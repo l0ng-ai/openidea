@@ -2,15 +2,45 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 
 const calls: string[] = [];
-const referenceResponse = vi.fn(async () => ({ locations: [loc], incomplete: null }));
+/** The editor at the caret (`null`: none, as for a search from outside an editor). */
+let caretView: import("@codemirror/view").EditorView | null = null;
+const referenceResponse = vi.fn(
+  async (): Promise<{ locations: (typeof loc)[]; incomplete: null; librariesSkipped?: boolean }> => ({
+    locations: [loc],
+    incomplete: null,
+  }),
+);
 const loc = { path: "/p/b.ts", range: { start: { line: 1, col: 4 }, end: { line: 1, col: 8 } } };
+const lspReferences = vi.fn(async () => ({ status: "ok", data: null }));
+vi.mock("@/platform/ipc", async (orig) => {
+  const actual = await orig<typeof import("@/platform/ipc")>();
+  return { ...actual, commands: { ...actual.commands, lspReferences } };
+});
+vi.mock("@/platform/keymap", async (orig) => ({
+  ...(await orig<typeof import("@/platform/keymap")>()),
+  shortcutLabel: (id: string) => (id === "find.showUsages" ? "⌥⌘F7" : ""),
+}));
 vi.mock("./ipc", async (orig) => ({
   ...(await orig<typeof import("./ipc")>()),
-  caretContext: () => ({ doc: 1, path: "/p/a.ts", line: 0, col: 0, word: "used", view: null }),
-  lspRequest: () => referenceResponse(),
+  caretContext: () => ({ doc: 1, path: "/p/a.ts", line: 0, col: 0, word: "used", view: caretView }),
+  lspRequest: (request: () => unknown) => {
+    request();
+    return referenceResponse();
+  },
   readManyFileLines: async () => new Map([["/p/b.ts", ["", "    used();"]]]),
   openLocation: async (path: string, line: number) => void calls.push(`open ${path}:${line}`),
   hint: (text: string) => void calls.push(`hint ${text}`),
+}));
+/** The partial-results channels of the searches, newest last. */
+const channels: { onmessage: (refs: unknown) => void }[] = [];
+vi.mock("@tauri-apps/api/core", async (orig) => ({
+  ...(await orig<object>()),
+  Channel: class {
+    onmessage = () => {};
+    constructor() {
+      channels.push(this);
+    }
+  },
 }));
 const showUsageResults = vi.fn();
 vi.mock("./usages", async (orig) => ({
@@ -19,7 +49,7 @@ vi.mock("./usages", async (orig) => ({
 }));
 
 const { UsagesPopup, filterUsages, usageLocations } = await import("./UsagesPopup");
-const { showUsagesPopup, useUsagesPopup, dismissUsagesPopup } = await import("./usages");
+const { showUsagesPopup, useUsagesPopup, dismissUsagesPopup, setUsagesPopupScope } = await import("./usages");
 
 const usage = (path: string, line: number, text: string) => ({ path, line, col: 0, endCol: 3, text });
 const groups = [
@@ -196,6 +226,171 @@ it("keeps filter controls available when all classified rows are hidden", () => 
   expect(screen.queryAllByRole("option")).toHaveLength(0);
   fireEvent.click(screen.getByRole("button", { name: "Show read accesses" }));
   expect(screen.getAllByRole("option")).toHaveLength(2);
+});
+
+it("opens with the usages found first and fills in the rest", async () => {
+  render(<UsagesPopup />);
+  const at = (line: number) => ({ ...loc, range: { start: { line, col: 4 }, end: { line, col: 8 } } });
+  let resolve!: (value: { locations: (typeof loc)[]; incomplete: null }) => void;
+  referenceResponse.mockReturnValueOnce(
+    new Promise((r) => {
+      resolve = r;
+    }),
+  );
+  const before = calls.length;
+  const requested = lspReferences.mock.calls.length;
+  const pending = showUsagesPopup();
+  await act(async () => {
+    await vi.waitFor(() => expect(lspReferences).toHaveBeenCalledTimes(requested + 1));
+    channels.at(-1)!.onmessage({ locations: [at(1)], incomplete: null });
+  });
+  // Not before the rest had a moment to arrive.
+  expect(useUsagesPopup.getState().open).toBe(false);
+  await act(() => new Promise((r) => setTimeout(r, 350)));
+  expect(useUsagesPopup.getState()).toMatchObject({ open: true, loading: true });
+  expect(screen.getByRole("status", { name: "Searching for more usages" })).toBeInTheDocument();
+  expect(screen.getAllByRole("option")).toHaveLength(1);
+  await act(async () => channels.at(-1)!.onmessage({ locations: [at(1), at(2)], incomplete: null }));
+  expect(screen.getAllByRole("option")).toHaveLength(2);
+  await act(async () => {
+    resolve({ locations: [at(1), at(2), at(3)], incomplete: null });
+    await pending;
+  });
+  expect(useUsagesPopup.getState()).toMatchObject({ open: true, loading: false });
+  expect(screen.queryByRole("status", { name: "Searching for more usages" })).toBeNull();
+  expect(screen.getAllByRole("option")).toHaveLength(3);
+  expect(calls.slice(before)).toEqual([]);
+  act(() => dismissUsagesPopup());
+});
+
+it("says at the caret that it is searching until the popup shows", async () => {
+  const { EditorState } = await import("@codemirror/state");
+  const { EditorView } = await import("@codemirror/view");
+  const { PENDING_HINT_DELAY_MS } = await import("@/editor/lsp/hint");
+  render(<UsagesPopup />);
+  caretView = new EditorView({ state: EditorState.create({ doc: "used();" }), parent: document.body });
+  const hint = () => document.querySelector(".cm-lsp-hint")?.textContent ?? null;
+  const at = (line: number) => ({ ...loc, range: { start: { line, col: 4 }, end: { line, col: 8 } } });
+  let resolve!: (value: { locations: (typeof loc)[]; incomplete: null }) => void;
+  referenceResponse.mockReturnValueOnce(
+    new Promise((r) => {
+      resolve = r;
+    }),
+  );
+  try {
+    const pending = showUsagesPopup();
+    expect(hint()).toBeNull();
+    await act(() => new Promise((r) => setTimeout(r, PENDING_HINT_DELAY_MS + 10)));
+    expect(hint()).toBe("Searching for usages…");
+    await act(async () => {
+      resolve({ locations: [at(1), at(2)], incomplete: null });
+      await pending;
+    });
+    expect(useUsagesPopup.getState().open).toBe(true);
+    expect(hint()).toBeNull();
+  } finally {
+    caretView.destroy();
+    caretView = null;
+    act(() => dismissUsagesPopup());
+  }
+});
+
+it("jumps to a single usage when all arrive quickly, and otherwise stays open", async () => {
+  render(<UsagesPopup />);
+  let resolve!: (value: { locations: (typeof loc)[]; incomplete: null }) => void;
+  const respond = () =>
+    referenceResponse.mockReturnValueOnce(
+      new Promise((r) => {
+        resolve = r;
+      }),
+    );
+  respond();
+  let before = calls.length;
+  let requested = lspReferences.mock.calls.length;
+  let pending = showUsagesPopup();
+  await act(async () => {
+    await vi.waitFor(() => expect(lspReferences).toHaveBeenCalledTimes(requested + 1));
+    channels.at(-1)!.onmessage({ locations: [loc], incomplete: null });
+  });
+  await act(async () => {
+    resolve({ locations: [loc], incomplete: null });
+    await pending;
+  });
+  expect(useUsagesPopup.getState().open).toBe(false);
+  expect(calls.slice(before)).toEqual(["open /p/b.ts:1", "hint Only one usage in Project Files"]);
+  respond();
+  before = calls.length;
+  requested = lspReferences.mock.calls.length;
+  pending = showUsagesPopup();
+  await act(async () => {
+    await vi.waitFor(() => expect(lspReferences).toHaveBeenCalledTimes(requested + 1));
+    channels.at(-1)!.onmessage({ locations: [loc], incomplete: null });
+  });
+  await act(() => new Promise((r) => setTimeout(r, 350)));
+  await act(async () => {
+    resolve({ locations: [loc], incomplete: null });
+    await pending;
+  });
+  expect(useUsagesPopup.getState()).toMatchObject({ open: true, loading: false });
+  expect(screen.getAllByRole("option")).toHaveLength(1);
+  expect(calls.slice(before)).toEqual([]);
+  act(() => dismissUsagesPopup());
+});
+
+it("searches Project Files, and Project and Libraries when invoked again", async () => {
+  render(<UsagesPopup />);
+  const at = (line: number) => ({ ...loc, range: { start: { line, col: 4 }, end: { line, col: 8 } } });
+  const libraries = () => (lspReferences.mock.lastCall as unknown[])[5];
+  const widen = "Press ⌥⌘F7 again to search in 'Project and Libraries'";
+  // Nothing in Project Files: the hint offers the libraries, searched when invoked again meanwhile.
+  let before = calls.length;
+  referenceResponse.mockResolvedValueOnce({ locations: [], incomplete: null, librariesSkipped: true });
+  await showUsagesPopup();
+  expect(libraries()).toBe(false);
+  expect(calls.slice(before)).toEqual([`hint No usages found in Project Files. ${widen}`]);
+  referenceResponse.mockResolvedValueOnce({ locations: [at(1), at(2)], incomplete: null });
+  await act(() => showUsagesPopup());
+  expect(libraries()).toBe(true);
+  expect(useUsagesPopup.getState()).toMatchObject({ open: true, scope: "libraries" });
+  expect(screen.getByRole("button", { name: "Scope" })).toHaveTextContent("Project and Libraries");
+  // The scope chooser searches Project Files again.
+  referenceResponse.mockResolvedValueOnce({ locations: [at(1), at(2)], incomplete: null, librariesSkipped: true });
+  await act(async () => setUsagesPopupScope("project"));
+  await vi.waitFor(() => expect(useUsagesPopup.getState()).toMatchObject({ loading: false, scope: "project" }));
+  expect(libraries()).toBe(false);
+  expect(screen.getByRole("button", { name: "Scope" })).toHaveTextContent("Project Files");
+  // Switched while Project and Libraries are still searched: that search gives way.
+  let finish!: (value: { locations: (typeof loc)[]; incomplete: null }) => void;
+  referenceResponse.mockReturnValueOnce(new Promise((r) => (finish = r)));
+  await act(async () => setUsagesPopupScope("libraries"));
+  expect(libraries()).toBe(true);
+  expect(useUsagesPopup.getState()).toMatchObject({ loading: true, scope: "libraries" });
+  referenceResponse.mockResolvedValueOnce({ locations: [at(1), at(2)], incomplete: null, librariesSkipped: true });
+  await act(async () => setUsagesPopupScope("project"));
+  await vi.waitFor(() => expect(useUsagesPopup.getState()).toMatchObject({ loading: false, scope: "project" }));
+  expect(libraries()).toBe(false);
+  await act(async () => finish({ locations: [at(1), at(2), at(3), at(4)], incomplete: null }));
+  expect(screen.getAllByRole("option")).toHaveLength(2);
+  // Invoked again while it shows Project Files: Project and Libraries.
+  referenceResponse.mockResolvedValueOnce({ locations: [at(1), at(2), at(3)], incomplete: null });
+  await act(() => showUsagesPopup());
+  expect(libraries()).toBe(true);
+  expect(screen.getAllByRole("option")).toHaveLength(3);
+  act(() => dismissUsagesPopup());
+  // The only usage in Project Files is opened; the hint offers the libraries too.
+  before = calls.length;
+  referenceResponse.mockResolvedValueOnce({ locations: [at(1)], incomplete: null, librariesSkipped: true });
+  await showUsagesPopup();
+  expect(calls.slice(before)).toEqual(["open /p/b.ts:1", `hint Only one usage in Project Files. ${widen}`]);
+  referenceResponse.mockResolvedValueOnce({ locations: [at(1)], incomplete: null });
+  before = calls.length;
+  await showUsagesPopup();
+  expect(libraries()).toBe(true);
+  expect(calls.slice(before)).toEqual(["open /p/b.ts:1", "hint Only one usage in Project and Libraries"]);
+  // Without a hint showing, it searches the symbol at the caret in Project Files again.
+  referenceResponse.mockResolvedValueOnce({ locations: [at(1)], incomplete: null, librariesSkipped: true });
+  await showUsagesPopup();
+  expect(libraries()).toBe(false);
 });
 
 it("discards a pending response after the current popup is dismissed", async () => {

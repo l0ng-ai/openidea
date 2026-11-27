@@ -87,6 +87,8 @@ export function loadBreakpoints(root: string | null) {
   }
   const previous = Object.keys(useBreakpoints.getState().byFile);
   useBreakpoints.setState({ root, byFile, muted, status: {} });
+  // The backend may still hold files this window no longer lists (a reloaded window).
+  void replaceBreakpoints().catch((e) => console.warn("debugReplaceBreakpoints failed", e));
   for (const path of new Set([...previous, ...Object.keys(byFile)])) scheduleSync(path);
 }
 
@@ -96,6 +98,7 @@ const timers = new Map<string, ReturnType<typeof setTimeout>>();
 /** Ids in the order last sent per file (backend states are index-aligned). */
 const sent = new Map<string, string[]>();
 const inFlight = new Map<string, Promise<void>>();
+let flushing: Promise<void> | null = null;
 const SYNC_DELAY = 120;
 
 export function scheduleSync(path: string) {
@@ -110,14 +113,37 @@ export function scheduleSync(path: string) {
 }
 
 /** Drain debounced edits before the backend takes its startup breakpoint snapshot. */
-export async function flushBreakpoints() {
+export function flushBreakpoints(): Promise<void> {
+  // Concurrent session starts must not keep adding work to each other's drain.
+  if (flushing) return flushing;
+  flushing = drainBreakpoints().finally(() => {
+    flushing = null;
+  });
+  return flushing;
+}
+
+async function drainBreakpoints() {
   let paths = new Set([...timers.keys(), ...inFlight.keys(), ...Object.keys(useBreakpoints.getState().byFile)]);
   while (paths.size) {
     for (const timer of timers.values()) clearTimeout(timer);
     timers.clear();
+    // oxlint-disable-next-line no-await-in-loop -- the debounce drain must repeat: syncing can schedule new timers, so the next batch is recomputed only after this one settles
     await Promise.all([...paths].map((path) => syncFile(path)));
     paths = new Set([...timers.keys(), ...inFlight.keys()]);
   }
+  // The new session gets exactly the files listed here, even if a removal never reached the
+  // backend (#6116). Failing that, the session still starts with what the backend has.
+  await replaceBreakpoints().catch((e) => console.warn("debugReplaceBreakpoints failed", e));
+}
+
+/** Makes this window's whole list the backend's: files it no longer lists are cleared there. */
+async function replaceBreakpoints() {
+  // Without a project (before one opens, after it closes) the backend holds no breakpoints for
+  // this window and has none to clear.
+  const { root, byFile, muted } = useBreakpoints.getState();
+  if (!isTauri() || root === null || useProject.getState().project?.trusted === false) return;
+  const files = Object.fromEntries(Object.entries(byFile).map(([path, list]) => [path, toBackend(list, muted, path)]));
+  await call(commands.debugReplaceBreakpoints(files));
 }
 
 export function syncFile(path: string): Promise<void> {
@@ -214,6 +240,10 @@ export function removeBreakpoint(path: string, id: string) {
 
 export function removeAllBreakpoints() {
   for (const path of Object.keys(useBreakpoints.getState().byFile)) setFile(path, []);
+}
+
+export function removeFileBreakpoints(path: string) {
+  setFile(path, []);
 }
 
 /** Replaces a file's list after its lines moved with an edit (from the editor gutter). */

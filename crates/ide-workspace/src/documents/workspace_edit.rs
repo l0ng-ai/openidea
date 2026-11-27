@@ -1,6 +1,6 @@
 //! Preflight, rollback and grouped undo for edits spanning documents and files.
 
-use super::{DocState, Documents, RegEntry, disk_len, keys_for};
+use super::{DocState, Documents, RegEntry, keys_for};
 use ide_core::error::ErrorKind;
 use ide_core::{DocId, FileEdit, IdeError, IdeEvent, IdeResult, NullSink, WorkspaceEdit, WorkspaceEditPrecondition};
 use parking_lot::Mutex;
@@ -100,6 +100,8 @@ struct Record {
     paths: Vec<SavedPath>,
     documents: Vec<(DocId, DocState)>,
     after: Vec<WorkspaceEditPrecondition>,
+    /// External writes seen by each open document as of `after` (see [`Documents::external_writes`]).
+    writes: Vec<(DocId, u64)>,
 }
 
 fn stale(path: &Path) -> IdeError {
@@ -179,6 +181,9 @@ fn normalize_edit(edit: &WorkspaceEdit) -> IdeResult<WorkspaceEdit> {
     let mut files = Vec::new();
     for file in &edit.files {
         let resolve = |path: &Path, text: bool| -> IdeResult<PathBuf> {
+            if ide_core::is_virtual_uri(&path.to_string_lossy()) {
+                return Err(IdeError::invalid("library documents are always read-only"));
+            }
             if !changed.is_empty() {
                 return after_resources(path, &changed, 0);
             }
@@ -311,12 +316,7 @@ fn hash_disk(hash: &mut blake3::Hasher, path: &Path, unsaved: &HashMap<PathBuf, 
 
 /// The bytes saving `state` would write.
 fn saved_bytes(state: &DocState) -> IdeResult<Vec<u8>> {
-    let text = state.doc.text_for_save();
-    Ok(if state.native_to_ascii {
-        ide_vfs::encode_properties_ascii(&text).into_bytes()
-    } else {
-        ide_vfs::encode(&text, &state.encoding, state.has_bom)?
-    })
+    state.bytes_for_save(&state.doc)
 }
 
 /// A reverted edit may leave the dirty flag set even when all saved bytes match.
@@ -371,6 +371,35 @@ impl Documents {
             .collect()
     }
 
+    /// How many external writes each open document under `roots` has seen, with its path. An
+    /// unsaved buffer's file is checked first, for a write the watcher hasn't reported yet.
+    fn external_writes(&self, roots: &[PathBuf]) -> IdeResult<Vec<(DocId, u64, PathBuf)>> {
+        let mut writes = Vec::new();
+        for id in self.open_documents() {
+            self.with_doc(id, |state| {
+                if roots.iter().any(|p| text_path(&state.path).is_ok_and(|file| file.starts_with(p))) {
+                    self.check_disk_conflict(id, state);
+                    writes.push((id, state.external_writes, state.path.clone()));
+                }
+                Ok(())
+            })?;
+        }
+        Ok(writes)
+    }
+
+    /// Fingerprints see an unsaved buffer in place of its file, so another program writing that
+    /// file since the record was made shows only as a disk conflict. The IDE's own saves don't count.
+    fn validate_external_writes(&self, record: &Record, roots: &[PathBuf]) -> IdeResult<()> {
+        for (id, writes, path) in self.external_writes(roots)? {
+            // A document opened since then starts at zero.
+            let before = record.writes.iter().find(|(doc, _)| *doc == id).map_or(0, |(_, writes)| *writes);
+            if writes != before {
+                return Err(stale(&path));
+            }
+        }
+        Ok(())
+    }
+
     fn validate_preconditions(&self, expected: &[WorkspaceEditPrecondition]) -> IdeResult<()> {
         let current = self.fingerprints(&expected.iter().map(|p| p.path.to_path_buf()).collect::<Vec<_>>())?;
         for (before, after) in expected.iter().zip(current) {
@@ -386,6 +415,12 @@ impl Documents {
         self.apply_workspace_edit_inner(edit, true, &mut |_| Ok(()))
     }
 
+    /// [`Self::apply_workspace_edit`] for an agent's edit (the MCP server's tools): undoable the
+    /// same way, announced as an agent's (`by_agent`) rather than as a refactoring.
+    pub fn apply_agent_workspace_edit(&self, edit: &WorkspaceEdit) -> IdeResult<()> {
+        self.apply_workspace_edit_as(edit, true, true, &mut |_| Ok(()))
+    }
+
     /// File moves already own a combined move/reference undo record.
     pub fn apply_file_move_edits(&self, edit: &WorkspaceEdit) -> IdeResult<()> {
         self.apply_workspace_edit_inner(edit, false, &mut |_| Ok(()))
@@ -397,12 +432,24 @@ impl Documents {
         remember: bool,
         before_operation: &mut dyn FnMut(usize) -> IdeResult<()>,
     ) -> IdeResult<()> {
+        self.apply_workspace_edit_as(edit, remember, false, before_operation)
+    }
+
+    fn apply_workspace_edit_as(
+        &self,
+        edit: &WorkspaceEdit,
+        remember: bool,
+        by_agent: bool,
+        before_operation: &mut dyn FnMut(usize) -> IdeResult<()>,
+    ) -> IdeResult<()> {
         let _operation = self.operations.lock();
         if edit.files.is_empty() {
             return Ok(());
         }
         // Validate project rules before path resolution can erase linked components.
         crate::file_ops::validate_workspace_edit_paths(edit)?;
+        // Editors know the paths as the edit named them, before link resolution.
+        let moves = edit.moves();
         let mut edit = normalize_edit(edit)?;
         let captured = !edit.preconditions.is_empty();
         crate::file_ops::expand_workspace_edit(&mut edit)?;
@@ -453,6 +500,10 @@ impl Documents {
             Ok(after) => after,
             Err(error) => return Err(self.recover(record, error)),
         };
+        record.writes = match self.external_writes(&roots) {
+            Ok(writes) => writes.into_iter().map(|(id, writes, _)| (id, writes)).collect(),
+            Err(error) => return Err(self.recover(record, error)),
+        };
         if let Err(error) = fs::remove_file(record.directory.path().join("recovery")) {
             return Err(self.recover(record, error.into()));
         }
@@ -482,7 +533,7 @@ impl Documents {
                 });
             }
             history.prune(SystemTime::now(), MAX_HISTORY_BYTES, MAX_HISTORY_AGE);
-            self.sink.emit(IdeEvent::WorkspaceEditApplied { id, paths: affected });
+            self.sink.emit(IdeEvent::WorkspaceEditApplied { id, paths: affected, moves, by_agent });
         }
         Ok(())
     }
@@ -552,6 +603,7 @@ impl Documents {
             paths,
             documents,
             after: Vec::new(),
+            writes: Vec::new(),
         })
     }
 
@@ -745,13 +797,21 @@ impl Documents {
             let result = self.with_doc(*id, |state| {
                 self.replace_locked(*id, state, &before.doc.text())?;
                 state.encoding = before.encoding.clone();
+                state.encoding_chosen = before.encoding_chosen;
                 state.has_bom = before.has_bom;
                 state.doc.set_line_ending(before.doc.line_ending());
-                state.disk_mtime = fs::metadata(&state.path).map(|m| ide_vfs::mtime_ms(&m)).unwrap_or(0.0);
-                state.disk_len = disk_len(&state.path);
+                let mtime = fs::metadata(&state.path).map(|m| ide_vfs::mtime_ms(&m)).unwrap_or(0.0);
                 let disk_failed =
                     text_path(&state.path).is_ok_and(|path| failed_paths.iter().any(|failed| path.starts_with(failed)));
                 let dirty = disk_failed || (before.dirty && differs_from_disk(state)?);
+                let disk_conflict = state.disk_conflict;
+                state.synced(mtime);
+                if dirty {
+                    // The restored buffer differs from the file: no text of it is known to be clean,
+                    // and a warned external change must still stop autosave.
+                    state.clean_text = None;
+                    state.disk_conflict = disk_conflict;
+                }
                 self.set_dirty(*id, state, dirty);
                 Ok(())
             });
@@ -786,12 +846,17 @@ impl Documents {
                     return Err(stale(path));
                 }
                 let defaults = self.file_defaults();
-                let loaded = ide_vfs::load_text_with_fallback(path, defaults.fallback_for(path))?;
+                let native_to_ascii = defaults.native_to_ascii_for(path);
+                let loaded = if state.encoding_chosen {
+                    Self::load_as(path, &state.encoding, native_to_ascii)?
+                } else {
+                    Self::load_with_defaults(path, &defaults, state.editorconfig.as_ref())?
+                };
+                state.native_to_ascii = native_to_ascii;
                 self.replace_locked(id, state, &loaded.text)?;
                 state.encoding = loaded.encoding;
                 state.has_bom = loaded.has_bom;
-                state.disk_mtime = loaded.mtime_ms;
-                state.disk_len = disk_len(path);
+                state.synced(loaded.mtime_ms);
                 Ok(())
             })?;
         }
@@ -840,8 +905,9 @@ impl Documents {
         if record.undone != redo {
             return Err(IdeError::invalid("the refactoring is already in the requested history state"));
         }
-        self.validate_preconditions(&record.after)?;
         let roots = record.paths.iter().map(|p| p.path.clone()).collect::<Vec<_>>();
+        self.validate_external_writes(record, &roots)?;
+        self.validate_preconditions(&record.after)?;
         let mut current = self.backup(&roots)?;
         fs::write(current.directory.path().join("recovery"), b"history restore in progress")?;
         let _active = ActiveEdit::new(&self.workspace_edit_active);
@@ -850,6 +916,10 @@ impl Documents {
         }
         current.after = match self.fingerprints(&roots) {
             Ok(after) => after,
+            Err(error) => return Err(self.recover(current, error)),
+        };
+        current.writes = match self.external_writes(&roots) {
+            Ok(writes) => writes.into_iter().map(|(id, writes, _)| (id, writes)).collect(),
             Err(error) => return Err(self.recover(current, error)),
         };
         current.undone = !redo;

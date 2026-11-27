@@ -3,3 +3,6 @@ contact_links:
   - name: Download the latest release
     url: https://github.com/l0ng-ai/openidea/releases/latest
     about: Many problems are already fixed. Please check the latest version before reporting.
+  - name: Report a security vulnerability
+    url: https://github.com/l0ng-ai/openidea/security/advisories/new
+    about: Please report security problems privately, not in a public issue.

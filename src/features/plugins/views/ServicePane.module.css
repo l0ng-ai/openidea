@@ -1,0 +1,29 @@
+.pane {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.text {
+  flex: 1;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 6px 10px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  line-height: var(--lh-code);
+  color: var(--fg-editor);
+  background: var(--bg-editor);
+  white-space: pre;
+  -webkit-user-select: text;
+  user-select: text;
+}

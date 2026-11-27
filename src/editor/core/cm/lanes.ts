@@ -6,6 +6,7 @@ import { EditorSelection, type EditorState, type Extension, type StateEffect } f
 import { foldedRanges, unfoldEffect } from "@codemirror/language";
 import { EditorView, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
 import { gutterLaneMarkers, scrollbarMarks, type ScrollbarMark } from "@/editor/api";
+import { lockScrollbarCursor } from "@/ui/dragCursor";
 
 export const changeLane: Extension = gutter({
   class: "cm-openidea-lane",
@@ -42,7 +43,8 @@ export function scrollbarThumb(
   minThumb = MIN_THUMB,
 ): { top: number; bottom: number } | null {
   const max = scrollHeight - clientHeight;
-  if (max <= 0 || clientHeight <= 0) return null;
+  // A pixel of range is WebKit rounding after a resize, not content to scroll to.
+  if (max <= 1 || clientHeight <= 0) return null;
   const length = Math.min(clientHeight, Math.max(minThumb, (clientHeight * clientHeight) / scrollHeight));
   const top = (Math.min(Math.max(scrollTop, 0), max) / max) * (clientHeight - length);
   return { top, bottom: top + length };
@@ -60,7 +62,10 @@ export function unfoldAround(state: EditorState, pos: number): StateEffect<unkno
 
 class OverviewLane {
   dom: HTMLElement;
+  private scroller: HTMLElement;
   private scheduled = false;
+  /** Set while a resize burst is being coalesced; see [`scheduleMarksLater`]. */
+  private markTimer: number | undefined;
   private lastKey = "";
   /** The last pointer position over the editor, to re-check the thumb when it scrolls. */
   private pointer: { x: number; y: number } | null = null;
@@ -69,8 +74,10 @@ class OverviewLane {
    * press on this strip stays here instead of reaching the text layer as a text drag.
    */
   private thumb: HTMLElement;
+  private endThumbDrag?: () => void;
 
   constructor(private view: EditorView) {
+    this.scroller = view.scrollDOM;
     this.dom = document.createElement("div");
     this.dom.className = "cm-openidea-overview";
     this.dom.setAttribute("aria-hidden", "true");
@@ -80,21 +87,35 @@ class OverviewLane {
     this.thumb.addEventListener("mousedown", this.onThumbMouseDown);
     view.dom.addEventListener("mousemove", this.onPointerMove);
     view.dom.addEventListener("mouseleave", this.onPointerLeave);
-    view.scrollDOM.addEventListener("scroll", this.onScroll, { passive: true });
+    this.scroller.addEventListener("scroll", this.onScroll, { passive: true });
     view.dom.appendChild(this.dom);
     this.schedule();
   }
 
   update(u: ViewUpdate) {
+    // A window resize reaches the editor once per frame: keep the thumb current, which is one
+    // measure, and coalesce the mark maths that walks every mark's line block.
+    if (u.geometryChanged) {
+      this.scheduleThumb();
+      this.scheduleMarksLater();
+      return;
+    }
     if (
       u.docChanged ||
-      u.geometryChanged ||
       u.heightChanged ||
       u.viewportChanged ||
       u.selectionSet ||
       u.startState.facet(scrollbarMarks) !== u.state.facet(scrollbarMarks)
     )
       this.schedule();
+  }
+
+  /** Recomputes the marks once a resize burst has stopped instead of on every step of it. */
+  private scheduleMarksLater() {
+    this.markTimer ??= window.setTimeout(() => {
+      this.markTimer = undefined;
+      this.schedule();
+    }, 120);
   }
 
   private schedule() {
@@ -104,7 +125,7 @@ class OverviewLane {
       key: this,
       read: (view) => {
         this.scheduled = false;
-        const laneHeight = view.scrollDOM.clientHeight;
+        const laneHeight = this.scroller.clientHeight;
         const len = view.state.doc.length;
         // The document itself, without the scroll-past-end padding that follows the editor height.
         const contentHeight = Math.max(view.lineBlockAt(len).bottom, 1);
@@ -125,7 +146,10 @@ class OverviewLane {
           // Marks landing on the same lane pixel collapse into one.
           const px = Math.floor(a.top * scale);
           const top = pos(a.top);
-          const height = fit ? Math.round(b.bottom - a.top) : +(((b.bottom - a.top) / contentHeight) * 100).toFixed(3);
+          // A `full` mark runs from the top of its first line to the top of its last, as IDEA's
+          // error stripe (EditorMarkupModelImpl.offsetsToYPositions): one line is a min-height dash.
+          const span = (m.kind === "full" ? b.top : b.bottom) - a.top;
+          const height = fit ? Math.round(span) : +((span / contentHeight) * 100).toFixed(3);
           const key = `${px}:${m.color}:${m.kind ?? "line"}`;
           const prev = rows.get(key);
           if (!prev || (m.priority ?? 0) > (prev.mark.priority ?? 0) || height > prev.height)
@@ -136,19 +160,21 @@ class OverviewLane {
           rows: [...rows.values()].sort((x, y) => (x.mark.priority ?? 0) - (y.mark.priority ?? 0)),
           caret,
           unit,
+          laneHeight,
         };
       },
-      write: ({ rows, caret, unit }) => {
+      write: ({ rows, caret, unit, laneHeight }) => {
         const key =
-          rows.map((r) => `${r.top},${r.height},${r.mark.color},${r.mark.kind}`).join("|") + `#${caret}${unit}`;
+          rows.map((r) => `${r.top},${r.height},${r.mark.color},${r.mark.kind}`).join("|") +
+          `#${caret}${unit}${laneHeight}`;
         if (key === this.lastKey) return;
         this.lastKey = key;
         const frag = document.createDocumentFragment();
         for (const r of rows) {
           const el = document.createElement("div");
           el.className =
-            r.mark.kind === "thin"
-              ? "cm-openidea-overviewMark cm-openidea-overviewMark-thin"
+            r.mark.kind === "thin" || r.mark.kind === "full"
+              ? `cm-openidea-overviewMark cm-openidea-overviewMark-${r.mark.kind}`
               : "cm-openidea-overviewMark";
           el.style.top = `${r.top}${unit}`;
           el.style.height = `${r.height}${unit}`;
@@ -171,8 +197,8 @@ class OverviewLane {
   private scheduleThumb() {
     this.view.requestMeasure({
       key: this.thumb,
-      read: (view) => {
-        const s = view.scrollDOM;
+      read: () => {
+        const s = this.scroller;
         const thumb = scrollbarThumb(s.scrollTop, s.scrollHeight, s.clientHeight);
         // The lane starts at the top of the editor, the scrollbar at the top of the scroller.
         const offset = s.getBoundingClientRect().top - this.dom.getBoundingClientRect().top;
@@ -197,7 +223,7 @@ class OverviewLane {
     let over = false;
     if (p) {
       const lane = this.dom.getBoundingClientRect();
-      const s = this.view.scrollDOM;
+      const s = this.scroller;
       const thumb = scrollbarThumb(s.scrollTop, s.scrollHeight, s.clientHeight);
       const y = p.y - s.getBoundingClientRect().top;
       over = !!thumb && p.x >= lane.left && p.x <= lane.right && y >= thumb.top && y <= thumb.bottom;
@@ -226,9 +252,11 @@ class OverviewLane {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
-    const s = this.view.scrollDOM;
+    const s = this.scroller;
     const thumb = scrollbarThumb(s.scrollTop, s.scrollHeight, s.clientHeight);
     if (!thumb) return;
+    this.endThumbDrag?.();
+    const unlock = lockScrollbarCursor();
     const startY = e.clientY;
     const startTop = s.scrollTop;
     const travel = s.scrollHeight - s.clientHeight;
@@ -237,11 +265,20 @@ class OverviewLane {
     const onMove = (ev: MouseEvent) => {
       s.scrollTop = startTop + ((ev.clientY - startY) * travel) / track;
     };
-    const onUp = () => {
+    const onUp = (event?: MouseEvent | PointerEvent | FocusEvent) => {
+      if (event?.type === "mouseup" && (event as MouseEvent).button !== 0) return;
+      if (event?.type === "pointercancel" && (event as PointerEvent).pointerType !== "mouse") return;
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("blur", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      this.endThumbDrag = undefined;
+      unlock();
       this.updateThumbPassThrough();
     };
+    this.endThumbDrag = onUp;
+    window.addEventListener("blur", onUp);
+    window.addEventListener("pointercancel", onUp);
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
   };
@@ -255,7 +292,7 @@ class OverviewLane {
     const hit = nearestMark(marks, e.clientY);
     if (!hit) {
       // Above / below the thumb pages the editor, like the native track it replaces.
-      const s = this.view.scrollDOM;
+      const s = this.scroller;
       const thumb = scrollbarThumb(s.scrollTop, s.scrollHeight, s.clientHeight);
       e.preventDefault();
       if (!thumb) return;
@@ -276,16 +313,18 @@ class OverviewLane {
   };
 
   destroy() {
+    this.endThumbDrag?.();
+    if (this.markTimer !== undefined) window.clearTimeout(this.markTimer);
     this.dom.removeEventListener("mousedown", this.onMouseDown);
     this.thumb.removeEventListener("mousedown", this.onThumbMouseDown);
     this.view.dom.removeEventListener("mousemove", this.onPointerMove);
     this.view.dom.removeEventListener("mouseleave", this.onPointerLeave);
-    this.view.scrollDOM.removeEventListener("scroll", this.onScroll);
+    this.scroller.removeEventListener("scroll", this.onScroll);
     this.dom.remove();
   }
 }
 
 export const overviewLane: Extension = [
-  ViewPlugin.fromClass(OverviewLane),
+  ViewPlugin.define((view) => new OverviewLane(view)),
   EditorView.editorAttributes.of({ class: "cm-openidea-withOverview" }),
 ];

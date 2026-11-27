@@ -8,13 +8,18 @@
   flex-direction: column;
   background: var(--bg-app);
 }
+.toolbar[hidden] {
+  display: none;
+}
 .toolbar {
   flex: none;
-  height: var(--h-header);
+  min-height: var(--h-header);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 2px;
-  padding: 0 6px;
+  align-content: center;
+  gap: var(--space-0-5);
+  padding: var(--space-0-5) var(--space-1-5);
   border-bottom: 1px solid var(--border);
 }
 .toolbar > * {
@@ -26,16 +31,32 @@
   margin: 0 4px;
   background: var(--border-strong);
 }
-.toolbar > .count {
+.toolbar > .statusTools {
   flex-shrink: 1;
-  min-width: 0;
-  margin-left: auto;
-  padding: 0 6px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-0-5);
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  margin-inline-start: auto;
+}
+.statusTools > :not(.count) {
+  flex: none;
+}
+.count {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  padding-inline: var(--space-1-5);
   color: var(--fg-subtle);
   font-size: var(--fs-small);
-  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+  text-align: end;
+}
+.count:empty {
+  display: none;
 }
 /* Narrow (a side-docked preview): the whitespace / highlighting pickers stay in the gear menu. */
 @container diff-editor (max-width: 640px) {
@@ -43,8 +64,9 @@
     display: none;
   }
 }
-@container diff-editor (max-width: 380px) {
-  .toolbar > .sep {
+@container diff-editor (max-width: 520px) {
+  .toolbar > .sep,
+  .toolbar > .inlineOption {
     display: none;
   }
 }
@@ -61,7 +83,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 0 12px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -70,6 +92,47 @@
 }
 .label + .label {
   border-left: 1px solid var(--border);
+}
+/* Side by side, the right label starts at the right pane (`--diff-b-start`, set by the viewer). */
+.labels > .label:first-child:not(:only-child) {
+  flex: 0 0 var(--diff-b-start, 50%);
+}
+.labelFile {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-subtle);
+  font-family: var(--font-ui);
+}
+.sourceLabels {
+  font-size: var(--fs-ui);
+}
+.sourceLabels .label {
+  font-family: var(--font-ui);
+}
+.sourceLabels .labelText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sourceLabels .labelFile {
+  font-size: var(--fs-small);
+}
+.labelFile.revisionPath {
+  display: inline-flex;
+  color: var(--fg-muted);
+  font-size: var(--fs-ui);
+}
+.revisionDirectory,
+.revisionFilename {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.revisionFilename {
+  /* Let the directory shrink first, then elide the filename if it still exceeds the path's width. */
+  flex: none;
+  max-width: 100%;
 }
 .badge {
   padding: 0 5px;
@@ -93,13 +156,14 @@
   border-bottom: none;
 }
 .findRowSplit > div {
-  flex: 0 0 50%;
+  flex: 0 0 var(--diff-b-start, 50%);
   border-right: 1px solid var(--border);
 }
 .findRowRight {
   justify-content: flex-end;
 }
 .findRowRight > div {
+  flex-basis: calc(100% - var(--diff-b-start, 50%));
   border-right: none;
   border-left: 1px solid var(--border);
 }
@@ -111,12 +175,26 @@
   padding: 24px;
   color: var(--fg-subtle);
 }
+.stagedNotice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  color: var(--fg-subtle);
+}
+.indexDeletion {
+  --diff-inserted: var(--diff-deleted);
+  --diff-inserted-stripe: var(--diff-deleted-stripe);
+}
 .host {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+.host:not([hidden]) {
+  animation: diff-enter var(--dur) var(--ease) both;
 }
 .host[hidden] {
   display: none;
@@ -128,13 +206,16 @@
 .host :global(.cm-mergeView) {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  /* The panes scroll themselves (`.paneScroll`); a fitted block is content-tall and its host scrolls. */
+  overflow: hidden;
 }
 .host :global(.cm-mergeViewEditors) {
   min-height: 100%;
 }
 .host :global(.cm-mergeViewEditor) {
   min-width: 0;
+  /* Clips like the library's `hidden` without becoming a scroll container. */
+  overflow: clip;
 }
 .host :global(.cm-merge-revert) {
   width: 22px;
@@ -151,7 +232,35 @@
 }
 .host :global(.cm-merge-revert button:hover) {
   color: var(--fg-strong);
+  background: var(--bg-toolbar-hover);
+}
+.hunkGutter {
+  min-width: var(--h-row);
+}
+.host :global(.cm-openidea-withOverview .cm-gutters-after):has(> .hunkGutter) {
+  inset-inline-end: var(--space-3);
+  margin-inline-end: var(--space-3);
+}
+.hunkButtons {
+  display: inline-flex;
+  vertical-align: top;
+}
+.hunkButtons > button {
+  display: inline-grid;
+  place-items: center;
+  width: var(--h-row);
+  height: 100%;
+  min-height: var(--space-4);
+  border: 0;
+  border-radius: var(--radius-control);
+  padding: 0;
   background: transparent;
+  color: var(--fg-secondary);
+}
+.hunkButtons > button:hover,
+.hunkButtons > button:focus-visible {
+  background: var(--bg-hover);
+  color: var(--fg);
 }
 .select {
   height: var(--h-control-small);
@@ -170,7 +279,7 @@
   padding: 0;
   border: 0;
   background: none;
-  cursor: pointer;
+  cursor: default;
 }
 .host :global(.cm-diffHoverLine) {
   position: relative;
@@ -178,11 +287,12 @@
 .host :global(.cm-diffHoverRevert) {
   position: absolute;
   right: 8px;
-  top: 0;
+  /* Centre on the first row, including when the editor's line height changes. */
+  top: calc((var(--openidea-editor-line-height, var(--lh-code)) - var(--space-4)) / 2);
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  height: 16px;
+  height: var(--space-4);
   padding: 0 6px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-small);
@@ -190,40 +300,63 @@
   color: var(--fg-secondary);
   font-family: var(--font-ui);
   font-size: var(--fs-tiny);
-  cursor: pointer;
 }
 .host :global(.cm-diffHoverRevert:hover) {
   color: var(--fg-strong);
   background: var(--bg-hover);
 }
+.host :global(.cm-diffNumbers) {
+  position: relative;
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+.host :global(.cm-diffNumbers .cm-gutterElement),
+.host :global(.cm-diffWidgetNumber) {
+  min-inline-size: calc(var(--space-4) + var(--space-2));
+  padding-inline: var(--space-1) var(--space-2);
+}
+.host :global(.cm-diffWidgetNumbers) {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.host :global(.cm-diffWidgetNumber) {
+  position: absolute;
+  inset-inline: 0;
+}
 .noHighlight :global(.cm-changedLine),
 .noHighlight :global(.cm-insertedLine),
 .noHighlight :global(.cm-changedText),
+.noHighlight :global(.cm-inlineChangedLine),
+.noHighlight :global(.cm-unifiedWorkingChunk),
+.noHighlight :global(.cm-unifiedWorkingWord),
 .noHighlight :global(.cm-diffLine),
 .noHighlight :global(.cm-diffChangedGutter) {
   background: none !important;
 }
-/* Side-by-side without alignment (IDEA's default): each pane scrolls itself. */
-.unaligned :global(.cm-mergeView) {
-  overflow: hidden;
-}
-.unaligned :global(.cm-mergeViewEditors) {
+/* Every split diff but a fitted block: each pane scrolls itself (both axes), so its
+   horizontal scrollbar stays at the pane's bottom edge — a content-tall scroller would
+   render it at the content's end, out of reach until the diff is scrolled there. */
+.paneScroll :global(.cm-mergeViewEditors) {
   height: 100%;
   min-height: 0;
 }
-.unaligned :global(.cm-mergeViewEditor) {
+.paneScroll :global(.cm-mergeViewEditor) {
   height: 100%;
   min-height: 0;
-  overflow: hidden;
 }
 /* Overrides MergeView's base theme, which leaves scrolling to the outer view. */
-.unaligned :global(.cm-mergeViewEditor > .cm-editor),
-.unaligned :global(.cm-mergeViewEditor > .cm-editor > .cm-scroller) {
+.paneScroll :global(.cm-mergeViewEditor > .cm-editor),
+.paneScroll :global(.cm-mergeViewEditor > .cm-editor > .cm-scroller) {
   height: 100% !important;
 }
-.unaligned :global(.cm-mergeViewEditor > .cm-editor > .cm-scroller) {
+.paneScroll :global(.cm-mergeViewEditor > .cm-editor > .cm-scroller) {
   overflow: auto !important;
 }
+.measuringPanes {
+  opacity: 0;
+}
+
 .host :global(.cm-diffDivider) {
   position: relative;
   flex: none;
@@ -232,8 +365,18 @@
   background: var(--bg-app);
   border-left: 1px solid var(--border);
   border-right: 1px solid var(--border);
+  cursor: col-resize;
+  touch-action: none;
 }
-.host :global(.cm-diffDivider svg) {
+.host :global(.cm-diffDivider:hover) {
+  background: var(--bg-hover);
+}
+.host :global(.cm-diffDivider:focus-visible) {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+/* Only the band layer: the chevrons inside the arrow buttons are centred by the button's flex box. */
+.host :global(.cm-diffDivider > svg) {
   position: absolute;
   inset: 0;
 }
@@ -267,17 +410,23 @@
   border-radius: var(--radius-small);
   background: none;
   color: var(--fg-subtle);
-  cursor: pointer;
+  cursor: default;
 }
 .host :global(.cm-diffDivider button.cm-diffArrow-a-to-b) {
-  left: 1px;
+  left: 0;
 }
 .host :global(.cm-diffDivider button.cm-diffArrow-b-to-a) {
-  right: 1px;
+  right: 0;
+}
+/* With one direction there is no pair to keep apart: the arrow sits in the middle of the divider. */
+.host :global(.cm-diffDivider-lone button.cm-diffArrow) {
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
 }
 .host :global(.cm-diffDivider button.cm-diffArrow:hover) {
   color: var(--fg-strong);
-  background: transparent;
+  background: var(--bg-toolbar-hover);
 }
 /* Where the other pane has lines this one lacks. */
 .host :global(.cm-diffGap-inserted) {
@@ -297,7 +446,7 @@
 .notes {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
   margin: 4px 8px 6px 8px;
   padding: 6px 10px;
   border: 1px solid var(--border-strong);
@@ -314,7 +463,7 @@
 }
 .noteHead {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   font-size: var(--fs-small);
   color: var(--fg-subtle);
 }
@@ -342,4 +491,38 @@
   box-shadow: var(--shadow-tooltip);
   font-size: var(--fs-small);
   pointer-events: none;
+}
+
+@keyframes diff-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .host:not([hidden]) {
+    animation: none;
+  }
+}
+
+/* A block of the all-in-one diff: as tall as its content, the tab scrolls. */
+.fit {
+  flex: none;
+  height: auto;
+}
+.fit .host {
+  flex: none;
+}
+.fit .host > :global(.cm-editor) {
+  flex: none;
+}
+.fit .host :global(.cm-mergeView) {
+  flex: none;
+  overflow-y: visible;
+}
+.fit .host :global(.cm-mergeViewEditors) {
+  min-height: 0;
 }

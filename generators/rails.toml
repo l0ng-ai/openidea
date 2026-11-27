@@ -1,0 +1,46 @@
+id = "rails"
+name = "Ruby on Rails"
+group = "Ruby"
+icon = "project-rails"
+order = 1
+description = "A Rails application from rails new."
+
+[[requires]]
+program = "rails"
+# macOS ships a `rails` stub that only says Rails is not installed.
+min = "7.1"
+hint = "Install Rails: gem install rails"
+
+[[fields]]
+id = "database"
+label = "Database:"
+type = "choice"
+options = [
+    { value = "sqlite3", label = "SQLite" },
+    { value = "postgresql", label = "PostgreSQL" },
+    { value = "mysql", label = "MySQL" },
+    { value = "trilogy", label = "MySQL (Trilogy)" },
+]
+default = "sqlite3"
+
+[[fields]]
+id = "api"
+label = "API only"
+type = "checkbox"
+default = "false"
+
+[[fields]]
+id = "install"
+label = "Install gems"
+type = "checkbox"
+default = "true"
+
+[[steps]]
+label = "Running rails new"
+program = "rails"
+cwd = "parent"
+args = [
+    "new", "{{name}}", "--database={{database}}", "--skip-git",
+    { when = { api = "true" }, args = ["--api"] },
+    { when = { install = "false" }, args = ["--skip-bundle"] },
+]

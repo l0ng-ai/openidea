@@ -9,16 +9,34 @@ export type BuildStatus = "running" | "success" | "failed" | "cancelled";
 export interface ConsoleLine {
   text: string;
   kind: "out" | "err" | "system";
+  /** Directory of the step that printed the line (links resolve against it). */
+  cwd?: string | null;
 }
 
 /** Oldest lines are dropped beyond this (IDEA's console cycle buffer). */
 export const MAX_CONSOLE_LINES = 20_000;
 
-/** Appends streamed text (one or more `\n`-terminated lines) to `lines`. */
-export function appendOutput(lines: ConsoleLine[], text: string, kind: ConsoleLine["kind"]): ConsoleLine[] {
+/** The lines of streamed text (one or more `\n`-terminated lines). */
+export function outputLines(text: string): string[] {
   const parts = text.split("\n");
   if (parts.at(-1) === "") parts.pop();
-  const next = lines.concat(parts.map((t) => ({ text: t.replace(/\r$/, ""), kind })));
+  return parts;
+}
+
+/**
+ * Appends streamed text (one or more `\n`-terminated lines) to `lines`.
+ * `cwd` is the running step's directory (a step may append several chunks).
+ */
+export function appendOutput(
+  lines: ConsoleLine[],
+  text: string,
+  kind: ConsoleLine["kind"],
+  cwd?: string,
+): ConsoleLine[] {
+  const parts = outputLines(text);
+  const next = lines.concat(
+    parts.map((t) => ({ text: t.replace(/\r$/, ""), kind, ...(cwd !== undefined ? { cwd } : {}) })),
+  );
   return next.length > MAX_CONSOLE_LINES ? next.slice(next.length - MAX_CONSOLE_LINES) : next;
 }
 

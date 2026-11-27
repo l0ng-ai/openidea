@@ -98,9 +98,8 @@ export function setFindPopupNewTab(newTab: boolean) {
 }
 
 const SIZE_KEY = "openidea.search.findPopupSize.v1";
-const SPLIT_KEY = "openidea.search.findPopupSplit.v1";
+export const FIND_POPUP_SPLIT_KEY = "openidea.search.findPopupSplit.v1";
 
-/** The popup's size and its results / preview split, remembered like IDEA's. */
 export function loadFindPopupSize(): { w: number; h: number } | null {
   const v = loadJson<{ w?: unknown; h?: unknown } | null>(SIZE_KEY, null);
   return typeof v?.w === "number" && typeof v.h === "number" ? { w: v.w, h: v.h } : null;
@@ -108,17 +107,6 @@ export function loadFindPopupSize(): { w: number; h: number } | null {
 
 export function saveFindPopupSize(size: { w: number; h: number }) {
   saveJson(SIZE_KEY, size);
-}
-
-export function loadFindPopupSplit(): Record<string, number> | undefined {
-  const v = loadJson<unknown>(SPLIT_KEY, null);
-  return v && typeof v === "object" && Object.values(v).every((n) => typeof n === "number")
-    ? (v as Record<string, number>)
-    : undefined;
-}
-
-export function saveFindPopupSplit(layout: Record<string, number>) {
-  saveJson(SPLIT_KEY, layout);
 }
 
 /**
@@ -167,8 +155,6 @@ export function showFindPopup(replace: boolean, arg: FindArg & { selection?: str
   if (arg.directory) {
     patch.scopeTab = "directory";
     patch.directory = arg.directory;
-  } else if (!s.open && s.scopeTab === "directory" && !s.directory) {
-    patch.scopeTab = "project";
   }
   useFindPopup.setState(patch);
 }
@@ -178,11 +164,10 @@ export function hideFindPopup() {
 }
 
 const MASKS_KEY = "openidea.search.fileMasks.v1";
-const PROJECT_MASKS = 5;
 
 /**
- * `*.ext` masks of the project's most common language file types. IDEA seeds its
- * mask list with the IDE's languages; a multi-language IDE takes the project's.
+ * `*.ext` masks of every language file type in the project, most common first. IDEA
+ * seeds its mask list with the IDE's languages; a multi-language IDE takes the project's.
  */
 export const useProjectMasks = create<{ masks: string[] }>(() => ({ masks: [] }));
 
@@ -190,10 +175,7 @@ export async function refreshProjectMasks() {
   try {
     const [counts, languages] = await Promise.all([call(commands.indexFileExtensions()), commands.languages()]);
     const known = new Set(languages.flatMap((l) => l.extensions.map((e) => e.toLowerCase())));
-    const masks = counts
-      .filter((c) => known.has(c.extension))
-      .slice(0, PROJECT_MASKS)
-      .map((c) => `*.${c.extension}`);
+    const masks = counts.filter((c) => known.has(c.extension)).map((c) => `*.${c.extension}`);
     useProjectMasks.setState({ masks });
   } catch {
     /* no project index (welcome screen, tests) */
@@ -244,20 +226,20 @@ export interface ScopeInputs {
 }
 
 export function resolveDirectory(dir: string, root: string | null): string {
-  const d = dir.trim().replace(/\/+$/, "");
+  const d = dir.trim();
   if (!d || d.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(d)) return d;
-  return root ? `${root}/${d}` : d;
+  return root ? `${root.replace(/\/$/, "")}/${d}` : d;
 }
 
 /** The backend scope of the popup's scope tabs. */
-export function resolveFindScope(o: FindOptions, inputs: ScopeInputs): SearchScope {
+export function resolveFindScope(o: FindOptions, inputs: ScopeInputs): SearchScope | null {
   const { root } = inputs;
-  if (o.scopeTab === "directory" && o.directory.trim())
-    return { kind: "directory", path: resolveDirectory(o.directory, root) };
+  if (o.scopeTab === "directory") {
+    const path = resolveDirectory(o.directory, root);
+    return path ? { kind: "directory", path } : null;
+  }
   if (o.scopeTab === "module")
-    return o.module && root
-      ? { kind: "directory", path: o.module.startsWith("/") ? o.module : `${root}/${o.module}` }
-      : { kind: "project" };
+    return o.module && root ? { kind: "directory", path: resolveDirectory(o.module, root) } : { kind: "project" };
   if (o.scopeTab !== "scope") return { kind: "project" };
   const custom = customScopeName(o.namedScope);
   if (custom !== null) {

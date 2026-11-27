@@ -3,24 +3,27 @@
  * (like run configurations' gutter) and a toolbar panel above the text with
  * the environment selector, Run All and Stop.
  */
-import { RangeSet, StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
+import { EditorState, RangeSet, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter, showPanel, type Panel, type ViewUpdate } from "@codemirror/view";
 import { useEffect } from "react";
 import { createRoot } from "react-dom/client";
-import type { EditorDocContext } from "@/editor/api";
+import { CONTRIBUTED_FORMAT, mapLineStart, type EditorDocContext } from "@/editor/api";
 import { shortcutLabel } from "@/platform/keymap";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import type { HttpRequestBlock } from "@/platform/ipc";
-import { IconButton, Select, gutterIconMarkup, T } from "@/ui";
+import { executeAction } from "@/platform/actions";
+import { IconButton, Select, gutterIconMarkup, showContextMenu, T } from "@/ui";
 import {
   cancelRunning,
   loadEnvironments,
   parseRequests,
+  requestFromCurl,
   runAll,
   runRequest,
   setEnvironment,
   useHttpClient,
 } from "./store";
+import { httpBodyFormatter } from "./bodyFormat";
 import styles from "./HttpClient.module.css";
 
 export const HTTP_LANGUAGE = "http";
@@ -38,7 +41,7 @@ export const requestsField = StateField.define<Placed[]>({
     for (const e of tr.effects) if (e.is(setRequests)) return e.value;
     if (!tr.docChanged || !value.length) return value;
     return value.map((r) => {
-      const pos = tr.state.doc.lineAt(tr.changes.mapPos(r.pos, -1)).from;
+      const pos = mapLineStart(tr, r.pos);
       return { ...r, pos, line: tr.state.doc.lineAt(pos).number - 1 };
     });
   },
@@ -103,7 +106,10 @@ function Toolbar({ path, view }: { path: string | null; view: EditorView }) {
   useEffect(() => {
     if (path) void loadEnvironments(path);
   }, [path]);
-  const options = [{ value: "", label: "No Environment" }, ...(envs ?? []).map((e) => ({ value: e, label: e }))];
+  const options = [
+    { value: "", label: "No Environment" },
+    ...(envs ?? []).map((e) => ({ value: e, label: e, verbatim: true })),
+  ];
   return (
     <div className={styles.toolbar}>
       <IconButton
@@ -129,6 +135,27 @@ function Toolbar({ path, view }: { path: string | null; view: EditorView }) {
         disabled={!path}
         onClick={() => path && void loadEnvironments(path)}
       />
+      <IconButton
+        icon="plus"
+        title="Add Environment File"
+        disabled={!path}
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          showContextMenu({ x: r.left, y: r.bottom }, [
+            { kind: "action", action: "http.addPublicEnvironment" },
+            { kind: "action", action: "http.addPrivateEnvironment" },
+          ]);
+        }}
+      />
+      <IconButton
+        icon="copy"
+        title="Convert to cURL and Copy"
+        shortcut={shortcutLabel("http.copyAsCurl")}
+        onClick={() => {
+          view.focus();
+          void executeAction("http.copyAsCurl");
+        }}
+      />
     </div>
   );
 }
@@ -143,6 +170,25 @@ function toolbarPanel(path: string | null) {
 }
 
 const DEBOUNCE = 300;
+
+const CURL = /^\s*curl\s/;
+
+/** A pasted `curl …` command becomes the request it sends. */
+const curlPaste = EditorView.domEventHandlers({
+  paste(event, view) {
+    const text = event.clipboardData?.getData("text/plain");
+    if (!text || !CURL.test(text) || view.state.readOnly) return false;
+    event.preventDefault();
+    const { doc } = view.state;
+    void requestFromCurl(text)
+      .catch(() => null)
+      .then((request) => {
+        if (view.state.doc !== doc) return;
+        view.dispatch(view.state.replaceSelection(request ?? text), { scrollIntoView: true, userEvent: "input.paste" });
+      });
+    return true;
+  },
+});
 
 export function httpEditorExtension(ctx: EditorDocContext): Extension {
   if (ctx.language !== HTTP_LANGUAGE) return [];
@@ -167,9 +213,13 @@ export function httpEditorExtension(ctx: EditorDocContext): Extension {
       }
     },
   );
+  // Reformat Code: JSON request bodies (the blocks as last parsed).
+  const format = httpBodyFormatter((state) => state.field(requestsField, false) ?? []);
   return [
     requestsField,
+    EditorState.languageData.of(() => [{ [CONTRIBUTED_FORMAT]: format }]),
     detector,
+    curlPaste,
     showPanel.of(toolbarPanel(path)),
     gutter({
       class: `${styles.runGutter} cm-openidea-gutter-http`,

@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as TauriCore from "@tauri-apps/api/core";
+import { EditorState } from "@codemirror/state";
 import type { IdeEvent, NotebookSnapshot } from "@/bindings";
 import { IpcError } from "@/platform/ipc";
 import type * as Ipc from "@/platform/ipc";
-import { NotebookSession, notebookBackend } from "./session";
+import { caretAfterHistory, NotebookSession, notebookBackend } from "./session";
 
 type KernelEvent = Extract<IdeEvent, { type: "notebookKernel" }>;
 const kernelListeners = vi.hoisted(() => new Set<(event: KernelEvent) => void>());
@@ -93,6 +94,10 @@ function model() {
       document = snapshot();
       return structuredClone(document);
     },
+    cellDocs: async () =>
+      document.cells
+        .filter((cell) => cell.cellType === "code")
+        .map((cell, i) => ({ cell: cell.id, doc: 100 + i, uri: `vscode-notebook-cell:/p/a.ipynb#${cell.id}` })),
   };
   return {
     backend,
@@ -104,6 +109,60 @@ function model() {
 }
 
 describe("shared notebook mutation session", () => {
+  it("fetches the code cells' language-server documents when the code cells change", async () => {
+    const m = model();
+    const cellDocs = vi.fn(m.backend.cellDocs);
+    m.backend.cellDocs = cellDocs;
+    const session = new NotebookSession("/p/a.ipynb", m.backend, true);
+    await session.load();
+    await vi.waitFor(() => expect(session.getState().cellDocs.get("cell-a")?.doc).toBe(100));
+    expect(session.cellOfUri("vscode-notebook-cell:/p/a.ipynb#cell-a")).toBe("cell-a");
+    expect(session.cellOfUri("vscode-notebook-cell:/p/a.ipynb#other")).toBeNull();
+
+    // Typing keeps the same cells: no refetch.
+    session.edit({ type: "setSource", cell: "cell-a", source: "changed" });
+    await session.settled();
+    expect(m.read().cells[0]!.source).toBe("changed");
+    expect(cellDocs).toHaveBeenCalledTimes(1);
+
+    const added = { ...m.read().cells[0]!, id: "cell-b", source: "" };
+    m.replace({ ...m.read(), version: m.read().version + 1, cells: [...m.read().cells, added] });
+    session.edit({ type: "setSource", cell: "cell-a", source: "again" });
+    await session.settled();
+    await vi.waitFor(() => expect(session.getState().cellDocs.get("cell-b")?.doc).toBe(101));
+    expect(cellDocs).toHaveBeenCalledTimes(2);
+  });
+
+  it("asks the editor to show a revealed location", () => {
+    const session = new NotebookSession("/p/a.ipynb", model().backend, true);
+    session.reveal("cell-a", { line: 1, col: 2 });
+    const first = session.getState().reveal!;
+    expect(first).toMatchObject({ cell: "cell-a", selection: { line: 1, col: 2 } });
+    expect(session.selectedCell).toBe("cell-a");
+    session.reveal("cell-a");
+    expect(session.getState().reveal!.seq).toBeGreaterThan(first.seq);
+  });
+
+  it("reveals the nearest cell with an editor before or after a cell", async () => {
+    const m = model();
+    const cell = (id: string, cellType: string) => ({ ...m.read().cells[0]!, id, cellType });
+    m.replace({
+      ...m.read(),
+      cells: [cell("a", "code"), cell("md", "markdown"), cell("raw", "raw"), cell("b", "code")],
+    });
+    const session = new NotebookSession("/p/a.ipynb", m.backend, true);
+    await session.load();
+    // A Markdown preview and a raw cell have no editor.
+    expect(session.revealAdjacent("a", 1, 3)).toBe(true);
+    expect(session.getState().reveal).toMatchObject({ cell: "b", selection: { line: 0, col: 3 }, align: "auto" });
+    session.markdownEditing.add("md");
+    expect(session.revealAdjacent("b", -1, 0)).toBe(true);
+    expect(session.getState().reveal).toMatchObject({ cell: "md", selection: { col: 0 } });
+    expect(session.getState().reveal!.selection!.line).toBeGreaterThan(1e6);
+    expect(session.revealAdjacent("a", -1, 0)).toBe(false);
+    expect(session.revealAdjacent("b", 1, 0)).toBe(false);
+  });
+
   it("retires event listeners even when the backend project disappears during close", async () => {
     const m = model();
     const session = new NotebookSession("/p/a.ipynb", m.backend, true);
@@ -489,6 +548,114 @@ describe("shared notebook mutation session", () => {
     m.backend.restart = async () => structuredClone(m.read());
     await session.restart();
     expect(session.getState().error).toBeNull();
+    await session.close();
+  });
+});
+
+describe("caretAfterHistory", () => {
+  it("goes to the end of the text the history step changed", () => {
+    // Undo of typing: the inserted text is gone, the caret sits where it was.
+    expect(caretAfterHistory("a = 1\nb = 22\n", "a = 1\nb = 2\n", 0)).toEqual({ line: 1, col: 5 });
+    // Redo of typing: the caret follows the re-inserted text.
+    expect(caretAfterHistory("a = 1\n", "a = 1\nprint(a)\n", 0)).toEqual({ line: 2, col: 0 });
+    expect(caretAfterHistory("x\n", "x = 10\n", 0)).toEqual({ line: 0, col: 6 });
+  });
+
+  it("keeps the old caret when the cell did not change", () => {
+    expect(caretAfterHistory("abc\ndef", "abc\ndef", 6)).toEqual({ line: 1, col: 2 });
+  });
+});
+
+describe("undo and redo keep the focused cell's caret", () => {
+  /** A backend whose history responses set every cell's source back to the original. */
+  function historyModel(direction: "undo" | "redo") {
+    const m = model();
+    m.backend[direction] = async () => {
+      const current = m.read();
+      const reverted = {
+        ...current,
+        version: current.version + 1,
+        canRedo: true,
+        cells: current.cells.map((cell) => ({ ...cell, source: "original" })),
+      };
+      m.replace(reverted);
+      return structuredClone(reverted);
+    };
+    return m;
+  }
+
+  it("reveals the undone change in the focused cell after an undo", async () => {
+    const m = historyModel("undo");
+    const session = new NotebookSession("/p/a.ipynb", m.backend, true);
+    await session.load();
+    session.edit({ type: "setSource", cell: "cell-a", source: "original + typed" });
+    await session.settled();
+    // The caret had moved to the start; undo removes " + typed", so it goes where that was.
+    session.focusedCell = "cell-a";
+    session.editors.set("cell-a", EditorState.create({ doc: "original + typed", selection: { anchor: 0 } }));
+    await session.undo();
+    expect(session.getState().reveal).toMatchObject({
+      cell: "cell-a",
+      selection: { line: 0, col: 8 },
+      align: "auto",
+    });
+    await session.close();
+  });
+
+  it("reveals the focused cell's caret after a redo", async () => {
+    const m = historyModel("redo");
+    const session = new NotebookSession("/p/a.ipynb", m.backend, true);
+    await session.load();
+    session.focusedCell = "cell-a";
+    session.editors.set("cell-a", EditorState.create({ doc: "original", selection: { anchor: 4 } }));
+    await session.redo();
+    expect(session.getState().reveal).toMatchObject({ cell: "cell-a", selection: { line: 0, col: 4 } });
+    await session.close();
+  });
+
+  it("does not reveal a location when no cell editor is focused", async () => {
+    const m = historyModel("undo");
+    const session = new NotebookSession("/p/a.ipynb", m.backend, true);
+    await session.load();
+    session.edit({ type: "setSource", cell: "cell-a", source: "typed text" });
+    await session.settled();
+    await session.undo();
+    expect(session.getState().reveal).toBeNull();
+    await session.close();
+  });
+
+  it("skips the caret restore when the undo removes the focused cell", async () => {
+    const m = historyModel("undo");
+    m.backend.undo = async () => {
+      const current = m.read();
+      const emptied = { ...current, version: current.version + 1, cells: [] };
+      m.replace(emptied);
+      return structuredClone(emptied);
+    };
+    const session = new NotebookSession("/p/a.ipynb", m.backend, true);
+    await session.load();
+    session.focusedCell = "cell-a";
+    session.editors.set("cell-a", EditorState.create({ doc: "typed text", selection: { anchor: 6 } }));
+    await session.undo();
+    expect(session.getState().reveal).toBeNull();
+    await session.close();
+  });
+
+  it("skips the caret restore when the focused cell lost its editor", async () => {
+    const m = historyModel("undo");
+    m.backend.undo = async () => {
+      const current = m.read();
+      const markdown = { ...current.cells[0]!, cellType: "markdown" as const };
+      const converted = { ...current, version: current.version + 1, cells: [markdown] };
+      m.replace(converted);
+      return structuredClone(converted);
+    };
+    const session = new NotebookSession("/p/a.ipynb", m.backend, true);
+    await session.load();
+    session.focusedCell = "cell-a";
+    session.editors.set("cell-a", EditorState.create({ doc: "typed text", selection: { anchor: 6 } }));
+    await session.undo();
+    expect(session.getState().reveal).toBeNull();
     await session.close();
   });
 });

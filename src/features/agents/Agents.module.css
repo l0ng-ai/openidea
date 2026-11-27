@@ -31,7 +31,7 @@
 .row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
   flex: 1;
 }
@@ -42,6 +42,30 @@
 .count {
   color: var(--fg-subtle);
   font-size: var(--fs-tiny);
+}
+/* A task is being dragged over this group: dropping it puts the task there. */
+.dropOver {
+  background: var(--bg-hover);
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+}
+/* Drop insertion indicator on a tree row while dragging to reorder tasks or custom groups. */
+.dropBefore::before,
+.dropAfter::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--focus-ring);
+  pointer-events: none;
+  z-index: 1;
+}
+.dropBefore::before {
+  top: 0;
+}
+.dropAfter::after {
+  bottom: 0;
 }
 .title {
   flex: 0 1 auto;
@@ -79,10 +103,70 @@
 }
 .age {
   flex: none;
+  margin-left: auto;
   padding-right: 8px;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
+  min-width: 3ch;
+  text-align: end;
+}
+/* Pin and Archive appear beside the age while the pointer is on the row. */
+.rowActions {
+  display: none;
+  flex: none;
+  margin-left: auto;
+  margin-right: var(--space-2);
+  gap: var(--space-0-5);
+}
+.row:hover .rowActions,
+.rowActions:focus-within {
+  display: flex;
+}
+.row:hover .age,
+.row:has(.rowActions:focus-within) .age {
+  margin-left: 0;
+}
+/* The status mark sits in a fixed slot just before the age, so marks form a column. */
+.status {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  margin-left: auto;
+}
+.row:has(.status) .age,
+.row:hover .status,
+.row:has(.rowActions:focus-within) .status {
+  margin-left: 0;
+}
+.rowAction {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--h-control-small);
+  height: var(--h-control-small);
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-small);
+  background: none;
+  color: var(--fg-subtle);
+  --icon-color: currentColor;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+.rowAction:hover {
+  background: var(--bg-toolbar-hover);
+  color: var(--fg-strong);
+}
+.rowAction:active {
+  background: var(--bg-toolbar-pressed);
+}
+.rowAction:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 .ready {
   color: var(--success);
@@ -98,7 +182,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 24px 12px;
   color: var(--fg-muted);
 }
@@ -125,7 +209,6 @@
   background: none;
   color: inherit;
   font: inherit;
-  cursor: pointer;
 }
 .statusItem:hover {
   background: var(--bg-hover);
@@ -147,7 +230,7 @@
 .dockedBar {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 2px 8px;
   border-bottom: 1px solid var(--border);
 }
@@ -173,6 +256,21 @@
   display: flex;
   flex-direction: column;
 }
+/* Sits in the list like a tree row: no frame at rest, a fill on hover and a ring while typing. */
+.taskSearch {
+  flex: none;
+  height: var(--h-list-row);
+  margin: 2px var(--tree-inset, 6px) 2px;
+  border-radius: var(--radius-selection, 5px);
+  transition: background var(--dur-fast) var(--ease);
+}
+.taskSearch:hover {
+  background: var(--bg-hover);
+}
+.taskSearch:focus-within {
+  background: var(--bg-field, var(--bg-button));
+  box-shadow: inset 0 0 0 1px var(--focus-ring);
+}
 .history {
   display: flex;
   flex-direction: column;
@@ -186,12 +284,62 @@
   border-bottom: 1px solid var(--border);
   font-weight: 600;
 }
+/* Imported sessions below the task list: compact rows, not growing space. */
+.external {
+  /* Many imported sessions must not squeeze the task list out of the popup. */
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 40%;
+  overflow-y: auto;
+  padding: 4px 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.external > .row {
+  flex: none;
+}
 
-.location {
+/* Keep the import list height stable while filtering. */
+.chooser {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4) 0;
+}
+.chooserList {
+  height: 312px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  overflow: hidden;
+}
+.chooserList > * {
+  flex: 1;
+  min-height: 0;
+}
+.chooserRow {
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding: 1px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-small);
+  gap: var(--space-1-5);
+  min-width: 0;
+  width: 100%;
+}
+.chooserFooter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.chooserFolder {
+  flex: 0 0 auto;
+  max-width: 35%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-subtle);
+}
+.chooserHint {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
 }

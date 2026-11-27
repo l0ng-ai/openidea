@@ -1,0 +1,183 @@
+---
+title: "MCP Server"
+description: "让 Claude Code、Codex 等 MCP 客户端在你打开的项目上使用 OpenIDEA 的搜索、代码洞察、编辑、运行和 Git 工具。"
+---
+
+OpenIDEA 内置了一个 [Model Context Protocol](https://modelcontextprotocol.io)（MCP）服务器。打开后，在 IDE 之外运行的 AI agent（例如终端里的 Claude Code、Codex 或 Cursor）就能对你打开的项目调用 IDE 的工具：借助项目索引搜索、通过语言服务器查询符号、读取问题视图、重命名、重新格式化、构建、执行运行配置以及查看 Git 状态。
+
+在 OpenIDEA 内启动的 agent 任务（见 [Agent](/zh/guide/agents)）在服务器开启期间会自动获得同样的工具。
+
+## 开启
+
+<Steps>
+  <Step title="打开设置页面">进入 **设置 › 智能体 › IDE MCP 服务器**。</Step>
+  <Step title="启用">打开 **启用 MCP 服务器** 并应用。默认是关闭的。</Step>
+  <Step title="查看状态">
+    **状态** 显示服务器正在使用的端口，或启动失败的原因。**端点** 显示当前窗口所在项目的 URL。
+  </Step>
+</Steps>
+
+服务器默认只监听 `127.0.0.1`，每个请求都必须带上访问令牌。来自其他 Origin 的请求，以及用 `localhost` 以外的主机名访问服务器的请求，都会被拒绝。
+
+- **监听地址。** `127.0.0.1`（默认）只允许本机连接。要让其他电脑上的智能体连接，就填本机的其他地址（局域网或 VPN 地址），或填 `0.0.0.0` 监听所有地址；对方带着令牌连接 `http://<该地址>:<端口>/mcp`。任何能访问该地址并持有令牌的人都能使用这些工具，所以只在可信的网络里这样做。地址不是 `127.0.0.1` 时，**状态**会显示它。
+- **端口。** 默认每次运行都监听同一个端口 26371（**使用固定端口** 和 **端口**），这样 OpenIDEA 重启后 HTTP 客户端和端口转发（例如到另一台机器的 SSH 隧道）仍然有效。端口被占用或被系统保留时，本次运行改用一个空闲端口，**状态** 中会说明原因。关闭 **使用固定端口** 则每次运行使用一个空闲端口。
+- **令牌。** 默认每次启动 OpenIDEA 都会换一个新令牌。打开 **保留令牌** 后会在多次运行间保留同一个令牌，保存在 OpenIDEA 的应用数据目录中，只有你的账户可读；**重新生成令牌** 会替换它，使用旧令牌配置的客户端随之失效。
+
+## 连接客户端
+
+设置页面的 **客户端配置** 下有两个按钮，都会复制一段大多数客户端都能识别的 `mcpServers` JSON 配置。
+
+- **复制 Stdio 配置**（推荐）：客户端以 `--mcp-stdio` 参数启动 OpenIDEA 的可执行文件，由它转发给正在运行的 IDE。配置里没有令牌，OpenIDEA 重启后依然可用。
+- **复制 HTTP 配置**：客户端带着 `Authorization: Bearer <token>` 连接 `http://<地址>:<端口>/mcp`（监听所有地址时为 `127.0.0.1`）。只有同时使用固定端口并保留令牌时，OpenIDEA 重启后这份配置才继续有效；否则每次重启后都要重新复制。
+
+stdio 配置大致如下（路径以你机器上的为准）：
+
+```json
+{
+  "mcpServers": {
+    "openidea": {
+      "type": "stdio",
+      "command": "/Applications/OpenIDEA.app/Contents/MacOS/openidea",
+      "args": ["--mcp-stdio", "--project", "/path/to/project"]
+    }
+  }
+}
+```
+
+`--project` 指定客户端要操作的项目。省略时，转发程序使用客户端启动它时所在的目录，这样一份配置就能用于你在 OpenIDEA 中打开的所有项目。
+
+<Tabs>
+  <Tab title="Claude Code">
+    在项目目录的终端中为当前项目添加服务器：
+
+    ```sh
+    claude mcp add openidea -- /Applications/OpenIDEA.app/Contents/MacOS/openidea --mcp-stdio
+    ```
+
+    也可以把复制的 JSON 放到项目根目录的 `.mcp.json` 中，与团队共享。
+
+  </Tab>
+  <Tab title="Codex">
+    在 `~/.codex/config.toml` 中添加：
+
+    ```toml
+    [mcp_servers.openidea]
+    command = "/Applications/OpenIDEA.app/Contents/MacOS/openidea"
+    args = ["--mcp-stdio"]
+    ```
+
+    Codex 会在你运行 `codex` 的目录中启动它。
+
+  </Tab>
+  <Tab title="其他客户端">
+    把复制的配置粘贴到客户端的 MCP 设置中（例如 Cursor 的 `mcp.json`）。只支持 HTTP 的客户端可以用 **复制 HTTP 配置**，但每次 OpenIDEA 重启后都要更新。
+  </Tab>
+</Tabs>
+
+请以 **复制 Stdio 配置** 得到的可执行文件路径为准，上面的 macOS 路径只是示例。在 Windows 上，它是安装目录（或便携版目录）中的 `openidea.exe`。
+
+工具只在 OpenIDEA 运行，且项目已在窗口中打开或作为[后台项目](#后台项目)提供服务时可用。客户端可以指定这类项目中的任意目录，服务器会选出包含它的那个项目。HTTP 客户端通过 `X-OpenIDEA-Project` 请求头或 `?project=` 查询参数指定项目。
+
+服务器运行期间，OpenIDEA 会把端口和令牌写入应用数据目录下的 `mcp/server.json`（只有你自己可读），stdio 转发程序从这里读取。
+
+## 工具
+
+| 类别        | 工具                                                                                              |
+| ----------- | ------------------------------------------------------------------------------------------------- |
+| 文件        | `get_workspace_roots`、`read_file`、`list_directory_tree`、`create_new_file`、`apply_patch`       |
+| 搜索        | `search_text`、`search_regex`、`search_symbol`、`search_file`                                     |
+| 编辑器      | `get_all_open_file_paths`、`get_current_file`、`open_file_in_editor`                              |
+| 代码        | `get_symbol_info`、`find_references`、`get_call_hierarchy`、`rename_refactoring`、`reformat_file` |
+| 问题        | `get_file_problems`、`get_project_problems`、`check_files`                                        |
+| 运行与构建  | `get_run_configurations`、`execute_run_configuration`、`build_project`                            |
+| 命令        | `run_command`、`wait_for_run`、`send_run_input`、`stop_run`                                       |
+| 命令状态    | `get_run_status`、`read_run_output`、`list_runs`                                                  |
+| Git         | `get_repositories`、`git_status`、`git_diff`                                                      |
+| HTTP 客户端 | `http_list_requests`、`http_run_request`                                                          |
+
+几点说明：
+
+- `get_workspace_roots` 列出项目和附加到它的受信任项目，在其中一个项目里工作的 agent 也能知道工作区里的其他项目。
+- `read_file` 还能读取依赖的源代码，以及 jar 和 zip 压缩包中的文件。
+- `search_symbol` 和 `find_references` 使用 IDE 的索引和语言服务器；`get_symbol_info` 返回的内容与快速文档相同。
+- `get_call_hierarchy` 列出某个位置上函数或方法的调用方，`direction` 为 `outgoing` 时列出它调用的函数，每次一层。位置在函数体内时，指的就是这个函数。要再深入一层，用某一项的 `filePath`、`startLine` 和 `startColumn` 再调用一次。库中的项以 URI 作为 `filePath`，不能继续展开。
+- 列表类工具每次返回一页：从 `offset` 开始的 `limit` 项（默认 100；`search_symbol` 为 50，`list_runs` 为 10）。`total`（计数代价低的工具才有）、`more` 和 `nextOffset` 说明后面还有多少。`list_runs` 可按 `state` 过滤（`running`、`idle`、`error` 或某个具体状态），`get_run_configurations` 可按 `query` 过滤，`get_project_problems` 默认只列错误，`errorsOnly` 传 false 时也列警告。
+- 查询类工具（各搜索工具、`find_references`、`get_call_hierarchy`、`get_project_problems`、`git_status`、`get_all_open_file_paths`、`get_run_configurations`、`list_runs`）接受 `paths`：相对项目根目录的通配符（`src/**`、`!**/test/**`、`*.rs`），项目外的附加项目用绝对路径，只返回匹配的结果。搜索工具只遍历这些通配符所在的目录。
+- `search_text`、`search_regex` 和 `search_file` 会跳过 `.gitignore` 忽略的和项目排除的内容，`paths` 指定的目录里也一样，`includeExcluded` 传 true 时才包括。
+- `list_directory_tree` 列出全部内容，`.gitignore` 忽略的标为 `[git-ignored]`，项目排除的标为 `[ide-excluded]`。
+- `get_file_problems` 和 `get_project_problems` 返回的是问题工具窗口当前显示的内容（已应用你的检查配置文件），而不是重新分析的结果。
+- `check_files` 才是重新分析，适合在任何工具修改文件之后调用：它从磁盘同步每个文件，通知语言服务器文件已保存（这样 `cargo check` 等保存时检查也会运行），并等到服务器答复且分析完成。每个文件都有一个 `status`，说明问题列表是否完整，或者为什么无法检查：没有对应的语言服务器，或者服务器未安装、配置错误、已崩溃。
+- `rename_refactoring` 通过语言服务器重命名，文本搜索找不到的引用也会一并更新；也可以只预览不写入。
+- `apply_patch` 接受 Codex 的 `apply_patch` 格式和 unified diff，路径必须在项目内。
+- `git_diff` 比较的是磁盘上的文件，不包含编辑器中尚未保存的内容。
+- `http_list_requests` 列出项目中 `.http` / `.rest` 文件里的请求；`http_run_request` 按索引发送其中一个（可选 `env`，来自 `http-client.env.json`），会先询问，并返回状态和截断后的响应体——不含请求头或请求体。
+
+## 在运行工具窗口中执行命令
+
+`run_command` 在运行工具窗口的一个标签页中，用 **设置 › 工具 › 终端** 中配置的 shell 执行一条命令行。标签名由智能体指定，OpenIDEA 显示为 `_agent_<名称>`。输出实时可见，你也可以像对待其他运行一样向命令输入、重新运行或停止它。
+
+和 JetBrains 的 IDE 一样，命令通过管道运行，而不是在终端里运行：程序输出的是普通文本行，不会有进度条和屏幕重绘。智能体拿到的输出会去掉控制字符，并截断到 2000 行（`maxLinesCount`）；超出部分默认保留结尾，也可以用 `truncateMode` 改为保留开头或两头。标签页的原始输出日志保持完整。
+
+- **服务启动好就返回。** 调用默认最多等 10 秒让命令结束。服务器、监视进程或应用不会结束：智能体传入 `pattern`（它就绪时输出的那一行，如 `Listening on`、`Started … in`），这一行一出现就返回，命令继续运行。
+- **一个名称对应一个标签。** 名称对应的命令已结束时，下一条命令在同一标签中运行。命令仍在运行时会被拒绝，并返回该命令和它最后的输出：智能体必须先用 `stop_run` 停止它，或者换一个名称。任何进程都不会被悄悄停掉。
+- **跟进命令。** `wait_for_run` 等待命令结束，或等待输出中出现指定文本（例如服务器的“正在监听”一行）；`read_run_output` 从任意位置读取输出；`get_run_status` 报告命令是在运行、成功、失败、崩溃，还是被智能体或你停止；`send_run_input` 向命令的输入写入文本和 Enter，Ctrl+C 会停止命令，Ctrl+D 结束它的输入。
+- **你可以随时干预。** 你在标签输入行中输入的内容、重新运行、停止和关闭标签，都会连同时间一起告诉智能体。正在进行的等待会立即返回，并建议智能体停下手头的工作，回复你已收到干预，等你确认后再继续。
+- **已结束的标签会置灰。** 已结束的标签超过 **显示的已结束智能体标签数**（默认 1）时，最旧的会移入标签栏末尾的归档，显示为 **归档(n)**。归档超过 **保留的已归档智能体标签数**（默认 999）时，最旧的会被关闭。正在运行的命令永远不会被归档或关闭。这两项设置位于 **设置 › 智能体 › IDE MCP 服务器**。
+
+插件可以添加更多工具，它们会出现在同一个列表中。标记为破坏性操作的插件工具同样会先请求确认。
+
+## 后台项目
+
+默认情况下，服务器只为在窗口中打开的项目提供服务。**无窗口时提供服务** 让它也能为没有窗口的文件夹提供服务：第一次针对其中某个路径的工具调用会打开该项目，空闲一段时间后 OpenIDEA 再把它卸载。这项设置在 **设置 › 智能体 › IDE MCP 服务器** 的 **后台项目** 下，默认关闭。
+
+**无窗口时提供服务** 决定为哪些文件夹提供服务：
+
+- **关**（默认）：只提供在窗口中打开的项目。
+- **受信任的项目**：受信任的项目、受信任的最近项目和受信任位置内的仓库，加上 **文件夹** 中列出的文件夹。位于你设为受限的根目录之下的文件夹不会被提供服务。
+- **列表中的项目**：只提供 **文件夹** 中列出的文件夹。
+
+模式为 **关** 时，**文件夹**、**空闲卸载时间** 和 **项目数上限** 不可编辑。
+
+**文件夹** 是这份列表。**+** 通过本机的文件夹选择器添加文件夹，也可以新建一项，直接输入或粘贴路径；**−** 移除选中的一项，编辑按钮（或双击）用来修改它。条目必须是绝对路径，相对路径的条目会被忽略。与页面上的其他设置一样，列表在应用设置后生效。一个路径位于多个列出的文件夹之内时，最内层的那个就是项目。
+
+在 `settings.toml` 中，这四个选项是 `[mcpServer]` 下的 `backgroundProjects`（`"off"`、`"trusted"` 或 `"listed"`）、`backgroundProjectPaths`、`backgroundIdleMinutes`（0 到 1440）和 `backgroundProjectLimit`（1 到 32），只在全局文件中生效。
+
+项目何时加载、何时卸载：
+
+- **第一次工具调用时加载。** 针对其中某个路径的第一次工具调用会加载它。`initialize` 和 `tools/list` 不会打开任何项目，所以只是连接的客户端不会加载项目。
+- **进行中的调用会让它保持加载**，它启动的、仍在运行的任务也一样。
+- **空闲的项目会卸载。** 超过 **空闲卸载时间** 分钟（默认 30）没有请求，项目就会卸载。设为 0 则空闲的项目一直保持加载。
+- **数量上限。** **项目数上限**（默认 8，范围 1 到 32）是同时加载的项目数上限。达到上限时，空闲最久的项目会被卸载以腾出位置；所有已加载的项目都在忙时，客户端的请求会被拒绝。
+- **在窗口中打开该文件夹** 会卸载它的后台项目，由窗口接手。窗口还在打开该文件夹时到达的调用，会被要求稍后重试。
+- **更改提供服务的范围会立即卸载。** 把 **无窗口时提供服务** 切换为 **关**、从列表中移除文件夹、撤销使项目得以提供服务的信任以及关闭服务器，都会立即卸载受影响的项目，不必等到空闲时间。
+- **卸载会停止它的运行。** **卸载** 按钮、设置或列表的更改、撤销信任以及在窗口中打开该文件夹，都会立即卸载项目，并且不经询问就停止它启动的运行。只有空闲卸载和数量上限不会动有运行仍在进行的项目。
+- **重启 OpenIDEA** 后一个项目也没有加载。
+
+**当前已打开** 列出已加载的项目，每个项目显示它正在做什么（正在处理请求、因某个运行保持打开，或已空闲多久以及何时卸载），并带有 **卸载** 按钮。卸载不必等到 **应用**。如果设置仍然提供该项目，下一次指向它的工具调用会再次加载它。
+
+只要有项目处于加载状态，状态栏中的 **后台项目**（层叠图标和数量）就会打开同样的列表。每一行有 **在新窗口中打开** 和 **卸载** 两个图标按钮，列表下方是 **全部卸载** 和 **MCP 服务器设置…**。
+
+信任决定什么：受信任的项目与在窗口中打开的项目一样，可以使用语言服务器和会写入的工具。你没有信任的列出文件夹会以受限模式打开，只开放只读工具。
+
+后台项目没有窗口，所以有些工具不同：
+
+- `run_command` 和 `open_file_in_editor` 需要窗口。
+- `get_file_problems` 和 `get_project_problems` 报告的是窗口中显示的内容。在后台项目中，它们会返回一个错误，指向 `check_files`。
+- `get_current_file` 和 `get_all_open_file_paths` 描述的同样是窗口。在后台项目中，它们会返回一个错误，说明该项目需要窗口。
+- 打开 **运行工具时不再确认（勇敢模式）** 后，`execute_run_configuration` 和 `build_project` 可以在后台项目中使用。
+
+## 安全
+
+- **未受信任的项目** 只开放只读工具。写文件、重命名、重新格式化、构建或运行的工具都要求项目已被信任。
+- **运行和构建会先询问。** `execute_run_configuration`、`build_project`、`run_command` 和 `http_run_request` 会在 OpenIDEA 中弹出对话框，说明是哪个客户端、哪个项目、哪个工具以及要运行什么，选择 **允许** 或 **拒绝**；多个请求会排队。
+- 会写入的工具拒绝项目之外的路径。
+- **后台项目。** 任何持有令牌的人都能让 IDE 加载 **无窗口时提供服务** 所提供的项目，所以这项设置和令牌共同决定谁能在这台电脑上打开文件夹。你没有信任的列出文件夹会以受限模式打开，只开放只读工具。列表里只放你愿意让智能体访问的文件夹。
+
+## 远程开发
+
+在远程窗口（[SSH](/zh/guide/remote/ssh)、WSL 或[容器](/zh/guide/remote/containers)）中，`openidea-server` 会在远程主机上运行自己的 MCP 服务器，可在该远程窗口的 **Settings › Agents › IDE MCP Server** 中独立配置。远程窗口内启动的编程智能体会立即可用内置工具；在远程主机终端运行的外部客户端可使用 **Copy Stdio Config**（`~/.openidea/bin/openidea-server --mcp-stdio`）或 **Copy HTTP Config**，桌面端客户端则可在 **Ports** 工具窗口转发该端口后连接。远程服务器只为其窗口中打开的项目提供服务：[后台项目](#后台项目)由桌面上的 OpenIDEA 提供，远程窗口的设置里 **后台项目** 分组不可编辑。
+
+## 限制
+
+- 服务器为在窗口中打开的项目提供服务；打开 **无窗口时提供服务** 后，也为它加载的后台项目提供服务。两者都不是的项目不会被提供服务；关闭项目窗口后，除非该设置仍然提供它，否则它的工具就不可用了。后台项目只在 OpenIDEA 运行期间存在。
+- 响应是普通 JSON，服务器不通过 SSE 推送流式结果。

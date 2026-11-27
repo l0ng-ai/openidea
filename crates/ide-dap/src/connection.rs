@@ -68,10 +68,16 @@ pub enum Incoming {
     Closed,
 }
 
+/// Bounded outgoing queue: an adapter that stops reading its input holds back `send`
+/// instead of the IDE accumulating unbounded messages. The incoming queue stays unbounded:
+/// the event loop awaits requests while handling events (`stopped` restores breakpoints), so
+/// a reader parked on a full queue would never read the response that loop waits for.
+const OUT_CAPACITY: usize = 256;
+
 type Pending = HashMap<i64, (String, oneshot::Sender<Result<Value, DapError>>)>;
 
 struct Inner {
-    out: mpsc::UnboundedSender<Vec<u8>>,
+    out: mpsc::Sender<Vec<u8>>,
     pending: Mutex<Pending>,
     seq: AtomicI64,
     closed: AtomicBool,
@@ -114,7 +120,7 @@ impl Connection {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(OUT_CAPACITY);
         let (in_tx, in_rx) = mpsc::unbounded_channel();
         let inner = Arc::new(Inner {
             out: out_tx,
@@ -183,17 +189,17 @@ impl Connection {
         self.inner.closed.load(Ordering::Acquire)
     }
 
-    fn send(&self, value: &Value) -> Result<(), DapError> {
+    async fn send(&self, value: &Value) -> Result<(), DapError> {
         if self.is_closed() {
             return Err(DapError::Closed);
         }
         let body = serde_json::to_vec(value).map_err(|e| DapError::Protocol(e.to_string()))?;
         tracing::trace!(target: "ide_dap::wire", "--> {}", String::from_utf8_lossy(&body));
-        self.inner.out.send(body).map_err(|_| DapError::Closed)
+        self.inner.out.send(body).await.map_err(|_| DapError::Closed)
     }
 
     /// Sends a request and returns a receiver for its response body, without waiting.
-    pub fn send_request(
+    pub async fn send_request(
         &self,
         command: &str,
         arguments: Value,
@@ -205,7 +211,7 @@ impl Connection {
         if !arguments.is_null() {
             msg["arguments"] = arguments;
         }
-        if let Err(e) = self.send(&msg) {
+        if let Err(e) = self.send(&msg).await {
             self.inner.pending.lock().remove(&seq);
             return Err(e);
         }
@@ -214,7 +220,7 @@ impl Connection {
 
     /// Sends a request and waits for the response body (`null` when absent).
     pub async fn request(&self, command: &str, arguments: Value) -> Result<Value, DapError> {
-        let rx = self.send_request(command, arguments)?;
+        let rx = self.send_request(command, arguments).await?;
         rx.await.unwrap_or(Err(DapError::Closed))
     }
 
@@ -226,7 +232,12 @@ impl Connection {
     }
 
     /// Answers a reverse request.
-    pub fn respond(&self, request_seq: i64, command: &str, result: Result<Value, String>) -> Result<(), DapError> {
+    pub async fn respond(
+        &self,
+        request_seq: i64,
+        command: &str,
+        result: Result<Value, String>,
+    ) -> Result<(), DapError> {
         let seq = self.inner.seq.fetch_add(1, Ordering::Relaxed);
         let mut msg = json!({
             "seq": seq,
@@ -240,19 +251,13 @@ impl Connection {
             Ok(_) => {}
             Err(message) => msg["message"] = Value::String(message),
         }
-        self.send(&msg)
+        self.send(&msg).await
     }
 }
 
 fn dispatch(inner: &Inner, incoming: &mpsc::UnboundedSender<Incoming>, body: &[u8]) {
     tracing::trace!(target: "ide_dap::wire", "<-- {}", String::from_utf8_lossy(body));
-    let msg: Value = match serde_json::from_slice(body) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!("dap: unparsable message: {e}");
-            return;
-        }
-    };
+    let Some(msg) = parse_message(body) else { return };
     match msg.get("type").and_then(Value::as_str) {
         Some("response") => {
             let Some(request_seq) = msg.get("request_seq").and_then(Value::as_i64) else {
@@ -285,6 +290,25 @@ fn dispatch(inner: &Inner, incoming: &mpsc::UnboundedSender<Incoming>, body: &[u
     }
 }
 
+/// A message body as JSON. Some adapters pass the debuggee's output through as it was
+/// written: netcoredbg on Windows embeds console output in the ANSI code page (GBK on a
+/// Chinese system), which isn't valid UTF-8 and made the whole `output` event unparsable,
+/// so every line with non-ASCII text went missing. Such a body is decoded like other tool
+/// output (UTF-8, else the system code page) before parsing.
+fn parse_message(body: &[u8]) -> Option<Value> {
+    let error = match serde_json::from_slice(body) {
+        Ok(v) => return Some(v),
+        Err(e) => e,
+    };
+    if std::str::from_utf8(body).is_err()
+        && let Ok(v) = serde_json::from_str(&ide_core::output_encoding::decode_tool_output(body))
+    {
+        return Some(v);
+    }
+    tracing::warn!("dap: unparsable message: {error}");
+    None
+}
+
 /// `message`, or the formatted `body.error` (`{format, variables}`) when present.
 fn error_message(msg: &Value) -> String {
     if let Some(err) = msg.pointer("/body/error")
@@ -306,11 +330,95 @@ fn error_message(msg: &Value) -> String {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn a_handler_awaiting_a_request_still_gets_its_response_behind_an_event_burst() {
+        // The event loop handles `stopped` by sending `setBreakpoints` and awaiting the reply
+        // while the adapter keeps printing: the reply arrives behind thousands of events.
+        let (client_in, mut adapter_out) = tokio::io::duplex(64 * 1024);
+        let (client_out, adapter_in) = tokio::io::duplex(64 * 1024);
+        let (conn, mut incoming) = Connection::start(client_in, client_out);
+        let adapter = tokio::spawn(async move {
+            let event =
+                |seq: i64, event: &str| json!({"seq": seq, "type": "event", "event": event, "body": {"output": "x"}});
+            framing::write_message(&mut adapter_out, event(0, "stopped").to_string().as_bytes()).await.unwrap();
+            for i in 1..=5000 {
+                framing::write_message(&mut adapter_out, event(i, "output").to_string().as_bytes()).await.unwrap();
+            }
+            let mut requests = BufReader::new(adapter_in);
+            let request = framing::read_message(&mut requests).await.unwrap().unwrap();
+            let request: Value = serde_json::from_slice(&request).unwrap();
+            let response = json!({"seq": 5001, "type": "response", "request_seq": request["seq"], "success": true, "command": request["command"], "body": {"breakpoints": []}});
+            framing::write_message(&mut adapter_out, response.to_string().as_bytes()).await.unwrap();
+            adapter_out
+        });
+        let Some(Incoming::Event { event, .. }) = incoming.recv().await else { panic!("no event") };
+        assert_eq!(event, "stopped");
+        let reply = tokio::time::timeout(Duration::from_secs(10), conn.request("setBreakpoints", json!({})))
+            .await
+            .expect("the reader stalled behind the events")
+            .unwrap();
+        assert_eq!(reply, json!({"breakpoints": []}));
+        let _ = adapter.await;
+    }
+
+    #[tokio::test]
+    async fn outgoing_commands_are_backpressured_when_the_adapter_is_slow() {
+        let (writer, _unread_peer) = tokio::io::duplex(32 * 1024);
+        let (reader, _idle_peer) = tokio::io::duplex(32 * 1024);
+        // Nobody reads the writer's pipe, so it fills and the writer task stalls.
+        let (conn, _incoming) = Connection::start(reader, writer);
+        let producer_conn = conn.clone();
+        let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = sent.clone();
+        let producer = tokio::spawn(async move {
+            for i in 0..2000 {
+                let body = json!({"seq": i, "type": "event", "event": "output", "body": {"output": "x"}});
+                if producer_conn.send(&body).await.is_err() {
+                    break;
+                }
+                count.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(sent.load(Ordering::Relaxed) < 2000);
+        // The bounded queue held `send` back; closing cancels the writer task.
+        conn.close();
+        producer.abort();
+    }
+
+    #[test]
+    fn parses_output_events_with_non_utf8_text() {
+        // "中文" in GBK inside an output event, as netcoredbg sends it on a Chinese Windows.
+        let mut body = br#"{"seq":5,"type":"event","event":"output","body":{"category":"stdout","output":""#.to_vec();
+        body.extend_from_slice(&[0xd6, 0xd0, 0xce, 0xc4]);
+        body.extend_from_slice(br#"\n"}}"#);
+        let msg = parse_message(&body).expect("parsed");
+        assert_eq!(msg["event"], "output");
+        let output = msg["body"]["output"].as_str().unwrap();
+        assert!(output.ends_with('\n'));
+        // Off Windows (UTF-8 code page) the bytes decode lossily; the line still arrives.
+        #[cfg(not(windows))]
+        assert!(output.starts_with(char::REPLACEMENT_CHARACTER));
+        assert!(parse_message(b"{not json").is_none());
+    }
+
     #[test]
     fn formats_structured_errors() {
         let msg =
             json!({"message": "x", "body": {"error": {"format": "cannot find {file}", "variables": {"file": "a.py"}}}});
         assert_eq!(error_message(&msg), "cannot find a.py");
         assert_eq!(error_message(&json!({"message": "nope"})), "nope");
+    }
+
+    #[test]
+    fn a_failed_launch_response_keeps_delves_too_old_error_verbatim() {
+        // The UI's repair offer keys off this exact wording (`missingAdapter`), so the
+        // conversion to the IPC error must not fold it into a generic message.
+        let message = "Failed to launch /p/api: Version of Delve is too old for Go version go1.27.0 \
+                       (maximum supported version 1.26, suppress this error with --check-go-version=false)";
+        let e = ide_core::IdeError::from(DapError::Failed { command: "launch".into(), message: message.into() });
+        assert_eq!(e.kind, ide_core::error::ErrorKind::InvalidInput);
+        assert_eq!(e.message, format!("launch failed: {message}"));
+        assert!(e.message.contains("Version of Delve is too old for Go version go1.27.0"));
     }
 }

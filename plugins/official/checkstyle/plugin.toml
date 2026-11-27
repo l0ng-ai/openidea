@@ -1,6 +1,6 @@
 id = "openidea.checkstyle"
 name = "Checkstyle"
-version = "0.1.0"
+version = "0.1.1"
 description = "Checks Java files with Checkstyle when you save them: problems in the editor and the Problems view, quick fixes for tabs, trailing spaces and missing final newlines."
 authors = ["OpenIDEA contributors"]
 license = "Apache-2.0"

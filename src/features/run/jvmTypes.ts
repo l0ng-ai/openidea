@@ -6,6 +6,7 @@
  */
 import { call, commands, type RunConfig } from "@/platform/ipc";
 import { CLASSPATH, parseJavaArgs, TEST_CLASSPATH } from "@/platform/javaLaunch";
+import { hostOs } from "@/platform/remote";
 import { basename, useProject } from "@/platform/project";
 import { useBuildPresentation } from "@/platform/projectPresentation";
 import type { RunConfigTypeContribution, RunConfigTypeField } from "@/workbench/contributions";
@@ -13,7 +14,8 @@ import { formatArgs, parseArgs } from "./configs";
 import { commandName } from "./commandName";
 import { updatePolicyDefaults, updatePolicyFields } from "./updatePolicies";
 
-export const isWindows = () => typeof navigator !== "undefined" && /win/i.test(navigator.platform);
+/** Whether this window's commands run on Windows: the remote server's OS in a remote window, else the desktop's. */
+export const isWindows = () => hostOs() === "windows";
 
 /** VM options / program arguments as typed; on Windows a backslash is a path separator. */
 export const splitJvmArgs = (text: string | undefined, windows = isWindows()) => parseArgs(text ?? "", windows);
@@ -22,7 +24,7 @@ export const PROFILES_ARG = "--spring.profiles.active=";
 
 const VM_OPTIONS_PLACEHOLDER = "e.g. -Xmx1g -Dkey=value --add-opens java.base/java.lang=ALL-UNNAMED";
 
-const vmOptionsField = (hint?: string, visible?: RunConfigTypeField["visible"]): RunConfigTypeField => ({
+export const vmOptionsField = (hint?: string, visible?: RunConfigTypeField["visible"]): RunConfigTypeField => ({
   key: "vmOptions",
   label: "VM options",
   control: "textarea",
@@ -76,21 +78,35 @@ const jreField: RunConfigTypeField = {
     })),
 };
 
+/**
+ * JetBrains Runtime's `-XX:+AllowEnhancedClassRedefinition` for Debug, so Reload Changed Classes can add or
+ * remove methods and fields. The host adds it only on JetBrains Runtime (other JVMs refuse to start with it).
+ */
+const enhancedRedefinitionField: RunConfigTypeField = {
+  key: "enhancedClassRedefinition",
+  label: "Enhanced class redefinition",
+  control: "checkbox",
+  hint: "When debugging on JetBrains Runtime, Reload Changed Classes can also add or remove methods and fields",
+};
+
 /** IDEA's "Use classpath of module": the module whose classpath and build the run uses. */
 const moduleField: RunConfigTypeField = {
   key: "module",
   label: "Use classpath of module",
   control: "select",
   options: [{ value: "", label: "Find by main class" }],
-  loadOptions: async () => {
-    const root = useProject.getState().project?.root ?? "";
-    return [...useBuildPresentation.getState().modules.keys()].sort().map((dir) => ({
-      value: dir || ROOT_MODULE,
-      label: dir ? basename(dir) : basename(root),
-      detail: dir.includes("/") ? dir : undefined,
-    }));
-  },
+  loadOptions: async () => buildModuleOptions(),
 };
+
+/** The build's modules as select options (`.` for the project root). */
+export function buildModuleOptions(): { value: string; label: string; detail?: string }[] {
+  const root = useProject.getState().project?.root ?? "";
+  return [...useBuildPresentation.getState().modules.keys()].sort().map((dir) => ({
+    value: dir || ROOT_MODULE,
+    label: dir ? basename(dir) : basename(root),
+    detail: dir.includes("/") ? dir : undefined,
+  }));
+}
 
 function jvmApplicationType(spring: boolean): RunConfigTypeContribution {
   return {
@@ -114,6 +130,7 @@ function jvmApplicationType(spring: boolean): RunConfigTypeContribution {
       ...(spring ? [profilesField("Comma separated; passed as --spring.profiles.active")] : []),
       ...(spring ? updatePolicyFields(false) : []),
       jreField,
+      enhancedRedefinitionField,
       moduleField,
       {
         key: "classpath",
@@ -172,6 +189,37 @@ function jvmApplicationType(spring: boolean): RunConfigTypeContribution {
 
 export const applicationType = jvmApplicationType(false);
 export const springBootType = jvmApplicationType(true);
+
+export const jarApplicationType: RunConfigTypeContribution = {
+  id: "jar-application",
+  label: "JAR Application",
+  icon: "file-binary",
+  description: "Run an executable JAR",
+  debugAdapter: "java-debug",
+  fields: [
+    { key: "jarPath", label: "Path to JAR", mono: true, required: true, browse: "file" },
+    vmOptionsField(),
+    { key: "programArgs", label: "Program arguments", mono: true },
+    { ...jreField, options: [{ value: "", label: "Default (the project's JDK)" }] },
+  ],
+  commandLine(p) {
+    return {
+      command: p.jre ? jreJava(p.jre) : p.executable || "java",
+      args: [...splitJvmArgs(p.vmOptions), "-jar", p.jarPath?.trim() ?? "", ...splitJvmArgs(p.programArgs)],
+    };
+  },
+  paramsFrom(c) {
+    if (!/^java$/i.test(commandName(c.command))) return null;
+    const parsed = parseJavaArgs(c.args);
+    if (parsed.jarPath === undefined) return null;
+    return {
+      ...(c.command !== "java" ? { executable: c.command } : {}),
+      jarPath: parsed.jarPath,
+      vmOptions: formatArgs(parsed.vmArgs),
+      programArgs: formatArgs(parsed.programArgs),
+    };
+  },
+};
 
 /**
  * One value for a Maven property holding JVM arguments (`spring-boot.run.jvmArguments`,

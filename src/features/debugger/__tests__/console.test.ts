@@ -34,6 +34,24 @@ describe("debug console", () => {
     expect(lines(5).some((l) => l.text.includes("\x1b"))).toBe(false);
   });
 
+  it("overwrites the line after a carriage return, as a progress bar expects (#4280)", () => {
+    appendConsole(7, "stdout", "Network: http://localhost:8090/\n");
+    appendConsole(7, "stdout", "\x1b[32m━━\x1b[0m (10%) build modules");
+    appendConsole(7, "stdout", "\r");
+    appendConsole(7, "stdout", "\x1b[32m━━━━━━\x1b[0m (63%) build modules\r");
+    // An erase-line escape counts as a carriage return too.
+    appendConsole(7, "stdout", "\x1b[2K\x1b[1Gdone in 1.2 s\r");
+    appendConsole(7, "stdout", "\n");
+    appendConsole(7, "stdout", "next\r\nline\n");
+    expect(lines(7).map((l) => l.text)).toEqual([
+      "Network: http://localhost:8090/\n",
+      "done in 1.2 s\n",
+      "next\n",
+      "line\n",
+    ]);
+    expect(lines(7)[1]!.spans).toEqual([{ text: "done in 1.2 s\n" }]);
+  });
+
   it("keeps a colour across output events and an escape split between them", () => {
     appendConsole(6, "stderr", "\x1b[3");
     appendConsole(6, "stderr", "1mred ");
@@ -83,6 +101,35 @@ describe("multiline output", () => {
     expect(new Set(lines(11).map((line) => line.id)).size).toBe(lines(11).length);
   });
 
+  it("keeps only the newest output of a flood that outpaces the console, and counts what it dropped", () => {
+    vi.useFakeTimers();
+    adoptSession(14);
+    // 8 MiB arrives before the next frame: twice what may wait for it.
+    const line = "x".repeat(1023) + "\n";
+    for (let i = 0; i < 64; i++) appendConsoleQueued(14, "stdout", line.repeat(128));
+    appendConsoleQueued(14, "stdout", "last\n");
+    vi.advanceTimersToNextFrame();
+    const output = lines(14);
+    expect(output.at(-1)!.text).toBe("last\n");
+    expect(output.slice(0, -1).every((l) => l.text === line)).toBe(true);
+    // At most 4 MiB was parsed; every line that never reached the console is counted.
+    expect(output.length).toBeLessThanOrEqual(4097);
+    expect(useDebug.getState().consoleDropped[14]).toBe(64 * 128 + 1 - output.length);
+  });
+
+  it("counts lines trimmed past the line cap and resets the count on Clear", () => {
+    adoptSession(15);
+    appendConsole(15, "stdout", "line\n".repeat(60_000));
+    expect(useDebug.getState().consoleDropped[15]).toBe(60_000 - lines(15).length);
+    clearConsole(15);
+    expect(useDebug.getState().consoleDropped[15]).toBe(0);
+  });
+
+  it("breaks a line longer than the Run console's limit", () => {
+    appendConsole(16, "stdout", "y".repeat(20_000) + "\n");
+    expect(lines(16).map((l) => l.text.length)).toEqual([8000, 8000, 4001]);
+  });
+
   it("trims a multiline event by the configured character buffer", () => {
     const current = settings.workflowSettings();
     vi.spyOn(settings, "workflowSettings").mockReturnValue({
@@ -106,4 +153,23 @@ it("flushes output while an unfocused webview suspends animation frames", () => 
   vi.advanceTimersByTime(100);
   expect(lines(13).map((l) => l.text)).toEqual(["Spring Boot starting…\n"]);
   expect(useDebug.getState().sessions[13]?.status).toBe("running");
+});
+
+it("shows queued output at most at the Max FPS rate (#5897)", () => {
+  vi.useFakeTimers();
+  const workflow = settings.workflowSettings();
+  vi.spyOn(settings, "workflowSettings").mockReturnValue({
+    ...workflow,
+    terminal: { ...workflow.terminal, maxFps: "5" },
+  });
+  adoptSession(15);
+  appendConsoleQueued(15, "stdout", "one\n");
+  vi.advanceTimersToNextFrame();
+  expect(lines(15).map((l) => l.text)).toEqual(["one\n"]);
+  appendConsoleQueued(15, "stdout", "two\n");
+  appendConsoleQueued(15, "stdout", "three\n");
+  vi.advanceTimersByTime(150);
+  expect(lines(15)).toHaveLength(1);
+  vi.advanceTimersByTime(60);
+  expect(lines(15).map((l) => l.text)).toEqual(["one\n", "two\n", "three\n"]);
 });

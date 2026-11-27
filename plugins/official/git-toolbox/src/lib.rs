@@ -1,6 +1,6 @@
 //! Git Toolbox for OpenIDEA: background fetch of every open project's
 //! repository (on the plugin's `on-schedule`, which also fires after the
-//! instance was reclaimed while idle), and the focused project's branch with
+//! instance was reclaimed while idle), and the focused file's branch with
 //! its ahead/behind counts in the status bar.
 
 use openidea_plugin::host::{self, storage};
@@ -14,7 +14,12 @@ const LAST_FETCH: &str = "last-fetch:";
 const SHOWN: &str = "shown-root";
 
 #[derive(Default)]
-pub struct GitToolbox;
+pub struct GitToolbox {
+    /// The focused editor's file path, from the last `editor-focused` event.
+    /// Kept across events: the status bar keeps following that file's
+    /// repository until another file takes focus.
+    focused: Option<String>,
+}
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
@@ -67,31 +72,51 @@ fn tooltip(s: &RepositoryStatus) -> String {
     lines.join("\n")
 }
 
-/// Shows `project`'s repository in the status bar (or hides the item).
-fn show(project: &Project) -> Result<(), Error> {
-    match project.vcs_status()? {
-        Some(s) => {
+/// Shows the first of `projects` that has a repository in the status bar (the
+/// item hides when none has). Returns the index of the one shown.
+fn show(projects: &[Project]) -> Result<Option<usize>, Error> {
+    for (i, project) in projects.iter().enumerate() {
+        if let Some(s) = project.vcs_status()? {
             let _ = storage::set(SHOWN, &project.root()?);
             host::set_status_item(
                 ITEM,
                 &StatusItem { text: label(&s), tooltip: Some(tooltip(&s)), command: Some("fetch".into()) },
             );
+            return Ok(Some(i));
         }
-        None => host::remove_status_item(ITEM),
     }
-    Ok(())
+    host::remove_status_item(ITEM);
+    Ok(None)
 }
 
-/// The project the status bar follows: the invoking window's, else the one
-/// shown last, else the first open one.
-fn current(ctx: &Invocation) -> Option<Project> {
-    if let Some(p) = ctx.project() {
-        return Some(p);
+impl GitToolbox {
+    /// The projects the status bar may follow, most specific first: the
+    /// focused file's repository (a workspace window's project is the
+    /// container folder, and its focused files belong to member
+    /// repositories), the invoking window's, the one shown last, else the
+    /// first open one.
+    fn candidates(&self, ctx: &Invocation) -> Vec<Project> {
+        let mut out: Vec<Project> = Vec::new();
+        let editor = ctx.editor().map(|e| e.path());
+        let mut push = |project: Option<Project>| {
+            if let Some(p) = project
+                && let Ok(root) = p.root()
+                && out.iter().all(|q| q.root() != Ok(root.clone()))
+            {
+                out.push(p);
+            }
+        };
+        push(self.focused.as_deref().or(editor.as_deref()).and_then(host::project_of));
+        push(ctx.project());
+        let projects = host::projects().unwrap_or_default();
+        let shown = storage::get(SHOWN).ok().flatten();
+        let index = projects.iter().position(|p| p.root().ok().as_deref() == shown.as_deref()).unwrap_or(0);
+        let mut rest = projects;
+        if index < rest.len() {
+            push(Some(rest.swap_remove(index)));
+        }
+        out
     }
-    let projects = host::projects().ok()?;
-    let shown = storage::get(SHOWN).ok().flatten();
-    let index = projects.iter().position(|p| p.root().ok() == shown).unwrap_or(0);
-    projects.into_iter().nth(index)
 }
 
 /// Fetches `projects` in one cancellable task. Returns how many were fetched.
@@ -131,15 +156,22 @@ fn fetch(projects: &[Project]) -> Result<usize, Error> {
 
 impl Plugin for GitToolbox {
     fn run_command(&mut self, id: &str, ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
-        let project = current(ctx).ok_or("no project is open")?;
+        let projects = self.candidates(ctx);
+        if projects.is_empty() {
+            return Err("no project is open".into());
+        }
         match id {
             "fetch" => {
-                let n = fetch(std::slice::from_ref(&project))?;
-                show(&project)?;
+                // Only the repository the status bar shows, not every candidate.
+                let Some(i) = show(&projects)? else {
+                    return Ok(Some("The project is not in a git repository.".to_owned()));
+                };
+                let n = fetch(std::slice::from_ref(&projects[i]))?;
+                show(&projects)?;
                 Ok((n == 0).then(|| "The project is not in a git repository.".to_owned()))
             }
             "refresh" => {
-                show(&project)?;
+                show(&projects)?;
                 Ok(None)
             }
             _ => Err(Error::NotFound(format!("command {id}"))),
@@ -155,9 +187,12 @@ impl Plugin for GitToolbox {
                 host::notify(NotificationLevel::Warning, "Git Toolbox: fetch failed", &e.to_string());
             }
         }
-        if let Some(p) = current(ctx) {
-            let _ = show(&p);
+        for e in events {
+            if let Event::EditorFocused(Some(path)) = e {
+                self.focused = Some(path.clone());
+            }
         }
+        let _ = show(&self.candidates(ctx));
     }
 }
 
@@ -195,7 +230,7 @@ mod tests {
         let host = MockHost::install();
         host.add_project("/other");
         host.set_vcs_status(Some(status(0, 4)));
-        GitToolbox.handle_events(&[Event::Scheduled], &host.invocation());
+        GitToolbox::default().handle_events(&[Event::Scheduled], &host.invocation());
         assert_eq!(host.fetches(), 2, "every open project");
         let item = &host.status_items()["branch"];
         assert_eq!(item.text, "main ↓4");
@@ -208,13 +243,59 @@ mod tests {
     #[test]
     fn focus_changes_only_refresh() {
         let host = MockHost::install();
+        let mut plugin = GitToolbox::default();
         host.set_vcs_status(Some(status(1, 0)));
-        GitToolbox.handle_events(&[Event::EditorFocused(Some("/project/a.rs".into()))], &host.invocation());
+        plugin.handle_events(&[Event::EditorFocused(Some("/project/a.rs".into()))], &host.invocation());
         assert_eq!(host.fetches(), 0);
         assert_eq!(host.status_items()["branch"].text, "main ↑1");
         host.set_vcs_status(None);
-        GitToolbox.handle_events(&[Event::VcsChanged("/project".into())], &host.invocation());
+        plugin.handle_events(&[Event::VcsChanged("/project".into())], &host.invocation());
         assert!(host.status_items().is_empty(), "not a repository any more");
+    }
+
+    /// A workspace window's project is the container folder, which is no
+    /// repository: the focused file's member repository is shown instead, and
+    /// follows the focus between members.
+    #[test]
+    fn workspace_windows_follow_the_focused_members_repository() {
+        let host = MockHost::install();
+        let mut plugin = GitToolbox::default();
+        host.set_project_root(Some("/workspace"));
+        host.add_project("/repos/a");
+        host.add_project("/repos/b");
+        host.set_vcs_status(Some(status(1, 2)));
+        plugin.handle_events(&[Event::EditorFocused(Some("/repos/a/src/main.rs".into()))], &host.invocation());
+        assert_eq!(host.storage()["shown-root"], "/repos/a", "the focused file's member, not the container");
+        assert_eq!(host.status_items()["branch"].text, "main ↑1 ↓2");
+        plugin.handle_events(&[Event::EditorFocused(Some("/repos/b/src/lib.rs".into()))], &host.invocation());
+        assert_eq!(host.storage()["shown-root"], "/repos/b", "the focus moved to the other member");
+        // A scheduled tick keeps following the focused member.
+        plugin.handle_events(&[Event::Scheduled], &host.invocation());
+        assert_eq!(host.storage()["shown-root"], "/repos/b");
+    }
+
+    /// Fetch Now fetches the repository the status bar shows, not every
+    /// other open project.
+    #[test]
+    fn fetch_now_fetches_only_the_shown_repository() {
+        let host = MockHost::install();
+        host.add_project("/other");
+        storage::set(SHOWN, "/other").unwrap();
+        host.set_vcs_status(Some(status(0, 0)));
+        GitToolbox::default().run_command("fetch", &host.invocation(), None).unwrap();
+        assert_eq!(host.fetches(), 1);
+        assert_eq!(host.storage()["shown-root"], "/project");
+    }
+
+    /// A focused path outside every open project falls back to the window's
+    /// project, whose repository is shown as before.
+    #[test]
+    fn an_unresolvable_focused_path_falls_back_to_the_window_project() {
+        let host = MockHost::install();
+        host.set_vcs_status(Some(status(0, 0)));
+        GitToolbox::default().handle_events(&[Event::EditorFocused(Some("src/main.rs".into()))], &host.invocation());
+        assert_eq!(host.storage()["shown-root"], "/project");
+        assert_eq!(host.status_items()["branch"].text, "main");
     }
 
     #[test]
@@ -222,12 +303,12 @@ mod tests {
         let host = MockHost::install();
         host.set_vcs_status(Some(status(0, 0)));
         host.fail_fetch(Some(Error::Failed("no network".into())));
-        GitToolbox.handle_events(&[Event::Scheduled], &host.invocation());
+        GitToolbox::default().handle_events(&[Event::Scheduled], &host.invocation());
         assert_eq!(host.notifications()[0].body, "no network");
-        let err = GitToolbox.run_command("fetch", &host.invocation(), None).unwrap_err();
+        let err = GitToolbox::default().run_command("fetch", &host.invocation(), None).unwrap_err();
         assert_eq!(err, Error::Failed("no network".into()));
         host.fail_fetch(Some(Error::Cancelled));
-        GitToolbox.handle_events(&[Event::Scheduled], &host.invocation());
+        GitToolbox::default().handle_events(&[Event::Scheduled], &host.invocation());
         assert_eq!(host.notifications().len(), 1, "a cancelled fetch is not an error to report");
     }
 
@@ -235,7 +316,7 @@ mod tests {
     fn without_vcs_write_it_still_shows_the_branch() {
         let host = MockHost::install().with_capabilities(&["project.read", "vcs.read", "storage"]);
         host.set_vcs_status(Some(status(0, 1)));
-        GitToolbox.handle_events(&[Event::Scheduled], &host.invocation());
+        GitToolbox::default().handle_events(&[Event::Scheduled], &host.invocation());
         assert!(host.notifications()[0].body.contains("vcs.write"));
         assert_eq!(host.status_items()["branch"].text, "main ↓1");
     }

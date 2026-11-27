@@ -2,14 +2,17 @@
  * "usages" tool window: Find Usages results grouped by file with line
  * previews, one tab per search (pinnable, as the Find tool window's tabs).
  */
-import { useCallback, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { openCodeLocation } from "@/editor/api";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
 import { previewColors, tokenSpans, useLineTokens } from "@/editor/lineTokens";
 import { formatMessage, useTx } from "@/platform/i18n";
+import { useEditorPrefs } from "@/platform/editorSettings";
+import { BUNDLED_MONO_FAMILY, monoFontFamily } from "@/platform/fonts";
 import { shortcutLabel } from "@/platform/keymap";
 import { basename, relativeDir, useProject } from "@/platform/project";
-import { maybeEditorService, useOccurrenceNavigator } from "@/workbench/contributions";
+import { useOccurrenceNavigator } from "@/workbench/contributions";
 import {
   EmptyState,
   Icon,
@@ -66,8 +69,16 @@ export function UsagesTabs() {
   const tabs = useUsages((s) => s.tabs);
   const search = useUsages(activeUsageSearch);
   if (!search) return null;
-  const label = (t: (typeof tabs)[number]) =>
-    t.symbol ? formatMessage(tx("Usages of '{symbol}'"), { symbol: t.symbol }) : tx("Usages");
+  const label = (t: (typeof tabs)[number]) => {
+    if (!t.symbol) return tx("Usages");
+    const text =
+      t.scope === "project"
+        ? tx("Usages of '{symbol}' in Project Files")
+        : t.scope === "libraries"
+          ? tx("Usages of '{symbol}' in Project and Libraries")
+          : tx("Usages of '{symbol}'");
+    return formatMessage(text, { symbol: t.symbol });
+  };
   return (
     <Tabs
       variant="compact"
@@ -76,25 +87,32 @@ export function UsagesTabs() {
       items={tabs.map((t) => ({
         id: String(t.id),
         label: label(t),
+        verbatim: true,
         closable: true,
-        icon: t.pinned ? "pin" : undefined,
+        pinned: t.pinned,
       }))}
       activeId={String(search.id)}
       onSelect={(id) => useUsages.setState({ active: Number(id) })}
       onClose={(id) => closeUsageTab(Number(id))}
+      onTogglePin={(id) => {
+        const t = tabs.find((x) => x.id === Number(id));
+        if (t) pinUsageTab(t.id, !t.pinned);
+      }}
       onContextMenu={(id, e) => {
         const t = tabs.find((x) => x.id === Number(id));
         if (!t) return;
+        // IDEA's content tab menu.
         showContextMenu(e, [
-          { id: "pin", label: t.pinned ? "Unpin Tab" : "Pin Tab", run: () => pinUsageTab(t.id, !t.pinned) },
-          { kind: "separator" },
           { id: "close", label: "Close Tab", run: () => closeUsageTab(t.id) },
+          { id: "closeAll", label: "Close All Tabs", run: () => tabs.forEach((o) => closeUsageTab(o.id)) },
           {
             id: "closeOthers",
             label: "Close Other Tabs",
             disabled: tabs.length < 2,
             run: () => tabs.forEach((o) => o.id !== t.id && closeUsageTab(o.id)),
           },
+          { kind: "separator" },
+          { id: "pin", label: t.pinned ? "Unpin Tab" : "Pin Tab", run: () => pinUsageTab(t.id, !t.pinned) },
         ]);
       }}
     />
@@ -127,7 +145,7 @@ export function toggleExcludedUsages(excluded: ReadonlySet<string>, usages: read
 }
 
 function openUsage(u: Usage, focus: boolean) {
-  void maybeEditorService()?.openFile(u.path, { selection: { line: u.line, col: u.col }, focus });
+  void openCodeLocation(u.path, { line: u.line, col: u.col }, { focus });
 }
 
 export function UsagesView() {
@@ -231,8 +249,12 @@ export function UsagesView() {
       return (
         <span className={clsx(styles.row, isExcluded(n) && styles.excluded)}>
           <Icon name={fileIconName(basename(path), path)} size={16} className={styles.icon} />
-          <span className={styles.file}>{basename(path)}</span>
-          <span className={styles.muted}>{relativeDir(root, path)}</span>
+          <span className={styles.file} title={path}>
+            {basename(path)}
+          </span>
+          <span className={styles.directory} title={path}>
+            {relativeDir(root, path)}
+          </span>
           <span className={styles.count}>
             {n.group.usages.length} {tx(n.group.usages.length === 1 ? "usage" : "usages")}
           </span>
@@ -240,7 +262,7 @@ export function UsagesView() {
       );
     }
     return (
-      <span className={clsx(styles.row, excluded.has(n.key) && styles.excluded)}>
+      <span className={clsx(styles.row, styles.occurrence, excluded.has(n.key) && styles.excluded)}>
         <span className={styles.line}>{n.usage.line + 1}</span>
         <UsagePreview usage={n.usage} />
       </span>
@@ -251,7 +273,7 @@ export function UsagesView() {
     <div className={styles.view}>
       <div className={styles.toolbar} role="toolbar" aria-orientation="vertical" aria-label={tx("Usages actions")}>
         <IconButton
-          icon="rerun"
+          icon="refresh"
           title={tx("Rerun Find Usages")}
           size="small"
           iconSize={16}
@@ -263,16 +285,26 @@ export function UsagesView() {
         <IconButton icon="arrow-up" action="navigate.prevOccurrence" size="small" iconSize={16} />
         <IconButton icon="arrow-down" action="navigate.nextOccurrence" size="small" iconSize={16} />
         <span className={styles.toolbarSep} />
+        <UsageAccessFilter items={allUsages} vertical />
         <IconButton icon="expand-all" title="Expand All" size="small" iconSize={16} onClick={() => setAll(false)} />
         <IconButton icon="collapse-all" title="Collapse All" size="small" iconSize={16} onClick={() => setAll(true)} />
       </div>
       <div className={styles.body} onKeyDown={onKeyDown}>
-        <UsageAccessFilter items={allUsages} />
+        {!search.loading && !search.error && search.scope === "project" && (
+          <div className={styles.summary}>
+            <T>Usages in Project Files</T>
+            {search.searchLibraries && (
+              <button type="button" className={styles.link} onClick={() => search.searchLibraries?.()}>
+                {tx("Search in Project and Libraries")}
+              </button>
+            )}
+          </div>
+        )}
         {(search.loading || search.error) && (
           <div className={styles.summary} role="status" aria-live="polite">
             {search.loading ? (
               <>
-                <Spinner size={12} />{" "}
+                <Spinner size={16} variant="spokes" />{" "}
                 {search.symbol
                   ? formatMessage(tx("Searching for usages of '{symbol}'"), { symbol: search.symbol })
                   : tx("Searching for usages")}
@@ -375,36 +407,75 @@ export function useUsagesHeaderMenu(): MenuItem[] {
   ];
 }
 
+const DEFAULT_PREVIEW_LAYOUT = { usages: 50, preview: 50 };
+
 function UsagesSplit({ preview, children }: { preview: ReactNode; children: ReactNode }) {
   const show = useUsagesOptions((s) => s.preview);
+  const frame = useRef<HTMLDivElement>(null);
+  const [stacked, setStacked] = useState(false);
+  useLayoutEffect(() => {
+    const el = frame.current;
+    if (!show || !el) return;
+    const measure = () => setStacked(el.clientWidth < 580);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [show]);
   if (!show) return children;
   return (
-    <SplitGroup orientation="horizontal" id="usages-preview-split">
-      <SplitPanel id="usages" minSize={160} className={styles.panel}>
-        {children}
-      </SplitPanel>
-      <SplitHandle />
-      <SplitPanel id="preview" minSize={160} defaultSize="45%" className={styles.panel}>
-        {preview}
-      </SplitPanel>
-    </SplitGroup>
+    <div ref={frame} className={styles.splitFrame}>
+      <SplitGroup
+        orientation={stacked ? "vertical" : "horizontal"}
+        id="usages-preview-split"
+        storageKey={stacked ? "openidea.usages.previewSplit.vertical" : "openidea.usages.previewSplit"}
+        defaultLayout={DEFAULT_PREVIEW_LAYOUT}
+      >
+        <SplitPanel id="usages" minSize={stacked ? "30%" : 160} className={styles.panel}>
+          {children}
+        </SplitPanel>
+        <SplitHandle />
+        <SplitPanel id="preview" minSize={stacked ? "30%" : 160} className={styles.panel}>
+          {preview}
+        </SplitPanel>
+      </SplitGroup>
+    </div>
   );
 }
 
 function UsagesPreview({ node }: { node: Node | null }) {
   const usage = node?.kind === "usage" ? node.usage : node?.kind === "file" ? (node.group.usages[0] ?? null) : null;
   const search = useUsages(activeUsageSearch);
+  const settings = useProject((s) => s.settings?.editor);
+  const { fallbackFont } = useEditorPrefs();
+  const family = settings?.fontFamily;
+  const fontFamily =
+    (family && family !== BUNDLED_MONO_FAMILY) || fallbackFont.trim()
+      ? monoFontFamily(family, fallbackFont, "var(--font-mono)")
+      : undefined;
   const highlights = useMemo(() => {
     const group = usage && search?.groups.find((g) => g.path === usage.path);
     return (group?.usages ?? []).map((u) => ({ line: u.line, ranges: [[u.col, u.endCol] as const] }));
   }, [usage, search?.groups]);
   return (
-    <SourcePreview
-      path={usage?.path ?? null}
-      line={usage?.line ?? 0}
-      highlights={highlights}
-      load={previewText}
-      colorize={previewColors}
-    />
+    <div
+      className={styles.sourcePreview}
+      style={{
+        fontFamily,
+        fontSize: settings?.fontSize ?? undefined,
+        lineHeight: settings?.lineHeight != null ? `${settings.lineHeight}px` : undefined,
+      }}
+    >
+      <SourcePreview
+        path={usage?.path ?? null}
+        line={usage?.line ?? 0}
+        highlights={highlights}
+        load={previewText}
+        colorize={previewColors}
+        editorLayout
+        className={styles.sourceText}
+      />
+    </div>
   );
 }

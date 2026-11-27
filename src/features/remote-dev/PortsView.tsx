@@ -1,6 +1,7 @@
 /**
  * Ports tool window of a remote window: ports of the remote host forwarded to this machine
- * (`localhost:<port>` here reaches `localhost:<port>` there), like VS Code's Ports view.
+ * (`localhost:<port>` here reaches `localhost:<port>` there), like VS Code's Ports view. A dev
+ * container's `forwardPorts` may also name a port of another Compose service (`selenium:4444`).
  */
 import { useEffect, useState } from "react";
 import type { ForwardedPort } from "@/bindings";
@@ -11,6 +12,7 @@ import { forwardPort, parsePort, refreshPorts, stopForwarding, usePorts } from "
 import styles from "./Ports.module.css";
 
 const address = (p: ForwardedPort) => `localhost:${p.localPort}`;
+const remote = (p: ForwardedPort) => (p.host ? `${p.host}:${p.remotePort}` : String(p.remotePort));
 
 export function PortsView() {
   const ports = usePorts((s) => s.ports);
@@ -61,9 +63,10 @@ export function PortsView() {
         <ul className={styles.list} aria-label={tx("Forwarded ports")}>
           {ports.map((p) => {
             const addr = address(p);
+            const from = remote(p);
             return (
-              <li key={p.remotePort} className={styles.row}>
-                <span className={styles.remote}>{p.remotePort}</span>
+              <li key={from} className={styles.row}>
+                <span className={styles.remote}>{from}</span>
                 <span className={styles.arrow} aria-hidden>
                   →
                 </span>
@@ -79,8 +82,8 @@ export function PortsView() {
                   <IconButton
                     icon="close"
                     size="small"
-                    title={tx`Stop Forwarding Port ${p.remotePort}`}
-                    onClick={() => void stopForwarding(p.remotePort)}
+                    title={tx`Stop Forwarding Port ${from}`}
+                    onClick={() => void stopForwarding(p.remotePort, p.host)}
                   />
                 </span>
               </li>

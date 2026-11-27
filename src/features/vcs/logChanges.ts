@@ -4,11 +4,21 @@
  * context menu do with them.
  */
 import { create } from "zustand";
-import type { ChangedFile, Commit, RevisionChange } from "@/bindings";
+import type { ChangedFile, Commit, FileLineStats, LinkTarget, RevisionChange } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { editorService } from "@/workbench/contributions";
 import { tx } from "@/platform/i18n";
-import { commitFileDiffData, openDiff, revisionChangeDiffData, withChain, type DiffData } from "./diffInput";
+import { workflowSettings } from "@/platform/workflowSettings";
+import { combinedOf } from "./allInOneDiff";
+import {
+  commitFileDiffData,
+  openDiff,
+  openVcsDiff,
+  revisionChangeDiffData,
+  vcsDiffInFront,
+  withChain,
+  type DiffData,
+} from "./diffInput";
 import type { FileTreeNode } from "./fileTree";
 import { baseName } from "./model";
 import { readWorkingText, runOp, saveAll, writeFileText } from "./ops";
@@ -18,6 +28,9 @@ import { commitRepo } from "./multiRoot";
 import { repositoryPath } from "./repositoryPaths";
 import { confirmDialog } from "./dialogs";
 
+/** Git's empty tree: a file added in a root commit is diffed against this. */
+export const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
 /** A file of the pane, with the revisions holding its content before and after the change. */
 export interface LogChange {
   /** Repository-relative path (after the change). */
@@ -25,20 +38,38 @@ export interface LogChange {
   repo?: string | null;
   oldPath: string | null;
   kind: ChangedFile["kind"];
+  /** Set for a symbolic link: what it points to in the revision holding it. */
+  link?: LinkTarget | null;
   /** `null`: the file did not exist before. */
   before: string | null;
   /** `null`: the change deleted the file. */
   after: string | null;
+  /**
+   * Revisions whose diff holds this file's line counts. For one commit that is its
+   * first parent (or the empty tree) and the commit itself, added files included.
+   */
+  statsFrom: string;
+  statsTo: string;
+  added?: number;
+  removed?: number;
   diff: DiffData;
   readOnly?: boolean;
   group?: string;
   mergeParents?: Array<{ rev: string; path: string }>;
 }
 
+/** One `git diff --numstat` covering every file that shares its endpoints. */
+export interface LineStatRange {
+  repo: string | null;
+  from: string;
+  to: string;
+  paths: string[];
+}
+
 /** One commit's files (`commit` given) or several commits' combined changes. */
 export function toLogChanges(
   files: readonly (ChangedFile | RevisionChange)[],
-  commit: Commit | null,
+  commit: Pick<Commit, "id" | "shortId" | "parents"> | null,
   repo = currentRepoRoot(),
   readOnly = false,
 ): LogChange[] {
@@ -51,8 +82,11 @@ export function toLogChanges(
         path: f.path,
         oldPath: f.oldPath,
         kind: f.kind,
+        link: f.link,
         before: f.kind === "added" ? null : parent,
         after: f.kind === "deleted" ? null : commit.id,
+        statsFrom: parent ?? EMPTY_TREE,
+        statsTo: commit.id,
         diff: commitFileDiffData({ ...commit, repo }, f),
       };
     }
@@ -63,11 +97,63 @@ export function toLogChanges(
       path: r.path,
       oldPath: r.oldPath,
       kind: r.kind,
+      link: r.link,
       before: r.before,
       after: r.after,
+      statsFrom: r.before ?? EMPTY_TREE,
+      statsTo: r.after ?? EMPTY_TREE,
       diff: revisionChangeDiffData(r, repo),
     };
   });
+}
+
+/** Groups files that share a diff, so one numstat covers a commit's additions and edits. */
+export function lineStatRanges(files: readonly LogChange[]): LineStatRange[] {
+  const groups = new Map<string, LineStatRange>();
+  for (const f of files) {
+    if (!f.statsFrom || !f.statsTo || f.statsFrom === f.statsTo) continue;
+    const repo = f.repo ?? null;
+    const key = `${repo ?? ""}\0${f.statsFrom}\0${f.statsTo}`;
+    let group = groups.get(key);
+    if (!group) groups.set(key, (group = { repo, from: f.statsFrom, to: f.statsTo, paths: [] }));
+    if (!group.paths.includes(f.path)) group.paths.push(f.path);
+    if (f.oldPath && !group.paths.includes(f.oldPath)) group.paths.push(f.oldPath);
+  }
+  return [...groups.values()];
+}
+
+/** Writes numstat rows onto the files of the same revision pair, matching a rename by either name. */
+export function assignLineStats(
+  files: readonly LogChange[],
+  loaded: readonly (LineStatRange & { stats: readonly FileLineStats[] })[],
+): LogChange[] {
+  const byPath = new Map<string, FileLineStats>();
+  for (const range of loaded)
+    for (const stat of range.stats) {
+      const put = (path: string) => byPath.set(`${range.repo ?? ""}\0${range.from}\0${range.to}\0${path}`, stat);
+      put(stat.path);
+      if (stat.oldPath) put(stat.oldPath);
+    }
+  return files.map((f) => {
+    const repo = f.repo ?? "";
+    const stat =
+      byPath.get(`${repo}\0${f.statsFrom}\0${f.statsTo}\0${f.path}`) ??
+      (f.oldPath ? byPath.get(`${repo}\0${f.statsFrom}\0${f.statsTo}\0${f.oldPath}`) : undefined);
+    return stat ? { ...f, added: stat.added, removed: stat.removed } : f;
+  });
+}
+
+/** Fills `added` / `removed` from `git diff --numstat`. A failed diff leaves the files uncounted. */
+export async function withLineStats(files: LogChange[]): Promise<LogChange[]> {
+  const ranges = lineStatRanges(files);
+  if (!ranges.length) return files;
+  const loaded = await Promise.all(
+    ranges.map(async (range) => ({
+      ...range,
+      stats: await call(commands.vcsDiffNumstat(range.repo, range.from, range.to, range.paths)),
+    })),
+  );
+  return assignLineStats(files, loaded);
 }
 
 /** Files without directory grouping: by name, each node's path shown next to it. */
@@ -139,50 +225,61 @@ export function changesArg(arg: unknown): LogChange[] {
 }
 
 /**
- * Show Diff: the first file, with every file of the pane in the chain (F7 moves along).
- * `preview`: in the editor's preview tab without taking focus (selection in the pane).
+ * Show Diff: the first file, with every file of the pane in the chain (F7 moves along), in the
+ * editor's preview tab, so looking through a commit's files reuses one tab.
+ * `preview`: without taking focus (selection in the pane).
  */
-export async function showChangesDiff(changes: readonly LogChange[], preview = false) {
+export async function showChangesDiff(
+  changes: readonly LogChange[],
+  preview = false,
+  chainChanges: readonly LogChange[] = useLogChanges.getState().all,
+) {
   const first = changes[0];
   if (!first) return;
   if (first.mergeParents?.length === 2 && first.after) {
-    await editorService().openInput(
-      {
-        kind: "git-merge-diff",
-        key: `git-merge-diff:${first.repo}:${first.after}:${first.path}`,
-        data: {
-          repo: first.repo ?? currentRepoRoot(),
-          revision: first.after,
-          path: first.path,
-          parents: first.mergeParents,
-        },
+    const input = {
+      kind: "git-merge-diff",
+      key: `git-merge-diff:${first.repo}:${first.after}:${first.path}`,
+      data: {
+        repo: first.repo ?? currentRepoRoot(),
+        revision: first.after,
+        path: first.path,
+        parents: first.mergeParents,
       },
-      { preview, focus: !preview },
-    );
+    };
+    if (!preview && vcsDiffInFront()) (await import("./diffDialog")).openMergeDiffDialog(input);
+    else await editorService().openInput(input, { preview: true, focus: !preview });
     return;
   }
-  const all = useLogChanges.getState().all;
-  const chain = all.includes(first) ? all : [...changes];
-  await openDiff(
-    withChain(
-      chain.map((c) => c.diff),
-      Math.max(0, chain.indexOf(first)),
-    ),
-    preview ? { preview: true, focus: false } : {},
+  const chain = chainChanges.includes(first) ? chainChanges : [...changes];
+  const data = withChain(
+    chain.map((c) => c.diff),
+    Math.max(0, chain.indexOf(first)),
   );
+  // Selection preview stays a preview tab even under the modal interface; an explicit
+  // diff opens where the commit interface puts it. With "Open diff as editor tab" off
+  // (and no all-in-one diff) that is a separate window, so there is no tab to preview in.
+  if (preview) {
+    if (!vcsDiffInFront() && !workflowSettings().vcs.diffAsEditorTab && !combinedOf(data)) return;
+    await openDiff(data, { preview: true, focus: false });
+  } else await openVcsDiff(data, { preview: true });
 }
 
-/** Compare with Local (`side` after) / Compare Before with Local: the revision ↔ the working file. */
-export async function compareChangeWithLocal(change: LogChange, side: "after" | "before" = "after") {
-  if (change.readOnly) return;
-  const rev = side === "after" ? change.after : change.before;
-  if (!rev) return;
-  const revPath = side === "before" && change.oldPath ? absolutePath(change.oldPath, change.repo) : undefined;
-  await openDiff({
-    path: absolutePath(change.path, change.repo),
-    left: { type: "rev", rev, path: revPath, label: rev.slice(0, 8) },
-    right: { type: "worktree" },
+/** Compare the selected files' saved revisions with their working copies. */
+export async function compareChangesWithLocal(changes: readonly LogChange[], side: "after" | "before" = "after") {
+  const diffs = changes.flatMap((change): DiffData[] => {
+    const rev = change[side];
+    if (!rev || change.readOnly) return [];
+    const revPath = side === "before" && change.oldPath ? absolutePath(change.oldPath, change.repo) : undefined;
+    return [
+      {
+        path: absolutePath(change.path, change.repo),
+        left: { type: "rev", rev, path: revPath, label: rev.slice(0, 8) },
+        right: { type: "worktree" },
+      },
+    ];
   });
+  if (diffs.length) await openVcsDiff(withChain(diffs, 0));
 }
 
 /** Jump to Source: the working file. */
@@ -215,12 +312,16 @@ export async function getFromRevision(changes: readonly LogChange[]) {
       for (const c of changes) {
         const path = absolutePath(c.path, c.repo);
         if (!c.after) {
+          // oxlint-disable-next-line no-await-in-loop -- a deleted file is removed only after checking it still exists; working-tree operations stay ordered
           if ((await readWorkingText(path)) !== null) await call(commands.fsDelete(path));
           continue;
         }
+        // oxlint-disable-next-line no-await-in-loop -- the file's revision text must be read before it can be written to the working tree
         const text = await call(commands.vcsFileAt(path, c.after));
         if (text === null) continue;
+        // oxlint-disable-next-line no-await-in-loop -- a missing working file is created before its content is written, one file at a time
         if ((await readWorkingText(path)) === null) await call(commands.fsCreateFile(path));
+        // oxlint-disable-next-line no-await-in-loop -- files are written in selection order so the working tree is updated deterministically
         await writeFileText(path, text, { save: true });
       }
       return changes.length;
@@ -248,18 +349,54 @@ export async function revertSelectedChanges(changes: readonly LogChange[], commi
     async () => {
       const patch = filterPatch(
         await call(
-          commands.vcsCreatePatch(changes[0]!.repo ?? currentRepoRoot(), {
-            from: "commits",
-            commits: ids,
-            reverse: true,
-          }),
+          commands.vcsCreatePatch(
+            changes[0]!.repo ?? currentRepoRoot(),
+            { from: "commits", commits: ids, reverse: true },
+            null,
+          ),
         ),
         paths,
       );
       if (!patch.trim()) throw new Error(tx("Nothing to revert"));
-      return call(commands.vcsApplyPatch(changes[0]!.repo ?? currentRepoRoot(), patch));
+      return call(commands.vcsApplyPatch(changes[0]!.repo ?? currentRepoRoot(), patch, null));
     },
     { refresh: false },
   );
   if (outcome) await reportApply(outcome, "Changes reverted");
+}
+
+export function canApplySelectedChanges(changes: readonly LogChange[]): boolean {
+  if (!changes.length || changes.some((change) => change.readOnly || change.statsFrom === change.statsTo)) return false;
+  const repo = changes[0]!.repo ?? currentRepoRoot();
+  if (!repo || changes.some((change) => (change.repo ?? currentRepoRoot()) !== repo)) return false;
+  const paths = new Set<string>();
+  for (const change of changes) {
+    if (paths.has(change.path) || (change.oldPath && paths.has(change.oldPath))) return false;
+    paths.add(change.path);
+    if (change.oldPath) paths.add(change.oldPath);
+  }
+  return true;
+}
+
+export async function applySelectedChanges(changes: readonly LogChange[]) {
+  if (!canApplySelectedChanges(changes)) return;
+  const repo = changes[0]!.repo ?? currentRepoRoot();
+  if (!repo) return;
+  const ranges = lineStatRanges(changes);
+  await saveAll();
+  const outcome = await runOp(
+    tx("Apply Selected Changes"),
+    async () => {
+      const patches = await Promise.all(
+        ranges.map(({ from, to, paths }) =>
+          call(commands.vcsCreatePatch(repo, { from: "revisions", before: from, after: to, paths }, null)),
+        ),
+      );
+      const patch = patches.join("");
+      if (!patch.trim()) throw new Error(tx("Nothing to apply"));
+      return call(commands.vcsApplyPatch(repo, patch, null));
+    },
+    { refresh: false },
+  );
+  if (outcome) await reportApply(outcome, tx("Changes applied"));
 }

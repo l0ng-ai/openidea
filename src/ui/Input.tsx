@@ -5,6 +5,7 @@ import {
   type InputHTMLAttributes,
   type FocusEvent,
   type KeyboardEvent,
+  type MouseEvent,
   type ReactNode,
   type Ref,
   type TextareaHTMLAttributes,
@@ -12,9 +13,10 @@ import {
 import clsx from "clsx";
 import { Icon, type IconName } from "./icons";
 import { IconButton } from "./Button";
+import { startDragAutoscroll } from "./dragAutoscroll";
 import styles from "./Input.module.css";
 import { setContext } from "@/platform/context";
-import { useTx } from "@/platform/i18n";
+import { useGivenTx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
 
 export interface InputProps extends Omit<InputHTMLAttributes<HTMLInputElement>, "size"> {
@@ -22,6 +24,8 @@ export interface InputProps extends Omit<InputHTMLAttributes<HTMLInputElement>, 
   mono?: boolean;
   /** `bare` drops the frame (for inputs embedded in popups / headers). */
   variant?: "framed" | "bare";
+  /** Select the prefilled value the first time the field takes focus, so typing replaces it. */
+  autoSelect?: boolean;
 }
 
 export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
@@ -29,16 +33,20 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
     invalid,
     mono,
     variant = "framed",
+    autoSelect,
     className,
     spellCheck = false,
     autoComplete = "off",
     placeholder,
+    onFocus,
+    onMouseDown,
     "aria-label": ariaLabel,
     ...rest
   },
   ref,
 ) {
-  const tx = useTx();
+  const tx = useGivenTx();
+  const selected = useRef(false);
   return (
     <input
       ref={ref}
@@ -49,6 +57,18 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
       aria-invalid={invalid || undefined}
       placeholder={tx(placeholder)}
       aria-label={tx(ariaLabel)}
+      // First focus only: coming back to a field the user already edited keeps its caret.
+      onFocus={(e) => {
+        if (autoSelect && !selected.current) {
+          selected.current = true;
+          e.currentTarget.select();
+        }
+        onFocus?.(e);
+      }}
+      onMouseDown={(e) => {
+        onMouseDown?.(e);
+        startDragAutoscroll(e);
+      }}
       className={clsx(styles.input, variant === "bare" ? styles.bare : styles.framed, mono && styles.mono, className)}
       {...rest}
     />
@@ -82,6 +102,8 @@ export interface SearchFieldProps extends Omit<InputHTMLAttributes<HTMLInputElem
    * text, plus a New Line button (⇧⌘↵ / ⇧Ctrl↵ inserts one too).
    */
   multiline?: boolean;
+  /** How many lines of a search query stay visible before the field scrolls. */
+  maxRows?: number;
   /** Turns the leading magnifier into IDEA's search-history button (magnifier ▾). */
   onHistory?: () => void;
 }
@@ -119,13 +141,14 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(functi
     className,
     placeholder,
     multiline,
+    maxRows = 5,
     onHistory,
     "aria-label": ariaLabel,
     ...rest
   },
   ref,
 ) {
-  const tx = useTx();
+  const tx = useGivenTx();
   const inner = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
   const setRef = (el: HTMLInputElement | HTMLTextAreaElement | null) => {
     inner.current = el;
@@ -147,7 +170,7 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(functi
   commands.current.newLine = multiline ? insertNewLine : undefined;
   // oxlint-disable-next-line react/refs
   commands.current.history = onHistory;
-  const { onKeyDown, onFocus, onBlur, ...fieldProps } = rest;
+  const { onKeyDown, onFocus, onBlur, onMouseDown, ...fieldProps } = rest;
   const keyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (multiline && isNewLineKey(e)) {
       e.preventDefault();
@@ -170,7 +193,16 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(functi
     }
     onBlur?.(e);
   };
-  const handlers = { onKeyDown: keyDown, onFocus: focus, onBlur: blur };
+  const mouseDown = (e: MouseEvent<HTMLInputElement>) => {
+    onMouseDown?.(e);
+    startDragAutoscroll(e);
+  };
+  const handlers = {
+    onKeyDown: keyDown,
+    onFocus: focus,
+    onBlur: blur,
+    onMouseDown: mouseDown,
+  };
   // Removing a focused field fires no blur.
   useEffect(() => {
     const own = commands.current;
@@ -214,7 +246,7 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(functi
         <textarea
           ref={setRef as Ref<HTMLTextAreaElement>}
           className={clsx(styles.searchInput, styles.searchArea, lines === 1 && styles.searchAreaSingle)}
-          rows={Math.min(lines, 5)}
+          rows={Math.min(lines, maxRows)}
           wrap="off"
           value={value}
           spellCheck={false}

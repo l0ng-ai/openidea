@@ -8,7 +8,7 @@
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 2px 6px;
   border-bottom: 1px solid var(--border);
 }
@@ -20,7 +20,6 @@
   font: inherit;
   padding: 2px 6px;
   border-radius: 4px;
-  cursor: pointer;
 }
 
 .textButton:hover:not(:disabled) {
@@ -68,7 +67,7 @@
 .listItem {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: 24px;
   padding: 0 8px;
   cursor: default;
@@ -78,6 +77,15 @@
 .listItem:focus-visible {
   background: var(--bg-toolbar-hover);
   outline: none;
+}
+
+.listItem[aria-selected="true"] {
+  background: var(--bg-tree-selected);
+}
+
+.master {
+  height: 100%;
+  overflow: auto;
 }
 
 .detail {
@@ -95,7 +103,7 @@
 .field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .fieldLabel {
@@ -162,9 +170,38 @@
   border-right: 1px solid var(--border);
 }
 
+/* A sortable table's header: clickable, the sorted one marked by an arrow. */
+.headerCell {
+  user-select: none;
+}
+
+.headerCell:hover,
+.headerCell:focus-visible {
+  background: var(--bg-hover);
+}
+
+.sortIcon {
+  display: inline-block;
+  margin-left: 4px;
+  vertical-align: -2px;
+}
+
 .tableEmpty {
   padding: 32px 12px;
   color: var(--fg-muted);
+}
+
+.webWrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.cornerActions {
+  position: absolute;
+  top: 5px;
+  right: 8px;
+  z-index: 20;
 }
 
 .frame {
@@ -208,4 +245,23 @@
 .layoutActions > button {
   width: var(--h-floating-toolbar-button);
   height: var(--h-floating-toolbar-button);
+}
+
+.readonlyValue {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+/* Selectable, but framed like a disabled field so it doesn't read as editable. */
+.readonlyField:read-only {
+  border: 0;
+  border-radius: var(--radius-control, 4px);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.tableRow:focus-visible {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: -1px;
 }

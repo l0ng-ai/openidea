@@ -1,5 +1,5 @@
 /** History for Selection tab input; kept apart from `SelectionHistory` so opening one does not load it. */
-import { activeEditor } from "@/editor/api";
+import { activeEditor, focusedCellEditor } from "@/editor/api";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { editorService, notifications, type EditorInput } from "@/workbench/contributions";
 
@@ -35,6 +35,12 @@ export function selectedLines(
 
 /** Git › Show History for Selection: the active editor's selected lines. */
 export function showSelectionHistory() {
+  // A notebook cell has no line range in its file yet: ask for a file rather than
+  // showing the last text tab's selection (the notebook's own lines are a later step).
+  if (focusedCellEditor()) {
+    notifications().notify({ group: "vcs", level: "info", title: "Open a file to show the history of its selection" });
+    return;
+  }
   const editor = activeEditor();
   if (!editor || isVirtualUri(editor.ctx.path)) {
     notifications().notify({ group: "vcs", level: "info", title: "Open a file to show the history of its selection" });

@@ -4,11 +4,12 @@
  * client-side sorting when the caller does not sort on the server, and the
  * Record / Value / Aggregates side panel following the selection.
  */
-import { useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
+import { writeClipboardText } from "@/platform/clipboard";
+import { useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import clsx from "clsx";
 import { Button, Checkbox, Icon, IconButton, Input, Popup, SearchField, Select, Tabs, T, type MenuItem } from "@/ui";
 import { EXPORT_FORMATS, exportData, type ExportData, type ExportFormat } from "./export";
-import { Grid, type GridColumn, type GridProps, type GridRange } from "./Grid";
+import { Grid, type CopyFormat, type GridColumn, type GridProps, type GridRange } from "./Grid";
 import type { Cell } from "./model";
 import {
   aggregates,
@@ -25,8 +26,17 @@ import {
 } from "./resultView";
 import { openDialog } from "./store";
 import { hasLineBreak } from "./cellPreview";
+import {
+  initialJsonText,
+  isJsonColumn,
+  isJsonValue,
+  jsonErrorOf,
+  JSON_INLINE_LIMIT,
+  type JsonError,
+} from "./jsonValue";
+import { JsonValueEditor, JsonValueWindow, type JsonEditorApi } from "./JsonValueEditor";
 import styles from "./Database.module.css";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 export type DataPanel = "record" | "value" | "aggregates";
 
@@ -36,9 +46,9 @@ export function exportMenu(data: ExportData, source: string, format?: ExportForm
     { label: "Export Data…", icon: "export", run: () => openDialog({ kind: "export", data, source, format }) },
     { kind: "separator" },
     ...EXPORT_FORMATS.map((f): MenuItem => ({
-      label: tx`Copy as ${f.label}`,
+      label: tx`Copy as ${txPart(f.label)}`,
       icon: "copy",
-      run: () => void navigator.clipboard?.writeText(exportData(f.id, data)),
+      run: () => void writeClipboardText(exportData(f.id, data)),
     })),
   ];
 }
@@ -47,12 +57,81 @@ export function exportMenu(data: ExportData, source: string, format?: ExportForm
 export function ExtractorSelect({ value, onChange }: { value: ExportFormat; onChange: (f: ExportFormat) => void }) {
   return (
     <Select
+      variant="ghost"
       aria-label="Data extractor"
       value={value}
       options={EXPORT_FORMATS.map((f) => ({ value: f.id, label: f.label }))}
       onChange={(v) => onChange(v as ExportFormat)}
     />
   );
+}
+
+/** The copy format plain ⌘C uses under a toolbar extractor (cell copies stay cell-shaped). */
+export const copyFormatOf = (extractor: ExportFormat): CopyFormat =>
+  extractor === "csv" ? "csv" : extractor === "onerow" ? "onerow" : "tsv";
+
+/** The toolbar's extractor; `table` is the whole table to export (`null`: nothing, already reported). */
+export interface ExtractorMenu {
+  value: ExportFormat;
+  onChange: (f: ExportFormat) => void;
+  table: () => ExportData | null | Promise<ExportData | null>;
+}
+
+const PANEL_ENTRIES: ReadonlyArray<{ panel: DataPanel; label: string }> = [
+  { panel: "record", label: "Show Record View" },
+  { panel: "value", label: "Open in Value Editor" },
+  { panel: "aggregates", label: "Show Aggregate View" },
+];
+
+/**
+ * The view's entries of the grid's context menu (DataGrip's): the side panels, checked while
+ * shown, then the toolbar's extractor and Export Table to Clipboard when the view has them.
+ */
+export function viewMenu(
+  panel: DataPanel | null,
+  onPanelChange: (panel: DataPanel | null) => void,
+  extractor?: ExtractorMenu,
+): MenuItem[] {
+  const items: MenuItem[] = PANEL_ENTRIES.map(({ panel: p, label }) => ({
+    label,
+    checked: panel === p,
+    run: () => onPanelChange(panel === p ? null : p),
+  }));
+  if (!extractor) return items;
+  return [
+    ...items,
+    { kind: "separator" },
+    {
+      label: "Data Extractor",
+      submenu: EXPORT_FORMATS.map((f) => ({
+        label: f.label,
+        checked: f.id === extractor.value,
+        run: () => extractor.onChange(f.id),
+      })),
+    },
+    {
+      label: "Export Table to Clipboard",
+      icon: "copy",
+      run: () =>
+        void Promise.resolve(extractor.table()).then(
+          (data) => data && writeClipboardText(exportData(extractor.value, data)),
+        ),
+    },
+  ];
+}
+
+/** Copy as › SQL INSERT / UPDATE / DELETE of the whole selected rows, in the selected order. */
+function sqlCopies(rows: readonly number[], extractor: ExtractorMenu): MenuItem[] {
+  const copy = (format: ExportFormat) => () =>
+    void Promise.resolve(extractor.table()).then((data) => {
+      const picked = data && rows.flatMap((r) => (data.rows[r] ? [data.rows[r]] : []));
+      if (picked?.length) void writeClipboardText(exportData(format, { ...data!, rows: picked }));
+    });
+  return [
+    { label: "SQL INSERT", run: copy("sql") },
+    { label: "SQL UPDATE", run: copy("sqlUpdates") },
+    { label: "SQL DELETE", run: copy("sqlDeletes") },
+  ];
 }
 
 /** The Record / Value / Aggregates panel's toggle (IDEA's "Show Value Editor"). */
@@ -76,7 +155,19 @@ interface Shaping {
 
 export interface DataViewProps extends Pick<
   GridProps,
-  "rowState" | "isModified" | "editable" | "onEdit" | "sort" | "onSort" | "rowMenu"
+  | "rowState"
+  | "isModified"
+  | "editable"
+  | "onEdit"
+  | "onResetCell"
+  | "driver"
+  | "sort"
+  | "onSort"
+  | "rowMenu"
+  | "truncated"
+  | "loadFull"
+  | "initialScrollLeft"
+  | "onHorizontalScroll"
 > {
   columns: readonly GridColumn[];
   rowCount: number;
@@ -84,12 +175,18 @@ export interface DataViewProps extends Pick<
   /** Rows from here on (the table editor's added rows) are never filtered or sorted. */
   fixedRows?: number;
   firstRowNumber?: number;
+  pager?: ReactNode;
   /** The side panel shown (`null`: hidden). */
   panel: DataPanel | null;
   onPanelChange: (panel: DataPanel | null) => void;
+  /** Plain ⌘C's copy format (the toolbar's extractor; TSV by default). */
+  copyFormat?: CopyFormat;
+  /** The toolbar's extractor, also offered in the grid's context menu with the whole table to copy. */
+  extractor?: ExtractorMenu;
   /** The search bar is shown (the toolbar's search button, ⌘F in the grid). */
   searchOpen?: boolean;
   onSearchOpenChange?: (open: boolean) => void;
+  revealColumn?: GridProps["revealColumn"];
   "aria-label"?: string;
 }
 
@@ -200,21 +297,36 @@ export function DataView(props: DataViewProps) {
             isMatch={test ? (r, c) => matchSet.has(`${r}:${c}`) : undefined}
             currentMatch={currentMatch}
             onFind={onSearchOpenChange && openSearch}
+            revealColumn={props.revealColumn}
             aria-label={props["aria-label"]}
             columns={columns}
             rowCount={shown}
             value={(r, c) => value(at(r), c)}
+            truncated={props.truncated && ((r, c) => props.truncated!(at(r), c))}
+            loadFull={
+              props.loadFull && ((cells) => props.loadFull!(cells.map(({ row, col }) => ({ row: at(row), col }))))
+            }
             rowState={props.rowState && ((r) => props.rowState!(at(r)))}
             isModified={props.isModified && ((r, c) => props.isModified!(at(r), c))}
             editable={props.editable}
+            onResetCell={props.onResetCell && ((r, c) => props.onResetCell!(at(r), c))}
             onEdit={props.onEdit && ((r, c, v) => props.onEdit!(at(r), c, v))}
+            driver={props.driver}
             sort={sort}
             onSort={onSort}
-            rowMenu={props.rowMenu && ((rows) => props.rowMenu!(rows.map(at)))}
+            copyAs={props.extractor && ((rows) => sqlCopies(rows.map(at), props.extractor!))}
+            rowMenu={(rows) => {
+              const own = props.rowMenu?.(rows.map(at)) ?? [];
+              const view = viewMenu(panel, onPanelChange, props.extractor);
+              return own.length ? [...own, { kind: "separator" }, ...view] : view;
+            }}
             rowNumber={(r) => (props.firstRowNumber ?? 1) + at(r)}
+            copyFormat={props.copyFormat}
             onSelectionChange={setRange}
             onFilter={(col, anchor) => setFilterAt({ col, anchor })}
             filtered={(col) => filter.has(col)}
+            initialScrollLeft={props.initialScrollLeft}
+            onHorizontalScroll={props.onHorizontalScroll}
           />
           {filter.size > 0 && (
             <div className={styles.filterPill} role="status">
@@ -225,6 +337,7 @@ export function DataView(props: DataViewProps) {
             </div>
           )}
         </div>
+        {props.pager && <div className={styles.pagerDock}>{props.pager}</div>}
       </div>
       {filterAt && (
         <FilterPopup
@@ -232,7 +345,7 @@ export function DataView(props: DataViewProps) {
           column={columns[filterAt.col]?.name ?? ""}
           values={distinctValues(Math.min(rowCount, fixedRows), value, filterAt.col)}
           checked={filter.get(filterAt.col) ?? null}
-          onToggle={(all, v, on) => setFilter((f) => toggleFilterValue(f, filterAt.col, all, v, on))}
+          onToggle={(v, on) => setFilter((f) => toggleFilterValue(f, filterAt.col, v, on))}
           onClear={() =>
             setFilter((f) => {
               const next = new Map(f);
@@ -251,6 +364,10 @@ export function DataView(props: DataViewProps) {
           columns={columns}
           range={range}
           value={(r, c) => value(at(r), c)}
+          truncated={props.truncated && ((r, c) => props.truncated!(at(r), c))}
+          loadFull={
+            props.loadFull && ((cells) => props.loadFull!(cells.map(({ row, col }) => ({ row: at(row), col }))))
+          }
           editable={!!props.editable && !!props.onEdit && !!range && props.rowState?.(at(range.lead.row)) !== "deleted"}
           onEdit={(r, c, v) => props.onEdit?.(at(r), c, v)}
         />
@@ -367,13 +484,12 @@ function FilterPopup(props: {
   column: string;
   values: Array<{ value: Cell; count: number }>;
   checked: ReadonlySet<Cell> | null;
-  onToggle: (all: Cell[], v: Cell, on: boolean) => void;
+  onToggle: (v: Cell, on: boolean) => void;
   onClear: () => void;
   onClearAll: () => void;
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const all = props.values.map((v) => v.value);
   const q = query.trim().toLowerCase();
   const list = q ? props.values.filter((v) => (v.value ?? "<null>").toLowerCase().includes(q)) : props.values;
   return (
@@ -397,8 +513,8 @@ function FilterPopup(props: {
         {list.map(({ value: v, count }) => (
           <div key={v ?? "\u0000null"} className={styles.filterValue}>
             <Checkbox
-              checked={props.checked ? props.checked.has(v) : true}
-              onChange={(on) => props.onToggle(all, v, on)}
+              checked={props.checked?.has(v) ?? false}
+              onChange={(on) => props.onToggle(v, on)}
               label={v === null ? <span className={styles.null}>&lt;null&gt;</span> : v}
             />
             <span className={styles.filterCount}>{count}</span>
@@ -439,6 +555,8 @@ function SidePanel(props: {
   columns: readonly GridColumn[];
   range: GridRange | null;
   value: (row: number, col: number) => Cell;
+  truncated?: GridProps["truncated"];
+  loadFull?: GridProps["loadFull"];
   editable: boolean;
   onEdit: (row: number, col: number, v: Cell) => void;
 }) {
@@ -469,9 +587,12 @@ function SidePanel(props: {
           <RecordView key={range.lead.row} {...props} row={range.lead.row} />
         ) : props.panel === "value" ? (
           <ValueView
-            key={`${range.lead.row}:${range.lead.col}`}
-            column={columns[range.lead.col]?.name ?? ""}
+            // A committed value (here or in the grid) starts the editor over.
+            key={`${range.lead.row}:${range.lead.col}\u0000${value(range.lead.row, range.lead.col) ?? "\u0001"}`}
+            column={columns[range.lead.col] ?? { name: "", type: "" }}
             cell={value(range.lead.row, range.lead.col)}
+            cut={props.truncated?.(range.lead.row, range.lead.col) ?? null}
+            onLoad={() => void props.loadFull?.([{ row: range.lead.row, col: range.lead.col }])}
             editable={props.editable}
             onCommit={(v) => props.onEdit(range.lead.row, range.lead.col, v)}
           />
@@ -488,6 +609,8 @@ function RecordView(props: {
   columns: readonly GridColumn[];
   row: number;
   value: (row: number, col: number) => Cell;
+  truncated?: GridProps["truncated"];
+  loadFull?: GridProps["loadFull"];
   editable: boolean;
   onEdit: (row: number, col: number, v: Cell) => void;
 }) {
@@ -499,6 +622,8 @@ function RecordView(props: {
           key={`${c.name}\u0000${props.value(props.row, i) ?? "\u0001"}`}
           column={c}
           cell={props.value(props.row, i)}
+          cut={props.truncated?.(props.row, i) ?? null}
+          onLoad={() => void props.loadFull?.([{ row: props.row, col: i }])}
           editable={props.editable}
           onCommit={(v) => props.onEdit(props.row, i, v)}
         />
@@ -507,73 +632,178 @@ function RecordView(props: {
   );
 }
 
-function RecordField(props: { column: GridColumn; cell: Cell; editable: boolean; onCommit: (v: Cell) => void }) {
+/** What a value that is shown cut short offers: the whole value is read on request (until then it is read-only). */
+function CutNotice(props: { shown: number; total: number; onLoad: () => void }) {
+  const { shown, total } = props;
+  return (
+    <div className={styles.cutNotice} role="status">
+      <span>{tx`Only the first ${shown} of ${total} characters are shown.`}</span>
+      <Button size="small" onClick={props.onLoad}>
+        <T>Load whole value</T>
+      </Button>
+    </div>
+  );
+}
+
+function RecordField(props: {
+  column: GridColumn;
+  cell: Cell;
+  cut: number | null;
+  onLoad: () => void;
+  editable: boolean;
+  onCommit: (v: Cell) => void;
+}) {
   const [text, setText] = useState(props.cell ?? "");
   const commit = () => {
     if (text !== (props.cell ?? "") || (props.cell === null && text !== "")) props.onCommit(text);
   };
   const c = props.column;
+  const editable = props.editable && props.cut === null;
   return (
-    <label className={styles.recordField}>
-      <span className={styles.recordLabel}>
-        <Icon name={c.primaryKey ? "db-column-key" : c.foreignKey ? "db-column-fk" : "db-column"} size={16} />
-        {c.name}
-        {c.type && c.type !== "NULL" && <span className={styles.treeType}>{c.type}</span>}
-      </span>
-      {hasLineBreak(props.cell ?? "") ? (
-        // A single-line field would drop the line breaks on the first edit.
-        <textarea
-          className={styles.recordText}
-          rows={Math.min(8, (props.cell ?? "").split(/\r\n|\r|\n/).length)}
-          value={text}
-          readOnly={!props.editable}
-          spellCheck={false}
-          onChange={(e) => setText(e.target.value)}
-          onBlur={commit}
-        />
-      ) : (
-        <Input
-          mono
-          value={text}
-          readOnly={!props.editable}
-          placeholder={props.cell === null ? "<null>" : undefined}
-          onChange={(e) => setText(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") commit();
-          }}
-        />
-      )}
-    </label>
+    <>
+      <label className={styles.recordField}>
+        <span className={styles.recordLabel}>
+          <Icon name={c.primaryKey ? "db-column-key" : c.foreignKey ? "db-column-fk" : "db-column"} size={16} />
+          {c.name}
+          {c.type && c.type !== "NULL" && <span className={styles.treeType}>{c.type}</span>}
+        </span>
+        {hasLineBreak(props.cell ?? "") ? (
+          // A single-line field would drop the line breaks on the first edit.
+          <textarea
+            className={styles.recordText}
+            rows={Math.min(8, (props.cell ?? "").split(/\r\n|\r|\n/).length)}
+            value={text}
+            readOnly={!editable}
+            spellCheck={false}
+            onChange={(e) => setText(e.target.value)}
+            onBlur={commit}
+          />
+        ) : (
+          <Input
+            mono
+            value={text}
+            readOnly={!editable}
+            placeholder={props.cell === null ? "<null>" : undefined}
+            onChange={(e) => setText(e.target.value)}
+            onBlur={commit}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commit();
+            }}
+          />
+        )}
+      </label>
+      {props.cut !== null && <CutNotice shown={props.cell?.length ?? 0} total={props.cut} onLoad={props.onLoad} />}
+    </>
   );
 }
 
-function ValueView(props: { column: string; cell: Cell; editable: boolean; onCommit: (v: Cell) => void }) {
-  const [text, setText] = useState(props.cell ?? "");
-  const dirty = text !== (props.cell ?? "") || (props.cell === null && text !== "");
+/** The Value panel's editor: plain text, or the JSON code editor for JSON cells (#2333). */
+function ValueView(props: {
+  column: GridColumn;
+  cell: Cell;
+  cut: number | null;
+  onLoad: () => void;
+  editable: boolean;
+  onCommit: (v: Cell) => void;
+}) {
+  const name = props.column.name;
+  const editable = props.editable && props.cut === null;
+  const [json] = useState(() => isJsonValue(props.column.type, props.cell));
+  const validate = isJsonColumn(props.column.type);
+  // JSON opens pretty-printed; the panel applies what the editor shows.
+  const [initial] = useState(() => (json ? initialJsonText(props.cell ?? "") : (props.cell ?? "")));
+  const [text, setText] = useState(initial);
+  const [error, setError] = useState<JsonError | null>(() =>
+    props.cell !== null && validate && initial.length <= JSON_INLINE_LIMIT ? jsonErrorOf(initial) : null,
+  );
+  const [pending, setPending] = useState(json && initial.length > JSON_INLINE_LIMIT);
+  const editor = useRef<JsonEditorApi | null>(null);
+  const dirty = text !== initial;
+  const commit = () => {
+    if (editable && dirty && !error && !pending) props.onCommit(text);
+  };
+  const [windowOpen, setWindowOpen] = useState(false);
   return (
     <div className={styles.valueView}>
-      <textarea
-        className={styles.valueText}
-        aria-label={`Value of ${props.column}`}
-        value={text}
-        readOnly={!props.editable}
-        placeholder={props.cell === null ? "<null>" : undefined}
-        spellCheck={false}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && dirty) props.onCommit(text);
-        }}
-      />
-      {props.editable && (
+      {props.cut !== null && <CutNotice shown={props.cell?.length ?? 0} total={props.cut} onLoad={props.onLoad} />}
+      {json ? (
+        <>
+          <JsonValueEditor
+            initial={initial}
+            validate={validate}
+            emptyIsNull={props.cell === null}
+            readOnly={!editable}
+            ariaLabel={tx`Value of ${name}`}
+            onChange={(t, e, busy) => {
+              setText(t);
+              setError(e);
+              setPending(busy);
+            }}
+            onReady={(api) => (editor.current = api)}
+            onSubmit={commit}
+            onOpenWindow={() => setWindowOpen(true)}
+          />
+          {error && (
+            <div className={styles.valueError} role="status">
+              {error.message}
+            </div>
+          )}
+          <div className={styles.filterButtons}>
+            <Button size="small" disabled={!editable || !!error || pending} onClick={() => editor.current?.reformat()}>
+              <T>Reformat</T>
+            </Button>
+            <Button size="small" onClick={() => setWindowOpen(true)}>
+              <T>Open in Window</T>
+            </Button>
+          </div>
+        </>
+      ) : (
+        <textarea
+          className={styles.valueText}
+          aria-label={tx`Value of ${name}`}
+          value={text}
+          readOnly={!editable}
+          placeholder={props.cell === null ? "<null>" : undefined}
+          spellCheck={false}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && dirty) props.onCommit(text);
+          }}
+        />
+      )}
+      {editable && (
         <div className={styles.filterButtons}>
-          <Button size="small" disabled={!dirty} onClick={() => props.onCommit(text)}>
+          <Button size="small" disabled={!dirty || !!error || pending} onClick={commit}>
             <T>Apply</T>
           </Button>
-          <Button size="small" onClick={() => props.onCommit(null)}>
+          <Button
+            size="small"
+            onClick={() => {
+              if (props.cell !== null) props.onCommit(null);
+            }}
+          >
             <T>Set NULL</T>
           </Button>
         </div>
+      )}
+      {windowOpen && (
+        <JsonValueWindow
+          title={tx`Value of ${name}`}
+          initial={text}
+          baseline={initial}
+          validate={validate}
+          emptyIsNull={props.cell === null}
+          readOnly={!editable}
+          onClose={() => setWindowOpen(false)}
+          onApply={(t) => {
+            props.onCommit(t);
+            setWindowOpen(false);
+          }}
+          onSetNull={() => {
+            props.onCommit(null);
+            setWindowOpen(false);
+          }}
+        />
       )}
     </div>
   );
@@ -581,8 +811,9 @@ function ValueView(props: { column: string; cell: Cell; editable: boolean; onCom
 
 function AggregatesView({ range, value }: { range: GridRange; value: (row: number, col: number) => Cell }) {
   const cells: Cell[] = [];
-  for (let r = range.top; r <= range.bottom; r++)
-    for (let c = range.left; c <= range.right; c++) cells.push(value(r, c));
+  const rows = new Set(range.rows);
+  for (let r = range.top; r <= range.bottom; r++) rows.add(r);
+  for (const r of rows) for (let c = range.left; c <= range.right; c++) cells.push(value(r, c));
   const a = aggregates(cells);
   const show = (v: number | string | null) => (v === null ? "—" : typeof v === "number" ? formatNumber(v) : v);
   return (

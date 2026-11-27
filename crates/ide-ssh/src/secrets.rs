@@ -25,6 +25,14 @@ static LOCK: Mutex<()> = Mutex::new(());
 /// Reads the secrets of an older version's file, by key (`None`: not that format).
 pub type Legacy = fn(serde_json::Value) -> Option<BTreeMap<String, String>>;
 
+#[derive(Clone, Copy, Deserialize, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum LegacyPasswordAction {
+    Check,
+    Retry,
+    RemovePlaintext,
+}
+
 /// Where the secrets are kept: the default credential store, or a stand-in in tests.
 pub trait Vault: Send + Sync {
     fn available(&self) -> bool;
@@ -77,6 +85,7 @@ pub struct SecretFile {
     path: PathBuf,
     legacy: Legacy,
     vault: Arc<dyn Vault>,
+    keep_legacy_until_moved: bool,
 }
 
 /// The file's contents. `id` keeps the credentials of different data directories
@@ -85,6 +94,11 @@ pub struct SecretFile {
 struct Index {
     id: String,
     keys: BTreeSet<String>,
+}
+
+enum Stored {
+    Index(Index),
+    Legacy(BTreeMap<String, String>),
 }
 
 enum Contents {
@@ -101,9 +115,30 @@ fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+/// Runs a credential-store operation off the async runtime.
+///
+/// The Linux Secret Service client is blocking (`zbus`) and starts a runtime of
+/// its own; calling it while a runtime already drives the current thread panics
+/// with "Cannot start a runtime from within a runtime". The store may also wait
+/// on an OS prompt, so run it on a plain thread when called from async code.
+fn off_runtime<R: Send>(f: impl FnOnce() -> R + Send) -> R {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return f();
+    }
+    std::thread::scope(|scope| match scope.spawn(f).join() {
+        Ok(value) => value,
+        Err(panic) => std::panic::resume_unwind(panic),
+    })
+}
+
 impl SecretFile {
     pub fn new(path: PathBuf) -> Self {
         Self::with_legacy(path, |v| serde_json::from_value(v).ok())
+    }
+
+    /// For the startup migration with a user-visible choice to retry or discard.
+    pub(crate) fn ssh_passwords(path: PathBuf) -> Self {
+        Self { keep_legacy_until_moved: true, ..Self::new(path) }
     }
 
     pub fn with_legacy(path: PathBuf, legacy: Legacy) -> Self {
@@ -111,106 +146,168 @@ impl SecretFile {
     }
 
     pub fn with_vault(path: PathBuf, legacy: Legacy, vault: Arc<dyn Vault>) -> Self {
-        Self { path, legacy, vault }
+        Self { path, legacy, vault, keep_legacy_until_moved: false }
     }
 
     pub fn get(&self, key: &str) -> Option<String> {
-        let _g = LOCK.lock();
-        match self.load() {
-            Contents::Index(mut index) if index.keys.contains(key) => match self.vault.get(&service(&index.id), key) {
-                Ok(secret) => Some(secret),
-                Err(StoreError::NoEntry) => {
-                    // Removed outside the app: stop listing it.
-                    index.keys.remove(key);
-                    self.write_logged(&index);
-                    None
+        off_runtime(|| {
+            let _g = LOCK.lock();
+            match self.load() {
+                Contents::Index(mut index) if index.keys.contains(key) => {
+                    match self.vault.get(&service(&index.id), key) {
+                        Ok(secret) => Some(secret),
+                        Err(StoreError::NoEntry) => {
+                            // Removed outside the app: stop listing it.
+                            index.keys.remove(key);
+                            self.write_logged(&index);
+                            None
+                        }
+                        Err(e) => {
+                            tracing::warn!("saved passwords: {key}: {e}");
+                            None
+                        }
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!("saved passwords: {key}: {e}");
-                    None
-                }
-            },
-            Contents::Index(_) => None,
-            Contents::Plaintext(mut old, _) => old.remove(key),
-        }
+                Contents::Index(_) => None,
+                Contents::Plaintext(mut old, _) => old.remove(key),
+            }
+        })
     }
 
     pub fn set(&self, key: &str, secret: &str) -> IdeResult<()> {
-        let _g = LOCK.lock();
-        let mut index = match self.load() {
-            Contents::Index(index) => index,
-            Contents::Plaintext(_, why) => return Err(unavailable(&why)),
-        };
-        let service = service(&index.id);
-        self.vault.set(&service, key, secret).map_err(|e| unavailable(&e.to_string()))?;
-        if index.keys.insert(key.to_owned())
-            && let Err(e) = self.write(&index)
-        {
-            let _ = self.vault.delete(&service, key);
-            return Err(e);
-        }
-        Ok(())
+        off_runtime(|| {
+            let _g = LOCK.lock();
+            let mut index = match self.load() {
+                Contents::Index(index) => index,
+                Contents::Plaintext(_, why) => return Err(unavailable(&why)),
+            };
+            let service = service(&index.id);
+            self.vault.set(&service, key, secret).map_err(|e| unavailable(&e.to_string()))?;
+            if index.keys.insert(key.to_owned())
+                && let Err(e) = self.write(&index)
+            {
+                let _ = self.vault.delete(&service, key);
+                return Err(e);
+            }
+            Ok(())
+        })
     }
 
     pub fn delete(&self, key: &str) {
-        let _g = LOCK.lock();
-        match self.load() {
-            Contents::Index(mut index) => {
-                if !index.keys.contains(key) {
-                    return;
+        off_runtime(|| {
+            let _g = LOCK.lock();
+            match self.load() {
+                Contents::Index(mut index) => {
+                    if !index.keys.contains(key) {
+                        return;
+                    }
+                    match self.vault.delete(&service(&index.id), key) {
+                        Ok(()) | Err(StoreError::NoEntry) => {}
+                        Err(e) => {
+                            // Kept in the index so that the next delete tries again.
+                            tracing::warn!("saved passwords: could not forget {key}: {e}");
+                            return;
+                        }
+                    }
+                    index.keys.remove(key);
+                    self.write_logged(&index);
                 }
-                match self.vault.delete(&service(&index.id), key) {
-                    Ok(()) | Err(StoreError::NoEntry) => {}
-                    Err(e) => {
-                        // Kept in the index so that the next delete tries again.
+                Contents::Plaintext(mut old, _) => {
+                    if old.remove(key).is_none() {
+                        return;
+                    }
+                    // A move halfway may have copied it already.
+                    if let Some(id) = self.pending_id()
+                        && let Err(e) = self.vault.delete(&service(&id), key)
+                        && !matches!(e, StoreError::NoEntry)
+                    {
                         tracing::warn!("saved passwords: could not forget {key}: {e}");
                         return;
                     }
+                    self.write_logged(&old);
                 }
-                index.keys.remove(key);
-                self.write_logged(&index);
             }
-            Contents::Plaintext(mut old, _) => {
-                if old.remove(key).is_none() {
-                    return;
-                }
-                // A move halfway may have copied it already.
-                if let Some(id) = self.pending_id()
-                    && let Err(e) = self.vault.delete(&service(&id), key)
-                    && !matches!(e, StoreError::NoEntry)
-                {
-                    tracing::warn!("saved passwords: could not forget {key}: {e}");
-                    return;
-                }
-                self.write_logged(&old);
-            }
-        }
+        })
     }
 
     /// Every stored key, sorted (the secrets themselves stay private).
     pub fn keys(&self) -> Vec<String> {
-        let _g = LOCK.lock();
-        match self.load() {
-            Contents::Index(index) => index.keys.into_iter().collect(),
-            Contents::Plaintext(old, _) => old.into_keys().collect(),
+        off_runtime(|| {
+            let _g = LOCK.lock();
+            match self.load() {
+                Contents::Index(index) => index.keys.into_iter().collect(),
+                Contents::Plaintext(old, _) => old.into_keys().collect(),
+            }
+        })
+    }
+
+    fn read(&self) -> std::io::Result<Stored> {
+        use std::io::{Error, ErrorKind};
+        let bytes = match std::fs::read(&self.path) {
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                return Ok(Stored::Index(Index { id: new_id(), keys: BTreeSet::new() }));
+            }
+            other => other?,
+        };
+        let value = serde_json::from_slice::<serde_json::Value>(&bytes)
+            .map_err(|_| Error::new(ErrorKind::InvalidData, "invalid JSON"))?;
+        if let Ok(index) = serde_json::from_value::<Index>(value.clone()) {
+            return Ok(Stored::Index(index));
         }
+        (self.legacy)(value).map(Stored::Legacy).ok_or_else(|| Error::new(ErrorKind::InvalidData, "unknown format"))
     }
 
     fn load(&self) -> Contents {
-        let value = match std::fs::read(&self.path) {
-            Err(_) => return Contents::Index(Index { id: new_id(), keys: BTreeSet::new() }),
-            Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
-                Ok(v) => v,
-                Err(e) => return self.set_aside(&e.to_string()),
-            },
-        };
-        if let Ok(index) = serde_json::from_value::<Index>(value.clone()) {
-            return Contents::Index(index);
+        match self.read() {
+            Ok(Stored::Index(index)) => Contents::Index(index),
+            Ok(Stored::Legacy(old)) => self.migrate(old),
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => self.set_aside(&e.to_string()),
+            Err(e) => Contents::Plaintext(BTreeMap::new(), format!("{}: {e}", self.path.display())),
         }
-        match (self.legacy)(value) {
-            Some(old) => self.migrate(old),
-            None => self.set_aside("unknown format"),
-        }
+    }
+
+    /// `Some` means plaintext remains. Never overwrite an index that another window
+    /// already migrated; an unreadable file is set aside, as on any other access.
+    pub(crate) fn resolve_legacy(&self, action: LegacyPasswordAction) -> IdeResult<Option<String>> {
+        off_runtime(|| {
+            let _g = LOCK.lock();
+            let old = match self.read() {
+                Ok(Stored::Legacy(old)) => old,
+                Ok(Stored::Index(_)) => return Ok(None),
+                Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                    return match self.set_aside(&e.to_string()) {
+                        Contents::Index(_) => Ok(None),
+                        Contents::Plaintext(_, why) => Err(unavailable(&why)),
+                    };
+                }
+                Err(e) => return Err(unavailable(&format!("{}: {e}", self.path.display()))),
+            };
+            if matches!(action, LegacyPasswordAction::Check) && !old.is_empty() {
+                return Ok(Some("Migration is incomplete.".into()));
+            }
+            if matches!(action, LegacyPasswordAction::RemovePlaintext) || old.is_empty() {
+                // A partial move may already have secured some keys. Preserve their
+                // namespace without needing the vault to be unlocked to remove plaintext.
+                let pending = self.pending_path();
+                let index = match std::fs::read_to_string(&pending) {
+                    Ok(id) if !id.trim().is_empty() => Index { id: id.trim().into(), keys: old.into_keys().collect() },
+                    Ok(_) => return Err(unavailable("empty migration id")),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Index { id: new_id(), keys: BTreeSet::new() },
+                    Err(e) => return Err(unavailable(&format!("{}: {e}", pending.display()))),
+                };
+                self.write(&index)?;
+                if let Err(e) = std::fs::remove_file(&pending)
+                    && e.kind() != std::io::ErrorKind::NotFound
+                {
+                    tracing::warn!("saved passwords: could not remove {}: {e}", pending.display());
+                }
+                return Ok(None);
+            }
+            Ok(match self.migrate(old) {
+                Contents::Index(_) => None,
+                Contents::Plaintext(_, why) => Some(why),
+            })
+        })
     }
 
     /// An unreadable file is renamed rather than overwritten (it may index
@@ -236,8 +333,8 @@ impl SecretFile {
     }
 
     /// Moves an older version's secrets to the credential store, key by key; a secret
-    /// the store refuses for good (too long, say) is forgotten, and the user is asked
-    /// for it again. The old file is replaced only when everything else was moved.
+    /// the store refuses for good (too long, say) is forgotten unless the caller
+    /// offers explicit recovery. The old file is replaced only when everything else was moved.
     /// Until then the id waits in `<file>.migrating`, so a retry after a failure or a
     /// crash overwrites the same credentials instead of copying them again.
     fn migrate(&self, old: BTreeMap<String, String>) -> Contents {
@@ -261,7 +358,7 @@ impl SecretFile {
                 Ok(()) => {
                     index.keys.insert(key.clone());
                 }
-                Err(e @ (StoreError::TooLong(..) | StoreError::Invalid(..))) => {
+                Err(e @ (StoreError::TooLong(..) | StoreError::Invalid(..))) if !self.keep_legacy_until_moved => {
                     tracing::warn!("saved passwords: {key} does not fit the credential store and is forgotten: {e}");
                 }
                 Err(e) => {
@@ -398,6 +495,82 @@ mod tests {
     }
 
     const OLD: &str = r#"{"https://a.example": "me\nold-a", "https://b.example": "me\nold-b"}"#;
+
+    #[test]
+    fn a_pending_plaintext_migration_can_be_retried_or_explicitly_discarded() {
+        use LegacyPasswordAction::{Check, RemovePlaintext, Retry};
+        for discard in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("ssh-passwords.json");
+            let vault = Arc::new(FakeVault::default());
+            let file = with_fake(&path, &vault);
+            assert!(file.resolve_legacy(Check).unwrap().is_none());
+            assert!(!path.exists());
+            std::fs::write(&path, OLD).unwrap();
+            vault.fail("https://b.example", platform);
+            assert!(file.resolve_legacy(Retry).unwrap().is_some());
+            assert!(file.resolve_legacy(Check).unwrap().is_some());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), OLD);
+            if discard {
+                assert!(file.resolve_legacy(RemovePlaintext).unwrap().is_none());
+            }
+            vault.heal();
+            assert!(file.resolve_legacy(Retry).unwrap().is_none());
+            // A stale action from another window cannot erase a migrated index.
+            assert!(file.resolve_legacy(RemovePlaintext).unwrap().is_none());
+            assert_eq!(files_containing(tmp.path(), "old-"), Vec::<PathBuf>::new());
+            assert_eq!(file.get("https://a.example").as_deref(), Some("me\nold-a"));
+            assert_eq!(file.get("https://b.example").as_deref(), (!discard).then_some("me\nold-b"));
+        }
+    }
+
+    #[test]
+    fn removing_plaintext_needs_no_vault_and_sets_an_unknown_format_aside() {
+        use LegacyPasswordAction::{RemovePlaintext, Retry};
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("ssh-passwords.json");
+        let vault = Arc::new(FakeVault { absent: true, ..Default::default() });
+        let file = with_fake(&path, &vault);
+        std::fs::write(&path, OLD).unwrap();
+        assert!(file.resolve_legacy(Retry).unwrap().is_some());
+        assert!(file.resolve_legacy(RemovePlaintext).unwrap().is_none());
+        assert!(files_containing(tmp.path(), "old-").is_empty());
+        assert!(file.keys().is_empty());
+        std::fs::write(&path, "unknown-format").unwrap();
+        assert!(file.resolve_legacy(RemovePlaintext).unwrap().is_none());
+        let aside = files_containing(tmp.path(), "unknown-format");
+        assert_eq!(aside.len(), 1);
+        assert_ne!(aside[0], path);
+    }
+
+    #[test]
+    fn ssh_keeps_the_only_copy_until_the_user_can_choose_what_to_do() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("ssh-passwords.json");
+        let vault = Arc::new(FakeVault::default());
+        let file = SecretFile { vault: vault.clone(), ..SecretFile::ssh_passwords(path.clone()) };
+        vault.fail("box", || StoreError::TooLong("password".into(), 2560));
+        std::fs::write(&path, r#"{"box":"legacy-value"}"#).unwrap();
+        assert!(file.resolve_legacy(LegacyPasswordAction::Retry).unwrap().is_some());
+        assert_eq!(file.get("box").as_deref(), Some("legacy-value"));
+        assert_eq!(files_containing(tmp.path(), "legacy-value"), std::slice::from_ref(&path));
+    }
+
+    #[test]
+    fn a_malformed_ssh_file_is_set_aside_instead_of_blocking_new_saves() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("ssh-passwords.json");
+        let vault = Arc::new(FakeVault::default());
+        let file = SecretFile { vault: vault.clone(), ..SecretFile::ssh_passwords(path.clone()) };
+        std::fs::write(&path, "{ malformed").unwrap();
+        assert!(file.resolve_legacy(LegacyPasswordAction::Check).unwrap().is_none());
+        let aside = files_containing(tmp.path(), "{ malformed");
+        assert_eq!(aside.len(), 1);
+        assert_ne!(aside[0], path);
+        file.set("box", "new-value").unwrap();
+        assert_eq!(file.get("box").as_deref(), Some("new-value"));
+        assert!(files_containing(tmp.path(), "new-value").is_empty());
+    }
 
     #[test]
     fn saved_secrets_never_reach_disk() {
@@ -557,5 +730,51 @@ mod tests {
             let mode = std::fs::metadata(tmp.path().join("ssh-passwords.json")).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+    }
+
+    /// A credential store that behaves like the Linux Secret Service client:
+    /// its blocking API runs a tokio runtime.
+    #[derive(Default)]
+    struct NestedRuntimeVault {
+        entries: Mutex<HashMap<(String, String), String>>,
+    }
+
+    fn nested_runtime() {
+        tokio::runtime::Builder::new_multi_thread().build().expect("a nested runtime").block_on(async {});
+    }
+
+    impl Vault for NestedRuntimeVault {
+        fn available(&self) -> bool {
+            true
+        }
+        fn get(&self, service: &str, key: &str) -> StoreResult<String> {
+            nested_runtime();
+            self.entries.lock().get(&(service.to_owned(), key.to_owned())).cloned().ok_or(StoreError::NoEntry)
+        }
+        fn set(&self, service: &str, key: &str, secret: &str) -> StoreResult<()> {
+            nested_runtime();
+            self.entries.lock().insert((service.to_owned(), key.to_owned()), secret.to_owned());
+            Ok(())
+        }
+        fn delete(&self, service: &str, key: &str) -> StoreResult<()> {
+            nested_runtime();
+            self.entries.lock().remove(&(service.to_owned(), key.to_owned())).map(|_| ()).ok_or(StoreError::NoEntry)
+        }
+    }
+
+    /// Saving a password from a Tauri command runs on a tokio runtime; the
+    /// Secret Service's blocking client starts a runtime of its own and panics
+    /// when both share a thread ("Cannot start a runtime from within a runtime").
+    #[tokio::test(flavor = "multi_thread")]
+    async fn credential_store_access_leaves_the_async_runtime_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let vault = Arc::new(NestedRuntimeVault::default());
+        let file =
+            SecretFile::with_vault(tmp.path().join("db-passwords.json"), |v| serde_json::from_value(v).ok(), vault);
+        file.set("s1", "hunter2").unwrap();
+        assert_eq!(file.get("s1").as_deref(), Some("hunter2"));
+        assert_eq!(file.keys(), ["s1"]);
+        file.delete("s1");
+        assert_eq!(file.get("s1"), None);
     }
 }

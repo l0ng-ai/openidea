@@ -1,0 +1,20 @@
+id = "openidea.test-runner"
+name = "Test Runner (API Example)"
+version = "0.1.0"
+description = "Small plugin API 1.4 example; see the package README."
+authors = ["OpenIDEA contributors"]
+license = "Apache-2.0"
+engines.openidea = "^1.4"
+wasm = "dist/plugin.wasm"
+activation = ["on-command:*"]
+
+[capabilities]
+required = ["process:openidea-example-tests"]
+[[contributes.commands]]
+id = "test"
+title = "Example: Run Tests"
+[[contributes.runConfigurations]]
+files = ["example.tests"]
+[[contributes.providers]]
+kinds = ["gutter-actions"]
+languages = ["plaintext", "text"]

@@ -1,0 +1,69 @@
+id = "nextjs"
+name = "Next.js"
+group = "JavaScript"
+icon = "project-nextjs"
+order = 2
+description = "A React app on Next.js from create-next-app."
+
+[[requires]]
+program = "node"
+min = "20.19"
+hint = "Install Node.js 20.19 or later: https://nodejs.org"
+
+[[requires]]
+program = "{{pm}}"
+when = { pm = ["pnpm", "yarn", "bun"] }
+hint = "Install it, or choose npm."
+
+[[fields]]
+id = "lang"
+label = "Language:"
+type = "choice"
+segmented = true
+options = [{ value = "--ts", label = "TypeScript" }, { value = "--js", label = "JavaScript" }]
+default = "--ts"
+
+[[fields]]
+id = "pm"
+label = "Package manager:"
+type = "choice"
+segmented = true
+options = ["npm", "pnpm", "yarn", "bun"]
+default = "npm"
+
+[[fields]]
+id = "tailwind"
+label = "Tailwind CSS"
+type = "checkbox"
+default = "true"
+
+[[fields]]
+id = "src"
+label = "Use a src/ directory"
+type = "checkbox"
+default = "false"
+
+[[fields]]
+id = "install"
+label = "Install dependencies"
+type = "checkbox"
+default = "true"
+
+[[steps]]
+label = "Running create-next-app"
+package = "create-next-app@latest"
+cwd = "parent"
+args = [
+    "{{name}}", "{{lang}}", "--app", "--eslint", "--import-alias", "@/*", "--use-{{pm}}",
+    "--disable-git", "--skip-install", "--yes",
+    { when = { tailwind = "true" }, args = ["--tailwind"] },
+    { when = { tailwind = "false" }, args = ["--no-tailwind"] },
+    { when = { src = "true" }, args = ["--src-dir"] },
+    { when = { src = "false" }, args = ["--no-src-dir"] },
+]
+
+[[after]]
+label = "Installing dependencies"
+program = "{{pm}}"
+args = ["install"]
+when = { install = "true" }

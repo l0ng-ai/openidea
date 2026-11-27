@@ -1,0 +1,21 @@
+[package]
+name = "openidea-plugin-openidea-blame-annotations"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# A plugin builds on its own (target wasm32-wasip2), outside any IDE workspace.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+openidea-plugin = { path = "../../../sdk/rust/openidea-plugin" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"

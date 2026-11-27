@@ -3,6 +3,7 @@ import type { ChangelistState, FileStatus } from "@/bindings";
 import { buildChangeTree, planCommit, type ChangeNode } from "../changes";
 import {
   addList,
+  changedRels,
   checksForList,
   editList,
   initialChangelists,
@@ -66,6 +67,23 @@ describe("change list model", () => {
     const active = setActiveList(synced, feature);
     const next = syncAssignments(active, ["src/b.ts", "new.ts"])!;
     expect(next.files).toEqual({ "src/b.ts": feature, "new.ts": feature });
+  });
+
+  it("keeps the lists of files whose changes a merge, rebase or update put aside", () => {
+    const { state, feature } = twoLists();
+    // The rebase stashed every change: nothing looks changed until they come back.
+    const aside = syncAssignments(state, [], true);
+    expect(aside?.files ?? state.files).toEqual(state.files);
+    const back = syncAssignments(aside ?? state, ["src/b.ts"]);
+    expect((back ?? aside ?? state).files).toEqual({ "src/b.ts": feature });
+  });
+
+  it("keeps restored conflicts assigned to their original lists", () => {
+    const { state, feature } = twoLists();
+    const changed = changedRels([fs("src/b.ts", null, "conflicted")], "/r");
+    expect(changed).toEqual(["src/b.ts"]);
+    const synced = syncAssignments(state, changed) ?? state;
+    expect(synced.files).toEqual({ "src/b.ts": feature });
   });
 
   it("files without an assignment belong to the active list", () => {

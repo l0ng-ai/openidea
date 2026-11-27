@@ -5,6 +5,8 @@ import type { SyncEntry } from "@/platform/ipc";
 const mocks = vi.hoisted(() => ({
   actions: [] as { id: string; run: (context: { arg: string[] }) => unknown }[],
   servers: [] as DeploymentServerValid[],
+  groups: [] as { id: string; name: string; servers: string[] }[],
+  defaultServer: "one",
   coverage: [] as { server: string; paths: string[]; skipped: { path: string; message: string }[] }[],
   choose: vi.fn(),
   notify: vi.fn(),
@@ -37,11 +39,14 @@ vi.mock("@/platform/project", () => ({
   useProject: { getState: () => ({ project: { root: "/project" } }) },
 }));
 vi.mock("@/platform/workflowSettings", () => ({
-  workflowSettings: () => ({ deployment: { servers: mocks.servers, defaultServer: "one" } }),
+  workflowSettings: () => ({
+    deployment: { servers: mocks.servers, groups: mocks.groups, defaultServer: mocks.defaultServer },
+  }),
 }));
 vi.mock("@/workbench/contributions", () => ({
   notifications: () => ({ notify: mocks.notify }),
   projectViewSelection: () => [],
+  changesViewSelection: () => [],
   toolWindowService: vi.fn(),
 }));
 vi.mock("@/workbench/inputDialogs", () => ({ chooseItem: mocks.choose }));
@@ -72,6 +77,8 @@ async function run(id: string, paths = ["/project/a", "/project/b"]) {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.servers = ["one", "two"].map((id) => ({ id, name: id, kind: "local" }) as DeploymentServerValid);
+  mocks.groups = [];
+  mocks.defaultServer = "one";
   mocks.coverage = [
     {
       server: "one",
@@ -90,6 +97,43 @@ beforeEach(() => {
   mocks.openWindow.mockResolvedValue(undefined);
   useDeployment.setState({ sync: null });
   registerDeploymentActions();
+});
+describe("server groups", () => {
+  it("offers a group with a covering server and uploads to each of its servers, past a failure", async () => {
+    mocks.groups = [
+      { id: "g", name: "Production", servers: ["one", "two"] },
+      { id: "none", name: "Elsewhere", servers: ["two"] },
+    ];
+    mocks.coverage[1]!.paths = [];
+    mocks.choose.mockResolvedValue("Production (group)");
+    mocks.upload.mockRejectedValueOnce(new Error("connection refused"));
+    await run("deployment.uploadTo");
+    expect(mocks.choose).toHaveBeenCalledWith({ title: "Upload to", items: ["one", "Production (group)"] });
+    await vi.waitFor(() =>
+      expect(mocks.notify).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "No selected paths can be deployed to two" }),
+      ),
+    );
+    expect(mocks.upload).toHaveBeenCalledTimes(1);
+    expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({ title: "Cannot upload to one" }));
+  });
+  it("uploads to each server of the default group without asking", async () => {
+    mocks.groups = [{ id: "g", name: "Production", servers: ["two", "one"] }];
+    mocks.defaultServer = "g";
+    mocks.coverage[1]!.paths = ["/project/a"];
+    mocks.actions.find((action) => action.id === "deployment.uploadToDefault")!.run({ arg: ["/project/a"] });
+    await vi.waitFor(() => expect(mocks.upload).toHaveBeenCalledTimes(2));
+    expect(mocks.upload.mock.calls.map((c) => c[1])).toEqual(["two", "one"]);
+    expect(mocks.choose).not.toHaveBeenCalled();
+  });
+  it("uploads to every covered server of the group in order", async () => {
+    mocks.groups = [{ id: "g", name: "Production", servers: ["two", "one"] }];
+    mocks.coverage[1]!.paths = ["/project/b"];
+    mocks.choose.mockResolvedValue("Production (group)");
+    await run("deployment.uploadTo");
+    await vi.waitFor(() => expect(mocks.upload).toHaveBeenCalledTimes(2));
+    expect(mocks.upload.mock.calls.map((c) => c[1])).toEqual(["two", "one"]);
+  });
 });
 describe("deployment eligibility", () => {
   it("keeps upstream's server-specific explanation when only one server is configured", async () => {

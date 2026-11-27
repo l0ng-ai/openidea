@@ -1,0 +1,10 @@
+// Astro components: the frontmatter, a TypeScript script between `---` fences,
+// then the template. `index.ts` parses the script as TypeScript and the
+// template as HTML with `{…}` expressions. Regenerate with
+// `pnpm gen:astro-grammar`.
+
+@top Document { Frontmatter? Template? }
+
+Frontmatter { FrontmatterFence FrontmatterScript? FrontmatterFence? }
+
+@external tokens component from "./tokens" { FrontmatterFence, FrontmatterScript, Template }

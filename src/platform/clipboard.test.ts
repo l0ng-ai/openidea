@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { commands } from "./ipc";
-import { pasteClipboardFiles, readClipboardText } from "./clipboard";
+import { usePlatform } from "./platformInfo";
+import {
+  pasteClipboardFiles,
+  readClipboardPlainText,
+  readClipboardPng,
+  readClipboardText,
+  writeClipboardPng,
+  writeClipboardText,
+} from "./clipboard";
 
 beforeEach(() => vi.stubGlobal("__TAURI_INTERNALS__", {}));
 afterEach(() => {
@@ -38,6 +46,29 @@ describe("clipboard text", () => {
     expect(list).toHaveBeenCalledTimes(calls);
   });
 
+  // WebKit on macOS asks the user to confirm navigator.clipboard reads outside a paste event.
+  it("treats no native text on macOS as empty, but falls back when the backend refuses", async () => {
+    usePlatform.setState({ os: "macos" });
+    const readText = vi.fn(async () => "web");
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { readText } });
+    const native = vi.spyOn(commands, "clipboardText").mockResolvedValue({ status: "ok", data: null });
+    expect(await readClipboardPlainText()).toBe("");
+    expect(readText).not.toHaveBeenCalled();
+    native.mockRejectedValue(new Error("restricted"));
+    expect(await readClipboardPlainText()).toBe("web");
+  });
+
+  it("falls back to the WebView where the backend has no text reader", async () => {
+    usePlatform.setState({ os: "windows" });
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { readText: async () => "web" } });
+    vi.spyOn(commands, "clipboardText").mockResolvedValue({ status: "ok", data: null });
+    try {
+      expect(await readClipboardPlainText()).toBe("web");
+    } finally {
+      usePlatform.setState({ os: "macos" });
+    }
+  });
+
   it("does not consult files for an empty text-only event or a browser", async () => {
     const list = vi.spyOn(commands, "clipboardFileList");
     expect(await readClipboardText(transfer("", false))).toBe("");
@@ -58,5 +89,97 @@ describe("clipboard text", () => {
     event.preventDefault();
     expect(pasteClipboardFiles(event, paste)).toBe(false);
     expect(paste).not.toHaveBeenCalled();
+  });
+});
+
+describe("clipboard writes", () => {
+  it.each(["com.acme.A#run", "/p/src/A.java:5", "中文\n😀", ""])(
+    "writes %j natively without browser activation",
+    async (text) => {
+      const native = vi.spyOn(commands, "clipboardWriteText").mockResolvedValue({ status: "ok", data: null });
+      const browser = vi
+        .fn()
+        .mockRejectedValue(
+          new DOMException(
+            "The request is not allowed by the user agent or the platform in the current context",
+            "NotAllowedError",
+          ),
+        );
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: browser } });
+      await Promise.resolve();
+      await writeClipboardText(text);
+      expect(native).toHaveBeenCalledExactlyOnceWith(text);
+      expect(browser).not.toHaveBeenCalled();
+    },
+  );
+
+  it("reports native errors instead of claiming success", async () => {
+    vi.spyOn(commands, "clipboardWriteText").mockResolvedValue({
+      status: "error",
+      error: { kind: "internal", message: "busy", data: null },
+    });
+    await expect(writeClipboardText("text")).rejects.toThrow("busy");
+  });
+
+  it("uses the browser clipboard outside Tauri", async () => {
+    vi.unstubAllGlobals();
+    const native = vi.spyOn(commands, "clipboardWriteText");
+    const browser = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: browser } });
+    await writeClipboardText("web preview");
+    expect(browser).toHaveBeenCalledExactlyOnceWith("web preview");
+    expect(native).not.toHaveBeenCalled();
+  });
+});
+
+describe("clipboard image", () => {
+  it("writes PNG bytes through the native command and reports native errors", async () => {
+    const native = vi.spyOn(commands, "clipboardWriteImage").mockResolvedValue({ status: "ok", data: null });
+    const blob = { arrayBuffer: async () => new Uint8Array([137, 80, 78, 71]).buffer } as Blob;
+    await writeClipboardPng(Promise.resolve(blob));
+    expect(native).toHaveBeenCalledExactlyOnceWith("iVBORw==");
+    native.mockResolvedValueOnce({ status: "error", error: { kind: "internal", message: "busy", data: null } });
+    await expect(writeClipboardPng(Promise.resolve(blob))).rejects.toThrow("busy");
+  });
+
+  it("starts a browser image write synchronously with a PNG promise, preserving user activation", async () => {
+    vi.unstubAllGlobals();
+    const native = vi.spyOn(commands, "clipboardWriteImage");
+    let finish!: (blob: Blob) => void;
+    const blob = new Blob(["png"], { type: "image/png" });
+    const pending = new Promise<Blob>((resolve) => {
+      finish = resolve;
+    });
+    const item = vi.fn(function (this: { data: unknown }, data: unknown) {
+      this.data = data;
+    });
+    vi.stubGlobal("ClipboardItem", item);
+    const write = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { write } });
+    const result = writeClipboardPng(pending);
+    expect(item).toHaveBeenCalledWith({ "image/png": pending });
+    expect(write).toHaveBeenCalledOnce();
+    finish(blob);
+    await result;
+    expect(native).not.toHaveBeenCalled();
+    write.mockRejectedValueOnce(new Error("denied"));
+    await expect(writeClipboardPng(Promise.resolve(blob))).rejects.toThrow("denied");
+  });
+
+  it("is the PNG's base64, without the data URL prefix", async () => {
+    const image = vi.spyOn(commands, "clipboardImage");
+    image.mockResolvedValue({ status: "ok", data: "data:image/png;base64,iVBORw0KGgo=" });
+    expect(await readClipboardPng()).toBe("iVBORw0KGgo=");
+    image.mockResolvedValue({ status: "ok", data: null });
+    expect(await readClipboardPng()).toBeNull();
+    image.mockRejectedValue(new Error("busy"));
+    await expect(readClipboardPng()).rejects.toThrow("busy");
+  });
+
+  it("is none outside the desktop app", async () => {
+    vi.unstubAllGlobals();
+    const image = vi.spyOn(commands, "clipboardImage");
+    expect(await readClipboardPng()).toBeNull();
+    expect(image).not.toHaveBeenCalled();
   });
 });

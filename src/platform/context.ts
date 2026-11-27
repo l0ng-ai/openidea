@@ -18,6 +18,13 @@ export function setContext(key: string, value: ContextValue) {
   if (useContextKeys.getState()[key] !== value) useContextKeys.setState({ [key]: value });
 }
 
+export function clearContext(key: string) {
+  const next = { ...useContextKeys.getState() };
+  if (!(key in next)) return;
+  delete next[key];
+  useContextKeys.setState(next, true);
+}
+
 export function getContext(): ContextKeys {
   return useContextKeys.getState();
 }

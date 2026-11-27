@@ -1,6 +1,10 @@
 import { Channel } from "@tauri-apps/api/core";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { call, commands, type ChannelFrame, type ExecutionEvent, type ProjectInfo, type Settings } from "./ipc";
+import { useProject } from "./project";
+import { disableRemote, enableRemote, useRemote } from "./remote";
 import { encodeArgs, remoteRouting } from "./remote";
+import { scratchesDir } from "./scratchesDir";
 
 describe("remote invoke", () => {
   beforeAll(() => {
@@ -15,6 +19,67 @@ describe("remote invoke", () => {
     expect(parsed.path).toBe("/a");
     expect(parsed.requestId).toBe(3);
     expect(channels.get(parsed.onEvent.$channel)).toBe(events);
+  });
+
+  it("routes SQL batch progress after releasing the unused local callback", async () => {
+    let next = 1;
+    const unregisterCallback = vi.fn();
+    const done: ExecutionEvent = { type: "done", error: null };
+    vi.stubGlobal("__TAURI_INTERNALS__", {
+      transformCallback: () => next++,
+      unregisterCallback,
+      async invoke(command: string, call: { cmd: string; args: string; onChannel: Channel<ChannelFrame> }) {
+        expect(command).toBe("remote_invoke");
+        expect(call.cmd).toBe("db_execute_stream");
+        const { onProgress } = JSON.parse(call.args) as { onProgress: { $channel: number } };
+        call.onChannel.onmessage({ id: onProgress.$channel, data: JSON.stringify(done) });
+        return "null";
+      },
+    });
+    enableRemote({
+      target: { kind: "wsl", distro: "Ubuntu" },
+      root: "/remote",
+      host: "Ubuntu",
+      os: "linux",
+      commands: ["db_execute_stream"],
+    });
+    const progress = vi.fn();
+    const channel = new Channel<ExecutionEvent>(progress);
+    try {
+      expect(await call(commands.dbExecuteStream(1, "test-db", [], 10, null, null, channel))).toBeNull();
+      expect(unregisterCallback).toHaveBeenCalledExactlyOnceWith(channel.id);
+      expect(progress).toHaveBeenCalledExactlyOnceWith(done);
+    } finally {
+      disableRemote();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("routes a scratch folder lookup made as soon as the remote session is published", async () => {
+    const invoke = vi.fn(async (command: string, args: { cmd: string }) => {
+      expect(command).toBe("remote_invoke");
+      expect(args.cmd).toBe("fs_scratches_dir");
+      return JSON.stringify("/home/me/.openidea/data/scratches");
+    });
+    vi.stubGlobal("__TAURI_INTERNALS__", { invoke, transformCallback: () => 1 });
+    const unsubscribe = useRemote.subscribe(({ session }) => {
+      if (session) void scratchesDir();
+    });
+    try {
+      enableRemote({
+        target: { kind: "ssh", config: "test" },
+        root: "/home/me/project",
+        host: "test",
+        os: "linux",
+        commands: ["fs_scratches_dir"],
+      });
+      await expect(scratchesDir()).resolves.toBe("/home/me/.openidea/data/scratches");
+      expect(invoke).toHaveBeenCalledOnce();
+    } finally {
+      unsubscribe();
+      disableRemote();
+      vi.unstubAllGlobals();
+    }
   });
 
   it("routes served commands, keeps opening / closing local and sets global settings on both sides", () => {
@@ -38,7 +103,56 @@ describe("remote invoke", () => {
     expect(remoteRouting("settings_set", { scope: "global", key: "k", value: "1" }, served)).toBe("both");
   });
 
+  it.each(["agent_subscribe", "agent_entries", "agent_prompt"])("routes %s to the agent's host", (cmd) => {
+    expect(remoteRouting(cmd, { task: "saved-codex-task", subagent: null }, new Set([cmd]))).toBe("remote");
+  });
+
   it("encodes no arguments as an empty object", () => {
     expect(encodeArgs(undefined).json).toBe("{}");
+  });
+});
+
+describe("remote session lifetime", () => {
+  const session = {
+    target: { kind: "wsl" as const, distro: "Ubuntu" },
+    root: "/home/me/app",
+    host: "Ubuntu",
+    os: "linux",
+    commands: ["vcs_roots"],
+  };
+  const project = {
+    name: "app",
+    root: "/home/me/app",
+    trusted: true,
+    isGit: true,
+    settings: {},
+  } as unknown as ProjectInfo;
+
+  afterEach(() => {
+    disableRemote();
+    useProject.setState({ project: null, settings: null, opening: false, openingPath: null, lightEdit: false });
+  });
+
+  it("keeps routing when a window with no project of its own updates the settings only", () => {
+    // The comparison window: it rides its parent's session and keeps just the settings
+    // (restoring the project would overwrite the main window's editor session).
+    enableRemote(session);
+    useProject.setState({ settings: { editor: { fontSize: 12 } } as unknown as Settings });
+    expect(useRemote.getState().session).not.toBeNull();
+  });
+
+  it("ends routing when the window's project leaves the session's root", () => {
+    enableRemote(session);
+    useProject.setState({ project });
+    // Close Project (or a local project opened over the remote one) — the session goes.
+    useProject.setState({ project: null });
+    expect(useRemote.getState().session).toBeNull();
+  });
+
+  it("keeps routing while the project still sits at the session's root", () => {
+    enableRemote(session);
+    useProject.setState({ project });
+    useProject.setState({ settings: { editor: { fontSize: 14 } } as unknown as Settings });
+    expect(useRemote.getState().session).not.toBeNull();
   });
 });

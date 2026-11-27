@@ -1,17 +1,20 @@
-import { parseCommitBookmark } from "./logBookmarks";
-import { commitKey, commitRepo } from "./multiRoot";
+import { writeClipboardText } from "@/platform/clipboard";
+import { useBookmarkPopups } from "@/features/search/bookmarks/store";
+import { commitBookmarkPath, parseCommitBookmark } from "./logBookmarks";
+import { canApplyCommits, commitKey, commitRepo } from "./multiRoot";
 /**
  * Actions for operations in progress, Git Log commits, change lists, the shelf
  * and patches (ids are bound in keymaps/intellij-macos.ts where IDEA binds them).
  */
-import type { Commit } from "@/bindings";
-import { setContext } from "@/platform/context";
+import type { Branch, Commit } from "@/bindings";
+import { getContext, setContext } from "@/platform/context";
 import { call, commands } from "@/platform/ipc";
 import { notifications, toolWindowService } from "@/workbench/contributions";
 import { executeAction, registerActions, type Action } from "@/platform/actions";
-import { checkoutDetached, newBranch, rebaseOnto } from "./branchOps";
+import { checkoutBranch, checkoutDetached, newBranch, rebaseOnto } from "./branchOps";
 import { openUrl } from "./issueLinks";
 import { commitWebUrl } from "./model";
+import { remoteWebSource } from "./remoteUrl";
 import {
   commitChangelist,
   deleteChangelist,
@@ -21,10 +24,21 @@ import {
   showMoveToChangelist,
 } from "./changelistsUi";
 import { useChangelists } from "./changelists";
-import { commitWindowFocused } from "./actions";
+import { commitWindowFocused, currentChangeTree } from "./actions";
+import { selectedChangeNodes, stagingPatchEntries } from "./changes";
+import { stagingAreaOn } from "./staging";
 import { useCommit } from "./commitStore";
 import { openCommit } from "./commitUi";
-import { goToChild, goToParent, goToRef, openLogTab, selectedCommits, useGitLog } from "./logStore";
+import {
+  goToChild,
+  goToParent,
+  goToRef,
+  goToRefRepositories,
+  openLogTab,
+  selectedCommits,
+  toggleCommitBookmark,
+  useGitLog,
+} from "./logStore";
 import { chooseRevision } from "./RevisionChooser";
 import {
   cherryPick,
@@ -34,6 +48,7 @@ import {
   revertCommits,
   showCompareVersions,
   showCompareWithLocal,
+  showFileAtRevision,
   showResetDialog,
   showTagDialog,
 } from "./operations";
@@ -45,7 +60,13 @@ import {
   squashCommits,
   undoCommit,
 } from "./rebase";
-import { showApplyPatch, showCreatePatchForChanges, showCreatePatchForCommits } from "./patches";
+import {
+  copyChangesAsPatch,
+  showApplyPatch,
+  showCreatePatchForChanges,
+  showCreatePatchForCommits,
+  type PatchSelection,
+} from "./patches";
 import {
   copyShelfPatch,
   createShelfPatch,
@@ -54,17 +75,21 @@ import {
   loadShelves,
   renameShelf,
   shelveChanges,
+  shelveSilently,
   shelfTarget,
   showShelf,
   showShelfDiff,
   unshelve,
+  unshelveSilently,
 } from "./shelf";
-import { currentRepo, focusRepo, useVcs } from "./store";
-import { openExternalLog } from "./RevisionBrowser";
+import { currentRepo, currentRepoRoot, focusRepo, useVcs } from "./store";
+import type { PatchDiffRequest } from "./patchDiff";
 
 const VCS = "vcsAvailable";
 const IN_GIT_LOG = "(vcsAvailable || projectOpen) && (activeToolWindow == git || vcsLogFocus)";
 const IN_COMMIT = "vcsAvailable && activeToolWindow == commit";
+/** Shortcuts that act on the selected commit: only while the commit list has focus. */
+const IN_COMMITS = "vcsLogCommitsFocus";
 
 /** The commit an action refers to: its argument (commit or id), else the Git Log selection. */
 export function commitArg(arg: unknown): Commit | null {
@@ -73,6 +98,55 @@ export function commitArg(arg: unknown): Commit | null {
   const id = typeof arg === "string" ? arg : selected;
   if (!id) return null;
   return commits.find((c) => commitKey(c) === id) ?? null;
+}
+
+export interface FileHistoryCommitArg {
+  kind: "file-history-commit";
+  commit: Commit;
+  target: string;
+}
+
+export interface FileHistoryCommitsArg {
+  kind: "file-history-commits";
+  commits: Commit[];
+  target: string;
+}
+
+function isCommit(value: unknown): value is Commit {
+  return !!value && typeof value === "object" && "id" in value && "summary" in value;
+}
+
+function isFileHistoryCommitArg(arg: unknown): arg is FileHistoryCommitArg {
+  return (
+    !!arg &&
+    typeof arg === "object" &&
+    "kind" in arg &&
+    arg.kind === "file-history-commit" &&
+    "commit" in arg &&
+    isCommit(arg.commit) &&
+    "target" in arg &&
+    typeof arg.target === "string"
+  );
+}
+
+function isFileHistoryCommitsArg(arg: unknown): arg is FileHistoryCommitsArg {
+  return (
+    !!arg &&
+    typeof arg === "object" &&
+    "kind" in arg &&
+    arg.kind === "file-history-commits" &&
+    "commits" in arg &&
+    Array.isArray(arg.commits) &&
+    arg.commits.every(isCommit) &&
+    "target" in arg &&
+    typeof arg.target === "string"
+  );
+}
+
+function activeFileHistoryTarget(): string | null {
+  const state = useGitLog.getState();
+  const tab = state.logTabs.find((t) => t.id === state.shownLog);
+  return tab?.kind === "history" ? tab.target : null;
 }
 
 /** Commits an action refers to: its argument (commit list or commit), else the Git Log selection. */
@@ -86,18 +160,20 @@ export function commitsArg(arg: unknown): Commit[] {
   return selection.length ? selection : [commitArg(undefined)].filter((c): c is Commit => !!c);
 }
 
-function withCommits(fn: (cs: Commit[]) => unknown, allowReadOnly = false) {
+function withCommits(fn: (cs: Commit[]) => unknown, { allowReadOnly = false, multipleRepositories = false } = {}) {
   return async ({ arg }: { arg?: unknown }) => {
     const cs = commitsArg(arg);
     if (!cs.length) {
       notifications().notify({ group: "vcs", level: "info", title: "Select a commit in the Git log" });
       return;
     }
-    if (!allowReadOnly && new Set(cs.map(commitRepo)).size > 1) return;
+    const current = currentRepo();
+    const repos = new Set(cs.map((commit) => commitRepo(commit) ?? current));
+    if (!allowReadOnly && !multipleRepositories && repos.size > 1) return;
     const readOnly = cs.some((c) => "readOnly" in c && c.readOnly === true);
     if (readOnly && !allowReadOnly) return;
     const repo = commitRepo(cs[0]!);
-    if (repo && !readOnly) await focusRepo(repo);
+    if (repo && !readOnly && (!multipleRepositories || repos.size === 1)) await focusRepo(repo);
     void fn(cs);
   };
 }
@@ -106,7 +182,7 @@ function withCommits(fn: (cs: Commit[]) => unknown, allowReadOnly = false) {
 async function openCommitInBrowser(c: Commit) {
   const upstream = useVcs.getState().branch?.upstream;
   const remote = upstream ? upstream.slice(0, upstream.indexOf("/")) : "origin";
-  const url = await call(commands.vcsConfigGet(currentRepo(), `remote.${remote}.url`)).catch(() => null);
+  const url = await remoteWebSource(currentRepo(), remote);
   const page = url ? commitWebUrl(url, c.id) : null;
   if (page) await openUrl(page);
   else notifications().notify({ group: "vcs", level: "warning", title: `No web URL for remote '${remote}'` });
@@ -127,12 +203,58 @@ function withCommit(fn: (c: Commit) => unknown, allowReadOnly = false) {
   };
 }
 
+/** Compare with Local alone uses the active File History's file instead of the repository tree. */
+function withHistoryAwareCompare(fn: (c: Commit, historyTarget?: string | null) => unknown) {
+  return async ({ arg }: { arg?: unknown }) => {
+    const scoped = isFileHistoryCommitArg(arg) ? arg : null;
+    const historyTarget = scoped?.target ?? (arg == null ? activeFileHistoryTarget() : null);
+    const c = scoped?.commit ?? commitArg(arg);
+    if (!c) {
+      notifications().notify({ group: "vcs", level: "info", title: "Select a commit in the Git log" });
+      return;
+    }
+    if ("readOnly" in c && c.readOnly === true) return;
+    const repo = commitRepo(c);
+    if (repo) await focusRepo(repo);
+    void fn(c, historyTarget);
+  };
+}
+
+/** Compare Versions uses the active File History file only for scoped or no-argument invocations. */
+function withHistoryAwareCompareVersions(fn: (cs: Commit[], historyTarget?: string | null) => unknown) {
+  return async ({ arg }: { arg?: unknown }) => {
+    const scoped = isFileHistoryCommitsArg(arg) ? arg : null;
+    const historyTarget = scoped?.target ?? (arg == null ? activeFileHistoryTarget() : null);
+    const cs = scoped?.commits ?? commitsArg(arg);
+    if (cs.length !== 2) {
+      notifications().notify({ group: "vcs", level: "info", title: "Select two commits to compare" });
+      return;
+    }
+    if (new Set(cs.map(commitRepo)).size > 1) return;
+    const readOnly = cs.some((c) => "readOnly" in c && c.readOnly === true);
+    if (readOnly) return;
+    const repo = commitRepo(cs[0]!);
+    if (repo) await focusRepo(repo);
+    void fn(cs, historyTarget);
+  };
+}
+
 /** Paths an action on changes refers to: argument, else the change tree's selection (Commit window or Git › Local Changes). */
 function changePaths(arg: unknown): string[] | undefined {
   if (Array.isArray(arg)) return arg.filter((x): x is string => typeof x === "string");
   if (typeof arg === "string") return [arg];
   const sel = useCommit.getState().selection;
   return commitWindowFocused() && sel.length ? sel : undefined;
+}
+
+function patchSelection(arg: unknown): PatchSelection | undefined {
+  if (arg && typeof arg === "object" && "staging" in arg && Array.isArray(arg.staging)) return { staging: arg.staging };
+  if (arg === undefined && commitWindowFocused() && stagingAreaOn()) {
+    const keys = new Set(useCommit.getState().selectionKeys);
+    const nodes = selectedChangeNodes(currentChangeTree(), keys);
+    return { staging: stagingPatchEntries(nodes) };
+  }
+  return changePaths(arg);
 }
 
 /** A change list id: argument, else the list of the Commit tool window selection. */
@@ -142,7 +264,7 @@ function listArg(arg: unknown): string | null {
 }
 
 async function checkoutCommit(c: Commit) {
-  await checkoutDetached(c.id, c.shortId);
+  await checkoutDetached(c.id, c.shortId, commitRepo(c) ?? currentRepo());
 }
 
 /** Keeps `vcsOperation` (rebase / merge / cherry-pick / revert / am / "") in sync for `when` clauses. */
@@ -250,7 +372,7 @@ export function registerHistoryActions(): () => void {
       id: "vcs.log.openExternal",
       title: "Open External Git Log…",
       category: "Git Log",
-      run: openExternalLog,
+      run: async () => (await import("./RevisionBrowser")).openExternalLog(),
     },
     {
       id: "vcs.log.goToRef",
@@ -267,7 +389,7 @@ export function registerHistoryActions(): () => void {
         const rev = await chooseRevision("Go to Hash/Branch/Tag", {
           tags: true,
           placeholder: "Enter hash or branch/tag name",
-          repositories: tab?.repo ? [tab.repo] : log.filters.repositories,
+          repositories: goToRefRepositories(log),
         });
         if (rev && !(await goToRef(rev)))
           notifications().notify({ group: "vcs", level: "warning", title: `'${rev}' was not found in the log` });
@@ -282,7 +404,16 @@ export function registerHistoryActions(): () => void {
       icon: "copy",
       when: "vcsAvailable || projectOpen || vcsLogFocus",
       keyWhen: IN_GIT_LOG,
-      run: withCommits((cs) => navigator.clipboard?.writeText(cs.map((c) => c.id).join(" ")), true),
+      run: withCommits((cs) => writeClipboardText(cs.map((c) => c.id).join(" ")), { allowReadOnly: true }),
+    },
+    {
+      id: "vcs.log.copyCommitSubject",
+      title: "Copy Commit Subject",
+      category: "Git Log",
+      icon: "copy",
+      when: "vcsAvailable || projectOpen || vcsLogFocus",
+      keyWhen: IN_GIT_LOG,
+      run: withCommits((cs) => writeClipboardText(cs.map((c) => c.summary).join("\n")), { allowReadOnly: true }),
     },
     {
       id: "vcs.log.createPatch",
@@ -295,8 +426,10 @@ export function registerHistoryActions(): () => void {
       id: "vcs.log.cherryPick",
       title: "Cherry-Pick",
       category: "Git Log",
+      icon: "cherry-pick",
       when: VCS,
-      run: withCommits(cherryPick),
+      enabled: ({ arg }) => canApplyCommits(commitsArg(arg)),
+      run: withCommits(cherryPick, { multipleRepositories: true }),
     },
     {
       id: "vcs.log.checkoutRevision",
@@ -306,12 +439,40 @@ export function registerHistoryActions(): () => void {
       run: withCommit(checkoutCommit),
     },
     {
+      id: "vcs.log.checkoutBranch",
+      title: "Checkout Branch",
+      category: "Git Log",
+      when: VCS,
+      hidden: true,
+      run: ({ arg }) => {
+        const target = arg as { branch?: Branch; repo?: string | null } | undefined;
+        if (typeof target?.branch?.name === "string" && !target.branch.remote) {
+          return checkoutBranch(target.branch, target.repo);
+        }
+      },
+    },
+    {
       id: "vcs.log.compareWithLocal",
       title: "Compare with Local",
       category: "Git Log",
       icon: "diff",
       when: VCS,
-      run: withCommit(showCompareWithLocal),
+      run: withHistoryAwareCompare(showCompareWithLocal),
+    },
+    {
+      id: "vcs.log.showFileAtRevision",
+      title: "Show File at Revision",
+      category: "Git Log",
+      icon: "file",
+      when: "vcsAvailable || projectOpen || vcsLogFocus",
+      hidden: true,
+      run: ({ arg }) => {
+        const scoped = isFileHistoryCommitArg(arg) ? arg : null;
+        const commit = scoped?.commit ?? commitArg(arg);
+        const target = scoped?.target ?? (arg == null ? activeFileHistoryTarget() : null);
+        const readOnly = !!commit && "readOnly" in commit && commit.readOnly === true;
+        if (commit && target) showFileAtRevision(commit, target, readOnly);
+      },
     },
     {
       id: "vcs.log.compareVersions",
@@ -319,13 +480,9 @@ export function registerHistoryActions(): () => void {
       category: "Git Log",
       icon: "diff",
       when: VCS,
-      run: withCommits((cs) => {
-        if (cs.length !== 2) {
-          notifications().notify({ group: "vcs", level: "info", title: "Select two commits to compare" });
-          return;
-        }
+      run: withHistoryAwareCompareVersions((cs, historyTarget) => {
         // Newest first, as the log shows them.
-        showCompareVersions(cs[1]!, cs[0]!);
+        showCompareVersions(cs[1]!, cs[0]!, historyTarget);
       }),
     },
     {
@@ -341,7 +498,7 @@ export function registerHistoryActions(): () => void {
       category: "Git Log",
       icon: "revert",
       when: VCS,
-      run: withCommits(revertCommits),
+      run: withCommits(revertCommits, { multipleRepositories: true }),
     },
     {
       id: "vcs.log.undoCommit",
@@ -357,6 +514,7 @@ export function registerHistoryActions(): () => void {
       category: "Git Log",
       when: VCS,
       keywords: ["reword"],
+      keyWhen: IN_COMMITS,
       run: withCommit(editCommitMessage),
     },
     {
@@ -395,10 +553,7 @@ export function registerHistoryActions(): () => void {
       category: "Git Log",
       icon: "git-push",
       when: VCS,
-      run: withCommit((c) => {
-        const head = useVcs.getState().branch?.head;
-        if (head) void executeAction("vcs.push", { branch: head, revision: c });
-      }),
+      run: withCommit((c) => executeAction("vcs.push", { repo: commitRepo(c) ?? currentRepoRoot(), revision: c })),
     },
     {
       id: "vcs.log.rebaseOntoCommit",
@@ -413,6 +568,7 @@ export function registerHistoryActions(): () => void {
       category: "Git Log",
       icon: "arrow-left",
       when: "vcsAvailable || projectOpen || vcsLogFocus",
+      keyWhen: IN_COMMITS,
       run: withCommit(goToChild, true),
     },
     {
@@ -421,6 +577,7 @@ export function registerHistoryActions(): () => void {
       category: "Git Log",
       icon: "arrow-right",
       when: "vcsAvailable || projectOpen || vcsLogFocus",
+      keyWhen: IN_COMMITS,
       run: withCommit(goToParent, true),
     },
     {
@@ -445,7 +602,32 @@ export function registerHistoryActions(): () => void {
       category: "Git Log",
       icon: "branch",
       when: VCS,
-      run: withCommit((c) => newBranch(c.id)),
+      keyWhen: IN_COMMITS,
+      run: withCommit((c) => newBranch(c.id, commitRepo(c) ?? currentRepo())),
+    },
+    {
+      id: "vcs.log.toggleBookmark",
+      title: "Toggle Commit Bookmark",
+      category: "Git Log",
+      icon: "bookmark",
+      when: "vcsAvailable || projectOpen || vcsLogFocus",
+      keyWhen: IN_COMMITS,
+      hidden: true,
+      keymap: true,
+      run: withCommit(toggleCommitBookmark, true),
+    },
+    {
+      id: "vcs.log.toggleBookmarkWithMnemonic",
+      title: "Toggle Commit Bookmark with Mnemonic",
+      category: "Git Log",
+      when: "vcsAvailable || projectOpen || vcsLogFocus",
+      keyWhen: IN_COMMITS,
+      hidden: true,
+      keymap: true,
+      run: withCommit(
+        (c) => useBookmarkPopups.setState({ chooser: { path: commitBookmarkPath(c), line: 0, text: c.summary } }),
+        true,
+      ),
     },
     {
       id: "vcs.log.newTag",
@@ -524,6 +706,20 @@ export function registerHistoryActions(): () => void {
       when: VCS,
       run: ({ arg }) => shelveChanges(changePaths(arg)),
     },
+    {
+      id: "vcs.shelveSilently",
+      title: "Shelve Silently",
+      category: "Git",
+      icon: "shelve",
+      when: VCS,
+      keyWhen: "vcsAvailable && (activeToolWindow == commit || activeToolWindow == git) && !shelfFocus",
+      run: ({ arg }) => {
+        // The Changes tab's selection is stale while the Shelf or Stash tab is shown.
+        if (arg === undefined && getContext().activeToolWindow === "commit" && useCommit.getState().tab !== "changes")
+          return;
+        return shelveSilently(changePaths(arg));
+      },
+    },
     { id: "vcs.showShelf", title: "Show Shelf", category: "Git", icon: "shelve", when: VCS, run: showShelf },
     {
       id: "vcs.unshelve",
@@ -535,6 +731,19 @@ export function registerHistoryActions(): () => void {
         const target = shelfTarget(arg);
         if (target) unshelve(target.entry, target.path);
         else showShelf();
+      },
+    },
+    {
+      id: "vcs.unshelveSilently",
+      title: "Unshelve Silently",
+      category: "Git",
+      icon: "unshelve",
+      when: VCS,
+      keyWhen: "vcsAvailable && shelfFocus",
+      run: ({ arg }) => {
+        const target = shelfTarget(arg);
+        if (target) return unshelveSilently(target.entry, target.path);
+        showShelf();
       },
     },
     {
@@ -622,7 +831,14 @@ export function registerHistoryActions(): () => void {
       category: "Git",
       icon: "file-patch",
       when: VCS,
-      run: ({ arg }) => showCreatePatchForChanges(changePaths(arg)),
+      run: ({ arg }) => showCreatePatchForChanges(patchSelection(arg)),
+    },
+    {
+      id: "vcs.copyPatch",
+      title: "Copy as Patch to Clipboard",
+      category: "Git",
+      when: VCS,
+      run: ({ arg }) => copyChangesAsPatch(patchSelection(arg)),
     },
     {
       id: "vcs.applyPatch",
@@ -638,6 +854,21 @@ export function registerHistoryActions(): () => void {
       category: "Git",
       when: VCS,
       run: () => void showApplyPatch("clipboard"),
+    },
+    {
+      id: "vcs.patch.showDiff",
+      title: "Show Diff",
+      category: "Git",
+      icon: "diff",
+      when: VCS,
+      hidden: true,
+      enabled: ({ arg }) => !!arg,
+      run: ({ arg }) => {
+        const request = arg as PatchDiffRequest;
+        if (Array.isArray(request?.paths) && typeof request.patch === "string" && typeof request.path === "string") {
+          return import("./patchDiff").then(({ showPatchDiff }) => showPatchDiff(request));
+        }
+      },
     },
   ];
   return registerActions(actions);

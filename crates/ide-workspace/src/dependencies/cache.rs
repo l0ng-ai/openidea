@@ -39,11 +39,11 @@ impl VersionCache {
         package: &str,
         cancel: &CancellationToken,
     ) -> IdeResult<Vec<String>> {
-        let safe = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b));
-        if !safe(source.id()) || !safe(package) || package.len() > 64 {
+        let Some(key) = source.cache_key(package).filter(|key| {
+            !key.is_empty() && key.len() <= 128 && key.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+        }) else {
             return Ok(Vec::new());
-        }
-        let key = format!("{}-{}", source.id(), package.to_ascii_lowercase());
+        };
         let slot = self.entries.lock().entry(key.clone()).or_default().clone();
         let mut cached = loop {
             if cancel.is_cancelled() {

@@ -10,12 +10,26 @@
 import { useId, useState } from "react";
 import { Button, Checkbox, Input, type SelectOption, T } from "@/ui";
 import { commands, isTauri, type LanguageInfo_Serialize as LanguageInfo } from "@/platform/ipc";
-import { ENCODING_CHOICES, lineCommentDefaults, type LanguageCodeStyle } from "@/platform/editorSettings";
+import { choosePath } from "@/platform/choosePath";
+import {
+  ENCODING_CHOICES,
+  lineCommentDefaults,
+  sqlCaseOf,
+  type LanguageCodeStyle,
+  type SqlWordCase,
+} from "@/platform/editorSettings";
 import { NATIVE_TO_ASCII_ACTION } from "../../nativeToAscii";
-import { NumberInput, Row, Select } from "../../components/Form";
+import { FormGroup, NumberInput, Row, Select, Toggle } from "../../components/Form";
 import { useSetting } from "../../components/context";
 import type { PageSpec } from "../spec";
-import { CODE_STYLE_SCOPE, CodeStyleMain, SchemeRow, formatterLabels } from "./codeStyleScheme";
+import {
+  CODE_STYLE_SCOPE,
+  CodeStyleMain,
+  CodeStyleTabs,
+  SchemeRow,
+  formatterLabels,
+  type CodeStyleTab,
+} from "./codeStyleScheme";
 import { editorPage, sectionLabels, type EditorSection } from "./kit";
 import styles from "./Editor.module.css";
 import { tx } from "@/platform/i18n";
@@ -131,7 +145,75 @@ const OTHER = {
   ...SCHEME_SCOPE,
 };
 
-/** Tabs and Indents of one language: overrides on top of the language definition. */
+const INDENTS = {
+  id: "indents",
+  label: "Tabs and Indents",
+  keywords: ["Tab size", "Indent", "Use tab character"],
+};
+const WRAPPING = { id: "wrapping", label: "Wrapping", keywords: ["Hard wrap at"] };
+const COMMENTS = {
+  id: "comments",
+  label: "Comment Code",
+  keywords: ["Line comment at first column", "Add a space at line comment start"],
+};
+const CASE = { id: "case", label: "Case", keywords: ["Keywords", "Identifiers", "To upper", "To lower"] };
+const IMPORTS = {
+  id: "imports",
+  label: "Imports",
+  keywords: ["imports", "static imports", "wildcard", "class count", "import with *"],
+};
+
+const SPACES = { id: "spaces", label: "Spaces", keywords: ["Space", "Around binary operators", "Within braces"] };
+const PUNCTUATION = { id: "punctuation", label: "Punctuation", keywords: ["Semicolons", "Quotes"] };
+
+/** The TypeScript server's code style: JavaScript (and JSX) and TypeScript (and TSX). */
+const TS_STYLE_LANGUAGES = new Set(["javascript", "typescript"]);
+
+/** tsserver's space options and their defaults (vtsls'). */
+const TS_SPACES = [
+  { key: "insertSpaceAfterCommaDelimiter", label: "After comma", on: true },
+  { key: "insertSpaceAfterSemicolonInForStatements", label: "After semicolon in for statements", on: true },
+  { key: "insertSpaceBeforeAndAfterBinaryOperators", label: "Around binary operators", on: true },
+  { key: "insertSpaceAfterKeywordsInControlFlowStatements", label: "After control flow keywords", on: true },
+  {
+    key: "insertSpaceAfterFunctionKeywordForAnonymousFunctions",
+    label: "After function keyword in anonymous functions",
+    on: true,
+  },
+  { key: "insertSpaceBeforeFunctionParenthesis", label: "Before function declaration parentheses", on: false },
+  { key: "insertSpaceAfterConstructor", label: "After constructor keyword", on: false },
+  { key: "insertSpaceAfterOpeningAndBeforeClosingNonemptyParenthesis", label: "Within parentheses", on: false },
+  { key: "insertSpaceAfterOpeningAndBeforeClosingNonemptyBrackets", label: "Within brackets", on: false },
+  { key: "insertSpaceAfterOpeningAndBeforeClosingNonemptyBraces", label: "Within braces", on: true },
+  { key: "insertSpaceAfterOpeningAndBeforeClosingEmptyBraces", label: "Within empty braces", on: true },
+  {
+    key: "insertSpaceAfterOpeningAndBeforeClosingTemplateStringBraces",
+    label: "Within template string interpolations",
+    on: false,
+  },
+  { key: "insertSpaceAfterOpeningAndBeforeClosingJsxExpressionBraces", label: "Within JSX expressions", on: false },
+  { key: "insertSpaceAfterTypeAssertion", label: "After type assertion", on: false },
+];
+
+const SEMICOLONS: SelectOption<NonNullable<LanguageCodeStyle["semicolons"]>>[] = [
+  { value: "ignore", label: "Keep as is" },
+  { value: "insert", label: "Use semicolons" },
+  { value: "remove", label: "Don't use semicolons" },
+];
+
+const QUOTES: SelectOption<NonNullable<LanguageCodeStyle["quotes"]>>[] = [
+  { value: "auto", label: "As in the file" },
+  { value: "single", label: "Single quotes" },
+  { value: "double", label: "Double quotes" },
+];
+
+const WORD_CASES: SelectOption<SqlWordCase>[] = [
+  { value: "upper", label: "To upper" },
+  { value: "lower", label: "To lower" },
+  { value: "keep", label: "Do not change" },
+];
+
+/** Code Style overrides on top of the language definition. */
 function LanguageStyle({ lang }: { lang: LanguageInfo }) {
   const [all, setAll] = useSetting<Record<string, LanguageCodeStyle>>("editor.codeStyle.languages");
   const [tabSize] = useSetting<number>("editor.tabSize");
@@ -156,42 +238,38 @@ function LanguageStyle({ lang }: { lang: LanguageInfo }) {
     delete next[lang.id];
     setAll(next);
   };
-  return (
-    <div className={styles.page}>
-      <SchemeRow />
-      {lang.id === "java" && <JavaFormatter style={own} onChange={set} />}
-      <section aria-label={tx("Tabs and Indents")}>
-        <div className={styles.previewTitle}>
-          <T>Tabs and Indents</T>
-        </div>
-        <div className={styles.check}>
-          <Checkbox checked={eff.useTab} onChange={(v) => set({ useTab: v })} label="Use tab character" />
-        </div>
-        <Row label="Tab size">
-          <NumberInput
-            value={eff.tabSize}
-            onChange={(n) => set({ tabSize: n })}
-            min={1}
-            max={16}
-            integer
-            aria-label="Tab size"
-          />
-        </Row>
-        <Row label="Indent">
-          <NumberInput
-            value={eff.indent}
-            onChange={(n) => set({ indent: n })}
-            min={1}
-            max={16}
-            integer
-            aria-label="Indent"
-          />
-        </Row>
-      </section>
-      <section aria-label={tx("Wrapping")}>
-        <div className={styles.previewTitle}>
-          <T>Wrapping</T>
-        </div>
+  const tabs: CodeStyleTab[] = [
+    {
+      ...INDENTS,
+      content: (
+        <FormGroup>
+          <Toggle checked={eff.useTab} onChange={(v) => set({ useTab: v })} label="Use tab character" />
+          <Row label="Tab size">
+            <NumberInput
+              value={eff.tabSize}
+              onChange={(n) => set({ tabSize: n })}
+              min={1}
+              max={16}
+              integer
+              aria-label="Tab size"
+            />
+          </Row>
+          <Row label="Indent">
+            <NumberInput
+              value={eff.indent}
+              onChange={(n) => set({ indent: n })}
+              min={1}
+              max={16}
+              integer
+              aria-label="Indent"
+            />
+          </Row>
+        </FormGroup>
+      ),
+    },
+    {
+      ...WRAPPING,
+      content: (
         <Row label="Hard wrap at" hint="Shown as the right margin guide in the editor.">
           <NumberInput
             value={eff.hardWrapAt}
@@ -203,25 +281,173 @@ function LanguageStyle({ lang }: { lang: LanguageInfo }) {
             unit="columns"
           />
         </Row>
-      </section>
-      {lang.lineComment && (
-        <section aria-label={tx("Comment Code")}>
+      ),
+    },
+  ];
+  if (lang.lineComment) {
+    tabs.push({
+      ...COMMENTS,
+      content: (
+        <>
+          <Toggle
+            checked={eff.lineCommentAtFirstColumn}
+            onChange={(v) => set({ lineCommentAtFirstColumn: v })}
+            label="Line comment at first column"
+          />
+          <Toggle
+            checked={eff.lineCommentAddSpace}
+            onChange={(v) => set({ lineCommentAddSpace: v })}
+            label="Add a space at line comment start"
+          />
+        </>
+      ),
+    });
+  }
+  if (lang.id === "java") {
+    tabs.push({
+      ...IMPORTS,
+      content: (
+        <FormGroup>
+          <Row
+            label="Class count to use import with '*'"
+            hint="Use a wildcard import once this many classes of one package are used (5 by default; 999 keeps single-class imports)."
+          >
+            <NumberInput
+              value={own.classCountToUseImportWithStar ?? 5}
+              onChange={(n) => set({ classCountToUseImportWithStar: n })}
+              min={1}
+              max={999}
+              integer
+              aria-label="Class count to use import with *"
+            />
+          </Row>
+          <Row
+            label="Names count to use static import with '*'"
+            hint="Use a wildcard static import once this many names are imported statically (3 by default; 999 keeps single imports)."
+          >
+            <NumberInput
+              value={own.namesCountToUseStaticImportWithStar ?? 3}
+              onChange={(n) => set({ namesCountToUseStaticImportWithStar: n })}
+              min={1}
+              max={999}
+              integer
+              aria-label="Names count to use static import with *"
+            />
+          </Row>
+        </FormGroup>
+      ),
+    });
+  }
+  if (TS_STYLE_LANGUAGES.has(lang.id)) {
+    tabs.push(
+      {
+        ...SPACES,
+        content: (
+          <>
+            {TS_SPACES.map(({ key, label, on }) => (
+              <Toggle
+                key={key}
+                checked={own.spaces?.[key] ?? on}
+                onChange={(v) => set({ spaces: { ...own.spaces, [key]: v } })}
+                label={label}
+              />
+            ))}
+          </>
+        ),
+      },
+      {
+        ...PUNCTUATION,
+        content: (
+          <FormGroup>
+            <Row label="Semicolons">
+              <Select
+                value={own.semicolons ?? "ignore"}
+                options={SEMICOLONS}
+                onChange={(semicolons) => set({ semicolons })}
+                aria-label="Semicolons"
+              />
+            </Row>
+            <Row label="Quotes" hint="For the strings and imports the TypeScript server adds.">
+              <Select
+                value={own.quotes ?? "auto"}
+                options={QUOTES}
+                onChange={(quotes) => set({ quotes })}
+                aria-label="Quotes"
+              />
+            </Row>
+          </FormGroup>
+        ),
+      },
+    );
+  }
+  if (lang.id === "sql") {
+    const wordCase = sqlCaseOf(own);
+    tabs.push({
+      ...CASE,
+      content: (
+        <FormGroup>
+          <Row label="Keywords">
+            <Select
+              value={wordCase.keywords}
+              options={WORD_CASES}
+              onChange={(keywordCase) => set({ keywordCase })}
+              aria-label="Keywords"
+            />
+          </Row>
+          <Row label="Identifiers" hint="Unquoted table, column and alias names; ClickHouse names keep their case.">
+            <Select
+              value={wordCase.identifiers}
+              options={WORD_CASES}
+              onChange={(identifierCase) => set({ identifierCase })}
+              aria-label="Identifiers"
+            />
+          </Row>
+        </FormGroup>
+      ),
+    });
+  }
+  return (
+    <div className={styles.page}>
+      <SchemeRow />
+      {lang.id === "java" && <JavaFormatter style={own} onChange={set} />}
+      <CodeStyleTabs tabs={tabs} />
+      {lang.id === "python" && (
+        <div className={styles.note}>
+          {tx(
+            "Ruff formats with the indent, tab character and hard wrap set here, and Black with the hard wrap, when no Ruff or Black configuration of the project or user applies. A file's .editorconfig values come first, as in the editor.",
+          )}
+        </div>
+      )}
+      {TS_STYLE_LANGUAGES.has(lang.id) && (
+        <div className={styles.note}>
+          {tx(
+            "The TypeScript server applies Spaces and Punctuation to Reformat Code and to the code it adds: quick fixes, imports, refactorings and organize imports. Files below a Prettier, Biome or oxfmt configuration are formatted by that tool. A .editorconfig's quote_type and ij_* properties come first. TSX files use the TypeScript settings, JSX files the JavaScript ones.",
+          )}
+        </div>
+      )}
+      {lang.id === "php" && (
+        <section aria-label={tx("Alignment")}>
           <div className={styles.previewTitle}>
-            <T>Comment Code</T>
+            <T>Alignment</T>
           </div>
           <div className={styles.check}>
             <Checkbox
-              checked={eff.lineCommentAtFirstColumn}
-              onChange={(v) => set({ lineCommentAtFirstColumn: v })}
-              label="Line comment at first column"
+              checked={own.alignKeyValuePairs ?? false}
+              onChange={(v) => set({ alignKeyValuePairs: v })}
+              label="Align key-value pairs"
             />
           </div>
           <div className={styles.check}>
             <Checkbox
-              checked={eff.lineCommentAddSpace}
-              onChange={(v) => set({ lineCommentAddSpace: v })}
-              label="Add a space at line comment start"
+              checked={own.alignConsecutiveAssignments ?? false}
+              onChange={(v) => set({ alignConsecutiveAssignments: v })}
+              label="Align consecutive assignments"
             />
+          </div>
+          <div className={styles.note}>
+            {tx(
+              "Lines up => in multi-line arrays and = in consecutive assignments after the language server or PHP-CS-Fixer formats the file; for a selection, only its lines.",
+            )}
           </div>
         </section>
       )}
@@ -254,9 +480,8 @@ function JavaFormatter({
 }) {
   const id = useId();
   const browse = async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const path = await open({
-      multiple: false,
+    const path = await choosePath({
+      directory: false,
       title: tx("Eclipse formatter XML"),
       filters: [{ name: "XML", extensions: ["xml"] }],
     });
@@ -311,15 +536,24 @@ export async function codeStyleLanguagePages(): Promise<PageSpec[]> {
       ...SCHEME_SCOPE,
       keywords: [
         "Scheme",
-        "Tabs and Indents",
-        "Tab size",
-        "Indent",
-        "Use tab character",
-        "Hard wrap at",
-        "Comment Code",
-        "Line comment at first column",
+        ...[INDENTS, WRAPPING, ...(lang.lineComment ? [COMMENTS] : [])].flatMap(({ label, keywords }) => [
+          label,
+          ...keywords,
+        ]),
         ...(lang.id === "java"
-          ? ["Formatting profile", "IntelliJ IDEA", "Custom Eclipse formatter XML", "Eclipse formatter XML"]
+          ? [
+              "Formatting profile",
+              "IntelliJ IDEA",
+              "Custom Eclipse formatter XML",
+              "Eclipse formatter XML",
+              IMPORTS.label,
+              ...IMPORTS.keywords,
+            ]
+          : []),
+        ...(lang.id === "php" ? ["Alignment", "Align key-value pairs", "Align consecutive assignments"] : []),
+        ...(lang.id === "sql" ? [CASE.label, ...CASE.keywords, "Do not change"] : []),
+        ...(TS_STYLE_LANGUAGES.has(lang.id)
+          ? [SPACES, PUNCTUATION].flatMap(({ label, keywords }) => [label, ...keywords])
           : []),
       ],
       component: () => <LanguageStyle lang={lang} />,

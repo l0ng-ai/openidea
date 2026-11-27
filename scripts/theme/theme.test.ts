@@ -40,8 +40,8 @@ describe("theme token reference", () => {
     expect(() => themeTokenGroups(bad)).toThrow(/--b .*section comment/);
   });
 
-  it("is current in docs/plugins/themes.md (run pnpm gen:theme-docs)", () => {
-    const doc = read("docs/plugins/themes.md");
+  it("is current in plugins/themes.md (run pnpm gen:theme-docs)", () => {
+    const doc = read("plugins/themes.md");
     expect(withReference(doc, referenceMarkdown(groups))).toBe(doc);
   });
 });
@@ -80,6 +80,15 @@ describe("theme plugin template", () => {
 });
 
 describe("IntelliJ theme import", () => {
+  it("imports Python docstring tags and the OpenIDEA keyword extension", () => {
+    const scheme = convertIcls(`<scheme><attributes>
+      <option name="PY.DOC_COMMENT_TAG"><value><option name="FOREGROUND" value="123456"/></value></option>
+      <option name="OPENIDEA_pyDocstringKeyword"><value><option name="FOREGROUND" value="654321"/></value></option>
+      </attributes></scheme>`);
+    expect(scheme.tokens["--syn-python-docstring-tag"]).toBe("#123456");
+    expect(scheme.tokens["--syn-python-docstring-keyword"]).toBe("#654321");
+  });
+
   const themeJson = `{
     // comment
     "name": "Deep Sea",
@@ -150,6 +159,65 @@ describe("IntelliJ theme import", () => {
     expect(s).toBeNull();
   });
 
+  it("maps the selection foreground colour (#2446)", () => {
+    const s = convertIcls(`<scheme name="Sel" version="142" parent_scheme="Default"><colors>
+      <option name="SELECTION_BACKGROUND" value="214283" />
+      <option name="SELECTION_FOREGROUND" value="112233" />
+    </colors></scheme>`);
+    expect(s.tokens).toMatchObject({
+      "--bg-editor-selection": "#214283",
+      "--fg-editor-selection": "#112233",
+    });
+  });
+
+  it("maps the caret identifier foregrounds (#4109)", () => {
+    const s = convertIcls(`<scheme name="Caret" version="142" parent_scheme="Darcula"><attributes>
+      <option name="IDENTIFIER_UNDER_CARET_ATTRIBUTES"><value>
+        <option name="FOREGROUND" value="aa0000" /><option name="BACKGROUND" value="220000" />
+      </value></option>
+      <option name="WRITE_IDENTIFIER_UNDER_CARET_ATTRIBUTES"><value>
+        <option name="FOREGROUND" value="00aa00" /><option name="BACKGROUND" value="002200" />
+      </value></option>
+    </attributes></scheme>`);
+    expect(s.tokens).toMatchObject({
+      "--fg-identifier-under-caret": "#aa0000",
+      "--bg-identifier-under-caret": "#220000",
+      "--fg-identifier-under-caret-write": "#00aa00",
+      "--bg-identifier-under-caret-write": "#002200",
+    });
+  });
+
+  it("takes what a Darcula-based scheme leaves out from Darcula", () => {
+    const s = convertIcls(`<scheme name="Mine" version="142" parent_scheme="Darcula"><attributes>
+      <option name="DEFAULT_KEYWORD"><value><option name="FOREGROUND" value="ff8800"/></value></option>
+      <option name="DEFAULT_STRING"><value/></option>
+    </attributes></scheme>`);
+    expect(s.tokens["--bg-editor"]).toBe("#2b2b2b");
+    expect(s.tokens["--syn-keyword"]).toBe("#ff8800");
+    // An empty entry of its own replaces Darcula's colour.
+    expect(s.tokens["--syn-string"]).toBeUndefined();
+    expect(convertIcls(`<scheme name="I" parent_scheme="Islands Dark"></scheme>`).tokens).toEqual({});
+  });
+
+  it("reads .icls colours written with a leading # or 0x, as IntelliJ does (#5619)", () => {
+    // One Dark writes most of its values as `#rrggbb`: its class names became the base theme's.
+    const s = convertIcls(`<scheme name="One" parent_scheme="Darcula"><colors>
+      <option name="CARET_COLOR" value="#528bff"/>
+      <option name="LINE_NUMBERS_COLOR" value="0x495162"/>
+      </colors><attributes>
+      <option name="DEFAULT_CLASS_NAME"><value><option name="FOREGROUND" value="#E5C07B"/></value></option>
+      <option name="DEFAULT_KEYWORD"><value><option name="FOREGROUND" value="c678dd"/></value></option>
+      <option name="DEFAULT_STRING"><value><option name="FOREGROUND" value="#98c37980"/></value></option>
+      </attributes></scheme>`);
+    expect(s.tokens).toMatchObject({
+      "--caret": "#528bff",
+      "--fg-line-number": "#495162",
+      "--syn-type": "#e5c07b",
+      "--syn-keyword": "#c678dd",
+      "--syn-string": "#98c37980",
+    });
+  });
+
   it("only targets tokens that exist in tokens.css", () => {
     const declared = new Set([...css.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]!));
     // Read with a fallback by the editor (no tokens.css default), still themeable.
@@ -182,6 +250,31 @@ describe("IntelliJ theme import", () => {
       "--syn-property": "#a9b7c6",
     });
     expect(s.tokens["--syn-constant"]).toBeUndefined();
+  });
+
+  it("maps doc comment tags, tag values and markup", () => {
+    const fg = (c: string) => `<value><option name="FOREGROUND" value="${c}"/></value>`;
+    const s = convertIcls(`<scheme name="Docs" parent_scheme="Darcula"><attributes>
+      <option name="DEFAULT_DOC_COMMENT_TAG">${fg("67a37c")}</option>
+      <option name="DEFAULT_DOC_COMMENT_TAG_VALUE">${fg("abadb3")}</option>
+      <option name="DEFAULT_DOC_MARKUP"><value><option name="FOREGROUND" value="68a67e"/><option name="BACKGROUND" value="e2ffe2"/></value></option>
+      </attributes></scheme>`);
+    expect(s.tokens).toMatchObject({
+      "--syn-doc-comment-tag": "#67a37c",
+      "--syn-doc-comment-tag-value": "#abadb3",
+      "--syn-doc-markup": "#68a67e",
+      "--syn-doc-markup-bg": "#e2ffe2",
+    });
+  });
+
+  it("keeps the search result colour apart from the text search result and the lists' search match", () => {
+    const bg = (c: string) => `<value><option name="BACKGROUND" value="${c}"/></value>`;
+    const s = convertIcls(`<scheme name="Search" parent_scheme="Darcula"><attributes>
+      <option name="SEARCH_RESULT_ATTRIBUTES">${bg("2d543f")}</option>
+      <option name="TEXT_SEARCH_RESULT_ATTRIBUTES">${bg("114957")}</option>
+      </attributes></scheme>`);
+    expect(s.tokens).toMatchObject({ "--bg-search-result": "#2d543f", "--bg-text-search-result": "#114957" });
+    expect(s.tokens).not.toHaveProperty("--bg-search-match");
   });
 
   it("produces an installable package", () => {
@@ -220,11 +313,6 @@ describe("IntelliJ theme import", () => {
       ],
     });
     expect(pkg.id).toBe("intellij.com-example-deepsea");
-    expect(pkg.themes).toEqual([
-      { id: "deep-sea", sourceId: "deep-sea-id", name: "Deep Sea" },
-      { id: "deep-sea-2", sourceId: "copy-id", name: "Deep Sea" },
-      { id: "shallow", sourceId: "light-id", name: "Shallow" },
-    ]);
     expect(pkg.files.map((f) => f.path)).toEqual([
       "plugin.toml",
       "themes/deep-sea.theme.json",

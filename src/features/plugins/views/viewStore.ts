@@ -4,8 +4,23 @@
  * sends to the script of an `html` body (`viewMessage`).
  */
 import { create } from "zustand";
+import { useProject } from "@/platform/project";
+import { projectLocation, useRemote } from "@/platform/remote";
+
+export function currentViewLocation(): string | null {
+  return projectLocation(useProject.getState().project?.root);
+}
+
+export function useViewLocation(): string | null {
+  const root = useProject((s) => s.project?.root);
+  useRemote((s) => s.session);
+  return projectLocation(root);
+}
 
 export const viewKey = (pluginId: string, view: string) => `${pluginId}/${view}`;
+
+/** The tool window a plugin's declared view is shown in. */
+export const pluginToolWindowId = (pluginId: string, view: string) => `plugin.${pluginId}.${view}`;
 
 export const useViewRevisions = create<{ revisions: Record<string, number> }>(() => ({ revisions: {} }));
 

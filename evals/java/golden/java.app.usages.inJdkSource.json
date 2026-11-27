@@ -1,0 +1,13 @@
+{
+  "tools": {
+    "jdtls": "1.63.0-202610191322",
+    "java": "21.0.13.0.2 (Homebrew)"
+  },
+  "groups": {
+    "usages": [
+      "src/main/java/com/example/orders/OrderBook.java:20",
+      "src/main/java/com/example/orders/OrderBook.java:24",
+      "src/main/java/com/example/orders/OrderBook.java:29"
+    ]
+  }
+}

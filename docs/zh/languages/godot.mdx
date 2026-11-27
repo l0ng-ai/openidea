@@ -1,0 +1,84 @@
+---
+title: "Godot"
+description: "借助 Godot 编辑器的语言服务器编辑 GDScript，运行和调试场景，并从 Godot 中用 OpenIDEA 打开脚本。"
+---
+
+OpenIDEA 支持 Godot 4 项目（含 `project.godot` 文件的文件夹）。GDScript 的代码智能和调试都来自 Godot 编辑器本身：语言服务器和调试适配器运行在编辑器内部，OpenIDEA 只负责连接它们。除了 Godot，不需要另外安装任何东西。
+
+## 支持的文件
+
+| 文件                                                                                              | 语言           | 提供的功能                                                                                             |
+| ------------------------------------------------------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------ |
+| `.gd`                                                                                             | GDScript       | 语法高亮、结构视图和折叠（tree-sitter），来自 Godot 的代码智能，断点。与 Godot 一致，默认用 Tab 缩进。 |
+| `.gdshader`、`.gdshaderinc`                                                                       | Godot Shader   | 语法高亮（类 C）和注释。没有语言服务器。                                                               |
+| `.tscn`、`.tres`、`.godot`、`.import`、`export_presets.cfg`、`override.cfg`、`extension_list.cfg` | Godot Resource | INI 风格的语法高亮。场景文件（`.tscn`）可以直接运行。                                                  |
+
+Godot .NET 项目中的 C# 脚本和普通 C# 代码一样处理，见 [C# 与 .NET](/zh/languages/csharp)。
+
+## 查找 Godot 可执行文件
+
+OpenIDEA 按以下顺序查找 Godot：
+
+1. 在 **设置 › 语言和框架 › 语言服务器** 中为 **godot** 条目选择的可执行文件（保存在设置的 `tools.godot` 中）。
+2. 搜索路径中名为 `godot`、`godot4`、`godot-4`、`Godot`、`godot-mono`、`godot4-mono` 的程序。
+3. 常见安装位置：
+   - macOS：`/Applications` 或 `~/Applications` 下的 `Godot.app`、`Godot_mono.app`、`Godot 4.app`，以及 Steam。
+   - Windows：Scoop、WinGet、`%LOCALAPPDATA%\Programs\Godot`、`Program Files\Godot`，以及 Steam。
+   - Linux：Flatpak（`org.godotengine.Godot`）、Snap（`godot-4`、`godot`），以及 Steam。
+
+Godot 装在其他位置时，在上述设置页中指定可执行文件即可。找不到 Godot 时，运行 Godot 配置会报错 “Godot was not found”。
+
+## 代码智能
+
+GDScript 语言服务器位于 Godot 编辑器内部，通过 TCP 提供 LSP。打开 `.gd` 文件时，OpenIDEA 会：
+
+1. 如果 `127.0.0.1:6005`（Godot 默认的语言服务器端口）上有编辑器在监听，就直接连接；否则
+2. 为项目启动一个无界面编辑器（`godot --headless --editor --path <project> --lsp-port <空闲端口>`），等它就绪后再连接。第一次启动需要导入项目，可能比较慢，OpenIDEA 最多等待两分钟。
+
+你自己打开的 Godot 编辑器不会被 OpenIDEA 关闭。想让 Godot 编辑器和 IDE 用同一个语言服务器，先在 Godot 中打开项目，再用 OpenIDEA 打开。如果你在 Godot 中改过语言服务器端口（**Editor Settings › Network › Language Server**），IDE 找不到正在运行的编辑器，会自己启动一个无界面编辑器。
+
+具体能用哪些功能取决于 Godot 的语言服务器，包括补全、悬停提示、跳转到定义、符号和诊断等。服务器不支持的功能（例如内嵌提示）就不会出现。
+
+## 运行
+
+项目根目录或子目录中的每个 `project.godot` 都会生成一个 **Godot Project** 运行配置（位于子目录时名为 `Godot Project (<folder>)`）。它在该目录下执行 `godot --path .`，启动项目的主场景。
+
+要单独运行某个场景，可以在项目视图中右键 `.tscn` 文件运行它，或打开该文件后使用 **运行 › 运行上下文配置**（`⌃⇧R` / `Ctrl+Shift+F10`），实际执行的是 `godot --path . res://<scene>`。
+
+也可以在 **运行 › 编辑配置…** 中添加 **Godot** 类型的配置，字段如下：
+
+| 字段         | 含义                                                 |
+| ------------ | ---------------------------------------------------- |
+| **项目目录** | 包含 `project.godot` 的目录。                        |
+| **场景**     | 例如 `res://levels/level_1.tscn`。留空则运行主场景。 |
+| **实参**     | 额外的 Godot 命令行选项，例如 `--debug-collisions`。 |
+
+## 调试
+
+GDScript 调试通过 Godot 编辑器的调试适配器（基于 TCP 的 DAP）进行。
+
+- **调试 Godot 配置。** OpenIDEA 先连接 `127.0.0.1:6006`（Godot 默认的调试适配器端口）上的编辑器；没有的话，就为项目在空闲端口上启动一个无界面编辑器。随后由编辑器按它自己的运行设置播放场景。以这种方式启动的无界面编辑器会随调试会话一起结束。
+- **附加到 Godot。** 这种配置类型只用于调试，默认主机为 `localhost`、端口为 `6006`，用来调试 Godot 编辑器正在运行的游戏。先在 Godot 编辑器中打开项目并播放场景（F5 / F6），再启动该配置。端口在 Godot 的 **Editor Settings › Network › Debug Adapter** 中设置。
+
+断点、调用栈、变量和单步执行的用法与其他语言相同，见[调试](/zh/guide/debugging)。
+
+<Note>
+  Godot 按真实路径匹配脚本。OpenIDEA 在发送断点前会解析项目路径中的符号链接，因此通过符号链接目录（例如 macOS 上的
+  `/tmp`）打开的项目也能正常命中断点。
+</Note>
+
+## 从 Godot 中打开脚本
+
+要让 Godot 用 OpenIDEA 打开脚本，在 Godot 的外部编辑器设置（**Editor Settings › Text Editor › External**）中勾选 **Use External Editor**，把 **Exec Path** 设为 OpenIDEA 的可执行文件（macOS 上是 `OpenIDEA.app/Contents/MacOS/` 中的可执行文件），并把 **Exec Flags** 设为：
+
+```text
+{project} --file {file} --line {line} --column {col}
+```
+
+之后 OpenIDEA 会打开项目，并把光标定位到对应位置。参数含义与 Unity 相同，详见 [Unity](/zh/languages/unity)。
+
+## 限制
+
+- GDScript 代码智能需要 Godot 4 编辑器，可以是正在运行的，也可以由 IDE 以无界面方式启动。没有 Godot 就没有 GDScript 分析。
+- Godot Shader 和资源文件只有语法高亮。
+- 调试只能通过编辑器的调试适配器进行，不支持调试导出后的游戏。

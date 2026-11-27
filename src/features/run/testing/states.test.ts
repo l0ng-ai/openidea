@@ -58,6 +58,19 @@ describe("test states for the run gutter", () => {
     expect(testState({ path: ["QTests", "test_a"], file: "/work/app/città/tests.py" })).toBe("passed");
   });
 
+  it("matches Zig results rooted at the module stem of the file", () => {
+    run([
+      { type: "result", path: ["tally", "adds"], status: "passed" },
+      { type: "result", path: ["tally", "subs"], status: "failed" },
+      { type: "result", path: ["other", "adds"], status: "failed" },
+    ]);
+    expect(testState({ path: ["adds"], file: "src/tally.zig" })).toBe("passed");
+    expect(testState({ path: ["subs"], file: "/work/app/src/tally.zig" })).toBe("failed");
+    // Same-named tests of another module don't bleed over.
+    expect(testState({ path: ["adds"], file: "src/other.zig" })).toBe("failed");
+    expect(testState({ path: ["adds"], file: "src/tally/main.zig" })).toBeNull();
+  });
+
   it("newer runs win and listeners hear about changes", () => {
     const listener = vi.fn();
     const off = onTestStatesChanged(listener);

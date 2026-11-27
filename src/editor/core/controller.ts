@@ -3,41 +3,65 @@
  * status, navigation history, autosave. The React views and actions talk to
  * this singleton; other features use the EditorService and editor/api.
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { pasteEditorClipboard } from "./cm/clipboard";
+import { saveOnBlur } from "./saveOnBlur";
+import type { ReactNode } from "react";
 import { EditorSelection } from "@codemirror/state";
 import { create } from "zustand";
 import { setContext } from "@/platform/context";
-import { shortcutLabel } from "@/platform/keymap";
+import { formatBinding, hostBinding, shortcutLabel } from "@/platform/keymap";
 import { isSameOrInside } from "@/platform/paths";
-import { basename, useProject } from "@/platform/project";
+import { basename, dirname, relativePath, useProject } from "@/platform/project";
 import { editorPrefs } from "@/platform/editorSettings";
 import {
   _emitEditorEvent,
+  _setEditorSwitching,
   _provideNavigationHistory,
   _provideOpenEditorPaths,
   _setActiveEditor,
+  focusedCellEditor,
+  shownLine,
   type NavigationLocation,
 } from "@/editor/api";
 import {
+  clearProjectViewLead,
   getFileDecoration,
+  gitMenuItems,
   menuGroupItems,
   notifications,
+  openFileExternally,
+  opensExternally,
   resolveFileEditor,
+  textEditorWrapperFor,
+  uriOpenerFor,
   useContributions,
+  useEditorDocuments,
   useStandaloneEditor,
+  useTextEditorWrappers,
   type EditorCloseSession,
   type EditorInput,
   type OpenOptions,
   type FileEditorResolution,
   type OpenEditorTab,
+  type TextEditorWrapperContribution,
 } from "@/workbench/contributions";
 import { useDistractionFree } from "@/workbench/distractionFree";
-import { ask } from "@/workbench/messages";
-import { t } from "@/platform/i18n";
-import { call, commands } from "@/platform/ipc";
-import { isRemoteWindow } from "@/platform/remote";
+import { restoreMaximizedToolWindow } from "@/workbench/toolwindows/store";
+import { ask, confirm } from "@/workbench/messages";
+import { t, tx } from "@/platform/i18n";
+import { call, commands, isErrorKind, isTauri } from "@/platform/ipc";
+import { openLightweightEditor } from "./openLightweightEditor";
+import { windowBackgroundHex } from "@/workbench/theme";
+import { hoverActionsAt } from "@/platform/hoverActions";
+import { chooseSavePath } from "@/platform/choosePath";
+import type { DialogFilter as SaveDialogFilter } from "@/platform/dialog";
+import { isUntitledUri, untitledTitle } from "@/platform/virtualDocs";
+import { isRemoteWindow, projectLocation } from "@/platform/remote";
+import { auxiliaryWindow } from "@/platform/auxWindow";
 import { fileIconName, showContextMenu, type MenuItem } from "@/ui";
-import { usePlatform } from "@/platform/platformInfo";
+import { FILE_COLOR_NAMES, ownFileColor } from "@/platform/fileColors";
+import { canOpenWithSystemApp, canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
 import {
   activateTab,
   changeSplitOrientation,
@@ -52,6 +76,7 @@ import {
   enforceTabLimit,
   findTab,
   initialTabsState,
+  mergeSessionTabs,
   moveTab,
   moveTabToNewSplit,
   neighbourPane,
@@ -82,6 +107,7 @@ import {
   documentDirty,
   documentLifecycle,
   failures,
+  inputBusy,
   inputDirty,
   type CustomDocument,
 } from "./model/customDocuments";
@@ -94,6 +120,7 @@ import { isClassFile } from "@/platform/classFiles";
 import { isVirtualUri, virtualDocument } from "@/platform/virtualDocs";
 import type { VirtualDocument } from "@/platform/ipc";
 import type { Scheduler } from "./sync/DocSync";
+import { selectedLineContext, selectedLines } from "./selectedLines";
 
 export const fileKey = (path: string) => `file:${path}`;
 export const fileInput = (path: string): EditorInput => ({ kind: "file", key: fileKey(path), path });
@@ -119,9 +146,16 @@ export const virtualInput = (
   data: { title: vd.title, description: vd.description, decompiled: vd.decompiled } satisfies VirtualInputData,
 });
 
-/** Inputs shown in the text editor: files and virtual documents. */
+/**
+ * An editable new-file buffer (File › New File). Its `path` is the minted
+ * `untitled:` URI, which identifies its document model; Save asks for a real
+ * path and turns the tab into a file one.
+ */
+export const untitledInput = (uri: string): EditorInput => ({ kind: "untitled", key: uri, path: uri });
+
+/** Inputs shown in the text editor: files, virtual documents and untitled buffers. */
 export function isTextInput(input: EditorInput): input is EditorInput & { path: string } {
-  return (input.kind === "file" || input.kind === "virtual") && !!input.path;
+  return (input.kind === "file" || input.kind === "virtual" || input.kind === "untitled") && !!input.path;
 }
 
 export const useTabs = create<TabsState>(() => initialTabsState());
@@ -146,6 +180,29 @@ export const useEditorStatus = create<{ status: EditorStatus | null }>(() => ({ 
 export const useTabErrors = create<Record<string, string>>(() => ({}));
 /** Per-tab find bar state (open / replace mode), like IDEA's per-editor search session. */
 export const useFindBars = create<Record<string, { replace: boolean; seq: number } | undefined>>(() => ({}));
+/** Text file entry shown first in the save dialog's type dropdown. */
+const TXT_FILTER = { name: "Text files (*.txt)", extensions: ["txt"] };
+
+/**
+ * The save dialog's type dropdown: every registered language (its name and
+ * extensions), plus plain text and an all-files escape hatch. Picking a type
+ * makes the OS append that extension; the backend re-detects from the path.
+ */
+let cachedLanguageFilters: SaveDialogFilter[] | null = null;
+async function languageFilters(): Promise<SaveDialogFilter[]> {
+  cachedLanguageFilters ??= await commands
+    .languages()
+    .catch(() => [] as { name: string; extensions: string[] }[])
+    .then((languages) => [
+      TXT_FILTER,
+      ...languages
+        .map((l) => ({ name: `${l.name} (${l.extensions.map((e) => `*.${e}`).join(", ")})`, extensions: l.extensions }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+      { name: "All files (*.*)", extensions: ["*"] },
+    ]);
+  return cachedLanguageFilters ?? [];
+}
+
 export const useGotoLine = create<{ open: boolean }>(() => ({ open: false }));
 
 /** Paths of open file tabs, all panes in visual order, unique. */
@@ -163,11 +220,20 @@ export function openFilePaths(s: TabsState): string[] {
 
 /** Editor Tabs › Sort tabs alphabetically: by file name. */
 function tabSortKey(input: EditorInput): string {
-  return basename(input.path ?? input.key);
+  return basename(untitledTitle(input.path ?? input.key));
 }
 
 function isTextTab(tab: Tab | null | undefined): tab is Tab & { input: { path: string } } {
   return !!tab && isTextInput(tab.input);
+}
+
+/** Keys of untitled buffers whose last tab the transition `before` → `after` closes. */
+function closedUntitledKeys(before: TabsState, after: TabsState): string[] {
+  const open = openKeys(after);
+  const out = new Set<string>();
+  for (const pane of Object.values(before.panes))
+    for (const tab of pane.tabs) if (tab.input.kind === "untitled" && !open.has(tab.input.key)) out.add(tab.input.key);
+  return [...out];
 }
 
 type EditorKinds = ReturnType<typeof useContributions.getState>["editorKinds"];
@@ -183,6 +249,7 @@ interface OpenRequest {
 /** Tab title of an editor input: the file name, or what its editor kind calls it. */
 export function tabTitle(input: EditorInput, kinds: EditorKinds): string {
   if (input.kind === "file") return basename(input.path ?? input.key);
+  if (input.kind === "untitled") return untitledTitle(input.path ?? input.key);
   if (input.kind === "virtual")
     return (input.data as VirtualInputData | undefined)?.title ?? basename(input.path ?? input.key);
   const kind = kinds.get(input.kind);
@@ -195,6 +262,7 @@ export function tabTitle(input: EditorInput, kinds: EditorKinds): string {
 
 export function tabIcon(input: EditorInput, kinds: EditorKinds): string {
   if (input.kind === "file") return fileIconName(basename(input.path ?? ""), input.path ?? null);
+  if (input.kind === "untitled") return fileIconName(untitledTitle(input.path ?? ""));
   if (input.kind === "virtual") return fileIconName(tabTitle(input, kinds));
   const kind = kinds.get(input.kind);
   try {
@@ -202,6 +270,24 @@ export function tabIcon(input: EditorInput, kinds: EditorKinds): string {
   } catch {
     return "file";
   }
+}
+
+/** A kind's trailing marker (status dot …); `null` when it has none. */
+export function tabTrailing(input: EditorInput, kinds: EditorKinds): ReactNode {
+  const kind = kinds.get(input.kind);
+  try {
+    return kind?.trailing?.(input) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Unsaved changes or a VCS status: what Close Unmodified Tabs and the tab limit's policy keep. */
+function tabModified(tab: Tab): boolean {
+  return (
+    (inputDirty(tab.input, useContributions.getState().editorKinds) ?? false) ||
+    !!(tab.input.path && (useDocMeta.getState()[tab.input.path]?.dirty || getFileDecoration(tab.input.path)?.color))
+  );
 }
 
 export class EditorController implements SlotHost {
@@ -216,6 +302,8 @@ export class EditorController implements SlotHost {
   private disposers: Array<() => void> = [];
   /** Project root (or {@link LIGHT_EDIT_SESSION}) whose editor session is being tracked (null while switching). */
   private sessionRoot: string | null = null;
+  /** Session keys a window close dropped. Restoring one starts empty, and saves stay empty until then. */
+  private forgottenSessions = new Set<string>();
   private sessionTimer: ReturnType<typeof setTimeout> | undefined;
   /** Restored caret / scroll per path, applied when the file's first slot is created. */
   private restoredViews = new Map<string, FileViewState>();
@@ -236,7 +324,10 @@ export class EditorController implements SlotHost {
   private openSequence = 0;
   private selectionRequests = new Map<string, number>();
   private activationGeneration = 0;
+  private navGeneration = 0;
   private admitting = false;
+  /** Tabs restored from a saved session: not a user's activation, so a pending open still activates its tab. */
+  private restoring = false;
   private closeRequests = 0;
   private projectTransition: Promise<void> = Promise.resolve();
 
@@ -246,6 +337,7 @@ export class EditorController implements SlotHost {
       {
         settings: () => useProject.getState().settings ?? useProject.getState().project?.settings,
         notify: (n) => notifications().notify(n),
+        saveAs: (model) => this.saveUntitled(model),
       },
       scheduler,
     );
@@ -259,16 +351,25 @@ export class EditorController implements SlotHost {
     this.disposers.push(
       useTabs.subscribe((s, previous) => {
         const open = openKeys(s);
+        const live = new Set<string>();
+        for (const pane of Object.values(s.panes)) for (const tab of pane.tabs) live.add(tab.id);
         const closed = new Map<string, EditorInput>();
+        const closedTabs: Tab[] = [];
         for (const pane of Object.values(previous.panes))
-          for (const tab of pane.tabs) if (!open.has(tab.input.key)) closed.set(tab.input.key, tab.input);
-        if (!this.replacingProject)
-          for (const input of closed.values())
-            useContributions.getState().editorKinds.get(input.kind)?.onClose?.(input);
+          for (const tab of pane.tabs) {
+            if (!live.has(tab.id)) closedTabs.push(tab);
+            if (!open.has(tab.input.key)) closed.set(tab.input.key, tab.input);
+          }
+        if (!this.replacingProject) {
+          const kinds = useContributions.getState().editorKinds;
+          for (const tab of closedTabs) kinds.get(tab.input.kind)?.onTabClose?.(tab.id, tab.input);
+          for (const input of closed.values()) kinds.get(input.kind)?.onClose?.(input);
+        }
         const prev = prevTabs;
         prevTabs = s;
         if (
           !this.admitting &&
+          !this.restoring &&
           (s.activePane !== prev.activePane || s.panes[s.activePane]?.active !== prev.panes[prev.activePane]?.active)
         )
           ++this.activationGeneration;
@@ -280,10 +381,21 @@ export class EditorController implements SlotHost {
           .find((tab) => kinds.get(tab.input.kind)?.standalone);
         useStandaloneEditor.setState({ title: standalone ? tabTitle(standalone.input, kinds) : null });
       }),
+      useEditorDocuments.subscribe(() => {
+        const current = useTabs.getState();
+        const kinds = useContributions.getState().editorKinds;
+        let next = current;
+        for (const [paneId, pane] of Object.entries(current.panes)) {
+          for (const tab of pane.tabs) {
+            if (tab.preview && inputDirty(tab.input, kinds)) next = promoteTab(next, paneId, tab.id);
+          }
+        }
+        if (next !== current) useTabs.setState(next, true);
+      }),
     );
     tabOptions.activateOnClose = editorPrefs().tabs.activateOnClose as typeof tabOptions.activateOnClose;
     let prevSettings = useProject.getState().settings;
-    let prevRoot = useProject.getState().project?.root ?? null;
+    let prevScope = projectLocation(useProject.getState().project?.root);
     let prevLight = useProject.getState().lightEdit;
     this.disposers.push(
       useProject.subscribe((s, previous) => {
@@ -293,32 +405,56 @@ export class EditorController implements SlotHost {
             .activateOnClose as typeof tabOptions.activateOnClose;
           this.manager.applySettings();
         }
-        const root = s.project?.root ?? null;
+        const scope = projectLocation(s.project?.root);
         // Entering or leaving LightEdit replaces the backend's documents too.
-        if (root !== prevRoot || s.lightEdit !== prevLight || (s.opening && s.project !== previous.project)) {
-          prevRoot = root;
+        if (scope !== prevScope || s.lightEdit !== prevLight || (s.opening && s.project !== previous.project)) {
+          prevScope = scope;
           prevLight = s.lightEdit;
           this.saveSession();
-          if (
-            root &&
-            previous.project &&
-            !previous.project.workspace &&
-            s.project?.workspace?.projects[0] === previous.project.root
-          ) {
-            const session = loadSession(previous.project.root);
-            if (session) storeSession(root, session);
-          }
           this.sessionRoot = null;
           const generation = ++this.projectGeneration;
           const documents = customDocuments(useTabs.getState(), useContributions.getState().editorKinds);
+          // Untitled buffers belong to the window, not a project: their tabs
+          // survive the switch (the backend carries them into the new
+          // registry) and their slots rebuild against the carried documents.
+          // Closing to Welcome drops them; the leave guard already asked about them.
+          const carriedUntitled: Tab[] = [];
+          let carriedActive: string | null = null;
+          const cs = useTabs.getState();
+          for (const pane of scope || s.lightEdit ? Object.values(cs.panes) : []) {
+            for (const tab of pane.tabs) {
+              if (isUntitledUri(tab.input.path ?? "")) {
+                carriedUntitled.push(tab);
+                if (pane.active === tab.id) carriedActive = tab.id;
+              }
+            }
+          }
           // The guard decided already. Disposal must never prompt or autosave
           // custom documents after the backend has replaced their project.
           this.replacingProject = true;
+          _setEditorSwitching(true);
           try {
             useTabs.setState(initialTabsState(), true);
+            if (carriedUntitled.length) {
+              let st = useTabs.getState();
+              const firstPane = paneIds(st)[0]!;
+              for (const tab of carriedUntitled) {
+                st = openTab(st, firstPane, tab.input, { activate: false }).state;
+              }
+              if (carriedActive) {
+                const carriedInPane = st.panes[firstPane]!.tabs.find(
+                  (t) => t.input.key === carriedUntitled.find((c) => c.id === carriedActive)!.input.key,
+                );
+                if (carriedInPane) st = activateTab(st, firstPane, carriedInPane.id);
+              }
+              useTabs.setState(st, true);
+            }
           } finally {
             this.replacingProject = false;
+            _setEditorSwitching(false);
           }
+          for (const tab of carriedUntitled) void this.ensureSlot(tab.id);
+          this.manager.releaseProjectDocuments();
           this.closeSession = null;
           this.closeCommitted = false;
           this.preparedDocuments.clear();
@@ -330,8 +466,8 @@ export class EditorController implements SlotHost {
             .catch((e) => this.documentError(e))
             .then(() => {
               if (generation !== this.projectGeneration) return;
-              if (root) this.restoreSession(root);
-              else if (s.lightEdit) this.restoreSession(LIGHT_EDIT_SESSION);
+              if (scope) return this.restoreSession(scope);
+              else if (s.lightEdit) return this.restoreSession(LIGHT_EDIT_SESSION);
             });
         } else if (previous.opening && !s.opening && this.closeCommitted) {
           // A failed project open returns to the same project.
@@ -341,15 +477,24 @@ export class EditorController implements SlotHost {
     );
     // Gutter, centred column and sticky lines follow Distraction Free Mode.
     this.disposers.push(useDistractionFree.subscribe(() => this.manager.applySettings()));
-    if (prevRoot) this.restoreSession(prevRoot);
+    this.disposers.push(
+      useTextEditorWrappers.subscribe(({ wrappers }) => {
+        this.upgradeWrappedImageTabs(wrappers);
+      }),
+    );
+    if (prevScope) this.projectTransition = this.restoreSession(prevScope);
     if (this.manager.backend.onFsChanged)
       this.disposers.push(this.manager.backend.onFsChanged((e) => this.onFilesRemoved(e.removed)));
+    if (this.manager.backend.onDiskConflict)
+      this.disposers.push(this.manager.backend.onDiskConflict((e) => this.onDiskConflict(e.path)));
     const onWindowBlur = () => {
       if (this.autoSave() && !this.closeSession) {
         void this.manager.saveAll("auto");
         void this.saveCustomDocuments(true).catch((e) => this.documentError(e));
       }
     };
+    if (this.manager.backend.onApplicationDeactivated)
+      this.disposers.push(this.manager.backend.onApplicationDeactivated(onWindowBlur));
     const onPageHide = () => this.saveSession();
     if (typeof window !== "undefined") {
       if (this.manager.backend.syncFromDisk)
@@ -400,6 +545,7 @@ export class EditorController implements SlotHost {
     const live = new Set<string>();
     for (const p of Object.values(next.panes)) for (const t of p.tabs) live.add(t.id);
     for (const id of this.selectionRequests.keys()) if (!live.has(id)) this.selectionRequests.delete(id);
+
     for (const [id, slot] of this.slots) {
       if (!live.has(id)) {
         this.slots.delete(id);
@@ -440,6 +586,7 @@ export class EditorController implements SlotHost {
 
     // Active editor follows the active pane's active tab.
     const tab = this.activeTabOf(next);
+    if (prev.activePane !== next.activePane || this.activeTabOf(prev)?.id !== tab?.id) clearProjectViewLead();
     const slot = tab && isTextTab(tab) ? (this.slots.get(tab.id) ?? null) : null;
     if (slot !== this.activeSlot) this.setActiveSlot(slot, tab);
     this.publishContext();
@@ -448,6 +595,35 @@ export class EditorController implements SlotHost {
   }
 
   // --- session (open tabs, splits, carets per project) ---------------------------
+
+  private upgradeWrappedImageTabs(wrappers: ReadonlyMap<string, TextEditorWrapperContribution>) {
+    const s = useTabs.getState();
+    let changed = false;
+    const panes: TabsState["panes"] = {};
+    const toEnsure: string[] = [];
+    for (const [paneId, pane] of Object.entries(s.panes)) {
+      let paneChanged = false;
+      const tabs = pane.tabs.map((tab) => {
+        const path = tab.input.path;
+        if (
+          tab.input.kind === "image" &&
+          path &&
+          textEditorWrapperFor(wrappers, path) &&
+          !pane.tabs.some((other) => other.id !== tab.id && other.input.key === fileKey(path))
+        ) {
+          paneChanged = true;
+          changed = true;
+          if (pane.active === tab.id) toEnsure.push(tab.id);
+          return { ...tab, input: fileInput(path) };
+        }
+        return tab;
+      });
+      panes[paneId] = paneChanged ? { ...pane, tabs } : pane;
+    }
+    if (!changed) return;
+    useTabs.setState({ ...s, panes }, true);
+    for (const tabId of toEnsure) void this.ensureSlot(tabId);
+  }
 
   private scheduleSessionSave() {
     if (!this.sessionRoot) return;
@@ -460,10 +636,16 @@ export class EditorController implements SlotHost {
     clearTimeout(this.sessionTimer);
     const root = this.sessionRoot;
     if (!root) return;
+    if (this.forgottenSessions.has(root)) {
+      storeSession(root, null);
+      return;
+    }
     const files: Record<string, FileViewState> = Object.fromEntries(this.restoredViews);
     for (const slot of this.slots.values()) {
       if (slot.disposed) continue;
       const path = slot.model.path;
+      // Untitled buffers have no file to restore a caret for (and are not saved as tabs).
+      if (isUntitledUri(path)) continue;
       // The last focused slot of a document wins over other split copies.
       if (files[path] && slot.model.lastFocused !== slot && !this.restoredViews.has(path)) continue;
       files[path] = slot.viewState();
@@ -475,19 +657,70 @@ export class EditorController implements SlotHost {
     );
   }
 
+  /** Drops this window's saved tabs. Later saves keep them dropped until the close is undone. */
+  forgetSavedTabs() {
+    const root = this.sessionRoot ?? this.openSessionKey();
+    if (!root) return;
+    this.forgottenSessions.add(root);
+    if (this.sessionRoot === root) this.saveSession();
+    else storeSession(root, null);
+  }
+
+  /** Writes the open tabs again after {@link forgetSavedTabs}, when the close did not happen. */
+  keepSavedTabs() {
+    const root = this.sessionRoot;
+    if (!root || !this.forgottenSessions.delete(root)) return;
+    this.saveSession();
+  }
+
+  private openSessionKey(): string | null {
+    const s = useProject.getState();
+    const scope = projectLocation(s.project?.root);
+    if (scope) return scope;
+    if (s.lightEdit) return LIGHT_EDIT_SESSION;
+    return null;
+  }
+
   /** Reopens the tabs, splits and carets saved for `root` (after the project opened). */
-  restoreSession(root: string) {
+  async restoreSession(root: string) {
+    // The project window owns the saved layout; a lightweight window shows what it was opened for.
+    if (auxiliaryWindow()) return;
     this.sessionRoot = root;
+    // A window close dropped this session: the next open starts from the tabs opened now.
+    if (this.forgottenSessions.delete(root)) return;
     const session = loadSession(root);
     if (!session) return;
     const state = restoreTabsState(session, fileKey);
     const kinds = useContributions.getState().editorKinds;
     for (const pane of Object.values(state.panes))
-      pane.tabs = pane.tabs.map((tab) => (documentLifecycle(tab.input, kinds) ? { ...tab, preview: false } : tab));
-    this.restoredViews = new Map(Object.entries(session.files));
+      pane.tabs = pane.tabs.map((tab) => {
+        const lifecycle = documentLifecycle(tab.input, kinds);
+        return lifecycle && !lifecycle.allowPreview ? { ...tab, preview: false } : tab;
+      });
+    const current = useTabs.getState();
+    const liveKeys = openKeys(current);
+    this.restoredViews = new Map(Object.entries(session.files).filter(([path]) => !liveKeys.has(fileKey(path))));
     this.restoredTabs = new Set(Object.values(state.panes).flatMap((p) => p.tabs.map((t) => t.id)));
-    useTabs.setState(state, true);
-    for (const pane of Object.values(state.panes)) if (pane.active) void this.ensureSlot(pane.active);
+    this.restoring = true;
+    try {
+      // A restore landing after tabs were already opened (e.g. a launched file
+      // admitted while the transition was still in flight) must not wipe them.
+      useTabs.setState(mergeSessionTabs(current, state), true);
+    } finally {
+      this.restoring = false;
+    }
+    if (liveKeys.size)
+      // oxlint-disable-next-line no-await-in-loop -- enforcing a limit mutates tabs and can evict them; each pane must see the previous pane's result
+      for (const paneId of paneIds(useTabs.getState())) await this.enforcePaneTabLimit(paneId, undefined, liveKeys);
+    const next = useTabs.getState();
+    for (const pane of Object.values(next.panes)) if (pane.active) void this.ensureSlot(pane.active);
+    if (liveKeys.size) {
+      const active = this.activeTabOf(next);
+      if (active) {
+        await this.ensureSlot(active.id);
+        if (this.activeTabOf()?.id === active.id) this.focus();
+      }
+    }
   }
 
   private activeTabOf(s: TabsState = useTabs.getState()): Tab | null {
@@ -531,7 +764,7 @@ export class EditorController implements SlotHost {
         return this.slots.get(tabId) ?? this.createSlot(tabId, m, init);
       })
       .catch((e: unknown) => {
-        if (this.restoredTabs.has(tabId) && (e as { kind?: string } | null)?.kind === "notFound") {
+        if (this.restoredTabs.has(tabId) && isErrorKind(e, "notFound")) {
           // A file from the saved session no longer exists: drop its tab quietly.
           this.restoredTabs.delete(tabId);
           this.restoredViews.delete(path);
@@ -586,7 +819,11 @@ export class EditorController implements SlotHost {
         path: slot?.model.path ?? nonTextTab?.input.path ?? null,
         doc: slot?.model.doc ?? null,
       });
-      if (slot) this.recordNav(slot, true);
+      if (slot) {
+        // The editor is the context again: the navigation bar leaves the project view's node.
+        clearProjectViewLead();
+        this.recordNav(slot, true);
+      }
     }
     this.scheduleStatus();
   }
@@ -595,11 +832,15 @@ export class EditorController implements SlotHost {
 
   onFocus(slot: EditorSlot) {
     slot.model.lastFocused = slot;
+    clearProjectViewLead();
     const loc = this.locateTab(slot.tabId);
     if (loc) {
       const s = useTabs.getState();
       const next = activateTab(setActivePane(s, loc.paneId), loc.paneId, slot.tabId);
-      if (next !== s) useTabs.setState(next, true);
+      if (next !== s) {
+        this.recordLeaving();
+        useTabs.setState(next, true);
+      }
     }
     if (this.activeSlot !== slot) this.setActiveSlot(slot);
     else _setActiveEditor(slot.handle);
@@ -612,26 +853,15 @@ export class EditorController implements SlotHost {
     setContext("editorTextFocus", false);
     if (!this.autoSave()) return;
     const save = () => void slot.model.save("auto").catch(() => {});
-    if (typeof document === "undefined") return save();
-    // A popup (intentions, completion, …) belongs to the editor: saving under it would change
-    // the text (save cleanup) its items were computed for. Save once focus leaves it elsewhere.
-    setTimeout(() => {
-      if (slot.view?.hasFocus) return;
-      if (!inPopup(document.activeElement)) return save();
-      const onFocusIn = (e: FocusEvent) => {
-        if (inPopup(e.target)) return;
-        document.removeEventListener("focusin", onFocusIn);
-        if (!slot.view?.hasFocus) save();
-      };
-      document.addEventListener("focusin", onFocusIn);
-    });
+    saveOnBlur(() => !!slot.view?.hasFocus, save);
   }
 
   onSelection(slot: EditorSlot, navigatedFrom?: { line: number; col: number }) {
     if (slot !== this.activeSlot) return;
     if (navigatedFrom && this.navSuppress === 0 && !slot.disposed) {
       // The place left behind is where the caret was right before the navigation.
-      this.nav.update({ path: slot.model.path, ...navigatedFrom });
+      const paneId = this.locateTab(slot.tabId)?.paneId;
+      this.nav.update({ path: slot.model.path, ...navigatedFrom, ...(paneId ? { paneId } : {}) });
       this.recordNav(slot, true);
     }
     // The status bar reflects the view state synchronously (programmatic and
@@ -667,8 +897,24 @@ export class EditorController implements SlotHost {
     if (pos !== null && !view.state.selection.ranges.some((r) => r.from <= pos && pos <= r.to))
       view.dispatch({ selection: EditorSelection.cursor(pos) });
     const hasSel = !view.state.selection.main.empty;
+    const caretLine = view.state.doc.lineAt(view.state.selection.main.head).number - 1;
+    const { first, last } = selectedLines(view.state);
+    const hoverItems: MenuItem[] = hoverActionsAt(slot.model.doc, caretLine).map(({ plugin, action }) => ({
+      label: action.label,
+      verbatim: true,
+      icon: "run",
+      run: () =>
+        void call(
+          commands.lspExecuteCommand(slot.model.doc, {
+            title: action.tooltip ?? action.label,
+            command: `openidea.plugin-language:${plugin}:${action.command}`,
+            arguments: [JSON.stringify(action.argument)],
+          }),
+        ).catch(console.warn),
+    }));
     const items: MenuItem[] = [
       { kind: "action", action: "code.showIntentions", label: "Show Context Actions", icon: "bulb" },
+      ...(hoverItems.length ? ([{ kind: "separator" }, ...hoverItems] as MenuItem[]) : []),
       { kind: "separator" },
       // Like IDEA, Cut / Copy only with a selection.
       ...((hasSel
@@ -676,7 +922,7 @@ export class EditorController implements SlotHost {
             {
               label: "Cut",
               icon: "cut",
-              shortcut: "⌘X",
+              shortcut: formatBinding(hostBinding("Meta+X")),
               disabled: view.state.readOnly,
               run: () => {
                 view.focus();
@@ -686,7 +932,7 @@ export class EditorController implements SlotHost {
             {
               label: "Copy",
               icon: "copy",
-              shortcut: "⌘C",
+              shortcut: formatBinding(hostBinding("Meta+C")),
               run: () => {
                 view.focus();
                 document.execCommand("copy");
@@ -697,21 +943,42 @@ export class EditorController implements SlotHost {
       {
         label: "Paste",
         icon: "paste",
-        shortcut: "⌘V",
+        shortcut: formatBinding(hostBinding("Meta+V")),
         disabled: view.state.readOnly,
         run: () => void pasteEditorClipboard(view),
       },
-      { kind: "separator" },
       {
         label: "Copy / Paste Special",
         submenu: [
+          { kind: "action", action: "editor.copyPathReference" },
           { kind: "action", action: "editor.copyReference" },
+          // A virtual document's `path` is not a file to point an agent at.
+          ...(slot.model.virtual || isVirtualUri(slot.model.path)
+            ? []
+            : ([
+                {
+                  kind: "action",
+                  action: "agents.copyAgentReference",
+                  label: "Copy Agent Reference",
+                  arg: [{ path: slot.model.path, lines: { from: first, to: last } }],
+                },
+              ] as MenuItem[])),
+          // As in IDEA: only the format Rich-Text Copy doesn't already give; rich text takes one selection.
+          ...(!hasSel
+            ? []
+            : editorPrefs().general.richTextCopy
+              ? ([{ kind: "action", action: "code.copyAsPlainText" }] as MenuItem[])
+              : view.state.selection.ranges.length === 1
+                ? ([{ kind: "action", action: "code.copyAsRichText" }] as MenuItem[])
+                : []),
           { kind: "action", action: "code.pasteAsPlainText" },
           { kind: "action", action: "code.pasteFromHistory" },
         ],
       },
       { kind: "action", action: "editor.toggleColumnSelection", label: "Column Selection Mode" },
       { kind: "separator" },
+      ...(hasSel && useProject.getState().project ? [{ kind: "action" as const, action: "find.inPath" }] : []),
+      { kind: "action", action: "find.usages", label: "Find Usages" },
       // IDEA's editor popup: secondary commands live in submenus.
       {
         label: "Go To",
@@ -720,9 +987,9 @@ export class EditorController implements SlotHost {
           { kind: "action", action: "navigate.implementation", label: "Implementation(s)" },
           { kind: "action", action: "navigate.typeDeclaration", label: "Type Declaration" },
           { kind: "action", action: "navigate.superMethod", label: "Super Method" },
+          { kind: "action", action: "navigate.relatedSymbol", label: "Related Symbol…" },
           { kind: "action", action: "navigate.gotoTest", label: "Test" },
           { kind: "separator" },
-          { kind: "action", action: "find.usages", label: "Find Usages" },
           { kind: "action", action: "navigate.callHierarchy", label: "Call Hierarchy" },
           { kind: "action", action: "navigate.typeHierarchy", label: "Type Hierarchy" },
         ],
@@ -751,6 +1018,8 @@ export class EditorController implements SlotHost {
           { kind: "action", action: "refactor.extractVariable" },
           { kind: "action", action: "refactor.extractConstant" },
           { kind: "action", action: "refactor.extractMethod" },
+          { kind: "action", action: "refactor.extractInterface" },
+          { kind: "action", action: "refactor.extractTypeAlias" },
           { kind: "action", action: "refactor.inline" },
           { kind: "action", action: "refactor.pullMembersUp" },
           { kind: "action", action: "refactor.pushMembersDown" },
@@ -764,19 +1033,23 @@ export class EditorController implements SlotHost {
       ...menuGroupItems("editor", {
         paths: [slot.model.path],
         text: view.state.doc.toString(),
-        line: view.state.doc.lineAt(view.state.selection.main.head).number - 1,
+        line: caretLine,
       }),
       ...(slot.model.virtual
         ? ([
             { kind: "separator" },
-            { label: "Copy Reference", run: () => void navigator.clipboard?.writeText(slot.model.path) },
+            { label: "Copy Reference", run: () => void writeClipboardText(slot.model.path) },
           ] as MenuItem[])
         : ([
             { kind: "separator" },
-            openInMenu(slot.model.path),
+            { kind: "action", action: "editor.splitRight" },
+            openInMenu(slot.model.path, selectedLineContext(view.state)),
             { kind: "separator" },
             localHistoryMenu(slot.model.path),
-            gitMenu(slot.model.path),
+            {
+              label: "Git",
+              submenu: gitMenuItems({ paths: [slot.model.path], file: true, ignore: true, editorSelection: true }),
+            },
             { kind: "separator" },
             {
               kind: "action",
@@ -845,6 +1118,9 @@ export class EditorController implements SlotHost {
     const slot = this.activeSlot;
     const meta = slot?.model.getMeta();
     const s = useTabs.getState();
+    // A focused notebook cell editor stands in for the active text editor (the notebook
+    // publishes the editor context keys for it): republishing on tab churn keeps them on.
+    const cell = focusedCellEditor();
     setContext("editorPath", slot?.model.path ?? null);
     setContext("editorLangId", meta?.language ?? null);
     setContext("editorReadOnly", !!meta?.readOnly);
@@ -854,37 +1130,145 @@ export class EditorController implements SlotHost {
       Object.values(s.panes).some((p) => p.tabs.length > 0),
     );
     setContext("editorSplit", paneIds(s).length > 1);
-    setContext("editorTextFocus", !!slot?.view?.hasFocus);
-    setContext("textEditorActive", !!slot);
+    setContext("editorTextFocus", cell ? cell.hasFocus : !!slot?.view?.hasFocus);
+    setContext("textEditorActive", !!slot || !!cell);
   }
 
   // --- navigation history --------------------------------------------------------------
 
+  private slotLocation(slot: EditorSlot): Omit<NavigationLocation, "time"> {
+    const c = slot.caret();
+    // A view standing in for the editor (Markdown Preview only) is where the reader is.
+    const shown = shownLine(slot.model.path);
+    const loc = shown === null || shown === c.line ? { line: c.line, col: c.col } : { line: shown, col: 0 };
+    const paneId = this.locateTab(slot.tabId)?.paneId;
+    return { path: slot.model.path, ...loc, ...(paneId ? { paneId } : {}) };
+  }
+
   /** `navigation`: the caret got here by a navigation (see NavigationHistory.update). */
   private recordNav(slot: EditorSlot, navigation = false) {
     if (this.navSuppress > 0 || slot.disposed) return;
-    const c = slot.caret();
-    this.nav.update({ path: slot.model.path, line: c.line, col: c.col }, navigation);
+    this.nav.update(this.slotLocation(slot), navigation);
+  }
+
+  private recordInput(input: EditorInput, paneId: string | undefined, navigation = true) {
+    if (this.navSuppress > 0 || isTextInput(input)) return;
+    const kind = useContributions.getState().editorKinds.get(input.kind);
+    const place = kind?.navigationInput?.(input) ?? input;
+    this.nav.update(
+      { path: input.path ?? "", line: 0, col: 0, input: place, ...(paneId ? { paneId } : {}) },
+      navigation,
+    );
+  }
+
+  private recordActiveEditor(navigation = true) {
+    if (this.navSuppress > 0) return;
+    if (this.activeSlot && !this.activeSlot.disposed) {
+      this.recordNav(this.activeSlot, navigation);
+      return;
+    }
+    const input = this.activeInput();
+    if (!input || isTextInput(input)) return;
+    this.recordInput(input, useTabs.getState().activePane, navigation);
+  }
+
+  /**
+   * The place a navigation leaves: the text editor's caret, or a non-text editor tab
+   * (diff, agent chat, terminal tab…) as a whole, so Back returns to it as IDEA does.
+   */
+  private recordLeaving() {
+    if (this.navSuppress > 0) return;
+    if (this.activeSlot && !this.activeSlot.disposed) {
+      this.recordNav(this.activeSlot);
+      return;
+    }
+    const input = this.activeInput();
+    if (!input || isTextInput(input)) return;
+    this.recordInput(input, useTabs.getState().activePane, true);
+  }
+
+  /** Whether the active editor tab and split pane already show `nav.current`. */
+  private showsCurrentPlace(): boolean {
+    const cur = this.nav.current;
+    if (!cur) return false;
+    const matchesTab = cur.input
+      ? this.activeInput()?.key === cur.input.key
+      : !!this.activeSlot && !this.activeSlot.disposed && this.activeSlot.model.path === cur.path;
+    if (!matchesTab) return false;
+    // If the recorded pane still holds this tab (a split copy), require that pane to be active;
+    // if the tab moved out of that pane, showing it in its new pane still counts as the current place.
+    const preferred = this.preferredPaneFor(cur);
+    return !preferred || useTabs.getState().activePane === preferred;
+  }
+
+  private canNavigateTo(loc: NavigationLocation): boolean {
+    if (loc.input) {
+      const kind = useContributions.getState().editorKinds.get(loc.input.kind);
+      if (kind?.canNavigate) return kind.canNavigate(loc.input, !!findTab(useTabs.getState(), loc.input.key));
+    }
+    return true;
+  }
+
+  private preferredPaneFor(loc: NavigationLocation): string | undefined {
+    const id = loc.paneId;
+    if (!id) return undefined;
+    const s = useTabs.getState();
+    const pane = s.panes[id];
+    if (!pane) return undefined;
+    const matches = (t: Tab) =>
+      loc.input ? t.input.key === loc.input.key : isTextInput(t.input) && t.input.path === loc.path;
+    if (pane.tabs.some(matches)) return id;
+    const openElsewhere = Object.values(s.panes).some((p) => p.tabs.some(matches));
+    return openElsewhere ? undefined : id;
   }
 
   async navigateTo(loc: NavigationLocation | null) {
     if (!loc) return;
+    const gen = ++this.navGeneration;
     this.navSuppress++;
     try {
-      await this.openFile(loc.path, { selection: { line: loc.line, col: loc.col }, focus: true });
+      const pane = this.preferredPaneFor(loc);
+      // At the place recorded on leaving it (a diff at its caret): a background tab shows afresh.
+      if (loc.input) await this.openInput(loc.input, { ...(pane ? { pane } : {}), focus: true });
+      else
+        await this.openFile(loc.path, {
+          ...(pane ? { pane } : {}),
+          selection: { line: loc.line, col: loc.col },
+          focus: true,
+        });
     } finally {
       this.navSuppress--;
-      if (this.activeSlot) this.recordNav(this.activeSlot);
+      if (gen === this.navGeneration && this.activeSlot) this.recordNav(this.activeSlot);
     }
   }
 
+  private refreshCurrentPlace() {
+    const cur = this.nav.current;
+    if (!cur) return;
+    if (this.activeSlot && !this.activeSlot.disposed) {
+      const loc = this.slotLocation(this.activeSlot);
+      if (!cur.input && loc.path === cur.path)
+        this.nav.update({ ...loc, ...(cur.paneId ? { paneId: cur.paneId } : {}) });
+      return;
+    }
+    const input = this.activeInput();
+    if (input && !isTextInput(input) && cur.input?.key === input.key) this.recordInput(input, cur.paneId, false);
+  }
+
   back() {
-    if (this.activeSlot) this.recordNav(this.activeSlot);
-    return this.navigateTo(this.nav.back());
+    // Nothing shows the current place (its last tab was closed, or another tab is active):
+    // going back returns to it first, as in IDEA.
+    if (!this.showsCurrentPlace()) {
+      if (this.nav.current && this.canNavigateTo(this.nav.current)) return this.navigateTo(this.nav.current);
+    } else {
+      this.refreshCurrentPlace();
+    }
+    return this.navigateTo(this.nav.back((loc) => this.canNavigateTo(loc)));
   }
 
   forward() {
-    return this.navigateTo(this.nav.forward());
+    if (this.showsCurrentPlace()) this.refreshCurrentPlace();
+    return this.navigateTo(this.nav.forward((loc) => this.canNavigateTo(loc)));
   }
 
   /** Navigate › Last Edit Location (⇧⌘⌫): repeated, walks back through older edits. */
@@ -947,10 +1331,14 @@ export class EditorController implements SlotHost {
   }
 
   async openFile(path: string, o: OpenOptions = {}): Promise<void> {
+    // The place left behind, as it is now (a preview may have scrolled since it was recorded).
+    this.recordLeaving();
     return this.openFileRequest(path, o, this.openingGeneration(o));
   }
 
   private async openFileRequest(path: string, o: OpenOptions, generation: OpenRequest): Promise<void> {
+    const opener = uriOpenerFor(path);
+    if (opener) return opener.open(path, o);
     if (isVirtualUri(path)) return this.openVirtualRequest(path, o, generation);
     if (isClassFile(path)) {
       await this.projectTransition;
@@ -966,8 +1354,10 @@ export class EditorController implements SlotHost {
     }
     await this.projectTransition;
     this.checkOpening(generation);
-    // Images, binary and huge files open in a contributed viewer unless already open as text.
+    // Files opened with another application, then images/binary/huge files in a
+    // contributed viewer, unless already open as text.
     if (!o.asText && !findTab(useTabs.getState(), fileKey(path))) {
+      if (o.external === false ? opensExternally(path) : await openFileExternally(path)) return;
       const viewer = await resolveFileEditor(path);
       if (viewer) {
         try {
@@ -1006,7 +1396,88 @@ export class EditorController implements SlotHost {
 
   async openInput(input: EditorInput, o: OpenOptions = {}) {
     if (input.path && isClassFile(input.path)) return this.openFile(input.path, o);
+    this.recordLeaving();
     return this.admitInput(input, o, this.openingGeneration(o));
+  }
+
+  /** File › New File: an editable untitled buffer; Save asks for a path. */
+  async openUntitled(o: OpenOptions = {}): Promise<void> {
+    const generation = this.openingGeneration(o);
+    await this.projectTransition;
+    this.checkOpening(generation);
+    const info = await this.manager.backend.openUntitled(null);
+    this.checkOpening(generation);
+    this.manager.adopt(info);
+    await this.admitInput(untitledInput(info.path), o, generation);
+  }
+
+  /**
+   * ManagerHost.saveAs: an untitled buffer's explicit save asks for a path
+   * (Save As). The backend re-keys the buffer; the model is re-pointed and
+   * every tab showing it becomes a file tab.
+   */
+  private async saveUntitled(model: import("./model/document").DocModel): Promise<boolean> {
+    const path = await chooseSavePath({
+      title: tx("Save As"),
+      defaultPath: this.saveAsSuggestion(model),
+      filters: await languageFilters(),
+    });
+    if (!path) return false;
+    const untitled = model.path;
+    try {
+      const info = await this.manager.backend.saveAs(model.doc, path);
+      this.manager.retarget(model, info);
+      this.swapUntitledTabs(untitled, info.path);
+      return true;
+    } catch (e) {
+      notifications().notify({
+        level: "error",
+        title: "Cannot save file",
+        body: e instanceof Error ? e.message : String(e),
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Where the save dialog opens for a new buffer: the project root, or, in a
+   * LightEdit window, the folder of its most recently open real file. The file
+   * type comes from the dialog's own type dropdown (see `languageFilters`).
+   */
+  private saveAsSuggestion(model: import("./model/document").DocModel): string {
+    const root = useProject.getState().project?.root;
+    const dir =
+      root ??
+      (() => {
+        const s = useTabs.getState();
+        for (const pane of Object.values(s.panes)) {
+          for (const id of pane.mru) {
+            const tab = pane.tabs.find((t) => t.id === id);
+            if (tab?.input.kind === "file" && tab.input.path) return dirname(tab.input.path);
+          }
+        }
+        return null;
+      })();
+    const name = untitledTitle(model.path);
+    return dir ? `${dir}/${name}` : name;
+  }
+
+  /** Save As turned an untitled buffer into `path`: retarget every tab showing it. */
+  private swapUntitledTabs(oldKey: string, path: string) {
+    const s = useTabs.getState();
+    let changed = false;
+    const panes: TabsState["panes"] = {};
+    for (const [paneId, pane] of Object.entries(s.panes)) {
+      let paneChanged = false;
+      const tabs = pane.tabs.map((tab) => {
+        if (tab.input.key !== oldKey) return tab;
+        paneChanged = true;
+        return { ...tab, input: fileInput(path) };
+      });
+      panes[paneId] = paneChanged ? { ...pane, tabs } : pane;
+      changed ||= paneChanged;
+    }
+    if (changed) useTabs.setState({ ...s, panes }, true);
   }
 
   private async admitInput(
@@ -1021,52 +1492,103 @@ export class EditorController implements SlotHost {
     this.checkOpening(generation);
     this.navSuppress++;
     try {
-      let s = useTabs.getState();
+      const before = useTabs.getState();
+      let s = before;
       const activate = this.isCurrentOpening(generation);
-      const preview =
-        !!o.preview &&
-        editorPrefs().tabs.previewTab &&
-        !documentLifecycle(input, useContributions.getState().editorKinds);
+      const restored = activate ? restoreMaximizedToolWindow() : false;
+      const kinds = useContributions.getState().editorKinds;
+      const lifecycle = documentLifecycle(input, kinds);
+      const canPreview = !lifecycle || (lifecycle.allowPreview && !documentDirty({ input, lifecycle }));
+      const preview = !!o.preview && editorPrefs().tabs.previewTab && canPreview;
       if (!activate && preview) return;
+      const kind = kinds.get(input.kind);
       let paneId = s.panes[generation.pane] ? generation.pane : activate ? s.activePane : null;
       if (!paneId) return;
-      if (o.side) {
-        const right = neighbourPane(s, paneId);
-        if (right) paneId = right;
-        else {
-          const split = splitPane(s, paneId, "row");
+      const existingSingleton = kind?.singleton ? findTab(s, input.key, paneId) : null;
+      let tabId: string;
+      if (existingSingleton) {
+        tabId = existingSingleton.tab.id;
+        if (o.edge) {
+          const moved = moveTabToNewSplit(s, existingSingleton.paneId, tabId, paneId, o.edge);
+          if (moved) {
+            s = moved.state;
+            paneId = moved.paneId;
+          } else {
+            paneId = existingSingleton.paneId;
+            if (activate) s = activateTab(setActivePane(s, paneId), paneId, tabId);
+          }
+        } else if ((o.pane || o.side) && existingSingleton.paneId !== paneId) {
+          const target = o.side ? (neighbourPane(s, paneId) ?? paneId) : paneId;
+          if (target !== existingSingleton.paneId) {
+            s = moveTab(
+              s,
+              existingSingleton.paneId,
+              tabId,
+              target,
+              o.index ?? s.panes[target]?.tabs.length ?? 0,
+              o.pinned,
+            );
+            paneId = target;
+          } else if (o.side) {
+            const moved = moveTabToNewSplit(s, existingSingleton.paneId, tabId, paneId, "right");
+            if (moved) {
+              s = moved.state;
+              paneId = moved.paneId;
+            }
+          }
+        } else {
+          paneId = existingSingleton.paneId;
+          if (activate) s = activateTab(setActivePane(s, paneId), paneId, tabId);
+        }
+        if (!o.preview || !canPreview) s = promoteTab(s, paneId, tabId);
+      } else {
+        if (o.edge) {
+          const split = splitAtEdge(s, paneId, o.edge);
           s = split.state;
           paneId = split.paneId;
-          // The new pane starts with only the requested input.
-          const pane = s.panes[paneId]!;
-          s = { ...s, panes: { ...s.panes, [paneId]: { ...pane, tabs: [], active: null, mru: [] } } };
           if (!activate) s = { ...s, activePane: useTabs.getState().activePane };
+        } else if (o.side) {
+          const right = neighbourPane(s, paneId);
+          if (right) paneId = right;
+          else {
+            const split = splitPane(s, paneId, "row");
+            s = split.state;
+            paneId = split.paneId;
+            // The new pane starts with only the requested input.
+            const pane = s.panes[paneId]!;
+            s = { ...s, panes: { ...s.panes, [paneId]: { ...pane, tabs: [], active: null, mru: [] } } };
+            if (!activate) s = { ...s, activePane: useTabs.getState().activePane };
+          }
         }
-      }
-      const found = findTab(s, input.key, paneId);
-      let tabId: string;
-      if (found && (!(o.side || o.pane) || found.paneId === paneId)) {
-        paneId = found.paneId;
-        if (activate) s = activateTab(setActivePane(s, paneId), paneId, found.tab.id);
-        if (!o.preview || documentLifecycle(input, useContributions.getState().editorKinds))
-          s = promoteTab(s, paneId, found.tab.id);
-        tabId = found.tab.id;
-        if (activate && found.tab.input.data !== input.data && input.data !== undefined)
-          s = openTab(s, paneId, input, {
-            preview: o.preview && !documentLifecycle(input, useContributions.getState().editorKinds),
+        const found = findTab(s, input.key, paneId);
+        if (found && (!(o.side || o.pane || o.edge) || found.paneId === paneId)) {
+          paneId = found.paneId;
+          if (activate) s = activateTab(setActivePane(s, paneId), paneId, found.tab.id);
+          if (!o.preview || !canPreview) s = promoteTab(s, paneId, found.tab.id);
+          tabId = found.tab.id;
+          if (activate && found.tab.input.data !== input.data && input.data !== undefined)
+            s = openTab(s, paneId, input, {
+              preview: o.preview && canPreview,
+              activate,
+            }).state;
+        } else {
+          const tabs = editorPrefs().tabs;
+          const r = openTab(s, paneId, input, {
+            preview,
+            pinned: o.pinned,
             activate,
-          }).state;
-      } else {
-        const tabs = editorPrefs().tabs;
-        const r = openTab(s, paneId, input, {
-          preview,
-          activate,
-          preservePreview: !activate,
-          ...(tabs.openAtEnd ? { index: s.panes[paneId]?.tabs.length ?? 0 } : {}),
-        });
-        s = r.state;
-        tabId = r.tabId;
-        if (tabs.sortAlphabetically) s = sortTabs(s, paneId, (t) => tabSortKey(t.input));
+            preservePreview: !activate,
+            keepPreview: (t) => !isTextInput(t.input),
+            ...(o.index !== undefined
+              ? { index: o.index }
+              : tabs.openAtEnd
+                ? { index: s.panes[paneId]?.tabs.length ?? 0 }
+                : {}),
+          });
+          s = r.state;
+          tabId = r.tabId;
+          if (tabs.sortAlphabetically && o.index === undefined) s = sortTabs(s, paneId, (t) => tabSortKey(t.input));
+        }
       }
       if (o.selection)
         this.selectionRequests.set(tabId, Math.max(generation.sequence, this.selectionRequests.get(tabId) ?? 0));
@@ -1077,25 +1599,10 @@ export class EditorController implements SlotHost {
       } finally {
         this.admitting = false;
       }
+      const replaced = preview && closedDocuments(before, s, kinds);
+      if (replaced && replaced.length) await this.releaseDocuments(replaced).catch((e) => this.documentError(e));
       const canFocus = () => this.isCurrentOpening(generation) && this.activeTabOf()?.id === tabId;
-      const tabPrefs = editorPrefs().tabs;
-      await this.removeGuarded(
-        (current) =>
-          current.panes[paneId]
-            ? enforceTabLimit(
-                current,
-                paneId,
-                tabPrefs.tabLimit,
-                tabPrefs.closingPolicy,
-                (tab) =>
-                  inputDirty(tab.input, useContributions.getState().editorKinds) ??
-                  !!(tab.input.path && useDocMeta.getState()[tab.input.path]?.dirty),
-                activate ? tabId : (current.panes[paneId]?.active ?? tabId),
-                (tab) => inputDirty(tab.input, useContributions.getState().editorKinds) === true,
-              )
-            : current,
-        { protect: (tab) => inputDirty(tab.input, useContributions.getState().editorKinds) === true },
-      );
+      await this.enforcePaneTabLimit(paneId, activate ? tabId : (useTabs.getState().panes[paneId]?.active ?? tabId));
       if (!isTextInput(input)) {
         if (o.focus !== false)
           requestAnimationFrame(() => {
@@ -1122,19 +1629,76 @@ export class EditorController implements SlotHost {
         slot.reveal({ anchor: head, head: anchor, center: true });
       }
       if (o.focus !== false && canFocus()) {
-        if (slot.view) slot.focus();
+        if (restored) {
+          requestAnimationFrame(() => {
+            if (canFocus()) this.focus();
+          });
+        } else if (slot.view) slot.focus();
         else slot.wantsFocus = true;
       }
     } finally {
       this.navSuppress--;
-      if (this.navSuppress === 0 && this.activeSlot) this.recordNav(this.activeSlot, true);
+      if (this.navSuppress === 0 && this.isCurrentOpening(generation)) this.recordActiveEditor(true);
     }
   }
 
+  /**
+   * Tabs of kinds with an `isBusy` answer are never evicted (that would end a
+   * running process unasked): their answers are resolved first, so the sync
+   * and the async ones are protected alike.
+   */
+  private enforcePaneTabLimit(paneId: string, keep?: string, liveKeys?: ReadonlySet<string>) {
+    const kinds = useContributions.getState().editorKinds;
+    const busyCapable = (useTabs.getState().panes[paneId]?.tabs ?? []).filter((t) => kinds.get(t.input.kind)?.isBusy);
+    const evict = (busy: ReadonlySet<string>) => {
+      const prefs = editorPrefs().tabs;
+      // A tab whose kind reports a running process is never evicted: that would end it unasked.
+      const protect = (tab: Tab) =>
+        busy.has(tab.input.key) || inputDirty(tab.input, kinds) === true || !!liveKeys?.has(tab.input.key);
+      return this.removeGuarded(
+        (current) =>
+          current.panes[paneId]
+            ? enforceTabLimit(
+                current,
+                paneId,
+                prefs.tabLimit,
+                prefs.closingPolicy,
+                tabModified,
+                keep ?? current.panes[paneId]?.active ?? undefined,
+                protect,
+              )
+            : current,
+        { protect },
+      );
+    };
+    if (!busyCapable.length) return evict(new Set());
+    return Promise.all(
+      busyCapable.map(async (tab) => ((await inputBusy(tab.input, kinds)) ? tab.input.key : null)),
+    ).then((keys) => evict(new Set(keys.filter((key): key is string => key !== null))));
+  }
+
+  /** Switches `activePane` when focus enters an inactive split pane (e.g. a non-text tab). */
+  focusPane(paneId: string) {
+    const s = useTabs.getState();
+    if (!s.panes[paneId] || s.activePane === paneId) return;
+    this.recordLeaving();
+    useTabs.setState(setActivePane(s, paneId), true);
+    const tab = this.activeTabOf();
+    if (tab && !isTextTab(tab)) this.recordActiveEditor(true);
+  }
+
   activate(paneId: string, tabId: string, focus = true) {
+    const restored = restoreMaximizedToolWindow();
+    this.recordLeaving();
     ++this.activationGeneration;
     useTabs.setState((s) => activateTab(setActivePane(s, paneId), paneId, tabId), true);
+    const tab = this.activeTabOf();
+    if (tab && !isTextTab(tab)) this.recordActiveEditor(true);
     if (focus) {
+      if (restored) {
+        requestAnimationFrame(() => this.focus());
+        return;
+      }
       const slot = this.slots.get(tabId);
       if (slot?.view) slot.focus();
       else if (slot) slot.wantsFocus = true;
@@ -1193,6 +1757,37 @@ export class EditorController implements SlotHost {
     });
   }
 
+  /**
+   * Inputs about to lose their last tab whose kind reports them busy
+   * (`EditorKindContribution.isBusy`): asks before ending what runs in them,
+   * like closing a busy terminal session. Resolves false to keep the tabs.
+   */
+  private async confirmBusyClose(
+    removal: (s: TabsState) => TabsState,
+    confirmed: Set<string> = new Set(),
+  ): Promise<boolean> {
+    const kinds = useContributions.getState().editorKinds;
+    const current = useTabs.getState();
+    const remaining = openKeys(removal(current));
+    const closing = new Map<string, EditorInput>();
+    for (const pane of Object.values(current.panes))
+      for (const tab of pane.tabs)
+        if (!remaining.has(tab.input.key) && kinds.get(tab.input.kind)?.isBusy) closing.set(tab.input.key, tab.input);
+    // Tabs whose ending was confirmed earlier in this close aren't asked about again.
+    const busy: EditorInput[] = [];
+    for (const input of closing.values())
+      if (!confirmed.has(input.key) && (await inputBusy(input, kinds))) busy.push(input);
+    if (!busy.length) return true;
+    const name = busy.map((input) => tabTitle(input, kinds)).join(", ");
+    const ok = await confirm({
+      title: t("editor.closeBusy.title", { name }),
+      message: t("editor.closeBusy.message", { name }),
+      ok: t("editor.closeBusy.terminate"),
+    });
+    if (ok) for (const input of busy) confirmed.add(input.key);
+    return ok;
+  }
+
   /** Close exactly the originally selected tabs, evaluating references after every await. */
   private removeGuarded(
     select: (s: TabsState) => TabsState,
@@ -1206,6 +1801,14 @@ export class EditorController implements SlotHost {
       Object.values(initial.panes).flatMap((p) => p.tabs.filter((t) => !remainingIds.has(t.id)).map((t) => t.id)),
     );
     const emptyPanes = paneIds(initial).filter((id) => !planned.panes[id] && !initial.panes[id]?.tabs.length);
+    // Closing the active diff leaves it as a place, so Back reopens it.
+    const active = this.activeInput();
+    if (
+      active &&
+      !isTextInput(active) &&
+      Object.values(initial.panes).some((p) => p.tabs.some((t) => targets.has(t.id) && t.input.key === active.key))
+    )
+      this.recordLeaving();
     return this.enqueueRemoval(async () => {
       if (generation !== this.projectGeneration || this.closeSession) return false;
       const prepared: CustomDocument[] = [];
@@ -1227,6 +1830,8 @@ export class EditorController implements SlotHost {
       try {
         const authorized = new Set<string>();
         const discards = new Map<string, CustomDocument>();
+        const confirmedBusy = new Set<string>();
+        let busyAsked = false;
         for (;;) {
           const current = useTabs.getState();
           const d = closedDocuments(current, currentRemoval(current), useContributions.getState().editorKinds).find(
@@ -1236,7 +1841,16 @@ export class EditorController implements SlotHost {
             // A later Cancel/save failure must not discard earlier documents.
             const discard = [...discards.values()].find(stillLast);
             if (!discard) break;
+            // Nor may a Cancel on ending a busy tab's session: ask before discarding anything.
+            if (!busyAsked) {
+              // oxlint-disable-next-line no-await-in-loop -- a Cancel here aborts the whole close; the answer decides whether to keep looping
+              if (!(await this.confirmBusyClose(currentRemoval, confirmedBusy))) return false;
+              if (generation !== this.projectGeneration) return false;
+              busyAsked = true;
+              continue;
+            }
             discards.delete(discard.input.key);
+            // oxlint-disable-next-line no-await-in-loop -- discarding changes which documents lose their last tab, so the loop re-checks afterwards
             await discard.lifecycle.discard(discard.input);
             // The await may have changed which documents lose their last tab.
             if (generation !== this.projectGeneration) return false;
@@ -1245,11 +1859,13 @@ export class EditorController implements SlotHost {
           if (!prepared.some((document) => document.input.key === d.input.key)) {
             prepared.push(d);
             this.preparedDocuments.set(d.input.key, d);
+            // oxlint-disable-next-line no-await-in-loop -- each prepare is checked for cancellation and project changes before the next one starts
             await d.lifecycle.prepareClose(d.input);
           }
           if (generation !== this.projectGeneration) return false;
           if (!stillLast(d)) continue;
           if (documentDirty(d)) {
+            // oxlint-disable-next-line no-await-in-loop -- one modal decision per document; Cancel ends the close sequence
             const decision = await ask({
               title: t("app.unsaved.title"),
               body: t("app.unsaved.body", { count: 1, project: d.input.path ?? d.input.key }),
@@ -1260,12 +1876,48 @@ export class EditorController implements SlotHost {
               icon: "warning",
             });
             if (!stillLast(d)) continue;
+            // oxlint-disable-next-line no-await-in-loop -- saving is only for the document just confirmed, before the loop moves on
             if (decision.button === "save") await d.lifecycle.save(d.input);
             else if (decision.button === "discard") discards.set(d.input.key, d);
             else return false;
           }
           authorized.add(d.input.key);
         }
+        // Dirty untitled buffers: autosave never writes them in place, so
+        // closing their last tab asks (Save opens the Save As dialog).
+        const untitledAuthorized = new Set<string>();
+        for (;;) {
+          const current = useTabs.getState();
+          const key = closedUntitledKeys(current, currentRemoval(current)).find((k) => !untitledAuthorized.has(k));
+          if (!key) break;
+          const model = this.manager.get(key);
+          if (!model || model.closed || !model.getMeta().dirty) {
+            untitledAuthorized.add(key);
+            continue;
+          }
+          // oxlint-disable-next-line no-await-in-loop -- one Save As decision at a time; a Cancel stops asking about the remaining buffers
+          const decision = await ask({
+            title: t("app.unsaved.title"),
+            body: t("app.unsaved.fileBody", { name: untitledTitle(key) }),
+            buttons: [
+              { id: "discard", label: t("app.unsaved.discard") },
+              { id: "save", label: t("app.unsaved.saveFile"), primary: true },
+            ],
+            icon: "warning",
+          });
+          if (decision.button === "save") {
+            // oxlint-disable-next-line no-await-in-loop -- re-check dirtiness right after this save before asking about the next buffer
+            await model.save("explicit");
+            // Still dirty: the Save As dialog was cancelled or the save failed.
+            if (model.getMeta().dirty) return false;
+          } else if (decision.button !== "discard") {
+            return false;
+          }
+          untitledAuthorized.add(key);
+        }
+        // Again after the discards: a tab may have become busy while they ran.
+        if (!(await this.confirmBusyClose(currentRemoval, confirmedBusy))) return false;
+        if (generation !== this.projectGeneration) return false;
         if (options.beforeRemove && !(await options.beforeRemove())) return false;
         // Commit only the original target ids against the latest tab state.
         if (generation !== this.projectGeneration) return false;
@@ -1292,8 +1944,18 @@ export class EditorController implements SlotHost {
     });
   }
 
-  closeTab(paneId: string, tabId: string): Promise<boolean> {
-    return this.removeGuarded((s) => (s.panes[paneId] ? closeTab(s, paneId, tabId) : s));
+  async closeTab(paneId: string, tabId: string): Promise<boolean> {
+    const hadFocus = this.slots.get(tabId)?.view?.hasFocus ?? false;
+    const closed = await this.removeGuarded((s) => (s.panes[paneId] ? closeTab(s, paneId, tabId) : s));
+    // The closed editor had the keyboard: hand it to the tab that took its place.
+    if (closed && hadFocus) await this.focusActiveEditor();
+    return closed;
+  }
+
+  private async focusActiveEditor() {
+    const tab = this.activeTabOf();
+    if (tab) await this.ensureSlot(tab.id);
+    if (this.activeTabOf()?.id === tab?.id) this.focus();
   }
   closeOthers(paneId: string, tabId: string): Promise<boolean> {
     return this.removeGuarded((s) => (s.panes[paneId] ? closeOthers(s, paneId, tabId) : s), {
@@ -1315,13 +1977,10 @@ export class EditorController implements SlotHost {
       protect: (tab) => tab.pinned,
     });
   }
-  /** Keeps tabs with unsaved changes or a VCS status (IDEA: tabs shown as modified). */
+  /** Keeps tabs with unsaved changes or a VCS status (tabs shown as modified). */
   closeUnmodified(paneId: string): Promise<boolean> {
-    const modified = (tab: Tab) =>
-      (inputDirty(tab.input, useContributions.getState().editorKinds) ?? false) ||
-      !!(tab.input.path && (useDocMeta.getState()[tab.input.path]?.dirty || getFileDecoration(tab.input.path)?.color));
-    return this.removeGuarded((s) => (s.panes[paneId] ? closeUnmodified(s, paneId, modified) : s), {
-      protect: (tab) => tab.pinned || modified(tab),
+    return this.removeGuarded((s) => (s.panes[paneId] ? closeUnmodified(s, paneId, tabModified) : s), {
+      protect: (tab) => tab.pinned || tabModified(tab),
     });
   }
   closeReadOnly(paneId: string): Promise<boolean> {
@@ -1331,6 +1990,39 @@ export class EditorController implements SlotHost {
     });
   }
   /** Reload from Disk: re-reads the open, unmodified documents of `paths`. */
+  /**
+   * A file changed on disk while its buffer had unsaved changes: the buffer keeps them (autosave
+   * leaves the file alone) until the user loads the disk version or saves over it.
+   */
+  private onDiskConflict(path: string) {
+    const key = `disk-conflict:${path}`;
+    notifications().notify({
+      level: "warning",
+      key,
+      sticky: true,
+      title: tx`${basename(path)} changed on disk`,
+      body: tx(
+        "The file was changed outside the IDE while it has unsaved changes in the editor. Saving keeps the editor's version and overwrites the file.",
+      ),
+      actions: [
+        {
+          label: tx("Load Changes from Disk"),
+          run: () => {
+            const doc = this.manager.get(path)?.getMeta().doc;
+            if (doc === undefined || !this.manager.backend.reloadDiscarding) return;
+            this.manager.backend.reloadDiscarding(doc).catch((e: unknown) =>
+              notifications().notify({
+                level: "error",
+                title: tx("Cannot reload from disk"),
+                body: e instanceof Error ? e.message : String(e),
+              }),
+            );
+          },
+        },
+        { label: tx("Keep Editor Changes"), run: () => {} },
+      ],
+    });
+  }
   async reloadFromDisk(paths: string[]) {
     for (const path of paths) {
       const model = this.manager.get(path);
@@ -1345,8 +2037,9 @@ export class EditorController implements SlotHost {
         continue;
       }
       try {
+        // oxlint-disable-next-line no-await-in-loop -- each reload emits document events and notifications; keep them in the requested file order
         const encoding = await this.manager.backend.setEncoding(meta.doc, meta.encoding, true);
-        model.setMeta({ encoding });
+        model.setMeta({ encoding: encoding.encoding, hasBom: encoding.hasBom });
       } catch (e) {
         notifications().notify({
           level: "error",
@@ -1363,18 +2056,26 @@ export class EditorController implements SlotHost {
   keepTab(paneId: string, tabId: string) {
     this.apply((s) => (s.panes[paneId] ? promoteTab(s, paneId, tabId) : s));
   }
+  private focusMovedTab(tabId: string) {
+    const slot = this.slots.get(tabId);
+    if (slot?.view) slot.focus();
+    else if (slot) slot.wantsFocus = true;
+    else
+      requestAnimationFrame(() => {
+        if (this.activeTabOf()?.id === tabId) this.focus();
+      });
+  }
   /** Drag & drop; the tab keeps its id (and slot) when moved within a pane. */
   moveTab(fromPane: string, tabId: string, toPane: string, index: number, pin?: boolean) {
     this.apply((s) => moveTab(s, fromPane, tabId, toPane, index, pin));
+    this.focusMovedTab(tabId);
   }
   /** Drag & drop onto an editor edge: the tab moves into a new split on that side. */
   moveTabToSplit(fromPane: string, tabId: string, targetPane: string, edge: SplitEdge) {
     const r = moveTabToNewSplit(useTabs.getState(), fromPane, tabId, targetPane, edge);
     if (!r) return;
     useTabs.setState(r.state, true);
-    const slot = this.slots.get(tabId);
-    if (slot?.view) slot.focus();
-    else if (slot) slot.wantsFocus = true;
+    this.focusMovedTab(tabId);
   }
   /** Files dropped on an editor: opened in that pane, or in a new split at `edge`. */
   async openFilesIn(paths: readonly string[], paneId: string, edge: SplitEdge | "center") {
@@ -1386,6 +2087,7 @@ export class EditorController implements SlotHost {
       useTabs.setState(r.state, true);
       target = r.paneId;
     }
+    // oxlint-disable-next-line no-await-in-loop -- drop order determines tab order, tab-limit eviction and which of the dropped files gets focus
     for (const [i, path] of paths.entries()) await this.openFile(path, { pane: target, focus: i === paths.length - 1 });
     const pane = useTabs.getState().panes[target];
     if (pane && !pane.tabs.length) this.apply((st) => removePane(st, target));
@@ -1398,7 +2100,10 @@ export class EditorController implements SlotHost {
     this.focus();
   }
   cycle(delta: number) {
+    this.recordLeaving();
     this.apply((s) => cycleTab(s, delta));
+    const tab = this.activeTabOf();
+    if (tab && !isTextTab(tab)) this.recordActiveEditor(true);
     this.focus();
   }
   async reopenClosed(): Promise<void> {
@@ -1408,16 +2113,35 @@ export class EditorController implements SlotHost {
     if (generation !== this.projectGeneration || this.closeSession) return;
     const r = reopenClosed(useTabs.getState());
     if (!r) return;
+    this.recordLeaving();
     useTabs.setState(r.state, true);
+    const tab = this.activeTabOf();
+    if (tab && !isTextTab(tab)) this.recordActiveEditor(true);
     void this.ensureSlot(r.tabId).then((slot) => slot && (slot.view ? slot.focus() : (slot.wantsFocus = true)));
   }
 
   split(paneId: string, dir: "row" | "column") {
     const s = useTabs.getState();
     const srcPane = s.panes[paneId];
+    const active = srcPane?.tabs.find((t) => t.id === srcPane.active);
+    const kind = active ? useContributions.getState().editorKinds.get(active.input.kind) : undefined;
+    if (active && kind?.singleton) {
+      if (kind.splitInput) {
+        void Promise.resolve(kind.splitInput(active.input)).then((fresh) => {
+          if (!fresh || !useTabs.getState().panes[paneId]) return;
+          void this.openInput(fresh, { pane: paneId, edge: dir === "row" ? "right" : "bottom", focus: true });
+        });
+      } else if (srcPane && srcPane.tabs.length > 1) {
+        this.moveTabToSplit(paneId, active.id, paneId, dir === "row" ? "right" : "bottom");
+      }
+      return;
+    }
     const srcSlot = srcPane?.active ? this.slots.get(srcPane.active) : undefined;
+    this.recordLeaving();
     const r = splitPane(s, paneId, dir);
     useTabs.setState(r.state, true);
+    const tab = this.activeTabOf();
+    if (tab && !isTextTab(tab)) this.recordActiveEditor(true);
     const newTab = r.state.panes[r.paneId]?.active;
     if (newTab) {
       void this.ensureSlot(newTab, { from: srcSlot }).then((slot) => {
@@ -1441,9 +2165,11 @@ export class EditorController implements SlotHost {
   changeSplitOrientation(paneId: string) {
     this.apply((s) => changeSplitOrientation(s, paneId));
   }
-  /** Save or resolve the dirty guard, open the window, then remove the original tab. */
+  /** Open a lightweight aux editor (or a full window outside the project), then remove the original tab. */
   async detachTab(paneId: string, tabId: string): Promise<boolean> {
     const tab = useTabs.getState().panes[paneId]?.tabs.find((t) => t.id === tabId);
+    const moves = tab && useContributions.getState().editorKinds.get(tab.input.kind)?.openInWindow;
+    if (moves) return moves(tab.input);
     const path = tab?.input.path;
     if (
       !tab ||
@@ -1458,9 +2184,40 @@ export class EditorController implements SlotHost {
     const project = useProject.getState().project;
     const inProject =
       !!project && (project.workspace?.projects ?? [project.root]).some((root) => isSameOrInside(path, root));
+    const light = inProject && isTextTab(tab) && isTauri();
     return this.removeGuarded((s) => (s.panes[paneId] ? closeTab(s, paneId, tabId) : s), {
       beforeRemove: async () => {
         if (!useTabs.getState().panes[paneId]?.tabs.some((t) => t.id === tabId)) return false;
+        if (light) {
+          const slot = await this.ensureSlot(tabId);
+          if (!slot) return false;
+          const state = slot.currentState();
+          const main = state.selection.main;
+          const from = state.doc.lineAt(main.from);
+          const to = state.doc.lineAt(main.to);
+          try {
+            await openLightweightEditor(
+              {
+                path,
+                line: from.number - 1,
+                column: main.from - from.from,
+                endLine: to.number - 1,
+                endColumn: main.to - to.from,
+              },
+              windowBackgroundHex(),
+            );
+            slot.model.handoffRelease = true;
+            return true;
+          } catch (e) {
+            notifications().notify({
+              level: "error",
+              title: t("app.window.openFailed", { name: basename(path) }),
+              body: e instanceof Error ? e.message : String(e),
+              key: `app.open:${path}`,
+            });
+            return false;
+          }
+        }
         if (isTextTab(tab)) {
           const slot = await this.ensureSlot(tabId);
           if (!slot) return false;
@@ -1481,6 +2238,11 @@ export class EditorController implements SlotHost {
       },
     });
   }
+  /** Shows `input` in a lightweight window of this project; resolves to the window's label once it is shown. */
+  openInWindow(input: EditorInput): Promise<string> {
+    if (!isTauri() || isRemoteWindow()) return Promise.reject(new Error(t("app.window.desktopOnly")));
+    return openLightweightEditor({ input: JSON.stringify(input) }, windowBackgroundHex(), input.key);
+  }
   /** IDEA "Open in Opposite Group": the tab stays and a copy opens next door (or in a new split). */
   openInOpposite(paneId: string, tabId: string) {
     const s = useTabs.getState();
@@ -1491,8 +2253,22 @@ export class EditorController implements SlotHost {
       this.activate(paneId, tabId, false);
       return this.split(paneId, "row");
     }
+    const kind = useContributions.getState().editorKinds.get(tab.input.kind);
+    if (kind?.singleton) {
+      if (kind.splitInput) {
+        void Promise.resolve(kind.splitInput(tab.input)).then((fresh) => {
+          if (fresh && useTabs.getState().panes[target]) void this.openInput(fresh, { pane: target, focus: true });
+        });
+      } else {
+        this.moveToOpposite(paneId, tabId);
+      }
+      return;
+    }
+    this.recordLeaving();
     const r = openTab(s, target, tab.input);
     useTabs.setState(r.state, true);
+    const activeTab = this.activeTabOf();
+    if (activeTab && !isTextTab(activeTab)) this.recordActiveEditor(true);
     void this.ensureSlot(r.tabId, { from: this.slots.get(tabId) }).then((slot) => {
       if (slot?.view) slot.focus();
       else if (slot) slot.wantsFocus = true;
@@ -1546,6 +2322,10 @@ export class EditorController implements SlotHost {
   // --- service helpers ------------------------------------------------------------------
 
   focus() {
+    if (restoreMaximizedToolWindow()) {
+      requestAnimationFrame(() => this.focus());
+      return;
+    }
     const tab = this.activeTabOf();
     if (!tab) {
       document.querySelector<HTMLElement>("[data-editor-area]")?.focus({ preventScroll: true });
@@ -1561,7 +2341,9 @@ export class EditorController implements SlotHost {
       return;
     }
     const pane = document.querySelector<HTMLElement>(`[data-pane-id="${useTabs.getState().activePane}"]`);
-    pane?.querySelector<HTMLElement>("[data-editor-focus], .cm-content")?.focus({ preventScroll: true });
+    (pane?.querySelector<HTMLElement>("[data-editor-focus]") ?? pane?.querySelector<HTMLElement>(".cm-content"))?.focus(
+      { preventScroll: true },
+    );
   }
 
   private stampActive(s: TabsState) {
@@ -1614,8 +2396,10 @@ export class EditorController implements SlotHost {
     return this.removeGuarded((s) => closeKey(s, key));
   }
 
-  activeInput(): EditorInput | null {
-    return this.activeTabOf()?.input ?? null;
+  activeInput(options?: { previewOnly?: boolean }): EditorInput | null {
+    const tab = this.activeTabOf();
+    if (options?.previewOnly && (!tab?.preview || !editorPrefs().tabs.previewTab)) return null;
+    return tab?.input ?? null;
   }
 
   onActiveInputChange(fn: (input: EditorInput | null) => void): () => void {
@@ -1649,8 +2433,11 @@ export class EditorController implements SlotHost {
     if (errors.length) throw combinedError(errors);
   }
 
-  async saveAll(): Promise<void> {
-    const results = await Promise.allSettled([this.manager.saveAll("explicit"), this.saveCustomDocuments()]);
+  async saveAll(opts?: { skipUntitled?: boolean }): Promise<void> {
+    const results = await Promise.allSettled([
+      this.manager.saveAll("explicit", opts?.skipUntitled),
+      this.saveCustomDocuments(),
+    ]);
     const errors = failures(results);
     if (errors.length) throw combinedError(errors);
   }
@@ -1699,6 +2486,7 @@ export class EditorController implements SlotHost {
         for (const d of documents) {
           prepared.push(d);
           this.preparedDocuments.set(d.input.key, d);
+          // oxlint-disable-next-line no-await-in-loop -- cancellation is checked after each prepare, so later documents must not start in parallel
           await d.lifecycle.prepareClose(d.input);
           if (generation !== this.projectGeneration) throw new Error("The project changed during close");
           if (this.closeSession !== session) {
@@ -1726,7 +2514,7 @@ export class EditorController implements SlotHost {
     if (!input) return false;
     const lifecycle = documentLifecycle(input, useContributions.getState().editorKinds);
     const run = lifecycle?.[command];
-    if (!run) return false;
+    if (!run || lifecycle.handlesHistory?.(input) === false) return false;
     void run.call(lifecycle, input).catch((e) => this.documentError(e));
     return true;
   }
@@ -1746,64 +2534,26 @@ export class EditorController implements SlotHost {
     return [
       { label: "Close", shortcut: shortcutLabel("editor.closeTab"), run: () => void this.closeTab(paneId, tab.id) },
       { label: "Close Other Tabs", disabled: tabs.length < 2, run: () => void this.closeOthers(paneId, tab.id) },
+      { label: "Close All Tabs", run: () => void this.closeAll(paneId) },
+      { label: "Close Unmodified Tabs", run: () => void this.closeUnmodified(paneId) },
+      ...(tabs.some((t) => t.pinned)
+        ? ([{ label: "Close All but Pinned", run: () => void this.closeAll(paneId, true) }] as MenuItem[])
+        : []),
       { label: "Close Tabs to the Left", disabled: index <= 0, run: () => void this.closeToLeft(paneId, tab.id) },
       {
         label: "Close Tabs to the Right",
         disabled: index < 0 || index >= tabs.length - 1,
         run: () => void this.closeToRight(paneId, tab.id),
       },
-      { label: "Close All Tabs", run: () => void this.closeAll(paneId) },
-      { label: "Close Unmodified Tabs", run: () => void this.closeUnmodified(paneId) },
-      ...(tabs.some((t) => t.pinned)
-        ? ([{ label: "Close All but Pinned", run: () => void this.closeAll(paneId, true) }] as MenuItem[])
-        : []),
       ...(tabs.some((t) => !t.pinned && !!t.input.path && useDocMeta.getState()[t.input.path]?.readOnly)
         ? ([{ label: "Close All Read-Only Tabs", run: () => void this.closeReadOnly(paneId) }] as MenuItem[])
         : []),
       { kind: "separator" },
-      { label: tab.pinned ? "Unpin Tab" : "Pin Tab", icon: "pin", run: () => this.togglePin(paneId, tab.id) },
-      ...(tab.preview ? ([{ label: "Keep Tab Open", run: () => this.keepTab(paneId, tab.id) }] as MenuItem[]) : []),
-      { kind: "separator" },
-      { label: "Split and Move Right", run: () => this.moveTabToSplit(paneId, tab.id, paneId, "right") },
-      { label: "Split and Move Down", run: () => this.moveTabToSplit(paneId, tab.id, paneId, "bottom") },
-      {
-        label: "Split Right",
-        icon: "split",
-        shortcut: shortcutLabel("editor.splitRight"),
-        run: activateThen(() => this.split(paneId, "row")),
-      },
-      {
-        label: "Split Down",
-        icon: "split-horizontal",
-        shortcut: shortcutLabel("editor.splitDown"),
-        run: activateThen(() => this.split(paneId, "column")),
-      },
-      ...(split
-        ? ([
-            { label: "Move to Opposite Group", run: () => this.moveToOpposite(paneId, tab.id) },
-            { label: "Open in Opposite Group", run: () => this.openInOpposite(paneId, tab.id) },
-            { label: "Change Splitter Orientation", run: () => this.changeSplitOrientation(paneId) },
-            { label: "Unsplit", run: () => void this.unsplit(paneId) },
-            { label: "Unsplit All", run: () => void this.unsplitAll(paneId) },
-          ] as MenuItem[])
-        : []),
-      ...(tab.input.path &&
-      (tab.input.kind === "file" || documentLifecycle(tab.input, useContributions.getState().editorKinds))
-        ? ([{ label: "Open in New Window", run: () => void this.detachTab(paneId, tab.id) }] as MenuItem[])
-        : []),
-      { kind: "separator" },
       ...(path
         ? ([
-            // Contributed groups (Run / Debug '…', More Run/Debug ›), each followed by a separator.
-            ...menuGroupItems("editorTab", { paths: [path], text: this.slots.get(tab.id)?.view?.state.doc.toString() }),
-            openInMenu(path),
-            { kind: "separator" },
-            localHistoryMenu(path),
-            ...(inProject ? [gitMenu(path)] : []),
-            { kind: "separator" },
-            { kind: "action", action: "diff.compareWith", arg: path, label: "Compare With…" },
-            { kind: "action", action: "diff.compareWithClipboard", arg: { path }, label: "Compare with Clipboard" },
-            { kind: "separator" },
+            ...(inProject && path !== project!.root
+              ? ([{ label: "File Color", submenu: fileColorMenuItems(path) }, { kind: "separator" }] as MenuItem[])
+              : []),
             {
               label: "Copy Path/Reference…",
               submenu: [
@@ -1819,30 +2569,121 @@ export class EditorController implements SlotHost {
                       },
                     ] as MenuItem[])
                   : []),
+                // The links the project view and the editor chooser offer (features/vcs: GitHub Link).
+                { kind: "separator" },
+                ...menuGroupItems("copyPath", { paths: [path] }),
               ],
             },
-            { kind: "action", action: "project.rename", arg: path, label: "Rename File…" },
             { kind: "separator" },
+          ] as MenuItem[])
+        : []),
+      {
+        label: "Split Right",
+        icon: "split",
+        shortcut: shortcutLabel("editor.splitRight"),
+        run: activateThen(() => this.split(paneId, "row")),
+      },
+      {
+        label: "Split and Move Right",
+        shortcut: shortcutLabel("editor.splitAndMoveRight"),
+        run: () => this.moveTabToSplit(paneId, tab.id, paneId, "right"),
+      },
+      {
+        label: "Split Down",
+        icon: "split-horizontal",
+        shortcut: shortcutLabel("editor.splitDown"),
+        run: activateThen(() => this.split(paneId, "column")),
+      },
+      {
+        label: "Split and Move Down",
+        shortcut: shortcutLabel("editor.splitAndMoveDown"),
+        run: () => this.moveTabToSplit(paneId, tab.id, paneId, "bottom"),
+      },
+      ...(split
+        ? ([
+            { label: "Move to Opposite Group", run: () => this.moveToOpposite(paneId, tab.id) },
+            { label: "Open in Opposite Group", run: () => this.openInOpposite(paneId, tab.id) },
+            { label: "Change Splitter Orientation", run: () => this.changeSplitOrientation(paneId) },
+            { label: "Unsplit", run: () => void this.unsplit(paneId) },
+            { label: "Unsplit All", run: () => void this.unsplitAll(paneId) },
+          ] as MenuItem[])
+        : []),
+      { kind: "separator" },
+      { label: tab.pinned ? "Unpin Tab" : "Pin Tab", icon: "pin", run: () => this.togglePin(paneId, tab.id) },
+      ...(tab.preview ? ([{ label: "Keep Tab Open", run: () => this.keepTab(paneId, tab.id) }] as MenuItem[]) : []),
+      ...(useContributions.getState().editorKinds.get(tab.input.kind)?.openInWindow ||
+      (tab.input.path &&
+        (tab.input.kind === "file" || documentLifecycle(tab.input, useContributions.getState().editorKinds)))
+        ? ([{ label: "Open in New Window", run: () => void this.detachTab(paneId, tab.id) }] as MenuItem[])
+        : []),
+      { kind: "action", action: "file.settings", arg: "editor.general.editorTabs", label: "Configure Editor Tabs…" },
+      { kind: "separator" },
+      ...(path
+        ? ([
+            // Contributed groups (Run / Debug '…', More Run/Debug ›), each followed by a separator.
+            ...menuGroupItems("editorTab", { paths: [path], text: this.slots.get(tab.id)?.view?.state.doc.toString() }),
+            openInMenu(path),
+            { kind: "separator" },
+            localHistoryMenu(path),
+            ...(inProject
+              ? ([{ label: "Git", submenu: gitMenuItems({ paths: [path], file: true, ignore: true }) }] as MenuItem[])
+              : []),
+            { kind: "separator" },
+            { kind: "action", action: "diff.compareWith", arg: path, label: "Compare With…" },
+            { kind: "action", action: "diff.compareWithClipboard", arg: { path }, label: "Compare with Clipboard" },
+            { kind: "separator" },
+            { kind: "action", action: "project.rename", arg: path, label: "Rename File…" },
           ] as MenuItem[])
         : [
             // Contributed groups for tabs without a file (e.g. "Open in Tool Window").
             ...menuGroupItems("editorTab", { paths: [], input: tab.input }),
           ]),
-      { kind: "action", action: "file.settings", arg: "editor.general.editorTabs", label: "Configure Editor Tabs…" },
     ];
   }
 }
 
-/** Open In › for a file: Project View, Finder / Explorer / Files, Terminal. */
-function openInMenu(path: string): MenuItem {
+/**
+ * File Color submenu of a file tab: the project view's File Color rows as action items carrying
+ * the path (features/project-tree owns the model and the titles), so both menus agree.
+ */
+function fileColorMenuItems(path: string): MenuItem[] {
+  const { project, settings } = useProject.getState();
+  const current = project ? ownFileColor(relativePath(project.root, path), false, settings)?.toLowerCase() : null;
+  return [
+    ...FILE_COLOR_NAMES.map((name): MenuItem => ({
+      kind: "action",
+      action: `file.${name}`,
+      arg: path,
+      checked: current === name,
+    })),
+    { kind: "separator" },
+    ...(current ? [{ kind: "action" as const, action: "file.clearColor", arg: path }] : []),
+    { kind: "action", action: "file.editColors" },
+  ];
+}
+
+/** Open In › for a file: Project View, Finder / Explorer / Files, associated app, Terminal. */
+function openInMenu(path: string, lines?: { line: number; endLine?: number }): MenuItem {
   return {
     label: "Open In",
     submenu: [
       { kind: "action", action: "navigate.selectIn", arg: { path }, label: "Project View" },
-      { kind: "action", action: "project.revealInFinder", arg: path, label: revealLabel() },
+      ...(canRevealInFileManager()
+        ? [{ kind: "action" as const, action: "project.revealInFinder", arg: path, label: fileManagerName() }]
+        : []),
+      ...(canOpenWithSystemApp()
+        ? [
+            {
+              kind: "action" as const,
+              action: "project.openWithAssociatedApp",
+              arg: path,
+              label: "Associated Application",
+            },
+          ]
+        : []),
       { kind: "action", action: "project.openInTerminal", arg: path, label: "Terminal" },
       { kind: "separator" },
-      ...menuGroupItems("openIn", { paths: [path] }),
+      ...menuGroupItems("openIn", { paths: [path], ...lines }),
     ],
   };
 }
@@ -1853,30 +2694,6 @@ function localHistoryMenu(path: string): MenuItem {
     submenu: [
       { kind: "action", action: "vcs.localHistory", arg: { path }, label: "Show History" },
       { kind: "action", action: "localHistory.putLabel", label: "Put Label…" },
-    ],
-  };
-}
-
-/** Git › for one file (editor and editor tab menus). */
-function gitMenu(path: string): MenuItem {
-  return {
-    label: "Git",
-    submenu: [
-      { kind: "action", action: "vcs.commit", label: "Commit File…" },
-      { kind: "action", action: "vcs.addToVcs", arg: [path], label: "Add" },
-      { kind: "separator" },
-      { kind: "action", action: "vcs.annotate", arg: path, label: "Annotate with Git Blame" },
-      { kind: "action", action: "vcs.showDiff", arg: [path], label: "Show Diff" },
-      { kind: "action", action: "vcs.compareWithBranch", arg: { path }, label: "Compare with Branch…" },
-      { kind: "action", action: "vcs.showHistory", arg: [path], label: "Show History" },
-      { kind: "action", action: "vcs.showHistoryForSelection", label: "Show History for Selection" },
-      { kind: "action", action: "vcs.rollback", arg: [path], label: "Rollback…" },
-      { kind: "separator" },
-      { kind: "action", action: "vcs.push", label: "Push…" },
-      { kind: "action", action: "vcs.update", label: "Pull…" },
-      { kind: "action", action: "vcs.fetch", label: "Fetch" },
-      { kind: "separator" },
-      { kind: "action", action: "vcs.branches", label: "Branches…" },
     ],
   };
 }
@@ -1922,14 +2739,4 @@ let controller: EditorController | null = null;
 
 export function editorController(): EditorController {
   return (controller ??= new EditorController());
-}
-
-/** "Finder" / "Explorer" / "Files", like IDEA's Open In submenu. */
-function revealLabel(): string {
-  const os = usePlatform.getState().os;
-  return os === "macos" ? "Finder" : os === "windows" ? "Explorer" : "Files";
-}
-
-function inPopup(target: EventTarget | null): boolean {
-  return target instanceof Element && !!target.closest("[data-popup]");
 }

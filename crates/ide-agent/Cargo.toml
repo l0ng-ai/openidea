@@ -7,8 +7,11 @@ license.workspace = true
 
 [dependencies]
 encoding_rs.workspace = true
+base64.workspace = true
+blake3.workspace = true
 ide-vfs.workspace = true
 ide-core.workspace = true
+ide-mcp.workspace = true
 ide-jsonrpc.workspace = true
 ide-vcs.workspace = true
 ide-tools = { path = "../ide-tools" }
@@ -21,7 +24,12 @@ tracing.workspace = true
 parking_lot.workspace = true
 dunce.workspace = true
 uuid.workspace = true
+tempfile.workspace = true
 which = "8"
+semver = "1"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs"] }
 
 [dev-dependencies]
-tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

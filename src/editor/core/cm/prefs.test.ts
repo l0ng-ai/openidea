@@ -1,17 +1,26 @@
 import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
-import { indentPastedText, matchesFilePatterns } from "./prefs";
-import { detectIndent, effectiveIndent } from "./setup";
+import { indentPastedText, matchesFilePatterns, softWrapActive } from "./prefs";
+import { detectIndent, effectiveIndent, prefsOf, wrapExtension } from "./setup";
 import { ModifiedRanges, saveCleanupChanges } from "../model/document";
 import { enforceTabLimit, initialTabsState, openTab } from "../model/tabs";
 import { matchesCase } from "@/editor/lsp/completion";
+import { DEFAULT_SETTINGS } from "@/features/settings/model/schema";
 import type { EditorSettings } from "@/platform/ipc";
 
 describe("editor settings behaviour", () => {
-  it("matches soft-wrap file patterns", () => {
+  it("matches soft-wrap file patterns and treats an unset softWrap like the default settings", () => {
     expect(matchesFilePatterns("*.md; *.txt", "/p/README.md")).toBe(true);
     expect(matchesFilePatterns("*.md; *.txt", "/p/main.rs")).toBe(false);
     expect(matchesFilePatterns("*", "/p/main.rs")).toBe(true);
+    expect(softWrapActive(undefined, prefsOf(undefined), "/p/README.md")).toBe(
+      softWrapActive(DEFAULT_SETTINGS.editor.softWrap, prefsOf(DEFAULT_SETTINGS.editor), "/p/README.md"),
+    );
+    expect(softWrapActive(undefined, prefsOf(undefined), "/p/main.rs")).toBe(
+      softWrapActive(DEFAULT_SETTINGS.editor.softWrap, prefsOf(DEFAULT_SETTINGS.editor), "/p/main.rs"),
+    );
+    expect(wrapExtension(undefined, "/p/README.md")).toBe(wrapExtension(DEFAULT_SETTINGS.editor, "/p/README.md"));
+    expect(softWrapActive(false, prefsOf(undefined), "/p/README.md")).toBe(false);
   });
 
   it("re-indents a pasted block to the caret column", () => {

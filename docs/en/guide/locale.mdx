@@ -1,0 +1,45 @@
+---
+title: "Display language"
+description: "Change the language of OpenIDEA's menus and dialogs, and the date format it uses."
+---
+
+## Change the language
+
+Open **Settings › Appearance & Behavior › System Settings › Language and Region** and choose a **Language**:
+
+| Language                       | Setting value |
+| ------------------------------ | ------------- |
+| English (default)              | `en`          |
+| 简体中文 (Chinese, Simplified) | `zh`          |
+| 한국어 (Korean)                | `ko`          |
+| Français (French)              | `fr`          |
+| Polski (Polish)                | `pl`          |
+| Português (Portuguese)         | `pt`          |
+| Español (Spanish)              | `es`          |
+
+The change applies as soon as you click **Apply** or **OK**, including the native menu bar; no restart needed. Text that hasn't been translated yet stays in English. English and Simplified Chinese are complete; the other languages may have gaps.
+
+In `settings.toml` the option is `locale` under `[appearance]`:
+
+```toml
+[appearance]
+locale = "zh"
+```
+
+Plugins are told the display language and can show their own text in it when they ship a translation.
+
+## Search in your language
+
+The settings search, Find Action and Search Everywhere match both the English names and the translated ones, so you can search in either.
+
+## Date and time format
+
+By default, dates in the Git log, Local History and blame annotations follow your operating system's locale. To choose a format yourself, open **Settings › Appearance & Behavior › System Settings › Date Formats** and turn on **Override system date and time format**. The pattern uses `dd`, `MM`, `MMM`, `yy` and `yyyy`.
+
+## Update source
+
+When **Update source** is **Automatic** (the default), OpenIDEA downloads updates from the CNB mirror if the display language is Chinese, and from GitHub otherwise. See [Install](/en/guide/install#updates).
+
+## Help translate
+
+Translations live in the repository. See [Text and localization](/en/contribute/guidelines/i18n) to add or fix strings.

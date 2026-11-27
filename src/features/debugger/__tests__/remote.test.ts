@@ -10,6 +10,7 @@ vi.mock("@/platform/ipc", async (orig) => {
     ...real,
     commands: {
       ...real.commands,
+      javaDebugAdapter: () => ok("java-debug"),
       javaDebugServer: (...a: unknown[]) => {
         invoked.push(["javaDebugServer", a]);
         return ok(41234);
@@ -30,9 +31,14 @@ const {
   goRemoteType,
   pythonRemoteType,
   nodeRemoteType,
+  phpRemoteType,
   jdwpAgentArgs,
+  xdebugCommand,
+  isPythonAttachTarget,
+  pythonAttachConfig,
   remoteAttachConfig,
   remoteJvmTarget,
+  remoteWaitingNote,
 } = remote;
 
 function configOf(type: (typeof REMOTE_TYPES)[number], params: Record<string, string> = {}): RunConfig {
@@ -67,7 +73,9 @@ describe("remote debug configuration types", () => {
       port: "Port must be a number from 1 to 65535",
     });
     expect(missingParams(configOf(type, { port: "abc" }), type).port).toBeDefined();
-    expect(missingParams(configOf(type, { host: "" }), type)).toEqual({ host: "Host is required" });
+    // PHP Remote Debug has no host: php-debug listens itself, Xdebug connects to it.
+    if (type.fields.some((f) => f.key === "host"))
+      expect(missingParams(configOf(type, { host: "" }), type)).toEqual({ host: "Host is required" });
   });
 
   it("Remote JVM Debug defaults to attaching to localhost:5005", () => {
@@ -125,6 +133,18 @@ describe("remote attach requests", () => {
     expect(plain).toEqual({ debugServer: "localhost:2345", mode: "remote" });
   });
 
+  it("a Python program in a container: the project root maps onto its folder there", () => {
+    const target = { name: "app", adapter: "debugpy" as const, hostName: "127.0.0.1", port: 41234, remoteRoot: "/app" };
+    expect(isPythonAttachTarget({ ...target, process: 3 })).toBe(true);
+    expect(isPythonAttachTarget({ name: "app", module: "", hostName: "h", port: 5005 })).toBe(false);
+    const l = pythonAttachConfig(target, "/p");
+    expect(l).toMatchObject({ name: "app", adapter: "debugpy", request: "attach", cwd: "/p" });
+    expect(JSON.parse(l.extraJson!)).toMatchObject({
+      debugServer: "127.0.0.1:41234",
+      pathMappings: [{ localRoot: "/p", remoteRoot: "/app" }],
+    });
+  });
+
   it("Python remote connects to debugpy --listen with pathMappings", () => {
     const l = remoteAttachConfig(
       configOf(pythonRemoteType, { host: "::1", localRoot: "svc", remoteRoot: "/app" }),
@@ -155,6 +175,62 @@ describe("remote attach requests", () => {
       localRoot: "/p",
       remoteRoot: "/usr/src/app",
     });
+  });
+
+  it("Attach to Node.js reconnects automatically only when the option is on", () => {
+    const attach = (params: Record<string, string> = {}) =>
+      JSON.parse(remoteAttachConfig(configOf(nodeRemoteType, params), "/p")!.extraJson!);
+    expect(attach()).not.toHaveProperty("restart");
+    expect(attach({ restart: "true" })).toMatchObject({ restart: true, port: 9229 });
+    expect(nodeRemoteType.fields.find((f) => f.key === "restart")!.control).toBe("checkbox");
+    const hint = nodeRemoteType.fields.find((f) => f.key === "hint")!;
+    expect(hint.value!({ restart: "true", port: "9230" })).toBe("nodemon --inspect=0.0.0.0:9230 app.js");
+  });
+
+  it("PHP Remote Debug defaults to port 9003 and shows the xdebug command line", () => {
+    expect(configOf(phpRemoteType).params).toEqual({ port: "9003" });
+    const field = phpRemoteType.fields.find((f) => f.key === "hint")!;
+    expect(field.control).toBe("output");
+    expect(field.value!({ port: "9004" })).toContain("-dxdebug.client_port=9004");
+    expect(xdebugCommand({})).toBe(
+      "php -dxdebug.mode=debug -dxdebug.start_with_request=yes -dxdebug.client_port=9003 script.php",
+    );
+  });
+
+  it("PHP Remote Debug launches php-debug without a program and maps the roots", () => {
+    const l = remoteAttachConfig(configOf(phpRemoteType, { localRoot: ".", remoteRoot: "/var/www/html" }), "/p")!;
+    expect(l).toMatchObject({ adapter: "php-debug", request: "launch", cwd: "/p" });
+    expect(l.program).toBeNull();
+    expect(JSON.parse(l.extraJson!)).toEqual({ port: 9003, pathMappings: { "/var/www/html": "/p" } });
+    const plain = JSON.parse(remoteAttachConfig(configOf(phpRemoteType), "/p")!.extraJson!);
+    expect(plain).toEqual({ port: 9003 });
+  });
+
+  it.each([
+    [{ remoteRoot: "/app", localRoot: "web" }, { "/app": "/p/web" }],
+    [{ remoteRoot: "/app", localRoot: "/srv/site" }, { "/app": "/srv/site" }],
+  ])("PHP Remote Debug maps the server path %j to the local root", (params, pathMappings) => {
+    const l = remoteAttachConfig(configOf(phpRemoteType, params), "/p")!;
+    expect(JSON.parse(l.extraJson!)).toEqual({ port: 9003, pathMappings });
+    expect(l).toMatchObject({ args: [], env: {} });
+  });
+
+  it("PHP Remote Debug keeps its form when Port, its only value, is cleared", () => {
+    const cleared = withParams(configOf(phpRemoteType), {}, phpRemoteType);
+    expect(missingParams(cleared, phpRemoteType)).toEqual({ port: "Port is required" });
+  });
+
+  it("PHP Remote Debug says which port it waits on; the attaching types don't", () => {
+    expect(remoteWaitingNote(configOf(phpRemoteType, { port: "9010" }))).toBe("Listening for Xdebug on port 9010");
+    for (const t of REMOTE_TYPES.filter((x) => x !== phpRemoteType)) expect(remoteWaitingNote(configOf(t))).toBeNull();
+  });
+
+  it("Attach to Node.js with Reconnect automatically says it waits once its process has ended", () => {
+    const rc = configOf(nodeRemoteType, { restart: "true", port: "9230" });
+    expect(remoteWaitingNote(rc, true)).toBe("Waiting to reconnect to Node.js on localhost:9230");
+    // The first attach (or one that never connects) isn't a reconnect.
+    expect(remoteWaitingNote(rc)).toBeNull();
+    expect(remoteWaitingNote(configOf(nodeRemoteType), true)).toBeNull();
   });
 
   it("start-the-remote-side hints follow the port", () => {

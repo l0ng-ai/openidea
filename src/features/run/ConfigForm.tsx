@@ -3,14 +3,25 @@
  * common ones, the options added through "Modify options" (⌥M) and the
  * Before launch list.
  */
-import { parseJavaArgs } from "@/platform/javaLaunch";
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
+import { writeClipboardText } from "@/platform/clipboard";
+import { isJvmApplication, parseJavaArgs } from "@/platform/javaLaunch";
+import { useRunTargets } from "@/platform/pluginRunTargets";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import clsx from "clsx";
-import { isTauri, type BeforeLaunchTask, type RunConfig } from "@/platform/ipc";
+import { isTauri, type BeforeLaunchTask, type BuildPolicy, type RunConfig } from "@/platform/ipc";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { relativePath, useProject } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
-import { useTx, useTxTemplate } from "@/platform/i18n";
+import { txPart, useTx, useTxTemplate } from "@/platform/i18n";
 import {
   Button,
   Checkbox,
@@ -31,6 +42,8 @@ import {
 } from "@/ui";
 import { useContributions, type RunConfigTypeContribution } from "@/workbench/contributions";
 import { TASK_LABELS, taskLabel, type BeforeLaunchKind } from "./beforeLaunch";
+import { ExpandableTextarea } from "./ExpandableTextarea";
+import { CWD_MACROS } from "./cwdMacros";
 import {
   commandLine,
   compoundCycle,
@@ -42,27 +55,46 @@ import {
   parseEnv,
   type ConfigErrors,
 } from "./configs";
+import { gradleContainsModule } from "./gradleRun";
 import { EnvDialog } from "./EnvDialog";
-import { withTarget } from "./remote";
+import { PluginArgsInput } from "./PluginArgsInput";
+import { pluginOwnedConfig } from "./pluginArgsCompletion";
+import { useBuildModel } from "@/platform/buildModel";
 import { COMPOUND, formParams, terminalApplies, withParams } from "./types";
+import { frameworkFor } from "./testing";
 import { TomcatSettings } from "./TomcatSettings";
+import { toolWindowTitle } from "@/workbench/toolwindows/title";
 import styles from "./Run.module.css";
+
+const TASK_ICONS: Readonly<Partial<Record<string, string>>> = {
+  build: "build-project",
+  buildModule: "build-project",
+  buildArtifacts: "build-rebuild",
+  dotnetBuild: "build-project",
+  run: "run",
+  tool: "settings",
+  command: "terminal",
+};
 
 /**
  * Debug adapters with a real launch template (`debugger/launch.ts`, `debugger/java.ts`),
- * verified against small programs. Others (dart, php-debug, …) only got
+ * verified against small programs. Others (dart, …) only got
  * generic launch arguments and are left out until they have one; a configuration that
  * already names one keeps it.
  */
 const ADAPTERS: ReadonlyArray<{ id: string; label: string }> = [
   { id: "netcoredbg", label: "netcoredbg (.NET)" },
   { id: "java-debug", label: "java-debug (Java)" },
-  { id: "kotlin-debug-adapter", label: "kotlin-debug-adapter (Kotlin)" },
+  { id: "kotlin-debug-adapter", label: "kotlin-lsp or kotlin-debug-adapter (Kotlin)" },
   { id: "debugpy", label: "debugpy (Python)" },
   { id: "js-debug", label: "js-debug (Node.js / TypeScript)" },
   { id: "delve", label: "Delve (Go)" },
   { id: "codelldb", label: "CodeLLDB (Rust, C, C++)" },
   { id: "lldb-dap", label: "lldb-dap (C, C++, Swift)" },
+  { id: "gdb", label: "GDB (C, C++)" },
+  { id: "php-debug", label: "php-debug (PHP)" },
+  { id: "rdbg", label: "rdbg (Ruby)" },
+  { id: "bun-dap", label: "bun-dap (Bun)" },
 ];
 
 /** Options "Modify options" adds to the form: value fields (shown once added) and flags (chips). */
@@ -74,12 +106,20 @@ export type OptionId =
   | "showOnStdout"
   | "showOnStderr"
   | "beforeLaunch"
+  | "buildPolicy"
   | "openToolWindow"
   | "focusToolWindow"
   | "isTest"
+  | "watch"
   | "emulateTerminal";
 
-const VALUE_OPTIONS: ReadonlySet<OptionId> = new Set(["stdinFile", "envFiles", "outputFile", "beforeLaunch"]);
+const VALUE_OPTIONS: ReadonlySet<OptionId> = new Set([
+  "stdinFile",
+  "envFiles",
+  "outputFile",
+  "beforeLaunch",
+  "buildPolicy",
+]);
 
 const OPTION_LABELS: Record<OptionId, string> = {
   allowParallel: "Allow multiple instances",
@@ -89,17 +129,23 @@ const OPTION_LABELS: Record<OptionId, string> = {
   showOnStdout: "Show console when a message is printed to stdout",
   showOnStderr: "Show console when a message is printed to stderr",
   beforeLaunch: "Add before launch task",
+  buildPolicy: "Build",
   openToolWindow: "Open run/debug tool window when started",
   focusToolWindow: "Focus run/debug tool window when started",
   isTest: "Show results in the test runner",
+  watch: "Watch for changes",
   emulateTerminal: "Emulate terminal in output console",
 };
 
 const OPTION_GROUPS: ReadonlyArray<{ label: string; options: OptionId[]; process: boolean }> = [
   { label: "Operating System", options: ["allowParallel", "stdinFile", "envFiles", "emulateTerminal"], process: true },
   { label: "Logs", options: ["outputFile", "showOnStdout", "showOnStderr"], process: true },
-  { label: "Test", options: ["isTest"], process: true },
-  { label: "Before Launch", options: ["beforeLaunch", "openToolWindow", "focusToolWindow"], process: false },
+  { label: "Test", options: ["isTest", "watch"], process: true },
+  {
+    label: "Before Launch",
+    options: ["buildPolicy", "beforeLaunch", "openToolWindow", "focusToolWindow"],
+    process: false,
+  },
 ];
 
 /** Whether the option currently has a (non-default) value. */
@@ -119,12 +165,16 @@ export function optionSet(config: RunConfig, id: OptionId, openByDefault: boolea
       return !!config.showOnStderr;
     case "beforeLaunch":
       return !!config.beforeLaunch?.length;
+    case "buildPolicy":
+      return (config.buildPolicy ?? "automatic") !== "automatic";
     case "openToolWindow":
       return config.openToolWindow ?? openByDefault;
     case "focusToolWindow":
       return !!config.focusToolWindow;
     case "isTest":
       return config.isTest;
+    case "watch":
+      return !!config.watch;
     case "emulateTerminal":
       return !!config.emulateTerminal;
   }
@@ -143,6 +193,8 @@ export function optionPatch(id: OptionId, on: boolean): Partial<RunConfig> {
       return { outputFile: null };
     case "beforeLaunch":
       return { beforeLaunch: [] };
+    case "buildPolicy":
+      return { buildPolicy: on ? "automatic" : null };
     case "showOnStdout":
       return { showOnStdout: on };
     case "showOnStderr":
@@ -153,10 +205,20 @@ export function optionPatch(id: OptionId, on: boolean): Partial<RunConfig> {
       return { focusToolWindow: on };
     case "isTest":
       return on ? { isTest: true, emulateTerminal: false } : { isTest: false };
+    case "watch":
+      return { watch: on };
     case "emulateTerminal":
       return { emulateTerminal: on };
   }
 }
+
+const BUILD_POLICY_OPTIONS: SelectOption[] = [
+  { value: "automatic", label: "Automatic (incremental)" },
+  { value: "make", label: "Build (Make)" },
+  { value: "rebuild", label: "Rebuild" },
+  { value: "noBuild", label: "No build" },
+  { value: "makeAndContinueOnErrors", label: "Build, no error check" },
+];
 
 export interface ConfigFormProps {
   config: RunConfig;
@@ -173,7 +235,7 @@ export interface ConfigFormProps {
 
 /** Picks files or a directory in the local file dialog, opened at `from`; empty when cancelled. */
 async function choosePaths(opts: { directory?: boolean; multiple?: boolean; from: string | null }): Promise<string[]> {
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({
     directory: !!opts.directory,
     multiple: !!opts.multiple,
@@ -212,22 +274,99 @@ function BrowseButton({
   );
 }
 
+const CWD_MACRO_LABELS: Record<(typeof CWD_MACROS)[number], string> = {
+  PROJECT_DIR: "Project root",
+  ContentRoot: "Content root",
+  MODULE_DIR: "Module directory",
+  MODULE_WORKING_DIR: "Module working directory",
+  USER_HOME: "User home directory",
+};
+
+/** Inserts a path macro at the caret of the working directory field. */
+function CwdMacroButton({
+  input,
+  onInsert,
+}: {
+  input: RefObject<HTMLInputElement | null>;
+  onInsert: (v: string) => void;
+}) {
+  const tx = useTx();
+  const ref = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const insert = (macro: string) => {
+    const el = input.current;
+    const value = el?.value ?? "";
+    const from = el?.selectionStart ?? value.length;
+    const to = el?.selectionEnd ?? from;
+    onInsert(value.slice(0, from) + macro + value.slice(to));
+    requestAnimationFrame(() => {
+      el?.focus();
+      el?.setSelectionRange(from + macro.length, from + macro.length);
+    });
+  };
+  return (
+    <>
+      <IconButton
+        ref={ref}
+        icon="plus"
+        size="small"
+        iconSize={14}
+        title={tx("Insert Macro…")}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      />
+      <Menu
+        open={open}
+        onClose={() => setOpen(false)}
+        anchor={ref}
+        placement="bottom-end"
+        aria-label={tx("Macros")}
+        items={CWD_MACROS.filter((m) => m !== "USER_HOME" || !isRemoteWindow()).map((m) => ({
+          id: m,
+          label: `$${m}$`,
+          shortcut: tx(CWD_MACRO_LABELS[m]),
+          run: () => insert(`$${m}$`),
+        }))}
+      />
+    </>
+  );
+}
+
 export function ConfigForm({ config, all, type, errors, template, onChange, modifyRequest }: ConfigFormProps) {
   const openByDefault = useWorkflowSettings((s) => s.run.showOnStart);
   const externalTools = useWorkflowSettings((s) => s.externalTools);
-  const runTargets = useWorkflowSettings((s) => s.runTargets);
+  const runTargets = useRunTargets();
   const toolWindows = useContributions((s) => s.toolWindows);
   const tx = useTx();
   const txTemplate = useTxTemplate();
   const root = useProject((s) => s.project?.root ?? null);
+  const cwdInput = useRef<HTMLInputElement>(null);
+  const gradle = useBuildModel((s) => s.model?.gradle);
+  const runUsing = useProject((s) => s.settings?.languages?.java?.gradle?.runUsing);
+  const delegated =
+    isJvmApplication(config) &&
+    runUsing !== "ide" &&
+    gradle?.some((g) => config.module == null || gradleContainsModule(g, root ?? "", config.module));
+  const buildPolicyOptions = BUILD_POLICY_OPTIONS.filter((option) => {
+    if (config.kind === "gradle" || delegated)
+      return option.value !== "noBuild" && option.value !== "makeAndContinueOnErrors";
+    return config.kind !== "maven" || option.value !== "noBuild";
+  });
   const [shown, setShown] = useState<ReadonlySet<OptionId>>(() => new Set());
   const [argsText, setArgsText] = useState<string | null>(null);
+  const setArgs = (text: string) => {
+    setArgsText(text);
+    const args = parseArgs(text);
+    const module = parseJavaArgs(args).mainClass === parseJavaArgs(config.args).mainClass ? config.module : undefined;
+    update({ args, params: {}, module });
+  };
   const [envText, setEnvText] = useState<string | null>(null);
   const [envFilesText, setEnvFilesText] = useState<string | null>(null);
   const [envOpen, setEnvOpen] = useState(false);
   const [modifyOpen, setModifyOpen] = useState(false);
   const [lastRequest, setLastRequest] = useState(modifyRequest);
-  const [taskMenu, setTaskMenu] = useState(false);
+  const [taskMenu, setTaskMenu] = useState<"add" | { index: number; anchor: HTMLButtonElement } | null>(null);
   const modifyRef = useRef<HTMLButtonElement>(null);
   const taskRef = useRef<HTMLButtonElement>(null);
 
@@ -237,6 +376,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   }
 
   const compound = config.kind === COMPOUND;
+  const buildPolicyApplies = (c: RunConfig) => isJvmApplication(c) || c.kind === "maven" || c.kind === "gradle";
   // Compound and debug-only types (Remote JVM Debug) start no process of their own.
   const noProcess = compound || !!type?.debugOnly;
   const params = compound ? {} : formParams(config, type);
@@ -265,6 +405,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   };
 
   const terminal = terminalApplies(config, type);
+  const watchApplies = config.isTest && frameworkFor(config) === "js";
   // A terminal has no separate input file: the two options exclude each other.
   const blocked = (id: OptionId) =>
     (id === "emulateTerminal" && isShown("stdinFile")) || (id === "stdinFile" && !!config.emulateTerminal);
@@ -273,7 +414,10 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
     ...g.options
       .filter(
         (id) =>
-          (!compound || id === "beforeLaunch") && (id !== "emulateTerminal" || terminal || !!config.emulateTerminal),
+          (!compound || id === "beforeLaunch") &&
+          (id !== "emulateTerminal" || terminal || !!config.emulateTerminal) &&
+          (id !== "buildPolicy" || buildPolicyApplies(config)) &&
+          (id !== "watch" || watchApplies),
       )
       .map((id): MenuItem => ({
         label: OPTION_LABELS[id],
@@ -298,21 +442,33 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
         run: () => addTask("run", c.id),
       })),
     },
-    { label: TASK_LABELS.build, icon: "build-project", run: () => addTask("build") },
+    { label: TASK_LABELS.build, icon: TASK_ICONS.build, run: () => addTask("build") },
+    {
+      label: TASK_LABELS.buildModule,
+      icon: TASK_ICONS.buildModule,
+      disabled: config.module == null,
+      run: () => addTask("buildModule", config.module ?? ""),
+    },
+    { label: TASK_LABELS.buildArtifacts, icon: TASK_ICONS.buildArtifacts, run: () => addTask("buildArtifacts") },
     ...(config.kind === "dotnet"
-      ? [{ label: TASK_LABELS.dotnetBuild, icon: "build-project", run: () => addTask("dotnetBuild") }]
+      ? [{ label: TASK_LABELS.dotnetBuild, icon: TASK_ICONS.dotnetBuild, run: () => addTask("dotnetBuild") }]
       : []),
     {
       label: TASK_LABELS.tool,
       disabled: !externalTools.length,
       submenu: externalTools.map((t) => ({ label: t.name, verbatim: true, run: () => addTask("tool", t.id) })),
     },
-    { label: TASK_LABELS.command, icon: "terminal", run: () => addTask("command") },
+    { label: TASK_LABELS.command, icon: TASK_ICONS.command, run: () => addTask("command") },
     {
       label: TASK_LABELS.toolWindow,
       submenu: [...toolWindows.values()]
-        .sort((a, b) => a.title.localeCompare(b.title))
-        .map((w) => ({ label: w.title, icon: w.icon, run: () => addTask("toolWindow", w.id) })),
+        .map((w) => ({
+          label: toolWindowTitle(w),
+          verbatim: true,
+          icon: w.icon,
+          run: () => addTask("toolWindow", w.id),
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
     },
   ];
   const moveTask = (i: number, d: -1 | 1) => {
@@ -322,10 +478,11 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
     [next[i], next[j]] = [next[j]!, next[i]!];
     setTasks(next);
   };
+  const taskActions = taskMenu === "add" ? null : taskMenu;
 
   const adapterOptions: SelectOption[] = [
     { value: "", label: "None" },
-    ...ADAPTERS.map((a) => ({ value: a.id, label: a.label })),
+    ...ADAPTERS.map((a) => ({ value: a.id, label: tx(a.label) })),
   ];
   if (config.debugAdapter && !ADAPTERS.some((a) => a.id === config.debugAdapter))
     adapterOptions.push({
@@ -334,8 +491,9 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
     });
 
   const targetOptions: SelectOption[] = [
+    { value: "__default", label: "Default run target" },
     { value: "", label: "Local machine" },
-    ...runTargets.map((t) => ({ value: t.id, label: t.name.trim() || t.id })),
+    ...runTargets.map((t) => ({ value: t.id, verbatim: true, label: t.name.trim() || t.id })),
   ];
   if (config.target && !runTargets.some((t) => t.id === config.target))
     targetOptions.push({ value: config.target, label: txTemplate(`${config.target} (missing)`) });
@@ -349,365 +507,449 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
       "openToolWindow",
       "focusToolWindow",
       "isTest",
+      "watch",
     ] as const
   ).filter(
     (id) => (!noProcess || id === "openToolWindow" || id === "focusToolWindow") && optionSet(config, id, openByDefault),
   );
 
   return (
-    <>
+    <div className={clsx(styles.configFields, config.kind === "tomcat" && styles.configFieldsTomcat)}>
       {config.detected && !template && (
         <div className={styles.notice}>
           <T>Detected from the project. Changes are saved as a user configuration that overrides it.</T>
         </div>
       )}
       {!template && (
-        <div className={styles.formHeader}>
-          <Field label="Name" error={errors.name}>
-            <Input
-              value={config.name}
-              invalid={!!errors.name}
-              aria-label="Name"
-              onChange={(e) => update({ name: e.target.value })}
-            />
+        <div className={clsx(styles.formHeader, config.kind === "tomcat" && styles.formHeaderTomcat)}>
+          <Field label={config.kind === "tomcat" ? "Name:" : "Name"} error={errors.name}>
+            <div className={styles.nameControl}>
+              <Input
+                value={config.name}
+                invalid={!!errors.name}
+                aria-label="Name"
+                onChange={(e) => update({ name: e.target.value })}
+              />
+              <div className={styles.storeProjectGroup}>
+                <Checkbox
+                  checked={!config.local}
+                  onChange={(shared) => update({ local: !shared })}
+                  label="Store as project file"
+                  aria-label="Store as project file (.openidea/run.toml); otherwise in the workspace (.openidea/run.local.toml)"
+                />
+              </div>
+            </div>
           </Field>
-          <Checkbox
-            checked={!config.local}
-            onChange={(shared) => update({ local: !shared })}
-            label="Store as project file"
-            aria-label="Store as project file (.openidea/run.toml); otherwise in the workspace (.openidea/run.local.toml)"
-          />
         </div>
       )}
-      {!noProcess && (
-        <Field
-          label="Run on"
-          hint={
-            config.target
-              ? "Debugging is not available on run targets."
-              : runTargets.length
-                ? undefined
-                : "Add SSH hosts in Settings › Build, Execution, Deployment › Run Targets."
-          }
-        >
-          <Select
-            value={config.target ?? ""}
-            options={targetOptions}
-            onChange={(target) => onChange(withTarget(config, target))}
-            aria-label="Run on"
-          />
-        </Field>
-      )}
-      <div className={styles.formSection}>
-        <span className={styles.formSectionTitle}>{tx(kindLabel(config.kind))}</span>
-        <button
-          ref={modifyRef}
-          type="button"
-          className={styles.noticeLink}
-          aria-haspopup="menu"
-          aria-expanded={modifyOpen}
-          onClick={() => setModifyOpen((v) => !v)}
-        >
-          <T>Modify options</T> <Icon name="chevron-down" size={12} />
-        </button>
-        <span className={styles.chooserMuted}>⌥M</span>
-        <Menu
-          open={modifyOpen}
-          anchor={modifyRef}
-          items={menuItems}
-          placement="bottom-end"
-          onClose={() => setModifyOpen(false)}
-        />
-      </div>
-
-      {config.kind === "tomcat" && <TomcatSettings config={config} onChange={onChange} />}
-
-      {compound ? (
-        template ? null : (
-          <CompoundMembers
-            config={config}
-            all={all}
-            error={errors.compound}
-            onChange={(compound) => update({ compound })}
-          />
-        )
-      ) : params && type ? (
-        type.fields
-          .filter((f) => f.visible?.(params) ?? true)
-          .map((f) => (
-            <Field
-              key={f.key}
-              label={f.label}
-              error={errors[f.key]}
-              hint={f.hint}
-              top={f.control === "textarea" || f.control === "output"}
-            >
-              <TypeField
-                field={f}
-                value={params[f.key] ?? ""}
-                params={params}
-                all={all}
-                invalid={!!errors[f.key]}
-                onChange={(v) => setParam(f.key, v)}
-              />
-            </Field>
-          ))
+      {config.kind === "tomcat" ? (
+        <TomcatSettings config={config} onChange={onChange} />
       ) : (
-        <>
-          {type && (
-            <div className={styles.notice}>
-              <T>This command line doesn't fit the type's form; it is edited as a command.</T>
-            </div>
-          )}
-          <Field label="Command" error={errors.command}>
-            <Input
-              mono
-              value={config.command}
-              invalid={!!errors.command}
-              aria-label="Command"
-              placeholder="e.g. ./gradlew or cargo"
-              onChange={(e) => update({ command: e.target.value, params: {} })}
-            />
-          </Field>
-          <Field label="Arguments">
-            <Input
-              mono
-              aria-label="Arguments"
-              value={argsText ?? formatArgs(config.args)}
-              placeholder="Space separated; quote with ' or &quot;"
-              onChange={(e) => {
-                setArgsText(e.target.value);
-                const args = parseArgs(e.target.value);
-                const module =
-                  parseJavaArgs(args).mainClass === parseJavaArgs(config.args).mainClass ? config.module : undefined;
-                update({ args, params: {}, module });
-              }}
-            />
-          </Field>
-        </>
-      )}
-
-      {!noProcess && (
-        <>
-          {!type?.ownsWorkingDirectory && (
-            <Field label="Working directory" error={errors.cwd}>
-              <div className={styles.inputWithButton}>
-                <Input
-                  mono
-                  aria-label="Working directory"
-                  value={config.cwd ?? ""}
-                  placeholder="Project root"
-                  onChange={(e) => update({ cwd: e.target.value.trim() ? e.target.value : null })}
-                />
-                <BrowseButton
-                  directory
-                  title="Browse…"
-                  from={root}
-                  onPick={(path) => update({ cwd: projectRelative(root, path) || null })}
-                />
-              </div>
+        <div className={styles.formSettings}>
+          {!noProcess && (
+            <Field
+              label="Run on"
+              hint={
+                config.target
+                  ? "Debugging is not available on run targets."
+                  : runTargets.length
+                    ? undefined
+                    : "Add SSH hosts in Settings › Build, Execution, Deployment › Run Targets."
+              }
+            >
+              <Select
+                value={config.target ?? "__default"}
+                options={targetOptions}
+                onChange={(target) => {
+                  if (target === "__default") {
+                    const { target: _target, ...rest } = config;
+                    onChange(rest);
+                  } else onChange({ ...config, target });
+                }}
+                aria-label="Run on"
+              />
             </Field>
           )}
-          <Field
-            label="Environment variables"
-            error={errors.env}
-            hint="Separate variables with semicolon: VAR=value; VAR1=value1"
-          >
-            <div className={styles.inputWithButton}>
-              <Input
-                mono
-                aria-label="Environment variables"
-                value={envText ?? formatEnv(config.env)}
-                invalid={!!errors.env}
-                onChange={(e) => {
-                  setEnvText(e.target.value);
-                  update({ env: Object.fromEntries(parseEnv(e.target.value).map((r) => [r.key, r.value])) });
-                }}
-                onBlur={() => setEnvText(null)}
+          <div className={styles.formSection}>
+            <span className={styles.formSectionTitle}>{tx(kindLabel(config.kind))}</span>
+            <button
+              ref={modifyRef}
+              type="button"
+              className={styles.noticeLink}
+              aria-haspopup="menu"
+              aria-expanded={modifyOpen}
+              onClick={() => setModifyOpen((v) => !v)}
+            >
+              <T>Modify options</T> <Icon name="chevron-down" size={12} />
+            </button>
+            <span className={styles.chooserMuted}>⌥M</span>
+            <Menu
+              open={modifyOpen}
+              anchor={modifyRef}
+              items={menuItems}
+              placement="bottom-end"
+              onClose={() => setModifyOpen(false)}
+            />
+          </div>
+
+          {compound ? (
+            template ? null : (
+              <CompoundMembers
+                config={config}
+                all={all}
+                error={errors.compound}
+                onChange={(compound) => update({ compound })}
               />
-              <IconButton
-                icon="list"
-                size="small"
-                iconSize={14}
-                title="Edit Environment Variables"
-                onClick={() => setEnvOpen(true)}
-              />
-              {isTauri() && !isRemoteWindow() && (
-                <IconButton
-                  icon="folder-open"
-                  size="small"
-                  iconSize={14}
-                  title="Browse for .env Files"
-                  onClick={() =>
-                    void choosePaths({ multiple: true, from: root }).then((picked) => {
-                      const current = config.envFiles ?? [];
-                      const added = picked.map((p) => projectRelative(root, p)).filter((f) => !current.includes(f));
-                      if (added.length) update({ envFiles: [...current, ...added] });
-                    })
-                  }
-                />
+            )
+          ) : params && type ? (
+            type.fields
+              .filter((f) => f.visible?.(params) ?? true)
+              .map((f) => (
+                <Field
+                  key={f.key}
+                  label={f.label}
+                  error={errors[f.key]}
+                  hint={f.hint}
+                  top={f.control === "textarea" || f.control === "output"}
+                >
+                  <TypeField
+                    field={f}
+                    value={params[f.key] ?? ""}
+                    params={params}
+                    all={all}
+                    invalid={!!errors[f.key]}
+                    onChange={(v) => setParam(f.key, v)}
+                  />
+                </Field>
+              ))
+          ) : (
+            <>
+              {type && (
+                <div className={styles.notice}>
+                  <T>This command line doesn't fit the type's form; it is edited as a command.</T>
+                </div>
               )}
-            </div>
-            {config.includeSystemEnv === false && (
-              <span className={styles.chooserMuted}>
-                <T>System environment variables are not passed</T>
-              </span>
-            )}
-          </Field>
-          {isShown("envFiles") && (
-            <Field label='Paths to ".env" files' hint="Relative to the project root; separate with semicolon">
-              <Input
-                mono
-                aria-label='Paths to ".env" files'
-                value={envFilesText ?? (config.envFiles ?? []).join(";")}
-                placeholder=".env"
-                onChange={(e) => {
-                  setEnvFilesText(e.target.value);
-                  update({
-                    envFiles: e.target.value
-                      .split(";")
-                      .map((p) => p.trim())
-                      .filter(Boolean),
-                  });
-                }}
-                onBlur={() => setEnvFilesText(null)}
-              />
-            </Field>
-          )}
-          {isShown("stdinFile") && (
-            <Field label="Redirect input from">
-              <div className={styles.inputWithButton}>
+              <Field label="Command" error={errors.command}>
                 <Input
                   mono
-                  aria-label="Redirect input from"
-                  value={config.stdinFile ?? ""}
-                  placeholder="File relative to the project root"
-                  onChange={(e) => update({ stdinFile: e.target.value || null })}
+                  value={config.command}
+                  invalid={!!errors.command}
+                  aria-label="Command"
+                  placeholder="e.g. ./gradlew or cargo"
+                  onChange={(e) => update({ command: e.target.value, params: {} })}
                 />
-                <BrowseButton
-                  title="Browse…"
-                  from={root}
-                  onPick={(path) => update({ stdinFile: projectRelative(root, path) || null })}
-                />
-              </div>
-            </Field>
-          )}
-          {isShown("outputFile") && (
-            <Field label="Save console output to file">
-              <Input
-                mono
-                aria-label="Save console output to file"
-                value={config.outputFile ?? ""}
-                placeholder="File relative to the project root"
-                onChange={(e) => update({ outputFile: e.target.value || null })}
-              />
-            </Field>
-          )}
-          <Field label="Debug adapter">
-            <Select
-              value={config.debugAdapter ?? ""}
-              options={adapterOptions}
-              onChange={(v) => update({ debugAdapter: v || null })}
-              aria-label="Debug adapter"
-            />
-          </Field>
-        </>
-      )}
-
-      {isShown("beforeLaunch") && (
-        <Field label="Before launch" error={errors.beforeLaunch} top>
-          <div className={styles.taskList} role="list" aria-label={tx("Before launch tasks")}>
-            {tasks.map((t, i) => (
-              <div key={i} role="listitem" className={styles.taskRow}>
-                {t.kind === "command" ? (
-                  <Input
-                    mono
-                    aria-label={txTemplate(`Before launch command ${i + 1}`)}
-                    value={t.target ?? ""}
-                    placeholder="Shell command, e.g. make generate"
-                    onChange={(e) => setTasks(tasks.map((x, j) => (j === i ? { ...x, target: e.target.value } : x)))}
+              </Field>
+              <Field label="Arguments">
+                {pluginOwnedConfig(config) ? (
+                  <PluginArgsInput
+                    configId={config.id}
+                    value={argsText ?? formatArgs(config.args)}
+                    placeholder="Space separated; quote with ' or &quot;"
+                    onChange={setArgs}
                   />
                 ) : (
-                  <span className={styles.taskLabel}>{txTemplate(taskLabel(t, all))}</span>
+                  <Input
+                    mono
+                    aria-label="Arguments"
+                    value={argsText ?? formatArgs(config.args)}
+                    placeholder="Space separated; quote with ' or &quot;"
+                    onChange={(e) => setArgs(e.target.value)}
+                  />
                 )}
-                <IconButton
-                  icon="arrow-up"
-                  size="small"
-                  iconSize={12}
-                  title="Move Up"
-                  disabled={i === 0}
-                  onClick={() => moveTask(i, -1)}
-                />
-                <IconButton
-                  icon="arrow-down"
-                  size="small"
-                  iconSize={12}
-                  title="Move Down"
-                  disabled={i === tasks.length - 1}
-                  onClick={() => moveTask(i, 1)}
-                />
-                <IconButton
-                  icon="minus"
-                  size="small"
-                  iconSize={12}
-                  title="Remove Task"
-                  onClick={() => setTasks(tasks.filter((_, j) => j !== i))}
-                />
-              </div>
-            ))}
-            <Button
-              ref={taskRef}
-              size="small"
-              variant="ghost"
-              icon="plus"
-              aria-haspopup="menu"
-              onClick={() => setTaskMenu(true)}
-            >
-              <T>Add task</T>
-            </Button>
-            <Menu open={taskMenu} anchor={taskRef} items={taskItems} onClose={() => setTaskMenu(false)} />
-          </div>
-        </Field>
-      )}
+              </Field>
+            </>
+          )}
 
-      {chips.length > 0 && (
-        <div className={styles.chips}>
-          {chips.map((id) => (
-            <span key={id} className={styles.chip}>
-              <T>{OPTION_LABELS[id]}</T>
-              <IconButton
-                icon="close"
-                size="small"
-                iconSize={10}
-                title={tx`Remove '${OPTION_LABELS[id]}'`}
-                onClick={() => update(optionPatch(id, false))}
+          {!noProcess && (
+            <>
+              {!type?.ownsWorkingDirectory && (
+                <Field label="Working directory" error={errors.cwd}>
+                  <div className={styles.inputWithButton}>
+                    <Input
+                      ref={cwdInput}
+                      mono
+                      aria-label="Working directory"
+                      value={config.cwd ?? ""}
+                      placeholder="Project root"
+                      onChange={(e) => update({ cwd: e.target.value.trim() ? e.target.value : null })}
+                    />
+                    <CwdMacroButton input={cwdInput} onInsert={(cwd) => update({ cwd })} />
+                    <BrowseButton
+                      directory
+                      title="Browse…"
+                      from={root}
+                      onPick={(path) => update({ cwd: projectRelative(root, path) || null })}
+                    />
+                  </div>
+                </Field>
+              )}
+              <Field
+                label="Environment variables"
+                error={errors.env}
+                hint="Separate variables with semicolon: VAR=value; VAR1=value1"
+              >
+                <div className={styles.inputWithButton}>
+                  <Input
+                    mono
+                    aria-label="Environment variables"
+                    value={envText ?? formatEnv(config.env)}
+                    invalid={!!errors.env}
+                    onChange={(e) => {
+                      setEnvText(e.target.value);
+                      update({ env: Object.fromEntries(parseEnv(e.target.value).map((r) => [r.key, r.value])) });
+                    }}
+                    onBlur={() => setEnvText(null)}
+                  />
+                  <IconButton
+                    icon="list"
+                    size="small"
+                    iconSize={14}
+                    title="Edit Environment Variables"
+                    onClick={() => setEnvOpen(true)}
+                  />
+                  {isTauri() && !isRemoteWindow() && (
+                    <IconButton
+                      icon="folder-open"
+                      size="small"
+                      iconSize={14}
+                      title="Browse for .env Files"
+                      onClick={() =>
+                        void choosePaths({ multiple: true, from: root }).then((picked) => {
+                          const current = config.envFiles ?? [];
+                          const added = picked.map((p) => projectRelative(root, p)).filter((f) => !current.includes(f));
+                          if (added.length) update({ envFiles: [...current, ...added] });
+                        })
+                      }
+                    />
+                  )}
+                </div>
+                {config.includeSystemEnv === false && (
+                  <span className={styles.chooserMuted}>
+                    <T>System environment variables are not passed</T>
+                  </span>
+                )}
+              </Field>
+              {isShown("envFiles") && (
+                <Field label='Paths to ".env" files' hint="Relative to the project root; separate with semicolon">
+                  <Input
+                    mono
+                    aria-label='Paths to ".env" files'
+                    value={envFilesText ?? (config.envFiles ?? []).join(";")}
+                    placeholder=".env"
+                    onChange={(e) => {
+                      setEnvFilesText(e.target.value);
+                      update({
+                        envFiles: e.target.value
+                          .split(";")
+                          .map((p) => p.trim())
+                          .filter(Boolean),
+                      });
+                    }}
+                    onBlur={() => setEnvFilesText(null)}
+                  />
+                </Field>
+              )}
+              {isShown("stdinFile") && (
+                <Field label="Redirect input from">
+                  <div className={styles.inputWithButton}>
+                    <Input
+                      mono
+                      aria-label="Redirect input from"
+                      value={config.stdinFile ?? ""}
+                      placeholder="File relative to the project root"
+                      onChange={(e) => update({ stdinFile: e.target.value || null })}
+                    />
+                    <BrowseButton
+                      title="Browse…"
+                      from={root}
+                      onPick={(path) => update({ stdinFile: projectRelative(root, path) || null })}
+                    />
+                  </div>
+                </Field>
+              )}
+              {isShown("outputFile") && (
+                <Field label="Save console output to file">
+                  <Input
+                    mono
+                    aria-label="Save console output to file"
+                    value={config.outputFile ?? ""}
+                    placeholder="File relative to the project root"
+                    onChange={(e) => update({ outputFile: e.target.value || null })}
+                  />
+                </Field>
+              )}
+              <Field label="Debug adapter">
+                <Select
+                  value={config.debugAdapter ?? ""}
+                  options={adapterOptions}
+                  onChange={(v) => update({ debugAdapter: v || null })}
+                  aria-label="Debug adapter"
+                />
+              </Field>
+            </>
+          )}
+
+          {isShown("buildPolicy") && buildPolicyApplies(config) && (
+            <Field label="Build" hint="Before launch build for this Java configuration">
+              <Select
+                value={config.buildPolicy ?? "automatic"}
+                options={buildPolicyOptions}
+                onChange={(v) => update({ buildPolicy: v === "automatic" ? null : (v as BuildPolicy) })}
+                aria-label="Build"
               />
-            </span>
-          ))}
+            </Field>
+          )}
+
+          {isShown("beforeLaunch") && (
+            <Field label="Before launch" error={errors.beforeLaunch} top>
+              <div className={styles.beforeLaunchTasks} role="list" aria-label={tx("Before launch tasks")}>
+                {tasks.map((t, i) => {
+                  const label = txTemplate(taskLabel(t, all));
+                  const target = t.kind === "run" ? all.find((c) => c.id === t.target) : undefined;
+                  const icon = target ? configIcon(target) : TASK_ICONS[t.kind];
+                  const prefix = (
+                    <>
+                      {icon && <Icon name={icon} size={14} />}
+                      <span className={styles.taskOrder}>{i + 1}.</span>
+                    </>
+                  );
+                  const actions = {
+                    "aria-haspopup": "menu" as const,
+                    "aria-expanded": taskActions?.index === i,
+                    onClick: (e: MouseEvent<HTMLButtonElement>) => setTaskMenu({ index: i, anchor: e.currentTarget }),
+                  };
+                  return (
+                    // oxlint-disable-next-line react/no-array-index-key -- tasks of one kind can repeat; position is the identity
+                    <div key={i} role="listitem" className={styles.taskTag}>
+                      {t.kind === "command" ? (
+                        <>
+                          {prefix}
+                          <Input
+                            mono
+                            className={styles.taskCommand}
+                            aria-label={txTemplate(`Before launch command ${i + 1}`)}
+                            value={t.target ?? ""}
+                            placeholder="Shell command, e.g. make generate"
+                            onChange={(e) =>
+                              setTasks(tasks.map((x, j) => (j === i ? { ...x, target: e.target.value } : x)))
+                            }
+                          />
+                          <IconButton icon="more" title="Task Actions" size="small" {...actions} />
+                        </>
+                      ) : (
+                        <button type="button" className={styles.taskName} title={label} {...actions}>
+                          {prefix}
+                          <span className={styles.taskLabel}>{label}</span>
+                        </button>
+                      )}
+                      <IconButton
+                        icon="close"
+                        size="small"
+                        iconSize={12}
+                        title="Remove Task"
+                        onClick={() => setTasks(tasks.filter((_, j) => j !== i))}
+                      />
+                    </div>
+                  );
+                })}
+                <div role="listitem">
+                  {tasks.length ? (
+                    <IconButton
+                      ref={taskRef}
+                      title="Add task"
+                      icon="plus"
+                      size="small"
+                      aria-haspopup="menu"
+                      aria-expanded={taskMenu === "add"}
+                      onClick={() => setTaskMenu("add")}
+                    />
+                  ) : (
+                    <Button
+                      ref={taskRef}
+                      size="small"
+                      variant="ghost"
+                      icon="plus"
+                      aria-haspopup="menu"
+                      aria-expanded={taskMenu === "add"}
+                      onClick={() => setTaskMenu("add")}
+                    >
+                      <T>Add task</T>
+                    </Button>
+                  )}
+                </div>
+                <Menu open={taskMenu === "add"} anchor={taskRef} items={taskItems} onClose={() => setTaskMenu(null)} />
+                {taskActions && (
+                  <Menu
+                    open
+                    anchor={taskActions.anchor}
+                    aria-label={tx("Task Actions")}
+                    items={[
+                      {
+                        label: "Move Up",
+                        icon: "arrow-up",
+                        disabled: taskActions.index === 0,
+                        run: () => moveTask(taskActions.index, -1),
+                      },
+                      {
+                        label: "Move Down",
+                        icon: "arrow-down",
+                        disabled: taskActions.index === tasks.length - 1,
+                        run: () => moveTask(taskActions.index, 1),
+                      },
+                    ]}
+                    onClose={() => setTaskMenu(null)}
+                  />
+                )}
+              </div>
+            </Field>
+          )}
+
+          {chips.length > 0 && (
+            <div className={styles.chips}>
+              {chips.map((id) => (
+                <span key={id} className={styles.chip}>
+                  <T>{OPTION_LABELS[id]}</T>
+                  <IconButton
+                    icon="close"
+                    size="small"
+                    iconSize={10}
+                    title={tx`Remove '${txPart(OPTION_LABELS[id])}'`}
+                    onClick={() => update(optionPatch(id, false))}
+                  />
+                </span>
+              ))}
+            </div>
+          )}
+
+          {config.watch && watchApplies && !noProcess && (
+            <div className={styles.notice}>
+              <T>Debug runs the tests once, without watching.</T>
+            </div>
+          )}
+
+          {!noProcess && !template && (
+            <div className={styles.editPreview}>
+              <span className={styles.chooserMuted}>
+                <T>Command line</T>
+              </span>
+              <code>{commandLine(config) || "—"}</code>
+            </div>
+          )}
+
+          {envOpen && (
+            <EnvDialog
+              env={config.env}
+              includeSystemEnv={config.includeSystemEnv !== false}
+              onClose={() => setEnvOpen(false)}
+              onOk={(env, includeSystemEnv) => {
+                setEnvText(null);
+                update({ env, includeSystemEnv });
+              }}
+            />
+          )}
         </div>
       )}
-
-      {!noProcess && !template && (
-        <div className={styles.editPreview}>
-          <span className={styles.chooserMuted}>
-            <T>Command line</T>
-          </span>
-          <code>{commandLine(config) || "—"}</code>
-        </div>
-      )}
-
-      {envOpen && (
-        <EnvDialog
-          env={config.env}
-          includeSystemEnv={config.includeSystemEnv !== false}
-          onClose={() => setEnvOpen(false)}
-          onOk={(env, includeSystemEnv) => {
-            setEnvText(null);
-            update({ env, includeSystemEnv });
-          }}
-        />
-      )}
-    </>
+    </div>
   );
 }
 
@@ -726,7 +968,6 @@ function TypeField({
   invalid: boolean;
   onChange: (value: string) => void;
 }) {
-  const tx = useTx();
   const root = useProject((s) => s.project?.root ?? null);
   const listId = `run-field-${field.key}`;
   const [loaded, setLoaded] = useState<ReadonlyArray<{ value: string; label: string; detail?: string }>>([]);
@@ -742,8 +983,9 @@ function TypeField({
   }, [field]);
   if (field.control === "output") return <OutputField label={field.label} text={field.value?.(params) ?? ""} />;
   if (field.control === "select") {
-    const options = [...(field.options ?? []), ...loaded];
-    if (value && !options.some((o) => o.value === value)) options.push({ value, label: value });
+    // Loaded options are detected data (JDKs, build modules), not catalog text.
+    const options: SelectOption[] = [...(field.options ?? []), ...loaded.map((o) => ({ ...o, verbatim: true }))];
+    if (value && !options.some((o) => o.value === value)) options.push({ value, label: value, verbatim: true });
     return (
       <Select
         value={value || (options[0]?.value ?? "")}
@@ -757,14 +999,13 @@ function TypeField({
     return <Checkbox checked={value === "true"} onChange={(on) => onChange(on ? "true" : "")} label={field.label} />;
   if (field.control === "textarea")
     return (
-      <textarea
-        className={clsx(styles.textarea, invalid && styles.textareaInvalid)}
-        aria-label={tx(field.label)}
-        spellCheck={false}
+      <ExpandableTextarea
+        label={field.label}
         value={value}
-        placeholder={tx(field.placeholder)}
-        rows={field.rows ?? 4}
-        onChange={(e) => onChange(e.target.value)}
+        placeholder={field.placeholder}
+        rows={field.rows}
+        invalid={invalid}
+        onChange={onChange}
       />
     );
   const suggestions = field.suggestions?.(all, params) ?? [];
@@ -811,8 +1052,7 @@ function OutputField({ label, text }: { label: string; text: string }) {
   const tx = useTx();
   const [copied, setCopied] = useState(false);
   const copy = () => {
-    void navigator.clipboard
-      ?.writeText(text)
+    void writeClipboardText(text)
       .then(() => setCopied(true))
       .catch(() => undefined);
   };

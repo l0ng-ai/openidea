@@ -1,0 +1,88 @@
+id = "cpp"
+name = "C/C++"
+group = "C/C++"
+icon = "project-cpp"
+description = "A CMake executable in C or C++."
+
+[[fields]]
+id = "lang"
+label = "Language:"
+type = "choice"
+segmented = true
+options = [{ value = "cpp", label = "C++" }, { value = "c", label = "C" }]
+default = "cpp"
+
+[[fields]]
+id = "cxx"
+label = "C++ standard:"
+type = "choice"
+options = ["23", "20", "17", "14"]
+default = "20"
+visible = { lang = "cpp" }
+
+[[fields]]
+id = "cstd"
+label = "C standard:"
+type = "choice"
+options = ["23", "17", "11", "99"]
+default = "17"
+visible = { lang = "c" }
+
+[[files]]
+path = "CMakeLists.txt"
+when = { lang = "cpp" }
+content = '''
+cmake_minimum_required(VERSION 3.20)
+project({{name|snake}} LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD {{cxx}})
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+add_executable({{name|snake}} src/main.cpp)
+'''
+
+[[files]]
+path = "src/main.cpp"
+when = { lang = "cpp" }
+content = '''
+#include <iostream>
+
+int main() {
+    std::cout << "Hello, World!" << std::endl;
+    return 0;
+}
+'''
+
+[[files]]
+path = "CMakeLists.txt"
+when = { lang = "c" }
+content = '''
+cmake_minimum_required(VERSION 3.20)
+project({{name|snake}} LANGUAGES C)
+
+set(CMAKE_C_STANDARD {{cstd}})
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+add_executable({{name|snake}} src/main.c)
+'''
+
+[[files]]
+path = "src/main.c"
+when = { lang = "c" }
+content = '''
+#include <stdio.h>
+
+int main(void) {
+    printf("Hello, World!\n");
+    return 0;
+}
+'''
+
+[[files]]
+path = ".gitignore"
+content = '''
+build/
+cmake-build-*/
+'''

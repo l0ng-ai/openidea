@@ -60,15 +60,17 @@ const introduceFallback = vi.fn(async () => true);
 vi.mock("./introduce", () => ({
   introduceFallback,
   expressionCandidates: (_doc: unknown, at: { candidates?: unknown[] }) => at.candidates ?? [],
-  expressionPreview: (text: string) => text,
 }));
 const safeDelete = vi.fn();
 vi.mock("./safeDelete", () => ({ safeDelete }));
 const startHierarchyRefactoring = vi.fn();
 vi.mock("./hierarchy", () => ({ startHierarchyRefactoring }));
+const startExtractInterface = vi.fn();
+vi.mock("./extractInterface", () => ({ EXTRACT_INTERFACE_LANGUAGES: new Set(["java"]), startExtractInterface }));
 
+const { registerAction } = await import("@/platform/actions");
 const { classifyAction, kindAdvertised, cannotPerform } = await import("./catalog");
-const { refactorThis, runRefactoring } = await import("./refactorThis");
+const { refactorThis, requestKind, runRefactoring } = await import("./refactorThis");
 const { useLspPopup, closePopup } = await import("@/editor/lsp/popupStore");
 const { lspDoc } = await import("@/editor/lsp/lsp");
 const { inplaceRenameExtension, inplaceSession } = await import("@/editor/lsp/inplaceRename");
@@ -143,16 +145,28 @@ describe("catalog", () => {
     expect(c("Change signature", "refactor.changeSignature")).toBe("changeSignature");
     expect(c("Convert parameters to destructured object", "refactor.rewrite.parameters.toDestructured")).toBeNull();
     expect(c("Extract type alias", "refactor.extract.type")).toBeNull();
+    expect(c("Extract to type alias", "refactor.extract.type")).toBe("extractTypeAlias");
+    expect(c("Extract to typedef", "refactor.extract.typedef")).toBe("extractTypeAlias");
+    expect(c("Extract to interface", "refactor.extract.interface")).toBe("extractInterface");
+    expect(c("Extract to interface", "refactor")).toBe("extractInterface");
     expect(c("Remove unused", "quickfix")).toBeNull();
     // typescript-language-server reports plain `refactor` for everything.
     expect(c("Extract to inner function in function 'formatMoney'", "refactor")).toBe("extractMethod");
     expect(c("Extract to constant in enclosing scope", "refactor")).toBe("extractVariable");
-    expect(c("Extract to type alias", "refactor")).toBeNull();
+    expect(c("Extract to type alias", "refactor")).toBe("extractTypeAlias");
     expect(c("Extract type as type alias", "refactor.extract")).toBeNull();
     expect(c("Extract struct from enum variant", "refactor.extract")).toBeNull();
     expect(c("Move to a new file", "refactor")).toBe("move");
     expect(c("Inline variable", "refactor")).toBe("inline");
     expect(c("Convert to template string", "refactor")).toBeNull();
+    // pylsp-rope (Python).
+    expect(c("Extract method including similar statements", "refactor.extract")).toBe("extractMethod");
+    expect(c("Extract global method", "refactor.extract")).toBeNull();
+    expect(c("Extract variable", "refactor.extract")).toBe("extractVariable");
+    expect(c("Extract global variable including similar statements", "refactor.extract")).toBe("extractConstant");
+    expect(c("Inline method/variable/parameter", "refactor.inline")).toBe("inline");
+    expect(c("Introduce parameter", "refactor")).toBe("extractParameter");
+    expect(c("To method object", "refactor.rewrite")).toBeNull();
   });
 
   it("knows which kinds an advertised list can produce", () => {
@@ -171,7 +185,7 @@ describe("catalog", () => {
 });
 
 describe("Refactor This", () => {
-  it("lists only the refactorings applicable at the caret, in IDEA order", async () => {
+  it("lists applicable refactorings in menu order and groups extraction actions", async () => {
     prepare = ok({ start: { line: 0, col: 0 }, end: { line: 0, col: 1 } });
     query = answer([
       action("Inline variable", "refactor.inline"),
@@ -180,26 +194,36 @@ describe("Refactor This", () => {
       action("Extract into function", "refactor.extract", "Can't extract here"),
     ]);
     await refactorThis(editor(), vi.fn());
-    expect(labels()).toEqual(["Rename…", "Safe Delete…", "Introduce Variable…", "Inline…", "Convert to raw string"]);
+    expect(labels()).toEqual(["Rename…", "Introduce Variable…", "Inline…", "Safe Delete…", "Convert to raw string"]);
+    const popup = useLspPopup.getState().popup;
+    expect(popup?.kind === "list" && popup.items[1]?.section?.label).toBe("Extract/Introduce");
     // IDEA's numbered list: 1-9 run a row directly.
     expect((useLspPopup.getState().popup as { numbered?: boolean }).numbered).toBe(true);
     expect(lspCodeActionQuery).toHaveBeenCalledOnce();
     expect(lspCodeActionQuery.mock.calls[0]![3]).toEqual(["refactor"]);
   });
 
-  it("offers Pull Members Up / Push Members Down in Java files, after IDEA's other refactorings", async () => {
+  it("offers Extract Interface, Pull Members Up and Push Members Down in Java files, after IDEA's other refactorings", async () => {
     query = answer([action("Convert to switch expression", "refactor.rewrite")]);
     const v = editor("class Dog extends Animal { int price; }", "java");
     await refactorThis(v, vi.fn());
-    expect(labels()).toEqual(["Pull Members Up…", "Push Members Down…", "Convert to switch expression"]);
+    expect(labels()).toEqual([
+      "Extract Interface…",
+      "Pull Members Up…",
+      "Push Members Down…",
+      "Convert to switch expression",
+    ]);
     const items = (useLspPopup.getState().popup as { items: { label: string; run: () => void }[] }).items;
     items.find((i) => i.label === "Push Members Down…")!.run();
     expect(startHierarchyRefactoring).toHaveBeenCalledWith(v, "pushDown");
+    items.find((i) => i.label === "Extract Interface…")!.run();
+    expect(startExtractInterface).toHaveBeenCalledWith(v);
     closePopup();
     v.destroy();
     // Other languages have no server for them; nor does Java while its server is down.
     await refactorThis(editor(), vi.fn());
     expect(labels()).not.toContain("Pull Members Up…");
+    expect(labels()).not.toContain("Extract Interface…");
     query = async () => unavailable;
     await refactorThis(editor("class Dog {}", "java"), vi.fn());
     expect(labels()).toEqual(["Nothing here"]);
@@ -303,12 +327,47 @@ describe("Refactor menu actions", () => {
     expect(showHint).toHaveBeenLastCalledWith(v, "Cannot perform refactoring. No language server for Rust is running");
   });
 
+  it("offer to install pylsp-rope when a Python refactoring it provides finds nothing", async () => {
+    const prompt = vi.fn();
+    const dispose = registerAction({
+      id: "tools.promptInstall",
+      title: "Install Missing Tool",
+      run: ({ arg }) => prompt(arg),
+    });
+    try {
+      const py = editor("total = price * 2", "python");
+      // oxlint-disable-next-line no-await-in-loop -- the test asserts the order of the install prompts
+      for (const id of ["extractMethod", "inline", "extractParameter"] as const) await runRefactoring(py, id);
+      expect(prompt.mock.calls.map((c) => c[0])).toEqual([
+        { name: "pylsp", refactoring: "Extract Method" },
+        { name: "pylsp", refactoring: "Inline" },
+        { name: "pylsp", refactoring: "Introduce Parameter" },
+      ]);
+      prompt.mockClear();
+      // Not a rope refactoring, another language, or the server already offers it.
+      await runRefactoring(py, "move");
+      await runRefactoring(editor(), "extractMethod");
+      query = answer([action("Extract method", "refactor.extract")]);
+      await runRefactoring(editor("total = price * 2", "python"), "extractMethod");
+      expect(prompt).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
+  });
+
   it("Introduce Variable falls back to the syntax refactoring", async () => {
     query = async () => unavailable;
     const v = editor();
     await runRefactoring(v, "extractVariable");
     expect(introduceFallback).toHaveBeenCalledWith(v, "variable", "notReady");
     expect(showHint).not.toHaveBeenCalled();
+  });
+
+  it("Introduce Variable builds the variable itself when the server offers only Extract constant", async () => {
+    query = answer([action("Extract constant", "refactor.extract.constant")]);
+    const v = editor();
+    await runRefactoring(v, "extractVariable");
+    expect(introduceFallback).toHaveBeenCalledWith(v, "variable", "otherKind");
   });
 
   it("never fall back to unrelated code actions", async () => {
@@ -363,6 +422,67 @@ describe("Refactor menu actions", () => {
     expect(temporaryHighlights(v)).toHaveLength(2);
   });
 
+  it("run tsserver's Extract to type alias / interface in TypeScript and rename the new type", async () => {
+    const text = "function f(p: { a: string }) {}";
+    const literal = "{ a: string }";
+    const v = editor(text, "typescript");
+    v.dispatch({ selection: { anchor: text.indexOf(literal), head: text.indexOf(literal) + literal.length } });
+    query = answer([
+      action("Extract to interface", "refactor.extract.interface"),
+      action("Extract to type alias", "refactor.extract.type"),
+    ]);
+    onApply = () =>
+      v.dispatch({
+        changes: [
+          { from: 0, insert: "type NewType = { a: string };\n\n" },
+          { from: text.indexOf(literal), to: text.indexOf(literal) + literal.length, insert: "NewType" },
+        ],
+      });
+    await runRefactoring(v, "extractTypeAlias");
+    expect(lspCodeActionQuery.mock.calls[0]![3]).toEqual(["refactor"]);
+    expect(lspResolveCodeAction.mock.calls[0]![1].title).toBe("Extract to type alias");
+    await vi.waitFor(() => expect(inplaceSession(v.state)).not.toBeNull());
+    expect(inplaceSession(v.state)!.oldName).toBe("NewType");
+
+    lspResolveCodeAction.mockClear();
+    onApply = null;
+    const w = editor(text, "typescriptreact");
+    w.dispatch({ selection: { anchor: text.indexOf(literal), head: text.indexOf(literal) + literal.length } });
+    await runRefactoring(w, "extractInterface");
+    expect(lspResolveCodeAction.mock.calls[0]![1].title).toBe("Extract to interface");
+    expect(startExtractInterface).not.toHaveBeenCalled();
+  });
+
+  it("say why when tsserver offers no type extraction, and keep Extract Interface on Java's dialog", async () => {
+    query = answer([action("Extract to constant in enclosing scope", "refactor.extract.constant")]);
+    const ts = editor("const x = 1;", "typescript");
+    await runRefactoring(ts, "extractTypeAlias");
+    expect(showHint).toHaveBeenLastCalledWith(ts, "Cannot perform refactoring. Selected block should represent a type");
+    await runRefactoring(ts, "extractInterface");
+    expect(showHint).toHaveBeenLastCalledWith(
+      ts,
+      "Cannot perform refactoring. Selected block should represent an object type",
+    );
+    expect(lspExecuteCodeAction).not.toHaveBeenCalled();
+
+    const rs = editor();
+    await runRefactoring(rs, "extractTypeAlias");
+    expect(showHint).toHaveBeenLastCalledWith(
+      rs,
+      "Cannot perform refactoring. Extract Type Alias is not supported for Rust",
+    );
+    await runRefactoring(rs, "extractInterface");
+    expect(showHint).toHaveBeenLastCalledWith(
+      rs,
+      "Cannot perform refactoring. Extract Interface is not supported for Rust",
+    );
+
+    lspCodeActionQuery.mockClear();
+    await runRefactoring(editor("class A {}", "java"), "extractInterface");
+    expect(startExtractInterface).toHaveBeenCalledOnce();
+    expect(lspCodeActionQuery).not.toHaveBeenCalled();
+  });
+
   it("rename the introduced name in place after the server's edit", async () => {
     const text = "fn main() { let total = price * 2; }";
     const v = editor(text);
@@ -380,5 +500,16 @@ describe("Refactor menu actions", () => {
     const session = inplaceSession(v.state)!;
     expect(session.oldName).toBe("var_name");
     expect(session.others).toHaveLength(1);
+  });
+});
+
+describe("requested code action kind", () => {
+  it("asks typescript-language-server and clangd for all refactorings, other servers for the kind", () => {
+    expect(requestKind("refactor.extract", "typescript")).toBe("refactor");
+    expect(requestKind("refactor.extract", "javascriptreact")).toBe("refactor");
+    expect(requestKind("refactor.extract", "c")).toBe("refactor");
+    expect(requestKind("refactor.extract", "cpp")).toBe("refactor");
+    expect(requestKind("refactor.extract", "java")).toBe("refactor.extract");
+    expect(requestKind("source.organizeImports", "typescript")).toBe("source.organizeImports");
   });
 });

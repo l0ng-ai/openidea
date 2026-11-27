@@ -1,0 +1,27 @@
+id = "test.ext-owner"
+name = "Extension point owner"
+version = "0.1.0"
+engines.openidea = "^1.5"
+wasm = "dist/plugin.wasm"
+activation = ["on-command:*", "on-event:extensions-changed"]
+
+[capabilities]
+required = ["storage"]
+
+[[extension-points]]
+id = "test.ext-owner.items"
+description = "Things other plugins add"
+required = ["name"]
+fields = { name = "string", weight = "integer" }
+
+[[contributes.commands]]
+id = "dump"
+title = "Dump contributions"
+
+[[contributes.commands]]
+id = "read"
+title = "Read the contributions to any extension point"
+
+[[contributes.commands]]
+id = "changes"
+title = "Show the change events received"

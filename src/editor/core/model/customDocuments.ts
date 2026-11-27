@@ -15,7 +15,8 @@ export interface CustomDocument {
 type Kinds = ReadonlyMap<string, EditorKindContribution>;
 
 export function documentLifecycle(input: EditorInput, kinds: Kinds): EditorDocumentLifecycle | undefined {
-  return kinds.get(input.kind)?.document;
+  const document = kinds.get(input.kind)?.document;
+  return typeof document === "function" ? document(input) : document;
 }
 
 /** Open custom documents by input key, in visual tab order (the first tab's input). */
@@ -50,6 +51,19 @@ export function documentDirty(d: CustomDocument): boolean {
 export function inputDirty(input: EditorInput, kinds: Kinds): boolean | null {
   const lifecycle = documentLifecycle(input, kinds);
   return lifecycle ? documentDirty({ input, lifecycle }) : null;
+}
+
+/**
+ * Whether the input's editor kind reports it busy (`EditorKindContribution.isBusy`).
+ * A failing check counts as not busy, so a broken kind cannot make its tabs unclosable.
+ */
+export async function inputBusy(input: EditorInput, kinds: Kinds): Promise<boolean> {
+  try {
+    return (await kinds.get(input.kind)?.isBusy?.(input)) === true;
+  } catch (e) {
+    console.warn(`editor input ${input.key}: isBusy failed`, e);
+    return false;
+  }
 }
 
 /** The rejection reasons of `results` (an AggregateError contributes each of its errors). */

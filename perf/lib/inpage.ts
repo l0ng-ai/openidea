@@ -20,16 +20,23 @@ export interface InPage {
   afterNextPaint(): Promise<number>;
   startFrames(): void;
   stopFrames(): number[];
-  /** Resolves with (frame start − first input after `arm`) once `selector` (and `text`) is rendered. */
-  arm(): void;
-  waitShown(selector: string, text: string | null, timeoutMs: number): Promise<number>;
+  /** Arms a current-input transition; unarmed waits remain navigation observations. */
+  arm(): number;
+  cancel(token: number): void;
+  waitShown(
+    selector: string,
+    text: string | null,
+    timeoutMs: number,
+    token?: number,
+    check?: () => boolean,
+  ): Promise<number>;
 }
 
 export function installInPage() {
   const w = window as unknown as { __perf: InPage };
   if (w.__perf) return;
-  let armedAt = -1;
-  let firstInputAfterArm = -1;
+  let nextToken = 0;
+  let operation: { token: number; input: number; capture?: () => void; cancel?: () => void } | null = null;
 
   const afterNextPaint = () =>
     new Promise<number>((resolve) =>
@@ -43,7 +50,10 @@ export function installInPage() {
   const onInput = (e: Event) => {
     const t = e.timeStamp;
     h.lastInput = t;
-    if (armedAt >= 0 && firstInputAfterArm < 0) firstInputAfterArm = t;
+    if (operation && operation.input < 0) {
+      operation.input = t;
+      operation.capture?.();
+    }
     if (e.type === "keydown" && h.recordKeys) requestAnimationFrame(() => h.keyLatencies.push(performance.now() - t));
   };
   // `input` covers `keyboard.insertText`, which dispatches no keydown.
@@ -76,25 +86,74 @@ export function installInPage() {
       return f;
     },
     arm() {
-      armedAt = performance.now();
-      firstInputAfterArm = -1;
+      if (operation) throw new Error("a measurement is already armed");
+      const token = ++nextToken;
+      operation = { token, input: -1 };
+      return token;
     },
-    waitShown(selector, text, timeoutMs) {
+    cancel(token) {
+      if (operation?.token !== token) return;
+      operation.cancel?.();
+      operation = null;
+    },
+    waitShown(selector, text, timeoutMs, token, check) {
+      const current = token === undefined ? null : operation;
+      if (token !== undefined && current?.token !== token) return Promise.reject(new Error("measurement is not armed"));
       const deadline = performance.now() + timeoutMs;
-      const matches = () => {
-        const el = document.querySelector(selector) as HTMLElement | null;
-        if (!el || el.getClientRects().length === 0) return false;
-        return text === null || (el.textContent ?? "").includes(text);
+      const snapshot = () => {
+        if (check && !check()) return [];
+        return [...document.querySelectorAll<HTMLElement>(selector)]
+          .filter(
+            (el) =>
+              el.getClientRects().length > 0 &&
+              getComputedStyle(el).visibility === "visible" &&
+              !el.closest('[aria-hidden="true"]') &&
+              (text === null || (el.textContent ?? "").includes(text)),
+          )
+          .map((el) => ({
+            el,
+            text: el.textContent,
+            value: el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? el.value : null,
+            selected: el.getAttribute("aria-selected"),
+          }));
       };
+      let baseline = snapshot();
+      if (current)
+        current.capture = () => {
+          baseline = snapshot();
+        };
       return new Promise<number>((resolve, reject) => {
+        let stopped = false;
+        const finish = () => {
+          stopped = true;
+          if (operation === current) operation = null;
+        };
+        if (current)
+          current.cancel = () => {
+            finish();
+            reject(new Error("measurement cancelled"));
+          };
         const tick = () => {
-          // Checked at the start of a frame: a match here is painted by this frame.
-          if (matches()) {
-            const start = firstInputAfterArm >= 0 ? firstInputAfterArm : armedAt;
-            armedAt = -1;
-            resolve(performance.now() - start);
+          if (stopped) return;
+          const frameStart = performance.now();
+          const shown = snapshot();
+          const changed = shown.some(
+            (now) =>
+              !baseline.some(
+                (old) =>
+                  old.el === now.el &&
+                  old.text === now.text &&
+                  old.value === now.value &&
+                  old.selected === now.selected,
+              ),
+          );
+          // Keep the endpoint at frame start, but only credit this input's target transition.
+          if (shown.length && (!current || (current.input >= 0 && changed))) {
+            const start = current?.input ?? 0;
+            finish();
+            resolve(frameStart - start);
           } else if (performance.now() > deadline) {
-            armedAt = -1;
+            finish();
             reject(new Error(`timed out waiting for ${selector}${text ? ` containing "${text}"` : ""}`));
           } else requestAnimationFrame(tick);
         };

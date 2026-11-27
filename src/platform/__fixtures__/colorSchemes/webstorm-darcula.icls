@@ -1,0 +1,19 @@
+<scheme name="WebStorm Ember" version="142" parent_scheme="Darcula">
+  <attributes>
+    <option name="TS.KEYWORD"><value><option name="FOREGROUND" value="e89c45"/></value></option>
+    <option name="DEFAULT_KEYWORD"><value><option name="FOREGROUND" value="cc7832"/></value></option>
+    <option name="JS.KEYWORD"><value><option name="FOREGROUND" value="d9a35b"/></value></option>
+    <option name="DEFAULT_SEMICOLON"><value><option name="FOREGROUND" value="d56075"/></value></option>
+    <option name="DEFAULT_STRING"><value><option name="FOREGROUND" value="8bb770"/></value></option>
+    <option name="JS.GLOBAL_FUNCTION"><value><option name="FOREGROUND" value="6dacff"/></value></option>
+    <option name="JS.INSTANCE_MEMBER_FUNCTION"><value><option name="FOREGROUND" value="e06c75"/></value></option>
+    <option name="JS.GLOBAL_VARIABLE"><value><option name="FOREGROUND" value="c678dd"/></value></option>
+    <option name="JS.EXPORTED.VARIABLE"><value><option name="FOREGROUND" value="b07ad8"/></value></option>
+    <option name="JS.INSTANCE_MEMBER_VARIABLE"><value><option name="FOREGROUND" value="cd87ea"/></value></option>
+    <option name="TS.INSTANCE_MEMBER_VARIABLE"><value><option name="FOREGROUND" value="ef8a80"/></value></option>
+    <option name="TS.STATIC_MEMBER_VARIABLE"><value><option name="FOREGROUND" value="c580ea"/></value></option>
+    <option name="JS.INTERFACE"><value><option name="FOREGROUND" value="6fa4e5"/></value></option>
+    <option name="TS.DOC_TAG_VALUE"><value><option name="FOREGROUND" value="e5c07b"/></value></option>
+    <option name="JS.REGEXP"><value><option name="FOREGROUND" value="56b6c2"/></value></option>
+  </attributes>
+</scheme>

@@ -1,0 +1,68 @@
+id = "test.data-tools"
+name = "Data tools fixture"
+version = "0.1.0"
+engines.openidea = "^1.4"
+wasm = "dist/plugin.wasm"
+activation = ["on-command:*"]
+[capabilities]
+required = ["project.read"]
+optional = ["database.sources"]
+
+[[contributes.commands]]
+id = "upsert"
+title = "upsert"
+
+[[contributes.commands]]
+id = "remove"
+title = "remove"
+
+[[contributes.commands]]
+id = "sources"
+title = "sources"
+
+[[contributes.commands]]
+id = "credential"
+title = "credential"
+
+[[contributes.commands]]
+id = "connect"
+title = "connect"
+
+[[contributes.commands]]
+id = "stdio"
+title = "stdio"
+
+[[contributes.mcpTools]]
+name = "echo"
+description = "Fixture echo"
+inputSchema = "arguments.json"
+readOnly = true
+destructive = false
+
+[[contributes.mcpTools]]
+name = "write"
+description = "Fixture write"
+inputSchema = "arguments.json"
+readOnly = false
+destructive = false
+
+[[contributes.mcpTools]]
+name = "erase"
+description = "Fixture erase"
+inputSchema = "arguments.json"
+readOnly = false
+destructive = true
+
+[[contributes.mcpTools]]
+name = "spin"
+description = "Fixture spin"
+inputSchema = "arguments.json"
+readOnly = true
+destructive = false
+
+[[contributes.mcpTools]]
+name = "denied"
+description = "Fixture denied"
+inputSchema = "arguments.json"
+readOnly = true
+destructive = false

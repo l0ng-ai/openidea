@@ -1,6 +1,8 @@
 .dialog {
   --se-bg-header: var(--bg-frame, var(--bg-app));
-  max-height: 80vh;
+  --se-max-height: 600px;
+  container-type: inline-size;
+  max-height: min(var(--se-max-height), 80vh);
   margin-top: 9vh;
   background: var(--bg-popup, var(--bg-elev));
   font-family: var(--font-ui);
@@ -16,20 +18,24 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-2);
   height: 44px;
   padding: 0 8px 0 8px;
   background: var(--se-bg-header);
   border-bottom: 1px solid var(--border-popup);
 }
 .tabs {
+  position: relative;
+  overflow-x: auto;
+  scrollbar-width: none;
   flex: 1;
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .tab {
+  flex: none;
   height: 26px;
   padding: 0 9px;
   border: 1px solid transparent;
@@ -52,6 +58,12 @@
   border-color: var(--border-tab-selected, var(--accent));
   color: var(--fg-strong);
 }
+.tools {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
 .include {
   flex: none;
   color: var(--fg);
@@ -64,20 +76,18 @@
 }
 .queryRow {
   flex: none;
-  padding: 6px 8px;
+  margin-inline: var(--space-3);
 }
 .field {
   display: flex;
   align-items: center;
-  gap: 6px;
-  height: 32px;
-  padding: 0 10px 0 8px;
-  background: var(--bg-input);
-  border: 2px solid var(--border);
-  border-radius: var(--radius-small);
+  gap: var(--space-1-5);
+  height: 30px;
+  padding-inline: var(--space-0-5);
+  border-bottom: 1px solid var(--border-popup);
 }
 .field:focus-within {
-  border-color: var(--border-strong);
+  border-bottom-color: var(--focus-ring, var(--accent));
 }
 .magnifier {
   flex: none;
@@ -119,7 +129,18 @@
   color: var(--fg-faint);
   white-space: nowrap;
 }
+.content {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.withPreview {
+  height: var(--se-max-height);
+}
 .results {
+  /* `auto`, not `1`: without the preview `.content` has no definite height, and a 0% basis there
+     collapses the list in the system WebKit of macOS 15 instead of using its inline height. */
+  flex: 1 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -130,10 +151,7 @@
   min-height: 0;
 }
 .preview {
-  flex: none;
-  display: flex;
-  height: 220px;
-  border-top: 1px solid var(--border-popup);
+  overflow: hidden;
 }
 .section {
   font-family: var(--font-ui);
@@ -159,7 +177,7 @@
   min-width: 0;
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  gap: var(--space-1-5);
   overflow: hidden;
 }
 .name {
@@ -167,12 +185,18 @@
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: pre;
+  white-space: nowrap;
+  white-space-collapse: preserve-spaces;
   color: var(--fg-strong);
+}
+.fileName {
+  flex-shrink: 0;
+  max-width: 100%;
 }
 .code {
   font-family: var(--font-ui);
   color: var(--fg);
+  white-space: pre;
   tab-size: 2;
 }
 .repeat {
@@ -189,8 +213,30 @@
   white-space: nowrap;
   color: var(--fg-subtle);
 }
+.path {
+  display: inline-flex;
+}
+.pathPart {
+  flex: none;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pathPrefix {
+  flex-shrink: 1;
+}
 .shortcut {
+  flex: none;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-subtle);
   font-family: var(--font-keys);
+  font-size: var(--fs-small);
+  font-weight: 600;
 }
 .right {
   flex: none;
@@ -204,15 +250,33 @@
 .rightActive {
   color: var(--fg-muted);
 }
+.textLocation {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+}
+.textFile {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.textLine {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
 .actionRow {
   flex: 1;
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-1-5);
+}
+.actionRow > .right {
+  max-width: 30%;
 }
 .disabled .name,
 .disabled .location,
+.disabled .shortcut,
 .disabled .right {
   color: var(--fg-faint);
 }
@@ -270,30 +334,79 @@
 .filterGroup {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 4px 12px 8px;
-}
-.filterGroup + .filterGroup {
-  border-top: 1px solid var(--border-popup);
-  padding-top: 8px;
 }
 .filterTitle {
   color: var(--fg-secondary);
   font-size: var(--fs-small);
 }
-.filterAll {
-  font-weight: 600;
-}
-.filterItems {
+.checklistPopup {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding-left: 4px;
+  width: min(280px, calc(100vw - 12px));
+  max-height: min(460px, 70vh);
+  overflow: hidden;
+  font-size: var(--fs-ui);
+}
+.checklistGroup {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.checklistGroup + .checklistGroup {
+  border-block-start: 1px solid var(--border-popup);
+}
+.checklistTitle {
+  flex: none;
+  padding: var(--space-2) var(--space-3) var(--space-1);
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+.checklistRows {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  padding: 0 var(--space-1) var(--space-1);
+}
+.checklistRow {
+  flex: none;
+  min-height: var(--h-row);
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-selection);
+}
+.checklistRow:hover {
+  background: var(--bg-tree-hover);
+}
+.checklistRow:focus-within {
+  background: var(--bg-tree-selected);
+}
+.checklistLabel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+.checklistName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.checklistActions {
+  display: flex;
+  flex: none;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: var(--space-1-5);
+  padding: var(--space-1-5) var(--space-2);
+  border-block-start: 1px solid var(--border-popup);
 }
 .filterMasks {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .filterMask {
   padding: 1px 6px;
@@ -306,4 +419,25 @@
 }
 .filterMask:hover {
   background: var(--bg-hover);
+}
+
+@container (max-width: 680px) {
+  .header {
+    flex-wrap: wrap;
+    height: auto;
+    gap: var(--space-1-5);
+    padding: 6px 8px;
+  }
+  .tabs {
+    flex-basis: 100%;
+  }
+  .tools {
+    width: 100%;
+  }
+  .include {
+    margin-right: auto;
+  }
+  .hint {
+    display: none;
+  }
 }

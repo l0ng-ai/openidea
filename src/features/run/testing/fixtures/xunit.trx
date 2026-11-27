@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TestRun id="6730bf1d-c08d-4929-bb05-3e13f571e02b" name="user@host 2026-11-09 15:31:14" runUser="host\user" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Times creation="2026-11-09T15:31:14.9191388+08:00" queuing="2026-11-09T15:31:14.9191389+08:00" start="2026-11-09T15:31:14.3506101+08:00" finish="2026-11-09T15:31:14.9238336+08:00" />
+  <TestSettings name="default" id="3df9757c-2b02-4a46-b1db-4ee1a8fa15dd">
+    <Deployment runDeploymentRoot="user_host_2026-11-09_15_31_14" />
+  </TestSettings>
+  <Results>
+    <UnitTestResult executionId="45bed8c3-6316-465f-9ebd-b1ce3e829452" testId="f52bc9c9-8df9-6fd9-934e-9b7c2f64f597" testName="Sample.CalculatorTests.Passes" computerName="host" duration="00:00:00.0000540" startTime="2026-11-09T15:31:14.8478668+08:00" endTime="2026-11-09T15:31:14.8478669+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="45bed8c3-6316-465f-9ebd-b1ce3e829452" />
+    <UnitTestResult executionId="b092dfdf-2c5c-48fd-b642-21df8c45636d" testId="7c64262f-2dfc-ba5e-c769-0c95cf182a76" testName="Sample.CalculatorTests.Fails" computerName="host" duration="00:00:00.0001171" startTime="2026-11-09T15:31:14.8483013+08:00" endTime="2026-11-09T15:31:14.8483014+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="b092dfdf-2c5c-48fd-b642-21df8c45636d">
+      <Output>
+        <ErrorInfo>
+          <Message>Assert.Equal() Failure: Values differ&#xD;
+Expected: 3&#xD;
+Actual:   2</Message>
+          <StackTrace>   at Sample.CalculatorTests.Fails() in C:\fixtures\Xunit\UnitTest1.cs:line 4&#xD;
+   at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)&#xD;
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="cd875b78-eac0-4818-8568-9f94369a9f82" testId="0352e892-15b1-279b-751c-4ef8fa3b78a4" testName="Sample.CalculatorTests.Parameterized(value: 1)" computerName="host" duration="00:00:00.0008224" startTime="2026-11-09T15:31:14.8477406+08:00" endTime="2026-11-09T15:31:14.8477407+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="cd875b78-eac0-4818-8568-9f94369a9f82" />
+    <UnitTestResult executionId="d881161e-8fea-4081-be74-367b5a2b1cdd" testId="dba96a25-d6a4-9ba0-5868-d87d247475d6" testName="Sample.CalculatorTests.Skipped" computerName="host" duration="00:00:00.0010000" startTime="2026-11-09T15:31:14.8488028+08:00" endTime="2026-11-09T15:31:14.8488029+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="NotExecuted" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="d881161e-8fea-4081-be74-367b5a2b1cdd">
+      <Output>
+        <ErrorInfo>
+          <Message>demonstration</Message>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="4f7a68de-fbed-4a0f-bb49-d33262b6b321" testId="342fa793-ffa3-5734-772a-79a8f289629f" testName="Sample.CalculatorTests.Parameterized(value: 2)" computerName="host" duration="00:00:00.0592671" startTime="2026-11-09T15:31:14.8455506+08:00" endTime="2026-11-09T15:31:14.8455607+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="4f7a68de-fbed-4a0f-bb49-d33262b6b321">
+      <Output>
+        <ErrorInfo>
+          <Message>Assert.Equal() Failure: Values differ&#xD;
+Expected: 1&#xD;
+Actual:   2</Message>
+          <StackTrace>   at Sample.CalculatorTests.Parameterized(Int32 value) in C:\fixtures\Xunit\UnitTest1.cs:line 6&#xD;
+   at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)&#xD;
+   at System.Reflection.MethodBaseInvoker.InvokeDirectByRefWithFewArgs(Object obj, Span`1 copyOfArgs, BindingFlags invokeAttr)</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+  </Results>
+  <TestDefinitions>
+    <UnitTest name="Sample.CalculatorTests.Parameterized(value: 2)" storage="C:\fixtures\xunit\bin\debug\net9.0\openidea.xunit.tests.dll" id="342fa793-ffa3-5734-772a-79a8f289629f">
+      <Execution id="4f7a68de-fbed-4a0f-bb49-d33262b6b321" />
+      <TestMethod codeBase="C:\fixtures\Xunit\bin\Debug\net9.0\OpenIdea.Xunit.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="Sample.CalculatorTests" name="Parameterized" />
+    </UnitTest>
+    <UnitTest name="Sample.CalculatorTests.Skipped" storage="C:\fixtures\xunit\bin\debug\net9.0\openidea.xunit.tests.dll" id="dba96a25-d6a4-9ba0-5868-d87d247475d6">
+      <Execution id="d881161e-8fea-4081-be74-367b5a2b1cdd" />
+      <TestMethod codeBase="C:\fixtures\Xunit\bin\Debug\net9.0\OpenIdea.Xunit.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="Sample.CalculatorTests" name="Skipped" />
+    </UnitTest>
+    <UnitTest name="Sample.CalculatorTests.Passes" storage="C:\fixtures\xunit\bin\debug\net9.0\openidea.xunit.tests.dll" id="f52bc9c9-8df9-6fd9-934e-9b7c2f64f597">
+      <Execution id="45bed8c3-6316-465f-9ebd-b1ce3e829452" />
+      <TestMethod codeBase="C:\fixtures\Xunit\bin\Debug\net9.0\OpenIdea.Xunit.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="Sample.CalculatorTests" name="Passes" />
+    </UnitTest>
+    <UnitTest name="Sample.CalculatorTests.Parameterized(value: 1)" storage="C:\fixtures\xunit\bin\debug\net9.0\openidea.xunit.tests.dll" id="0352e892-15b1-279b-751c-4ef8fa3b78a4">
+      <Execution id="cd875b78-eac0-4818-8568-9f94369a9f82" />
+      <TestMethod codeBase="C:\fixtures\Xunit\bin\Debug\net9.0\OpenIdea.Xunit.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="Sample.CalculatorTests" name="Parameterized" />
+    </UnitTest>
+    <UnitTest name="Sample.CalculatorTests.Fails" storage="C:\fixtures\xunit\bin\debug\net9.0\openidea.xunit.tests.dll" id="7c64262f-2dfc-ba5e-c769-0c95cf182a76">
+      <Execution id="b092dfdf-2c5c-48fd-b642-21df8c45636d" />
+      <TestMethod codeBase="C:\fixtures\Xunit\bin\Debug\net9.0\OpenIdea.Xunit.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="Sample.CalculatorTests" name="Fails" />
+    </UnitTest>
+  </TestDefinitions>
+  <TestEntries>
+    <TestEntry testId="f52bc9c9-8df9-6fd9-934e-9b7c2f64f597" executionId="45bed8c3-6316-465f-9ebd-b1ce3e829452" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="7c64262f-2dfc-ba5e-c769-0c95cf182a76" executionId="b092dfdf-2c5c-48fd-b642-21df8c45636d" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="0352e892-15b1-279b-751c-4ef8fa3b78a4" executionId="cd875b78-eac0-4818-8568-9f94369a9f82" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="dba96a25-d6a4-9ba0-5868-d87d247475d6" executionId="d881161e-8fea-4081-be74-367b5a2b1cdd" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="342fa793-ffa3-5734-772a-79a8f289629f" executionId="4f7a68de-fbed-4a0f-bb49-d33262b6b321" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+  </TestEntries>
+  <TestLists>
+    <TestList name="Results Not in a List" id="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestList name="All Loaded Results" id="19431567-8539-422a-85d7-44ee4e166bda" />
+  </TestLists>
+  <ResultSummary outcome="Failed">
+    <Counters total="5" executed="4" passed="2" failed="2" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0" disconnected="0" warning="0" completed="0" inProgress="0" pending="0" />
+    <Output>
+      <StdOut>[xUnit.net 00:00:00.00] xUnit.net VSTest Adapter v2.8.2+699d445a1a (64-bit .NET 9.0.17)&#xD;
+[xUnit.net 00:00:00.05]   Discovering: OpenIdea.Xunit.Tests&#xD;
+[xUnit.net 00:00:00.08]   Discovered:  OpenIdea.Xunit.Tests&#xD;
+[xUnit.net 00:00:00.08]   Starting:    OpenIdea.Xunit.Tests&#xD;
+[xUnit.net 00:00:00.17]       Assert.Equal() Failure: Values differ&#xD;
+[xUnit.net 00:00:00.17]       Expected: 1&#xD;
+[xUnit.net 00:00:00.17]       Actual:   2&#xD;
+[xUnit.net 00:00:00.17]       Stack Trace:&#xD;
+[xUnit.net 00:00:00.17]         C:\fixtures\Xunit\UnitTest1.cs(6,0): at Sample.CalculatorTests.Parameterized(Int32 value)&#xD;
+[xUnit.net 00:00:00.17]            at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)&#xD;
+[xUnit.net 00:00:00.17]            at System.Reflection.MethodBaseInvoker.InvokeDirectByRefWithFewArgs(Object obj, Span`1 copyOfArgs, BindingFlags invokeAttr)&#xD;
+[xUnit.net 00:00:00.17]       Assert.Equal() Failure: Values differ&#xD;
+[xUnit.net 00:00:00.17]       Expected: 3&#xD;
+[xUnit.net 00:00:00.17]       Actual:   2&#xD;
+[xUnit.net 00:00:00.17]       Stack Trace:&#xD;
+[xUnit.net 00:00:00.17]         C:\fixtures\Xunit\UnitTest1.cs(4,0): at Sample.CalculatorTests.Fails()&#xD;
+[xUnit.net 00:00:00.17]            at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)&#xD;
+[xUnit.net 00:00:00.17]            at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)&#xD;
+[xUnit.net 00:00:00.17]       demonstration&#xD;
+[xUnit.net 00:00:00.17]   Finished:    OpenIdea.Xunit.Tests&#xD;
+Test 'Sample.CalculatorTests.Skipped' was skipped in the test run.&#xD;
+</StdOut>
+    </Output>
+    <RunInfos>
+      <RunInfo computerName="host" outcome="Error" timestamp="2026-11-09T15:31:14.8441178+08:00">
+        <Text>[xUnit.net 00:00:00.17]     Sample.CalculatorTests.Parameterized(value: 2) [FAIL]</Text>
+      </RunInfo>
+      <RunInfo computerName="host" outcome="Error" timestamp="2026-11-09T15:31:14.8482465+08:00">
+        <Text>[xUnit.net 00:00:00.17]     Sample.CalculatorTests.Fails [FAIL]</Text>
+      </RunInfo>
+      <RunInfo computerName="host" outcome="Warning" timestamp="2026-11-09T15:31:14.8487414+08:00">
+        <Text>[xUnit.net 00:00:00.17]     Sample.CalculatorTests.Skipped [SKIP]</Text>
+      </RunInfo>
+    </RunInfos>
+  </ResultSummary>
+</TestRun>

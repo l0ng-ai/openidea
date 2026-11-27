@@ -135,7 +135,7 @@ impl Cli for Process {
 }
 
 /// Claude Code's configuration directory (`CLAUDE_CONFIG_DIR`, else `~/.claude`).
-pub(super) fn config_dir(env: &[(String, String)]) -> Option<PathBuf> {
+pub(crate) fn config_dir(env: &[(String, String)]) -> Option<PathBuf> {
     let set = env
         .iter()
         .find(|(k, _)| k == "CLAUDE_CONFIG_DIR")

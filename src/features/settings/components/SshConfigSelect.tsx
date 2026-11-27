@@ -14,18 +14,29 @@ export function SshConfigSelect({
   value,
   onChange,
   none,
+  configs: given,
   "aria-label": ariaLabel = "SSH configuration",
 }: {
   value: string;
   onChange: (id: string) => void;
   /** Label of an empty choice (e.g. "Local machine"); omitted: no empty choice. */
   none?: string;
+  /** The configurations to pick from; omitted: the global `ssh.configs` setting. Forms
+   * outside the settings window pass the live list (the staged base is not loaded there). */
+  configs?: SshConfigValid[];
   "aria-label"?: string;
 }) {
-  const configs = useSshConfigs();
+  const staged = useSshConfigs();
+  const configs = given ?? staged;
   const options: SelectOption[] = [
     ...(none !== undefined ? [{ value: "", label: none }] : []),
-    ...configs.map((c) => ({ value: c.id, label: c.name.trim() || sshLabel(c), detail: sshLabel(c) })),
+    ...configs.map((c) => ({
+      value: c.id,
+      verbatim: true,
+      verbatimDetail: true,
+      label: c.name.trim() || sshLabel(c),
+      detail: sshLabel(c),
+    })),
   ];
   if (value && !configs.some((c) => c.id === value)) options.push({ value, label: tx`${value} (missing)` });
   if (options.length === 0) options.push({ value: "", label: "No SSH configurations", disabled: true });

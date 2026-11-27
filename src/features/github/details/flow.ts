@@ -4,6 +4,7 @@
  * request (`isBusy` disables the others), mutations go through `data/operations.ts`, local
  * git through `data/local.ts` and the vcs feature. Failures are reported as notifications.
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { create } from "zustand";
 import type { DiffData } from "@/features/vcs/diffInput";
 import { mergeIntoCurrent } from "@/features/vcs/branchOps";
@@ -105,7 +106,7 @@ export async function showInGitLog(pr: GHPullRequest, headRemote: string | null)
 
 /** "Copy Branch Name". */
 export async function copyBranchName(name: string) {
-  await navigator.clipboard?.writeText(name);
+  await writeClipboardText(name);
 }
 
 /**

@@ -59,10 +59,10 @@ describe("ignore action", () => {
     await addToIgnore(["/p/pkg/a.txt"], "gitignore");
     expect(mocks.open).toHaveBeenCalledWith("/p/pkg/.gitignore", { focus: true });
   });
-  it("opens nothing for the local exclude file", async () => {
+  it("opens the local exclude file the rule was written to", async () => {
     mocks.write.mockResolvedValue(["/p/.git/info/exclude"]);
     await addToIgnore(["/p/a.txt"], "localExclude");
-    expect(mocks.open).not.toHaveBeenCalled();
+    expect(mocks.open).toHaveBeenCalledWith("/p/.git/info/exclude", { focus: true });
   });
   it("reports an already ignored selection instead of opening an unchanged file", async () => {
     mocks.write.mockResolvedValue([]);

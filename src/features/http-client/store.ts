@@ -10,9 +10,13 @@ import {
   type HttpRequestBlock,
   type RequestId,
 } from "@/platform/ipc";
-import { notifications, showServiceView } from "@/workbench/contributions";
+import { writeClipboardText } from "@/platform/clipboard";
+import { editorService, notifications, showServiceView, showStatusInfo } from "@/workbench/contributions";
 
 export const SERVICE_VIEW = "httpClient";
+// Same bound as ide_http::history::MAX_ENTRIES. Only recent rows keep their bodies in the UI.
+const HISTORY_LIMIT = 100;
+const EXCHANGE_LIMIT = 4;
 const ENV_KEY = "openidea.httpClient.environments";
 
 function readEnvChoices(): Record<string, string> {
@@ -28,6 +32,9 @@ interface Running {
   path: string | null;
   index: number;
   request: RequestId;
+  /** The request line as written, once parsed. */
+  method?: string;
+  url?: string;
 }
 
 interface HttpClientState {
@@ -37,8 +44,8 @@ interface HttpClientState {
   environments: Record<string, string[]>;
   /** History entries, newest first (this session's runs included). */
   history: HttpHistoryEntry[];
-  /** Loaded exchanges by entry id. */
-  exchanges: Record<string, HttpExchange>;
+  /** Loaded exchanges, most recently viewed first. */
+  exchanges: HttpExchange[];
   selected: string | null;
   running: Running | null;
 }
@@ -47,7 +54,7 @@ export const useHttpClient = create<HttpClientState>(() => ({
   envByFile: readEnvChoices(),
   environments: {},
   history: [],
-  exchanges: {},
+  exchanges: [],
   selected: null,
   running: null,
 }));
@@ -82,14 +89,18 @@ export async function loadEnvironments(path: string): Promise<string[]> {
   }
 }
 
-/** The environment a run of `path` uses: the chosen one if it still exists. */
-export function effectiveEnvironment(path: string | null): string | null {
+/** The environment a run of `path` uses: the selected one if it still exists. */
+function effectiveEnvironment(path: string | null, selection?: string | null): string | null {
   if (!path) return null;
   const s = useHttpClient.getState();
-  const chosen = s.envByFile[path];
+  const chosen = selection === undefined ? s.envByFile[path] : selection;
   const available = s.environments[path];
   if (chosen && (!available || available.includes(chosen))) return chosen;
   return null;
+}
+
+function rememberExchange(exchange: HttpExchange, recent: HttpExchange[]) {
+  return [exchange, ...recent.filter((e) => e.entry.id !== exchange.entry.id)].slice(0, EXCHANGE_LIMIT);
 }
 
 export async function refreshHistory() {
@@ -102,12 +113,18 @@ export async function refreshHistory() {
 }
 
 export async function selectEntry(id: string) {
+  const { exchanges } = useHttpClient.getState();
+  const cached = exchanges.find((e) => e.entry.id === id);
+  if (cached) {
+    useHttpClient.setState({ selected: id, exchanges: rememberExchange(cached, exchanges) });
+    return;
+  }
   useHttpClient.setState({ selected: id });
-  if (useHttpClient.getState().exchanges[id]) return;
   try {
     const ex = await call(commands.httpHistoryGet(id));
-    useHttpClient.setState((s) => ({ exchanges: { ...s.exchanges, [id]: ex } }));
+    useHttpClient.setState((s) => (s.selected === id ? { exchanges: rememberExchange(ex, s.exchanges) } : s));
   } catch (e) {
+    if (useHttpClient.getState().selected !== id) return;
     notifications().notify({
       level: "error",
       title: "Cannot open the response",
@@ -118,7 +135,7 @@ export async function selectEntry(id: string) {
 
 export async function clearHistory() {
   await call(commands.httpHistoryClear());
-  useHttpClient.setState({ history: [], exchanges: {}, selected: null });
+  useHttpClient.setState({ history: [], exchanges: [], selected: null });
 }
 
 export function parseRequests(text: string): Promise<HttpRequestBlock[]> {
@@ -129,20 +146,36 @@ export function parseRequests(text: string): Promise<HttpRequestBlock[]> {
  * Sends request `index` of `text` (the buffer of `path`). The response opens
  * in the HTTP Client tool window. Returns false when cancelled or failed early.
  */
-export async function runRequest(path: string | null, text: string, index: number): Promise<boolean> {
+export async function runRequest(
+  path: string | null,
+  text: string,
+  index: number,
+  batchEnvironment?: string | null,
+): Promise<boolean> {
   const busy = useHttpClient.getState().running;
   if (busy) void commands.cancelRequest(busy.request);
   const request = nextRequestId();
   useHttpClient.setState({ running: { path, index, request } });
+  // The tool window shows the request as it is sent, not only once it has answered.
+  showServiceView(SERVICE_VIEW, false);
+  void parseRequests(text)
+    .then((blocks) => {
+      const block = blocks.find((b) => b.index === index);
+      const running = useHttpClient.getState().running;
+      if (block && running?.request === request)
+        useHttpClient.setState({ running: { ...running, method: block.method, url: block.url } });
+    })
+    .catch(() => {});
   try {
-    if (path && !useHttpClient.getState().environments[path]) await loadEnvironments(path);
-    const ex = await call(commands.httpExecute(request, path, text, index, effectiveEnvironment(path)));
+    if (batchEnvironment === undefined && path && !useHttpClient.getState().environments[path])
+      await loadEnvironments(path);
+    const env = batchEnvironment === undefined ? effectiveEnvironment(path) : batchEnvironment;
+    const ex = await call(commands.httpExecute(request, path, text, index, env));
     useHttpClient.setState((s) => ({
-      history: [ex.entry, ...s.history.filter((h) => h.id !== ex.entry.id)],
-      exchanges: { ...s.exchanges, [ex.entry.id]: ex },
+      history: [ex.entry, ...s.history.filter((h) => h.id !== ex.entry.id)].slice(0, HISTORY_LIMIT),
+      exchanges: rememberExchange(ex, s.exchanges),
       selected: ex.entry.id,
     }));
-    showServiceView(SERVICE_VIEW, false);
     return true;
   } catch (e) {
     if (!isCancelled(e))
@@ -158,11 +191,53 @@ export async function runRequest(path: string | null, text: string, index: numbe
   }
 }
 
-/** Runs every request of the file in order; stops when one is cancelled. */
+/** Convert to cURL and Copy: request `index` of `text`, with the file's environment applied. */
+export async function copyAsCurl(path: string | null, text: string, index: number): Promise<void> {
+  try {
+    if (path && !useHttpClient.getState().environments[path]) await loadEnvironments(path);
+    await writeClipboardText(await call(commands.httpCurl(path, text, index, effectiveEnvironment(path))));
+    showStatusInfo("The request was copied as a cURL command");
+  } catch (e) {
+    notifications().notify({
+      level: "error",
+      title: "Cannot convert the request to cURL",
+      body: e instanceof Error ? e.message : String(e),
+      key: "http-curl",
+    });
+  }
+}
+
+/** A pasted `curl …` command as request text; null when it isn't one. */
+export function requestFromCurl(command: string): Promise<string | null> {
+  return commands.httpFromCurl(command);
+}
+
+/** Add Environment to Public / Private File: opens the env file that applies to `path`, created if missing. */
+export async function openEnvironmentFile(path: string, isPrivate: boolean): Promise<void> {
+  try {
+    const file = await call(commands.httpEnvironmentFile(path, isPrivate));
+    await editorService().openFile(file, { focus: true });
+    void loadEnvironments(path);
+  } catch (e) {
+    notifications().notify({
+      level: "error",
+      title: "Cannot create the environment file",
+      body: e instanceof Error ? e.message : String(e),
+      key: "http-env-file",
+    });
+  }
+}
+
+/** Runs every request of the file in order with the starting environment. */
 export async function runAll(path: string | null, text: string): Promise<void> {
+  const selection = path ? (useHttpClient.getState().envByFile[path] ?? null) : null;
   const blocks = await parseRequests(text);
+  if (!blocks.length) return;
+  if (path && !useHttpClient.getState().environments[path]) await loadEnvironments(path);
+  const environment = effectiveEnvironment(path, selection);
   for (const b of blocks) {
-    if (!(await runRequest(path, text, b.index))) return;
+    // oxlint-disable-next-line no-await-in-loop -- requests run in order and stop at the first failure
+    if (!(await runRequest(path, text, b.index, environment))) return;
   }
 }
 
@@ -174,5 +249,5 @@ export function cancelRunning() {
 /** The window switched projects: history, responses and environments belong to the previous one. */
 export function resetHttpClient() {
   cancelRunning();
-  useHttpClient.setState({ environments: {}, history: [], exchanges: {}, selected: null, running: null });
+  useHttpClient.setState({ environments: {}, history: [], exchanges: [], selected: null, running: null });
 }

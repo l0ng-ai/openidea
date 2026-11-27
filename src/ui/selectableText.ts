@@ -4,6 +4,8 @@
  * (chrome); content opts back in with `selectableText`. A right-click on a
  * selection, or anywhere in such content, offers Copy (`copyMenuFor`).
  */
+import { writeClipboardText } from "@/platform/clipboard";
+import { isTauri } from "@/platform/ipc";
 import type { KeyboardEvent } from "react";
 import { hasPrimaryModifier, formatBinding } from "@/platform/keymap";
 import type { MenuItem } from "./Menu";
@@ -22,14 +24,19 @@ function selectionCovers(sel: Selection | null, target: Node): boolean {
   return false;
 }
 
-/** The Copy menu for a right-click on `target`, or null when it is not on readable text. */
+/**
+ * The Copy menu for a right-click on `target`, or null when it is not on readable text. On a link
+ * it also offers Copy Link Address, as browsers do; Copy keeps copying the selected text.
+ */
 export function copyMenuFor(target: EventTarget | null): MenuItem[] | null {
   const el = target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
   if (!el || el.closest(EDITABLE)) return null;
   const sel = window.getSelection();
   const text = selectionCovers(sel, el) ? sel!.toString() : "";
-  if (!text && !el.closest(`.${selectableText}`)) return null;
-  return [
+  const href = el.closest("a[href]")?.getAttribute("href") ?? "";
+  const link = href.startsWith("#") ? "" : href;
+  if (!text && !link && !el.closest(`.${selectableText}`)) return null;
+  const items: MenuItem[] = [
     {
       id: "copy",
       label: "Copy",
@@ -39,13 +46,15 @@ export function copyMenuFor(target: EventTarget | null): MenuItem[] | null {
       run: () => void copyText(text),
     },
   ];
+  if (link) items.push({ id: "copy-link", label: "Copy Link Address", run: () => void copyText(link) });
+  return items;
 }
 
 /** Writes `text` to the clipboard; falls back to copying the live selection. */
 export async function copyText(text: string): Promise<void> {
   try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
+    if (isTauri() || typeof navigator.clipboard?.writeText === "function") {
+      await writeClipboardText(text);
       return;
     }
   } catch {

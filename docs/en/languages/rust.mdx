@@ -1,0 +1,80 @@
+---
+title: "Rust"
+description: "Rust code intelligence with rust-analyzer, toolchain and linter settings, cargo run and test configurations, and debugging with CodeLLDB."
+---
+
+OpenIDEA uses rust-analyzer for Rust code intelligence, runs and tests crates with cargo, and debugs them with CodeLLDB. Cargo workspaces are supported. For other languages, see the [support matrix](/en/languages/index).
+
+## Language server
+
+rust-analyzer serves `.rs` files. A workspace starts at the nearest `Cargo.toml` or `rust-project.json`.
+
+While rust-analyzer is still loading a project, it has no answers for navigation yet. OpenIDEA waits for it instead of reporting "not found": **Declaration or Usages** (`⌘B` / `Ctrl+B`) right after opening a project lands once the server is ready, for up to 30 seconds.
+
+Diagnostics come from rust-analyzer's own analysis and from `cargo check` (or Clippy) after each save.
+
+### Installing rust-analyzer
+
+If rust-analyzer is missing, OpenIDEA shows a **rust-analyzer is not installed** notification with an **Install** button. You can also install it, or select your own binary, in **Settings › Languages & Frameworks › Language Servers**.
+
+- With rustup on `PATH`, the IDE runs `rustup component add rust-analyzer`.
+- Without rustup, it downloads the rust-analyzer build from Open VSX into its own tools folder.
+
+`~/.cargo/bin/rust-analyzer` is a rustup proxy that fails when the active toolchain lacks the component. In that case the IDE uses the newest installed toolchain that has rust-analyzer; if none has it, the server counts as missing and you get the install offer.
+
+## Setup
+
+**Settings › Languages & Frameworks › Rust** has these options:
+
+| Option                               | What it does                                                                                                                                                                                                                                                                 |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Toolchain location**               | The toolchain cargo run configurations and rust-analyzer use (set through `PATH` and `RUSTUP_TOOLCHAIN`). **Default** is the rustup default or `PATH`. The list shows rustup toolchains (in `RUSTUP_HOME` or `~/.rustup`) and a cargo on `PATH` that rustup does not manage. |
+| **Standard library**                 | Sources of `std` for navigation and completion (`RUST_SRC_PATH`). Detected from the toolchain when empty.                                                                                                                                                                    |
+| **External tool** (External Linters) | **Cargo Check** or **Clippy**.                                                                                                                                                                                                                                               |
+| **Run external linter on save**      | rust-analyzer runs the external tool after each save and reports its diagnostics. On by default.                                                                                                                                                                             |
+| **Additional arguments** (Rustfmt)   | Passed to rustfmt when reformatting, for example `--edition 2024`.                                                                                                                                                                                                           |
+
+**Reformat Code** (`⌘⌥L` / `Ctrl+Alt+L`) formats with rustfmt through rust-analyzer.
+
+Crates and the Rust standard library appear under **External Libraries** in the Project view.
+
+## Run and test
+
+OpenIDEA reads `Cargo.toml` (and the members of a `[workspace]`) and detects:
+
+| Configuration          | When                                                                                                  |
+| ---------------------- | ----------------------------------------------------------------------------------------------------- |
+| `cargo run <bin>`      | One per binary: `src/main.rs`, `src/bin/*` and `[[bin]]` targets (with `-p <package>` in a workspace) |
+| `cargo test <package>` | One per workspace member                                                                              |
+| `cargo test`           | Always (`--workspace` in a workspace)                                                                 |
+| `cargo build`          | Always                                                                                                |
+
+In the editor, gutter icons run or debug:
+
+- `fn main` in `src/main.rs`, `src/bin/*.rs` and `examples/*.rs`,
+- functions marked `#[test]`, `#[tokio::test]`, `#[async_std::test]`, `#[actix_rt::test]`, `#[rstest]` or `#[test_case]`,
+- `mod tests` and modules marked `#[cfg(test)]`, which run every test inside.
+
+A single test runs as `cargo test -- <path> --exact`. Results appear in the test tree; **Rerun Failed Tests** runs only the failures. See [Run configurations](/en/guide/run) and [Testing](/en/guide/testing).
+
+| Action                      | macOS | Windows / Linux  |
+| --------------------------- | ----- | ---------------- |
+| Run Context Configuration   | `⌃⇧R` | `Ctrl+Shift+F10` |
+| Debug Context Configuration | `⌃⇧D` | none             |
+| Build Project               | `⌘F9` | `Ctrl+F9`        |
+
+**Build Project** runs `cargo build --all-targets`, **Rebuild Project** runs `cargo clean` first, and **Build Artifacts** runs `cargo build --release`. Compiler messages go to the Build tool window and the editor.
+
+**Run with Coverage** uses `cargo llvm-cov` for `cargo test`, `cargo run` and `cargo nextest` configurations. If it is missing, the IDE offers `cargo install cargo-llvm-cov` (the `llvm-tools-preview` rustup component is needed too). See [Coverage](/en/guide/coverage).
+
+## Debugging
+
+Rust debugging uses CodeLLDB. If it is missing when you start a debug session, OpenIDEA offers to install it; it downloads the CodeLLDB release from GitHub into its tools folder. The cargo run and test configurations and the gutter icons can be debugged: CodeLLDB builds the target with cargo and starts the resulting binary.
+
+**Attach to Process…** (`⌥⇧F5` / `Ctrl+Alt+F5`) lists native processes under **Native (LLDB)**. See [Debugging](/en/guide/debugging).
+
+## Limitations
+
+- CodeLLDB publishes no Windows ARM64 build, so the IDE cannot install it there.
+- rust-analyzer's own extension commands, such as Expand Macro or View Syntax Tree, are not available as IDE actions.
+- The profiler supports `cargo run` only on Linux (with `perf`). See [Profiler](/en/guide/profiler).

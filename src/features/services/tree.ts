@@ -21,7 +21,7 @@ export const useServicesTree = create<TreeState>(() => ({
   roots: {},
   selectedKey: null,
   selectedKeys: new Set(),
-  expanded: new Set(["docker:default", "docker:default:group:containers"]),
+  expanded: new Set(),
 }));
 
 /** Keys of nodes asking to start expanded that were shown once (collapsing them then sticks). */
@@ -82,9 +82,9 @@ export function orderedRoots(
 export function expandableKeys(items: readonly ServiceTreeItem[]): string[] {
   const out: string[] = [];
   const visit = (i: ServiceTreeItem) => {
-    if (i.children?.length) {
+    if (i.children?.length || i.expandable) {
       out.push(i.key);
-      i.children.forEach(visit);
+      i.children?.forEach(visit);
     }
   };
   items.forEach(visit);

@@ -1,19 +1,32 @@
 /**
- * Settings › Python › Interpreter (PyCharm's "Python Interpreter" page): the
+ * Settings › Python › Dependencies (PyCharm's "Python Interpreter" page): the
  * project interpreter and its packages (pip / uv pip). The interpreter feeds
  * run configurations, basedpyright / pyright (`python.pythonPath`) and the
- * terminal's virtualenv activation.
+ * terminal's virtualenv activation. A Docker or Compose run target can be the
+ * interpreter (`target:<id>`): its libraries are a read-only snapshot of the image.
  */
 import { isCancelled } from "@/platform/ipc";
 import { useCallback, useEffect, useMemo, useState, type KeyboardEvent, type MouseEvent } from "react";
 import clsx from "clsx";
-import { Button, IconButton, Input, Spinner, showContextMenu, T } from "@/ui";
+import { Button, Icon, IconButton, Input, Spinner, showContextMenu, T } from "@/ui";
 import { useProject } from "@/platform/project";
+import { usePythonPackages } from "@/platform/pythonPackages";
 import { Section, Toggle } from "../components/Form";
-import { effectivePython, listPackages, pip, useSdks, type PythonPackage } from "./api";
+import {
+  containerPython,
+  effectivePython,
+  interpreterTarget,
+  pip,
+  refreshContainerPython,
+  targetChoices,
+  type ContainerPython,
+  type PythonPackage,
+} from "./api";
+import { validateRunTargets, type RunTargetValid } from "@/platform/remoteSettings";
 import { AddInterpreterDialog } from "./AddInterpreterDialog";
-import { useSetting } from "../components/context";
+import { useAppliedSetting, useSetting } from "../components/context";
 import { SdkField, tildify } from "./components";
+import { interpreterIcon, sameInterpreterPath, usePythonInterpreters } from "./interpreters";
 import styles from "./Sdk.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -30,35 +43,51 @@ export function filterPackages(packages: readonly PythonPackage[], query: string
   return q ? packages.filter((p) => p.name.toLowerCase().includes(q)) : [...packages];
 }
 
-function usePackages(python: string | null) {
+/** The snapshot of a run target interpreter; polled while one is being taken. */
+function useContainerPython(target: string | null) {
+  const [state, setState] = useState<{ target: string; info: ContainerPython | null; error: string | null } | null>(
+    null,
+  );
   const [tick, setTick] = useState(0);
-  const [result, setResult] = useState<{
-    key: string;
-    python: string;
-    packages: PythonPackage[] | null;
-    error: string | null;
-  } | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   useEffect(() => {
-    if (!python) return;
+    if (!target) return;
     let live = true;
-    const key = `${python}#${tick}`;
-    listPackages(python)
-      .then((packages) => live && setResult({ key, python, packages, error: null }))
-      .catch(
-        (e: unknown) => live && setResult({ key, python, packages: null, error: String((e as Error)?.message ?? e) }),
-      );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = () =>
+      containerPython()
+        .then((info) => {
+          if (!live) return;
+          setState({ target, info, error: null });
+          if (info?.updating) timer = setTimeout(load, 2000);
+        })
+        .catch((e: unknown) => live && setState({ target, info: null, error: String((e as Error)?.message ?? e) }));
+    void load();
     return () => {
       live = false;
+      clearTimeout(timer);
     };
-  }, [python, tick]);
-  const reload = useCallback(() => setTick((t) => t + 1), []);
-  // While reloading the same interpreter, keep showing its previous list.
-  const same = !!python && result?.python === python;
+  }, [target, tick]);
+  const refresh = useCallback(() => {
+    if (!target) return;
+    setRefreshing(true);
+    refreshContainerPython()
+      .then((info) => setState({ target, info, error: null }))
+      .catch((e: unknown) =>
+        setState((s) => ({ target, info: s?.info ?? null, error: String((e as Error)?.message ?? e) })),
+      )
+      .finally(() => {
+        setRefreshing(false);
+        setTick((t) => t + 1);
+      });
+  }, [target]);
+  const same = !!target && state?.target === target;
   return {
-    packages: same ? result.packages : null,
-    error: same ? result.error : null,
-    loading: !!python && result?.key !== `${python}#${tick}`,
-    reload,
+    info: same ? state.info : null,
+    error: same ? state.error : null,
+    busy: refreshing || (same && !!state.info?.updating),
+    loading: !!target && !same,
+    refresh,
   };
 }
 
@@ -67,7 +96,27 @@ export function PythonInterpreterPage() {
   const [activate, setActivate] = useSetting<boolean>("languages.python.activateVirtualenv");
   const root = useProject((s) => s.project?.root ?? null);
   const [auto, setAuto] = useState<string | null>(null);
-  const detected = useSdks((s) => s.byKind.python);
+  // Bumped when an environment is created: it may reuse the configured path, whose state changed.
+  const [created, setCreated] = useState(0);
+  // Detected interpreters plus the ones added to (or hidden from) the IDE-wide list.
+  const { detected, rows, hidden } = usePythonInterpreters({ withProjects: false });
+  const extras = useMemo(
+    () =>
+      rows
+        .filter((row) => !row.invalid && !detected.some((sdk) => sameInterpreterPath(sdk.path, row.path, null)))
+        .map((row) => ({
+          value: row.path,
+          verbatim: true,
+          label: row.name,
+          detail: tildify(row.path),
+          icon: interpreterIcon(row.source),
+        })),
+    [rows, detected],
+  );
+  const [rawTargets] = useSetting<RunTargetValid[] | undefined>("runTargets");
+  const targets = useMemo(() => targetChoices(validateRunTargets(rawTargets)), [rawTargets]);
+  const target = interpreterTarget(interpreter);
+  const container = useContainerPython(target);
 
   useEffect(() => {
     let live = true;
@@ -77,11 +126,43 @@ export function PythonInterpreterPage() {
     return () => {
       live = false;
     };
-  }, [root]);
+  }, [root, created]);
+
+  // The interpreter runs resolve to: the configured one while it exists, else the fallback.
+  // The backend resolves the applied setting, so only that one can be judged here: a choice
+  // not applied yet (an environment just created) is not reported missing.
+  const applied = useAppliedSetting<string>("languages.python.interpreter");
+  const [resolved, setResolved] = useState<{ interpreter: string; path: string | null } | null>(null);
+  useEffect(() => {
+    if (!applied) return;
+    let live = true;
+    effectivePython()
+      .then((path) => live && setResolved({ interpreter: applied, path }))
+      .catch(() => live && setResolved(null));
+    return () => {
+      live = false;
+    };
+  }, [root, applied, created]);
+  // A configured interpreter whose executable is gone (PyCharm's "Invalid"): runs fall back.
+  const invalid =
+    !target &&
+    !!interpreter &&
+    interpreter === applied &&
+    resolved?.interpreter === interpreter &&
+    !sameInterpreter(resolved.path, interpreter, root);
 
   // Without a configured interpreter the project's virtualenv is used (like run configurations).
-  const python = interpreter || auto;
-  const { packages, error, loading, reload } = usePackages(python);
+  const python = target ? null : interpreter || auto;
+  const local = usePythonPackages(python);
+  const { newer, checking, checkFailed } = local;
+  const { packages, error, loading, reload } = target
+    ? {
+        packages: container.info?.version ? container.info.packages : null,
+        error: container.error,
+        loading: container.loading || container.busy,
+        reload: container.refresh,
+      }
+    : local;
   const [selected, setSelected] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [installing, setInstalling] = useState(false);
@@ -106,10 +187,13 @@ export function PythonInterpreterPage() {
           setInstalling(false);
         }
         if (op === "uninstall") setSelected(null);
-        reload();
       })
       .catch((e: unknown) => setJobError(isCancelled(e) ? null : String((e as Error)?.message ?? e)))
-      .finally(() => setJob(null));
+      .finally(() => {
+        setJob(null);
+        // A failed or cancelled run can still have installed some of the packages.
+        reload();
+      });
   };
 
   const menu = (e: MouseEvent, pkg: PythonPackage) => {
@@ -135,6 +219,15 @@ export function PythonInterpreterPage() {
 
   const autoDetail = auto ? tildify(auto) : "No virtualenv in the project";
   const current = detected?.find((s) => s.path === python);
+  const containerDetail = !target
+    ? null
+    : container.info?.version
+      ? `${container.info.name || target} — Python ${container.info.version}${container.info.image ? ` · ${container.info.image.replace(/^sha256:/, "").slice(0, 12)}` : ""}`
+      : container.busy
+        ? tx("Copying the libraries from the container…")
+        : container.info && !container.info.name
+          ? tx("No run target has this id: choose another interpreter.")
+          : tx("The container's libraries have not been copied yet.");
 
   return (
     <div className={styles.page}>
@@ -150,6 +243,10 @@ export function PythonInterpreterPage() {
           emptyDetail={autoDetail}
           browseTitle="Select Python Interpreter"
           aria-label="Python interpreter"
+          invalid={invalid}
+          extra={[...extras, ...targets]}
+          exclude={hidden}
+          optionIcon={(sdk) => interpreterIcon(sdk.source)}
         />
         <Button
           size="small"
@@ -160,10 +257,20 @@ export function PythonInterpreterPage() {
           <T>Add Interpreter…</T>
         </Button>
       </div>
+      {containerDetail && (
+        <div className={styles.path} title={container.info?.folders.join("\n")}>
+          {containerDetail}
+        </div>
+      )}
       {python && (
         <div className={styles.path} title={python}>
-          {current ? `${current.name} — ` : ""}
+          {current && !invalid ? `${current.name} — ` : ""}
           {tildify(python)}
+        </div>
+      )}
+      {invalid && (
+        <div className={clsx(styles.empty, styles.error)} role="alert">
+          <T>The configured Python interpreter no longer exists. Choose another interpreter or add a new one.</T>
         </div>
       )}
 
@@ -181,25 +288,30 @@ export function PythonInterpreterPage() {
             icon="minus"
             size="small"
             title="Uninstall"
-            disabled={!selected || !!job}
+            disabled={!python || !selected || !!job}
             onClick={() => selected && run("uninstall", selected)}
           />
           <IconButton
             icon="arrow-up"
             size="small"
             title="Upgrade"
-            disabled={!selected || !!job}
+            disabled={!python || !selected || !!job}
             onClick={() => selected && run("upgrade", selected)}
           />
           <IconButton
             icon="refresh"
             size="small"
-            title="Reload List of Packages"
-            disabled={!python || loading}
+            title={target ? "Copy Libraries from the Container Again" : "Reload List of Packages"}
+            disabled={(!python && !target) || loading}
             onClick={reload}
           />
           <span className={styles.spacer} />
-          {(loading || job) && <Spinner size={14} label={job ? `${job.op} ${job.target}` : "Loading packages"} />}
+          {(loading || job || checking) && (
+            <Spinner
+              size={14}
+              label={job ? `${job.op} ${job.target}` : loading ? "Loading packages" : "Checking for newer versions"}
+            />
+          )}
           <Input
             className={styles.search}
             value={query}
@@ -245,6 +357,11 @@ export function PythonInterpreterPage() {
                 <th scope="col">
                   <T>Version</T>
                 </th>
+                {!target && (
+                  <th scope="col">
+                    <T>Latest</T>
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -255,29 +372,30 @@ export function PythonInterpreterPage() {
                   aria-selected={selected === p.name}
                   className={clsx(selected === p.name && styles.selected)}
                   onMouseDown={() => setSelected(p.name)}
-                  onContextMenu={(e) => menu(e, p)}
+                  onContextMenu={(e) => (target ? undefined : menu(e, p))}
                   onKeyDown={(e) => onRowKey(e, i)}
                 >
                   <td>{p.name}</td>
                   <td className={styles.versionCell}>{p.version}</td>
+                  {!target && <td className={styles.versionCell}>{latestCell(p, newer)}</td>}
                 </tr>
               ))}
             </tbody>
           </table>
-          {!python && (
+          {!python && !target && (
             <div className={styles.empty}>
               <T>No interpreter selected. Choose one above or add a new one.</T>
             </div>
           )}
-          {python && error && (
+          {(python || target) && error && !invalid && (
             <div className={clsx(styles.empty, styles.error)} role="alert">
               {error}
             </div>
           )}
-          {python && !error && packages && shown.length === 0 && (
+          {(python || target) && !error && packages && shown.length === 0 && (
             <div className={styles.empty}>{query ? tx("No packages match") : tx("No packages installed")}</div>
           )}
-          {python && !error && !packages && loading && (
+          {(python || target) && !error && !packages && loading && (
             <div className={styles.empty}>
               <T>Loading packages…</T>
             </div>
@@ -285,6 +403,19 @@ export function PythonInterpreterPage() {
         </div>
       </div>
 
+      {checkFailed && (
+        <div className={styles.note}>
+          <T>Could not check for newer versions of the packages.</T>
+        </div>
+      )}
+      {target && (
+        <div className={styles.note}>
+          <T>
+            Packages come from the container image and are read-only here. To change them, edit the image or its
+            requirements and rebuild it, then copy the libraries again.
+          </T>
+        </div>
+      )}
       {job && (
         <div className={styles.status}>
           <Spinner size={14} label="Working" />
@@ -323,10 +454,31 @@ export function PythonInterpreterPage() {
           onClose={() => setAdding(false)}
           onAdded={(path) => {
             setInterpreter(path);
+            setCreated((n) => n + 1);
+            reload();
             setAdding(false);
           }}
         />
       )}
     </div>
   );
+}
+
+/** The newer release of `pkg`, marked as an upgrade; nothing for a package that is up to date. */
+function latestCell(pkg: PythonPackage, newer: Map<string, string> | null) {
+  const latest = newer?.get(pkg.name);
+  if (!latest || latest === pkg.version) return null;
+  return (
+    <span className={styles.upgradable} title={tx`Upgrade available: ${latest}`}>
+      <Icon name="arrow-up" size={12} />
+      {latest}
+    </span>
+  );
+}
+
+/** Whether `resolved` (an absolute path from the backend) is the configured `interpreter` setting. */
+function sameInterpreter(resolved: string | null, interpreter: string, root: string | null): boolean {
+  if (!resolved) return false;
+  if (tildify(resolved) === tildify(interpreter)) return true;
+  return !!root && resolved === `${root.replace(/[\\/]+$/, "")}/${interpreter}`;
 }

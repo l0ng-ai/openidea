@@ -1,0 +1,21 @@
+id = "test.commit"
+name = "Commit fixture"
+version = "0.1.0"
+engines.openidea = "^1.3"
+wasm = "dist/plugin.wasm"
+activation = ["on-command:*"]
+
+[capabilities]
+required = ["vcs.read", "vcs.write"]
+
+[[contributes.commands]]
+id = "describe"
+title = "Commit Fixture: Describe Changes"
+
+[[contributes.menus]]
+menu = "commit.message"
+command = "describe"
+
+[[contributes.commitChecks]]
+id = "markers"
+title = "Commit Markers"

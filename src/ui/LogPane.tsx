@@ -1,0 +1,193 @@
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import clsx from "clsx";
+import { useTx } from "@/platform/i18n";
+import { useWorkflowSettings } from "@/platform/workflowSettings";
+import { AnsiStream, spanStyle, stripAnsi, type Span } from "./ansi";
+import { IconButton } from "./Button";
+import { logLineColor } from "./logColors";
+import { Toggle } from "./Checkbox";
+import { copySelectionOnKeyDown } from "./selectableText";
+import styles from "./LogPane.module.css";
+
+export interface LogLine {
+  stderr: boolean;
+  text: string;
+}
+
+export interface LogToggle {
+  id: string;
+  label: string;
+}
+
+export interface LogPaneProps {
+  /**
+   * Starts the source and returns its stop function; called again whenever the toggles or `sourceKey` change.
+   * A program's source reports its exit code with `onExit`.
+   */
+  start(
+    onLine: (l: LogLine) => void,
+    onError: (message: string) => void,
+    on: ReadonlySet<string>,
+    onExit: (code: number | null) => void,
+  ): () => void;
+  sourceKey: string;
+  toggles?: LogToggle[];
+  /** Extra toolbar buttons placed before Clear. */
+  actions?: ReactNode;
+  /** "Waiting for output…" rather than "No output" while empty. */
+  live: boolean;
+  ariaLabel: string;
+}
+
+/** A line as shown: its ANSI-coloured spans and the plain text (level detection, copy). */
+interface ShownLine {
+  seq: number;
+  stderr: boolean;
+  text: string;
+  spans: Span[];
+}
+
+const MAX_LINES = 5000;
+
+/** A followed log (container, program output) in ANSI and log level colours, with toggles, Soft-wrap, Scroll to End and Clear. */
+export function LogPane({ sourceKey, ...props }: LogPaneProps) {
+  const [on, setOn] = useState<ReadonlySet<string>>(() => new Set());
+  const [wrap, setWrap] = useState(true);
+  const onKey = [...on].sort().join("\0");
+  // A new source (and buffer) per option set.
+  return <LogStream key={`${sourceKey}\0${onKey}`} {...props} on={on} setOn={setOn} wrap={wrap} setWrap={setWrap} />;
+}
+
+function LogStream(
+  props: Omit<LogPaneProps, "sourceKey"> & {
+    on: ReadonlySet<string>;
+    setOn: (on: ReadonlySet<string>) => void;
+    wrap: boolean;
+    setWrap: (wrap: boolean) => void;
+  },
+) {
+  const tx = useTx();
+  const { toggles = [], live, ariaLabel, on, setOn, wrap, setWrap } = props;
+  // As in the Run console: a line whose log level is recognised takes that level's colour.
+  const levelColors = useWorkflowSettings((s) => s.console.logColors);
+  const [lines, setLines] = useState<ShownLine[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [exit, setExit] = useState<number | null | undefined>(undefined);
+  const scroller = useRef<HTMLDivElement>(null);
+  // Scroll to End: follows new output; scrolling up turns it off, back to the end turns it on.
+  const [follow, setFollow] = useState(true);
+  const source = useRef({ start: props.start, on });
+
+  useEffect(() => {
+    let buffer: ShownLine[] = [];
+    // One parser per stream: a colour set on one line carries to the next of the same stream.
+    const ansi = [new AnsiStream(), new AnsiStream()];
+    let frame = 0;
+    let seq = 0;
+    // Output that arrives after the stop (a source that already ran) is dropped.
+    let stopped = false;
+    const flush = () => {
+      frame = 0;
+      const add = buffer;
+      buffer = [];
+      setLines((prev) => {
+        const next = prev.concat(add);
+        return next.length > MAX_LINES ? next.slice(next.length - MAX_LINES) : next;
+      });
+    };
+    const stop = source.current.start(
+      (line) => {
+        if (stopped) return;
+        const spans = ansi[line.stderr ? 1 : 0]!.parse(line.text);
+        buffer.push({ seq: seq++, stderr: line.stderr, text: stripAnsi(line.text), spans });
+        frame ||= requestAnimationFrame(flush);
+      },
+      (message) => !stopped && setError(message),
+      source.current.on,
+      (code) => {
+        if (stopped) return;
+        flush();
+        setExit(code);
+      },
+    );
+    return () => {
+      stopped = true;
+      cancelAnimationFrame(frame);
+      stop();
+    };
+  }, []);
+
+  useEffect(() => {
+    const el = scroller.current;
+    if (el && follow) el.scrollTop = el.scrollHeight;
+  }, [lines, follow]);
+
+  const toggle = (id: string, checked: boolean) => {
+    const next = new Set(on);
+    if (checked) next.add(id);
+    else next.delete(id);
+    setOn(next);
+  };
+
+  return (
+    <div className={styles.pane}>
+      <div className={styles.toolbar}>
+        {toggles.map((t) => (
+          <Toggle key={t.id} checked={on.has(t.id)} onChange={(checked) => toggle(t.id, checked)} label={t.label} />
+        ))}
+        <Toggle checked={wrap} onChange={setWrap} label="Soft-wrap" />
+        <span className={styles.flex} />
+        {props.actions}
+        <IconButton
+          icon="scroll-to-end"
+          size="small"
+          title="Scroll to End"
+          pressed={follow}
+          onClick={() => setFollow((v) => !v)}
+        />
+        <IconButton icon="trash" size="small" title="Clear" onClick={() => setLines([])} />
+      </div>
+      <div
+        ref={scroller}
+        className={clsx(styles.log, wrap && styles.wrap)}
+        tabIndex={0}
+        role="log"
+        onKeyDown={copySelectionOnKeyDown}
+        aria-label={ariaLabel}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          setFollow(el.scrollHeight - el.scrollTop - el.clientHeight < 24);
+        }}
+      >
+        {lines.map((l) => (
+          <div
+            key={l.seq}
+            className={clsx(l.stderr && styles.stderr)}
+            style={{ color: logLineColor(l.text, l.stderr ? "stderr" : "stdout", levelColors) }}
+          >
+            {l.spans.length
+              ? l.spans.map((span, i) => (
+                  <span
+                    // oxlint-disable-next-line react/no-array-index-key -- ANSI spans repeat; position in an immutable line is stable
+                    key={i}
+                    style={spanStyle(span)}
+                  >
+                    {span.text}
+                  </span>
+                ))
+              : " "}
+          </div>
+        ))}
+        {error && <div className={styles.stderr}>{error}</div>}
+        {exit !== undefined && (
+          <div className={styles.dim}>
+            {exit === null ? "Process finished" : `Process finished with exit code ${exit}`}
+          </div>
+        )}
+        {!lines.length && !error && exit === undefined && (
+          <div className={styles.dim}>{tx(live ? "Waiting for output…" : "No output")}</div>
+        )}
+      </div>
+    </div>
+  );
+}

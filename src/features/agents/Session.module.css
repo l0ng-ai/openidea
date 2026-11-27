@@ -1,99 +1,165 @@
 .session {
+  --session-content-width: var(--agent-conversation-width);
+  --session-card-width: 80%;
+  --agent-fs-ui: calc(var(--fs-ui) + var(--agent-font-zoom, 0px));
+  --agent-fs-small: calc(var(--fs-small) + var(--agent-font-zoom, 0px));
+  --agent-fs-code: calc(var(--fs-code) + var(--agent-font-zoom, 0px));
   flex: 1;
   min-height: 0;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  background: var(--bg-editor);
+  grid-template-columns: minmax(0, 1fr);
+  background: var(--bg-app);
   color: var(--fg);
+  font-size: var(--fs-ui);
 }
 
 .conversation {
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  border-right: 1px solid var(--border);
-}
-
-.conversation[hidden] {
-  display: none;
 }
 .docked {
-  grid-template-columns: minmax(0, 1fr);
   overflow: hidden;
 }
-.docked .conversation {
-  border-right: 0;
+.fitWidth .stream > * {
+  width: 100%;
 }
-.docked .changes {
-  width: auto;
+.fitWidth .userMessage > .user {
+  max-width: var(--session-card-width);
 }
-
-/* The conversation hugs its content; spare space stays below the composer
-   instead of inside the chat. */
-.streamArea,
-.stream {
-  flex: 0 1 auto;
+.fitWidth .composerArea {
+  max-width: none;
 }
 
-.header {
+/* Under the composer: where the task works on the left; changes, meters and terminal on the right. */
+.statusBar {
   display: flex;
   align-items: center;
-  gap: 6px;
-  height: 32px;
-  padding: 0 6px 0 12px;
-  border-bottom: 1px solid var(--border);
-  flex: none;
+  gap: var(--space-2);
   min-width: 0;
-}
-.title {
-  flex: 0 1 auto;
-  min-width: 0;
-  font-weight: 600;
-  color: var(--fg-strong);
-  white-space: nowrap;
+  height: var(--h-row);
+  padding: 0 6px;
   overflow: hidden;
-  text-overflow: ellipsis;
-}
-.headerDetail {
-  flex: 1 1 0;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 4px;
   color: var(--fg-subtle);
+  font-size: var(--fs-small);
 }
-.headerText {
+.where {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  overflow: hidden;
+}
+.fact {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: var(--space-1);
   min-width: 0;
   white-space: nowrap;
+}
+.factText {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.providerIcon {
-  color: var(--fg-muted);
+.state {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  height: 22px;
+  white-space: nowrap;
+}
+/* The rest of the line: the changes at its start, the meter, time and terminal at its end.
+   On a line of its own (a narrow session) the changes line up with the facts above. */
+.statusEnd {
+  display: inline-flex;
+  flex: 1 1 auto;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+/* Shrinks before the terminal buttons do: in a narrow docked session the meters clip, not the controls. */
+.statusMeters {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  height: 22px;
+  gap: var(--space-2);
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+.statusActions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-0-5);
+}
+/* What changed (files, commits) above the meters; both open the Changes pane. */
+.statusChips {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 100%;
+  min-width: 0;
+}
+.statusChip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  height: 22px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 0 6px;
+  overflow: hidden;
+  border: none;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.statusChip:hover {
+  background: var(--bg-toolbar-hover);
+  color: var(--fg-strong);
+}
+/* In a narrow docked session the chip is narrower than its text: the label ends in an ellipsis. */
+.statusChipLabel {
+  display: inline-block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The label's count alone, shown instead of it in a narrow session (the tooltip has the label). */
+.statusChipCount {
+  display: none;
 }
 .muted {
   color: var(--fg-subtle);
 }
 
-/* Pending permission: an editor notification banner. A long question (AskUserQuestion) wraps,
-   scrolling past a third of the height; the answers follow it, wrapping too. */
+/* The archived-task notice: an editor notification banner above the conversation. */
 .banner {
   flex: none;
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
-  gap: 4px 8px;
+  gap: var(--space-1) var(--space-2);
   min-height: 36px;
   padding: 9px 12px;
   background: var(--bg-feedback-warning);
   border-bottom: 1px solid var(--border-feedback-warning);
   color: var(--fg-strong);
-}
-.banner > svg {
-  flex: none;
-  margin-top: 1px;
 }
 .bannerText {
   flex: 1 1 240px;
@@ -106,33 +172,10 @@
 .bannerSpacer {
   flex: 1;
 }
-.bannerActions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  margin-left: auto;
-}
-.bannerLink {
-  flex: none;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--link);
-  font: inherit;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.bannerLink:hover:not(:disabled) {
-  color: var(--link-hover);
-  text-decoration: underline;
-}
-.bannerLink:disabled {
-  color: var(--fg-subtle);
-  cursor: default;
-}
 
 /* The conversation with its find bar. */
 .streamArea {
+  min-width: 0;
   position: relative;
   flex: 1;
   min-height: 0;
@@ -143,52 +186,262 @@
 .stream {
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  padding: 14px 16px 8px;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overflow-anchor: none;
+  padding: var(--space-3);
+  /* Room below the end that keeps the header of a section folded there in place (`Stream`). */
+  padding-bottom: calc(var(--space-3) + var(--stream-slack, 0px));
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  font-size: var(--agent-fs-ui, var(--fs-ui));
+}
+/* Actual row heights keep WebKit's scrollbar and cross-message selections anchored. */
+.stream > * {
+  flex: none;
+  min-width: 0;
+  width: min(100%, var(--session-content-width));
+  max-width: 100%;
+  margin-inline: auto;
+  box-sizing: border-box;
+  /* Each row paints into its own layer, leaving the stream's scrolled contents empty. WebKit
+     never frees that layer's surfaces when its height keeps crossing 2048px (turns fold and
+     unfold below the limit while a reply streams), and the app process grows by ~1 GB per
+     40 crossings. */
+  will-change: transform;
+}
+.conversationRow {
+  min-width: 0;
+  contain-intrinsic-size: auto 120px;
+}
+/* Laid out once, an off-screen row skips rendering at its remembered size (`useOffscreenRows`). */
+.conversationRow[data-measured] {
+  content-visibility: auto;
+}
+/* WebKit leaves a stale selection highlight on rows that skipped rendering (`useOffscreenRows`). */
+.conversationRow[data-measured][data-selection] {
+  content-visibility: visible;
+}
+/* Keep turns distinct and the work within a turn close to its author. Not `* + *`: a
+   universal adjacent-sibling rule makes Chromium restyle whole sibling subtrees on every
+   DOM insertion anywhere in the window, which costs every editor scroll frame. */
+.stream > :where(:not(:first-child)) {
+  margin-top: var(--space-3);
+}
+.stream > [data-process] + [data-process] {
+  margin-top: var(--space-2);
 }
 .stream:focus {
   outline: none;
 }
-/* Skip off-screen output layout; editable messages must repaint immediately when focus/content changes. */
-.stream > :not(.message):not(details) {
-  content-visibility: auto;
-  contain-intrinsic-block-size: auto 80px;
+/* Scrolled up: one click back to the latest message, centred over the stream's end like the conversation. */
+.jumpToLatest {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: var(--space-2);
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--h-control-small);
+  height: var(--h-control-small);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-toolbar-button);
+  background: var(--bg-app);
+  color: var(--fg-muted);
 }
-
+/* Over the stream's text: keep it opaque against the icon button's translucent hover fill. */
+.streamArea .jumpToLatest:not(:disabled):hover {
+  background: var(--bg-hover);
+  color: var(--fg-strong);
+}
 /* Your message with its actions, shown on hover. */
 .message {
   position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
 }
-.messageMeta {
+/* Keep the author attached to the message. */
+.messageHead {
   display: flex;
   align-items: center;
-  min-height: 20px;
-  padding-left: 12px;
-  font-size: var(--fs-small);
+  justify-content: flex-start;
+  gap: var(--space-2);
+  min-height: var(--h-control-small);
+  margin-bottom: calc(var(--space-2) / 2);
+}
+.messageTime {
+  -webkit-user-select: none;
+  user-select: none;
+  color: var(--fg-subtle);
+  font-size: var(--agent-fs-small, var(--fs-small));
+  white-space: nowrap;
+}
+.messageHead > .role {
+  margin-bottom: 0;
+}
+/* User cards and their footers share a right edge. */
+.userMessage {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+.userMessage > .user {
+  width: fit-content;
+  max-width: min(var(--session-card-width), 720px);
+}
+.userMessage > .messageHead {
+  justify-content: flex-end;
+}
+/* The actions and time below a message, in flow so they never cover the next entry. */
+.messageFooter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--h-control-small);
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+/* Who wrote the message. */
+.role {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 3px;
+  color: var(--fg-subtle);
+  font-size: var(--agent-fs-small, var(--fs-small));
+  -webkit-user-select: none;
+  user-select: none;
+}
+.agentMessage {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.agentAuthor {
+  display: flex;
+  align-items: center;
+  min-height: var(--h-control-small);
+}
+.agentAuthor > .role {
+  margin-bottom: 0;
+}
+:where(.conversationRow[data-author]) > :nth-child(2) {
+  margin-top: calc(var(--space-2) / 2);
+}
+.conversationRow > .process,
+.conversationRow > .permissionLine {
+  max-width: 100%;
+}
+/* Replies read as plain text on the panel, like other tool-window content. */
+.agentCard {
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+@container (max-width: 640px) {
+  .stream {
+    --session-card-width: 96%;
+  }
+}
+/* A narrower session: the provider shows its icon, the changes their count. */
+@container (max-width: 560px) {
+  .providerName {
+    display: none;
+  }
+  /* Out of sight, still the chip's accessible name. */
+  .statusChipLabel {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .statusChipCount {
+    display: inline;
+  }
+}
+/* A narrow docked session: where it works gives way first, the changes and meters stay readable;
+   what the IDE shows elsewhere (the project's branch, a running task's state) is left out. */
+@container (max-width: 420px) {
+  .where {
+    flex-shrink: 2;
+  }
+  .shownElsewhere {
+    display: none;
+  }
+  .processBody {
+    padding-left: var(--space-2);
+  }
+  .processBody > .thoughtEntry ~ .toolEntry {
+    padding-left: var(--space-3);
+  }
 }
 .messageActions {
   display: inline-flex;
-  gap: 2px;
-  margin-left: 6px;
+  gap: var(--space-1);
+  max-width: 100%;
+  flex-wrap: wrap;
   opacity: 0;
   pointer-events: none;
   -webkit-user-select: none;
   user-select: none;
 }
+/* A turn's final reply keeps its time and actions in view; your messages show theirs on hover. */
+.conversationRow:nth-last-child(1 of [data-message]) .agentMessage .messageActions,
+.conversationRow:nth-last-child(1 of [data-message]) .reply .messageActions,
 .message:hover .messageActions,
+.reply:hover .messageActions,
+.agentMessage:hover .messageActions,
+.agentMessage:focus-within .messageActions,
+.message:focus-within .messageActions,
+.reply:focus-within .messageActions,
+.messageActions[data-copied],
 .messageActions:focus-within {
   opacity: 1;
   pointer-events: auto;
+}
+
+.reply {
+  position: relative;
+  /* Keep WebKit's selection gap fill from extending across reply boundaries. */
+  transform: translateX(0);
+}
+.replyFooter {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  box-sizing: border-box;
+  display: flex;
+  min-height: var(--h-control);
+  padding-top: 2px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+@media (hover: none) {
+  .messageActions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .replyFooter {
+    position: static;
+    margin-top: 4px;
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 .findBar {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 4px 8px;
   border-bottom: 1px solid var(--border);
 }
@@ -210,9 +463,13 @@
 }
 
 .user {
-  padding: 2px 0 2px 10px;
-  border-left: 2px solid var(--accent);
-  color: var(--fg-strong);
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border-radius: var(--radius-tab);
+  background: var(--bg-hover);
+  color: var(--fg);
+  line-height: 1.4;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -233,19 +490,19 @@
 .editBar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   margin-top: 6px;
   font-size: var(--fs-small);
 }
 
 .editButtons {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
   margin-left: auto;
 }
 
 .markdown {
-  line-height: 1.55;
+  line-height: 1.4;
   overflow-wrap: anywhere;
 }
 .markdown :global(p) {
@@ -254,26 +511,45 @@
 .markdown :global(p:last-child) {
   margin-bottom: 0;
 }
+.markdown {
+  /* A tint of the text colour: reads as code on any background, and a selection over
+     it doesn't leave light boxes the way an opaque near-white fill does. */
+  --md-code-bg: color-mix(in srgb, var(--fg) 7%, transparent);
+}
+/* Each text block paints its own selection: WebKit otherwise fills the gap under a block's
+   last selected line across the whole block, a stripe below the unselected start of the line.
+   Not inside SVG (Mermaid labels): WebKit draws transformed foreignObject content at the origin. */
+.markdown :global(:is(p, li, h1, h2, h3, h4, h5, h6):not(foreignObject *)) {
+  transform: translateX(0);
+}
 .markdown :global(code) {
   font-family: var(--font-mono);
-  font-size: var(--fs-small);
-  padding: 0 4px;
-  border-radius: 3px;
-  background: var(--bg-elev);
+  font-size: var(--agent-fs-small, var(--fs-small));
+  border-radius: var(--radius-small);
+  background: var(--md-code-bg);
+  /* Side insets as shadows, not padding: a selection leaves inline padding unpainted. */
+  box-shadow:
+    -2px 0 0 var(--md-code-bg),
+    2px 0 0 var(--md-code-bg);
 }
 .markdown :global(pre) {
   margin: 0 0 8px;
   padding: 8px 10px;
   border-radius: var(--radius-small);
-  background: var(--bg-elev);
+  background: var(--md-code-bg);
   overflow: auto;
 }
 .markdown :global(pre code) {
-  padding: 0;
+  display: block;
   background: none;
+  box-shadow: none;
 }
-.markdown :global(pre) {
+.codeBlock {
   position: relative;
+  margin: 0 0 8px;
+}
+.codeBlock > :global(pre) {
+  margin: 0;
 }
 .codeCopy {
   position: absolute;
@@ -289,15 +565,80 @@
   border-radius: var(--radius-small);
   background: var(--bg-elev);
   color: var(--fg-secondary);
-  cursor: pointer;
   opacity: 0;
+  -webkit-user-select: none;
+  user-select: none;
 }
-.markdown :global(pre:hover) .codeCopy,
-.codeCopy:focus-visible {
+.codeBlock:hover > .codeCopy,
+.markdown :global([data-mermaid]:hover) .codeCopy,
+.codeCopy:focus-visible,
+.codeCopy[data-copied] {
   opacity: 1;
 }
+.codeCopy[data-copied] {
+  color: var(--success);
+}
+/* A drawn diagram carries its own tools at the top-right; Copy moves aside. */
+.markdown :global([data-mermaid][data-mermaid-state="ok"]) .codeCopy {
+  right: 56px;
+}
 .codeCopy:hover {
-  background: var(--bg-hover);
+  background: var(--bg-toolbar-hover);
+}
+/* Mermaid diagrams: the source stays until the diagram is drawn (and next to an
+   error), and the Copy button lives on the block — the drawn diagram hides the
+   code block that would otherwise carry it. */
+.markdown :global([data-mermaid]) {
+  position: relative;
+  margin: 0 0 8px;
+}
+.markdown :global([data-mermaid] > pre) {
+  margin: 0;
+}
+.markdown :global([data-mermaid-state="ok"] > pre) {
+  display: none;
+}
+.markdown :global([align="left" i]) {
+  --mermaid-align: left;
+  --mermaid-margin-left: 0;
+  --mermaid-margin-right: auto;
+}
+.markdown :global([align="right" i]) {
+  --mermaid-align: right;
+  --mermaid-margin-left: auto;
+  --mermaid-margin-right: 0;
+}
+.markdown :global([align="center" i]),
+.markdown :global(center) {
+  --mermaid-align: center;
+  --mermaid-margin-left: auto;
+  --mermaid-margin-right: auto;
+}
+.markdown :global(.mermaid-output) {
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: var(--mermaid-align, center);
+  /* Node labels are drawing, not text: selecting across a reply skips them. */
+  -webkit-user-select: none;
+  user-select: none;
+}
+.markdown :global(.mermaid-output svg[data-natural-width]) {
+  display: block;
+  margin: 0 var(--mermaid-margin-right, auto) 0 var(--mermaid-margin-left, auto);
+  width: calc(min(var(--diagram-width), 100%) * var(--markdown-zoom-scale, 1));
+  height: auto;
+}
+.markdown :global([data-mermaid-state="error"] > .mermaid-output) {
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  color: var(--danger);
+  font-family: var(--font-mono);
+  font-size: var(--agent-fs-small, var(--fs-small));
+  text-align: left;
+  white-space: pre-wrap;
 }
 .fileLink {
   color: var(--link);
@@ -309,8 +650,41 @@
 
 .markdown :global(ul),
 .markdown :global(ol) {
+  --md-list-indent: 1.55em;
   margin: 0 0 8px;
-  padding-left: 20px;
+  padding-left: var(--md-list-indent);
+  list-style: none;
+}
+.markdown :global(ol) {
+  --md-list-indent: 2.1em;
+}
+.markdown :global(ol:has(> li:nth-child(100))) {
+  --md-list-indent: 2.75em;
+}
+/* Markers are drawn as pseudo-elements: WebKit paints a selection box around a native marker,
+   leaving a broken stripe down the gutter when a list is selected. */
+.markdown :global(li) {
+  position: relative;
+}
+.markdown :global(li)::before {
+  position: absolute;
+  right: calc(100% + 0.45em);
+  white-space: nowrap;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.markdown :global(ul > li)::before {
+  content: "•";
+}
+.markdown :global(ul ul > li)::before {
+  content: "◦";
+}
+.markdown :global(ul ul ul > li)::before {
+  content: "▪";
+}
+.markdown :global(ol > li)::before {
+  content: counter(list-item) ".";
+  font-variant-numeric: tabular-nums;
 }
 .markdown :global(a) {
   color: var(--link);
@@ -337,13 +711,12 @@
   margin: 12px 0 6px;
   color: var(--fg-strong);
   font-size: 1em;
+  font-weight: 600;
   line-height: 1.3;
 }
+/* On the UI scale: one step up for a title, every other level at body size and weight 600. */
 .markdown :global(h1) {
-  font-size: 1.15em;
-}
-.markdown :global(h2) {
-  font-size: 1.08em;
+  font-size: calc(var(--fs-input-large) + var(--agent-font-zoom, 0px));
 }
 .markdown :global(blockquote) {
   margin: 0 0 8px;
@@ -357,11 +730,28 @@
   border-top: 1px solid var(--border);
 }
 .markdown :global(img) {
-  max-width: 100%;
+  max-width: calc(100% * var(--markdown-zoom-scale, 1));
+}
+.markdown :global(img[data-natural-width]) {
+  width: calc(min(var(--image-width), 100%) * var(--markdown-zoom-scale, 1));
+  height: auto;
+}
+.loadImage {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  color: var(--fg-secondary);
+  font: inherit;
+}
+.loadImage:hover {
+  background: var(--bg-toolbar-hover);
 }
 .markdown :global(li:has(> input[type="checkbox"])) {
-  margin-left: -20px;
-  list-style: none;
+  margin-left: calc(-1 * var(--md-list-indent));
+}
+.markdown :global(li:has(> input[type="checkbox"]))::before {
+  content: none;
 }
 .markdown > :global(:first-child) {
   margin-top: 0;
@@ -370,9 +760,13 @@
   margin-bottom: 0;
 }
 
+.thoughtEntry,
+.toolEntry {
+  min-width: 0;
+}
 .thought summary,
 .toolDetails > summary {
-  cursor: pointer;
+  cursor: default;
   list-style: none;
 }
 .thought summary::-webkit-details-marker,
@@ -380,13 +774,42 @@
   display: none;
 }
 .thought summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
+  min-height: var(--h-row);
+  padding: 0 calc(var(--space-2) / 2);
+  border-radius: var(--radius-row);
   color: var(--fg-muted);
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
+  -webkit-user-select: none;
+  user-select: none;
+}
+.thought summary:hover {
+  background: var(--bg-tree-hover);
+  color: var(--fg);
+}
+.thoughtChevron {
+  flex: none;
+}
+.thoughtPreview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.thought[open] .thoughtChevron {
+  transform: rotate(90deg);
+}
+.thoughtBody {
+  margin: var(--space-1-5) 0 var(--space-1) 10px;
+  padding-left: var(--space-3);
+  border-left: 1px solid var(--border);
+  color: var(--fg-secondary);
 }
 .thoughtText {
   margin-top: 4px;
-  padding-left: 10px;
-  border-left: 2px solid var(--border-strong);
   color: var(--fg-secondary);
   white-space: pre-wrap;
 }
@@ -394,41 +817,122 @@
 .tool {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-1-5);
   min-width: 0;
-  padding: 2px 8px;
-  margin-left: -8px;
+  box-sizing: border-box;
+  min-height: var(--h-row);
+  padding: 0 calc(var(--space-2) / 2);
   border-radius: var(--radius-row);
   color: var(--fg-secondary);
-  width: fit-content;
+  width: 100%;
   max-width: 100%;
 }
 .toolDetails > summary.tool:hover {
-  background: var(--bg-hover);
+  background: var(--bg-tree-hover);
   color: var(--fg);
 }
+.tool > svg {
+  flex: none;
+}
 .toolTitle {
-  font-family: var(--font-mono);
-  font-size: var(--fs-small);
+  min-width: 0;
+  font-size: var(--agent-fs-small, var(--fs-small));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.toolChevron {
+  flex: none;
+}
+.toolChevronSpacer {
+  width: 12px;
+  flex: none;
+}
+.toolDetails[open] > summary .toolChevron {
+  transform: rotate(90deg);
+}
 .toolDiff {
   font: inherit;
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
   border: 0;
   background: none;
   padding: 0 4px;
   border-radius: var(--radius-small);
-  cursor: pointer;
   white-space: nowrap;
 }
 .toolDiff:hover {
-  background: var(--bg-hover);
+  background: var(--bg-toolbar-hover);
+}
+
+/* Reasoning and tool calls between messages, folded as one block per turn. */
+.processRun > summary {
+  cursor: default;
+  list-style: none;
+}
+.processRun > summary::-webkit-details-marker {
+  display: none;
+}
+.processSummary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-height: var(--h-row);
+  padding: 0 calc(var(--space-2) / 2);
+  border-radius: var(--radius-row);
+  color: var(--fg-muted);
+  font-size: var(--agent-fs-small, var(--fs-small));
+  -webkit-user-select: none;
+  user-select: none;
+}
+.processSummary:hover {
+  background: var(--bg-tree-hover);
+  color: var(--fg);
+}
+.processChevron {
+  flex: none;
+  transition: transform var(--dur-fast) var(--ease);
+}
+.processRun[open] .processChevron {
+  transform: rotate(90deg);
+}
+.processRun:not([open]) > .processBody {
+  min-width: 0;
+  display: none;
+}
+/* The counts keep their line; what runs now gives way and ellipsizes. */
+.processParts {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* What the run is doing now, after its counts. */
+.processCurrent {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-subtle);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* An open run stays bounded and scrolls on its own, so a long one doesn't push the reply away. */
+.processBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  margin: 2px 0 0 10px;
+  padding-left: var(--space-3);
+  border-left: 1px solid var(--border);
+}
+.processBody > .thoughtEntry ~ .toolEntry {
+  padding-left: var(--space-4);
 }
 .output {
-  margin: 4px 0 0;
+  margin: 4px 0 4px 22px;
   max-height: 240px;
   overflow: auto;
   padding: 8px 10px;
@@ -436,14 +940,15 @@
   border: 1px solid var(--border);
   background: var(--bg-elev);
   font-family: var(--font-mono);
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   color: var(--fg-secondary);
 }
 
 .plan {
   display: grid;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .planTitle {
   font-weight: 600;
@@ -452,7 +957,7 @@
 .planItem {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .planDone {
   color: var(--fg-muted);
@@ -460,48 +965,123 @@
 }
 
 .permissionLine {
+  box-sizing: border-box;
   display: flex;
   align-items: flex-start;
-  gap: 6px;
+  gap: var(--space-2);
   min-width: 0;
+  padding: var(--space-2);
+  border: 1px solid var(--border-feedback-warning);
+  border-radius: var(--radius-small);
+  background: var(--bg-feedback-warning);
   color: var(--fg-secondary);
 }
-/* Up to three lines; the full text is its tooltip. */
-.permissionTitle {
-  display: -webkit-box;
+.permissionLine > svg {
+  flex: none;
+  margin-top: calc(var(--space-2) / 4);
+}
+.permissionAsking > svg {
+  color: var(--warning);
+}
+.permissionBody {
+  flex: 1;
   min-width: 0;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.permissionTitle {
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+.permissionCommand {
+  min-width: 0;
+  max-width: 100%;
+  max-height: calc((var(--lh-code) + var(--agent-font-zoom, 0px) * 1.6) * 6);
+  box-sizing: border-box;
+  margin: 0;
+  padding: var(--space-2);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: var(--agent-fs-code, var(--fs-code));
+  line-height: calc(var(--lh-code) + var(--agent-font-zoom, 0px) * 1.6);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+}
+.permissionCommand:focus-visible,
+.permissionDone:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.permissionDetail {
+  max-height: 33vh;
+  overflow-y: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.permissionLine > svg,
-.permissionLine > .muted {
-  flex: none;
-}
 .permissionAnswers {
-  flex: 1 1 160px;
   min-width: 0;
   display: flex;
   flex-wrap: wrap;
-  gap: 2px 12px;
-  margin-left: 6px;
+  gap: var(--space-2);
+}
+.permissionOption {
+  min-width: 0;
+  max-width: 100%;
+  padding-inline: var(--space-3);
+}
+.permissionOptionLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.permissionPrefix {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--agent-fs-small, var(--fs-small));
+}
+.permissionDone {
+  padding: calc(var(--space-2) / 2) 0;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: none;
+  color: var(--fg-muted);
+  font-size: var(--agent-fs-small, var(--fs-small));
+}
+.permissionRecord {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .error {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
   align-items: flex-start;
   color: var(--danger);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.errorContent {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
 
 .working {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   color: var(--fg-muted);
 }
 
@@ -513,23 +1093,53 @@
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 6px 12px 12px;
+  gap: var(--space-1);
+  align-self: center;
+  width: 100%;
+  max-width: calc(var(--session-content-width) + var(--space-3) * 2);
+  box-sizing: border-box;
+  padding: var(--space-1-5) var(--space-3) var(--space-3);
+}
+
+.background {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+}
+.backgroundTask {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-height: var(--h-row);
+  padding: 0 4px 0 8px;
+  border-radius: var(--radius-row);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+}
+.backgroundText {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .queue {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .queued {
   display: flex;
   align-items: center;
-  gap: 6px;
-  min-height: 24px;
+  gap: var(--space-1-5);
+  min-height: var(--h-field);
   padding: 0 4px 0 8px;
   border-radius: var(--radius-row);
   background: var(--bg-elev);
+  font-size: var(--agent-fs-ui, var(--fs-ui));
 }
 .queuedText {
   flex: 1;
@@ -539,38 +1149,102 @@
   white-space: nowrap;
 }
 
+/* Meters that don't fit wrap onto a hidden second row instead of being cut in half. */
 .meters {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  height: 22px;
+  overflow: hidden;
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  align-content: flex-start;
+  gap: 0 var(--space-1-5);
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+.meterSegment {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  min-width: 0;
+  height: 22px;
+  gap: var(--space-1-5);
+}
+.meterGroup {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  min-width: 0;
+  height: 22px;
+  gap: var(--space-1-5);
+}
+.meterDivider {
+  flex: none;
+  width: 1px;
+  height: 11px;
+  background: var(--border-strong);
+  opacity: 0.5;
+}
 .meter {
   display: inline-flex;
+  flex: 0 1 auto;
   align-items: center;
+  min-width: 0;
+  height: 20px;
   gap: 5px;
-}
-.usageBar {
-  width: 36px;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--border);
   overflow: hidden;
 }
-.usageBar > span {
+.meterValue {
+  line-height: 1;
+}
+.usageRing {
+  flex: none;
+  width: 13px;
+  height: 13px;
   display: block;
-  height: 100%;
-  background: var(--fg-muted);
+}
+.usageRingTrack {
+  fill: none;
+  stroke: color-mix(in srgb, currentColor 22%, transparent);
+  stroke-width: 1.75;
+}
+.usageRingArc {
+  fill: none;
+  stroke: var(--fg-muted);
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  transition:
+    stroke-dashoffset 200ms var(--ease),
+    stroke var(--dur-fast) var(--ease);
+}
+.limitsButton {
+  gap: 0;
+}
+.limitItem {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+}
+.limitWindow {
+  color: var(--fg-faint);
+}
+.limitPercent {
+  color: inherit;
+}
+.meterDot {
+  flex: none;
+  margin: 0 5px;
+  color: var(--fg-faint);
+  opacity: 0.65;
 }
 
 .images {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1-5);
   margin-top: 4px;
 }
 .imageItem {
@@ -591,6 +1265,14 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
 }
+/* Images a tool read (screenshots, crops): one row height whatever their size; a click shows the whole image. */
+.toolImages .image {
+  width: auto;
+  height: 96px;
+  max-width: 200px;
+  object-fit: cover;
+  object-position: top left;
+}
 .removeImage {
   position: absolute;
   top: 4px;
@@ -603,77 +1285,55 @@
   border: 0;
   border-radius: 50%;
   background: var(--bg-popup);
+  box-shadow: 0 0 0 1px var(--border);
   color: var(--fg);
-  cursor: pointer;
+}
+/* Opaque on hover too: the icon button's own hover fill is translucent over the image. */
+.imageItem .removeImage:not(:disabled):hover {
+  background: color-mix(in srgb, var(--fg-strong) 8%, var(--bg-popup));
+  color: var(--fg-strong);
 }
 
 .attachments {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 10px;
+  gap: var(--space-1) var(--space-1-5);
   margin-top: 4px;
-  color: var(--fg-muted);
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
 }
 .attachment {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
+/* The Changes tab: the file tree beside the diff of every file, under one toolbar. */
 .changes {
-  display: flex;
-  flex-direction: column;
+  flex: 1;
+  height: 100%;
   min-height: 0;
   min-width: 0;
-  width: 280px;
-}
-.changesHeader {
-  min-width: 0;
   display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 32px;
-  flex: none;
-  padding: 0 6px 0 10px;
-  border-bottom: 1px solid var(--border);
-}
-.changesTitle {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
-  color: var(--fg-strong);
+  flex-direction: column;
+  background: var(--bg-app);
+  color: var(--fg);
+  font-size: var(--fs-ui);
 }
 .changesSummary {
-  flex: none;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  padding: 4px 10px;
+  padding-inline: var(--space-1-5);
+  font-size: var(--fs-small);
   color: var(--fg-subtle);
   white-space: pre;
-}
-.changesList {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-.changesList > * {
-  flex: 1;
-  min-height: 0;
-}
-.changesEmpty {
-  padding: 8px 10px;
-  color: var(--fg-muted);
 }
 .change {
   flex: 1;
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .changeName {
   flex: 0 1 auto;
@@ -699,6 +1359,47 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Group and commit rows of the grouped Changes pane. */
+.changeGroup {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+.changeGroupName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--fg-strong);
+}
+.changeCommit {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+.changeCommitHash {
+  flex: none;
+  color: var(--fg-subtle);
+  font-family: var(--font-mono);
+}
+.changeCommitSummary {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.changeCommitTime {
+  flex: none;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+
 .added {
   color: var(--vcs-added);
 }
@@ -710,7 +1411,7 @@
 .subagent {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
@@ -719,7 +1420,7 @@
 .subagentHead {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
 }
 .subagentOpen {
@@ -727,7 +1428,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 2px 4px;
   margin: -2px -4px;
   border: 0;
@@ -736,7 +1437,6 @@
   color: var(--fg);
   font: inherit;
   text-align: left;
-  cursor: pointer;
 }
 .subagentOpen:hover {
   background: var(--bg-hover);
@@ -762,7 +1462,7 @@
   flex: none;
   margin-left: auto;
   color: var(--fg-subtle);
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -770,7 +1470,7 @@
   padding-left: 22px;
   color: var(--fg-muted);
   font-family: var(--font-mono);
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -778,8 +1478,8 @@
 .subagentSection > summary {
   padding-left: 22px;
   color: var(--fg-muted);
-  font-size: var(--fs-small);
-  cursor: pointer;
+  font-size: var(--agent-fs-small, var(--fs-small));
+  cursor: default;
   list-style: none;
 }
 .subagentSection > summary::-webkit-details-marker {
@@ -803,7 +1503,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: 30px;
   padding: 0 8px 0 6px;
   border-bottom: 1px solid var(--border);
@@ -814,7 +1514,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   overflow: hidden;
 }
 .crumb {
@@ -847,7 +1547,7 @@
 .messageFrom {
   margin-bottom: 2px;
   color: var(--fg-subtle);
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
 }
 
 .readOnly {
@@ -860,25 +1560,25 @@
 .subagentStrip {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: var(--space-1);
 }
+/* Flat like the toolbar chips: no frame at rest, the toolbar hover when the pointer is on it. */
 .subagentChip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   max-width: 240px;
   height: 22px;
-  padding: 0 8px;
-  border: 1px solid var(--border);
-  border-radius: 11px;
-  background: var(--bg-elev);
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-toolbar-button);
+  background: transparent;
   color: var(--fg-secondary);
   font: inherit;
   font-size: var(--fs-small);
-  cursor: pointer;
 }
 .subagentChip:hover {
-  background: var(--bg-hover);
+  background: var(--bg-toolbar-hover);
   color: var(--fg);
 }
 .subagentChipTitle {
@@ -888,29 +1588,586 @@
   text-overflow: ellipsis;
 }
 
-.changesToggle {
+/* An open AskUserQuestion: every question with its options, answered at once in the conversation. */
+.questionCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  background: var(--bg-elev);
+  font-size: var(--agent-fs-ui, var(--fs-ui));
+  container: question-card / inline-size;
+}
+/* A question that outlived its turn waits above the composer, at the composer's width. */
+.questionCardPinned {
+  flex: none;
+  max-height: 50vh;
+  overflow-y: auto;
+  width: 100%;
+  max-width: var(--session-content-width);
+  margin: 0 auto 8px;
+}
+.fitWidth .questionCardPinned {
+  width: calc(100% - var(--space-3) * 2);
+  max-width: none;
+}
+.questionTabCheck {
+  flex: none;
+  color: var(--accent);
+}
+/* All questions share one grid cell: the card keeps the tallest question's height. */
+.questionPanels {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+.questionPanel {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+.questionPanelHidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+/* The shown preview re-enables visibility, which would escape the hidden panel. */
+.questionPanelHidden .questionPreviewActive {
+  visibility: hidden;
+}
+.question {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.questionText {
+  margin-bottom: 6px;
+  padding: 0;
+  color: var(--fg-strong);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.questionTag {
+  margin: 0 8px 0 0;
+  padding: 1px 6px;
+  border-radius: var(--radius-small);
+  background: var(--bg-hover);
+  color: var(--fg-muted);
+  font-size: var(--agent-fs-small, var(--fs-small));
+}
+.questionLabel .questionTag {
+  margin: 0 0 0 8px;
+}
+.question .questionOption {
+  display: flex;
+  align-items: flex-start;
+  padding: 8px 10px;
+  border-radius: var(--radius-row);
+}
+/* Each option is a card of its own: separate targets, not one list with hairlines. */
+.question .questionChoices > * {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-row);
+}
+.question .questionChoices > *:hover {
+  border-color: var(--border-strong);
+}
+.question .questionChoices > *:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--bg-hover);
+}
+.question .questionOption:hover {
+  background: var(--bg-hover);
+}
+.questionOption > :first-child {
+  margin-top: 1px;
+}
+.questionOption > :last-child {
+  flex: 1;
+  min-width: 0;
+}
+.questionChoice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.questionOptionText {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+.questionLabel {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--fg);
+}
+.questionDescription {
+  color: var(--fg-muted);
+  font-size: var(--agent-fs-small, var(--fs-small));
+  overflow-wrap: anywhere;
+}
+.questionKey {
+  flex: none;
+  color: var(--fg-subtle);
+  font-size: var(--agent-fs-small, var(--fs-small));
+}
+.questionOther {
+  margin: 2px 0 0 30px;
+}
+.questionBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+}
+.questionChoices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  min-width: 0;
+}
+@container question-card (min-width: 640px) {
+  .questionBodyWithPreview {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--space-3);
+    align-items: start;
+  }
+  .questionBodyWithPreview .questionPreview {
+    margin: 0;
+  }
+}
+.questionPreview {
+  display: grid;
+  min-width: 0;
+  margin: 0 0 0 30px;
+}
+.questionPreviewItem {
+  display: flex;
+  flex-direction: column;
+  grid-area: 1 / 1;
+  gap: var(--space-1);
+  min-width: 0;
+  visibility: hidden;
+}
+.questionPreviewActive {
+  visibility: visible;
+}
+.questionPreviewCaption {
+  color: var(--fg-muted);
+  font-size: var(--agent-fs-small, var(--fs-small));
+}
+.questionPreviewBody {
+  margin: 0;
+  padding: 8px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-editor);
+  font-family: var(--font-mono);
+  font-size: var(--agent-fs-code, var(--fs-code));
+}
+.questionPreviewEmpty {
+  padding: 8px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-small);
+  color: var(--fg-subtle);
+  font-size: var(--agent-fs-small, var(--fs-small));
+}
+.questionActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+.questionPager {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+.questionPage {
+  color: var(--fg-subtle);
+  font-size: var(--agent-fs-small, var(--fs-small));
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* An agent's form (ACP elicitation): its message, then every field at once, in the question card. */
+.formMessage {
+  margin: 0;
+  color: var(--fg-strong);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.formFields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+/* Reasoning while it streams (auto): bounded, its tail in view. */
+.thoughtLive .thoughtBody {
+  max-height: calc(var(--h-row) * 4);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column-reverse;
+  mask-image: linear-gradient(to bottom, transparent, black 40%);
+}
+
+/* Above the composer: what waits for the user, the plan and changes, what runs now. */
+.tray {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+}
+.tray:empty {
+  display: none;
+}
+.trayAsk {
+  min-width: 0;
+}
+.trayStrip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+.trayChip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  height: 22px;
-  padding: 0 6px;
-  border: 0;
-  border-radius: var(--radius-small);
-  background: transparent;
-  color: var(--fg-subtle);
+  gap: var(--space-1-5);
+  height: var(--h-row);
+  padding: 0 var(--space-2);
+  border: none;
+  border-radius: var(--radius-row);
+  background: none;
+  color: var(--fg-secondary);
   font: inherit;
   font-size: var(--fs-small);
+}
+.trayChip:hover,
+.trayChip[aria-expanded="true"] {
+  background: var(--bg-toolbar-hover);
+  color: var(--fg);
+}
+.trayPlan {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  padding: 2px var(--space-2) 4px calc(var(--space-2) * 2);
+  font-size: var(--fs-small);
+}
+.planCurrent {
+  color: var(--fg);
+}
+
+/* Work in progress: a light sweeps across its label. The conversation's one spinner is the
+   working row at its end. */
+.shimmer {
+  background: linear-gradient(90deg, var(--fg-muted) 40%, var(--fg) 50%, var(--fg-muted) 60%) 0 0 / 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 2s linear infinite;
+}
+@keyframes shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+@media (prefers-reduced-motion: reduce), (forced-colors: active) {
+  .shimmer {
+    animation: none;
+    background: none;
+    color: var(--fg-muted);
+  }
+}
+
+/* Tool calls: a muted icon by what the call does, its end and time on the right. Colour is kept for
+   failures; a running call shows one spinner and nothing else moves. */
+.toolKindIcon {
+  flex: none;
+  color: var(--fg-muted);
+}
+.toolDir {
+  flex: none;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 4px;
+  border-radius: var(--radius-small);
+  background: var(--bg-hover);
+  color: var(--fg-muted);
+  font-size: var(--agent-fs-small, var(--fs-small));
+}
+.toolPath {
+  flex: none;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 4px;
+  border: none;
+  border-radius: var(--radius-small);
+  background: none;
+  color: var(--link);
+  font: inherit;
+  font-size: var(--agent-fs-small, var(--fs-small));
   cursor: pointer;
 }
-.changesToggle:hover:not(:disabled) {
-  background: var(--bg-hover);
-  color: var(--fg-strong);
+.toolPath:hover {
+  text-decoration: underline;
 }
-.changesToggle[aria-pressed="true"] {
-  background: var(--bg-selected);
-  color: var(--fg-strong);
+.toolEnd {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-1-5);
+  margin-left: auto;
+  font-size: var(--agent-fs-small, var(--fs-small));
 }
-.changesToggle:disabled {
-  opacity: 0.4;
+.toolDone {
+  color: var(--success);
+}
+.toolSpinner {
+  color: var(--fg-muted);
+}
+/* Only a failed command shows its exit code. */
+.exitCode {
+  flex: none;
+  color: var(--danger);
+  font-family: var(--font-mono);
+  font-size: var(--agent-fs-small, var(--fs-small));
+}
+.terminalBlock {
+  margin: 4px 0 4px 22px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  overflow: hidden;
+}
+.terminalCommand,
+.terminalOutput {
+  margin: 0;
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: var(--agent-fs-small, var(--fs-small));
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.terminalOutput {
+  max-height: 240px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+.prompt {
+  color: var(--fg-subtle);
+  user-select: none;
+}
+.thoughtTook {
+  flex: none;
+  margin-left: 6px;
+  color: var(--fg-subtle);
+}
+.meterButton {
+  composes: meter;
+  color: inherit;
+  font: inherit;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  padding: 0 5px;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+.meterButton:hover,
+.meterButton[aria-expanded="true"] {
+  background: var(--bg-toolbar-hover);
+  color: var(--fg);
+}
+.meterButton:hover .usageRingArc,
+.meterButton[aria-expanded="true"] .usageRingArc {
+  stroke: currentColor;
+}
+.limitsButton:hover .limitWindow,
+.limitsButton[aria-expanded="true"] .limitWindow {
+  color: var(--fg-subtle);
+}
+.meterButton:focus-visible {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: -1px;
+}
+.meterWarning,
+.meterWarning:hover,
+.meterWarning[aria-expanded="true"] {
+  color: var(--warning);
+}
+.meterDanger,
+.meterDanger:hover,
+.meterDanger[aria-expanded="true"] {
+  color: var(--danger);
+}
+.meterWarning .usageRingArc,
+.meterDanger .usageRingArc {
+  stroke: currentColor;
+}
+.meterWarning .meterValue,
+.meterDanger .meterValue,
+.meterWarning .limitPercent,
+.meterDanger .limitPercent {
+  font-weight: 500;
+}
+.limitsDetails {
+  display: grid;
+  gap: var(--space-2);
+  width: min(272px, 80vw);
+  padding: var(--space-3);
+  color: var(--fg-secondary);
+  font-size: var(--fs-ui);
+  font-variant-numeric: tabular-nums;
+}
+.limitsList {
+  display: grid;
+  gap: var(--space-3);
+}
+.limitsRow {
+  display: grid;
+  gap: 5px;
+}
+.limitsRowHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.limitsRowName {
+  color: var(--fg);
+  font-size: var(--fs-small);
+}
+.limitsRowPercent {
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+}
+.meterWarning .limitsRowPercent {
+  color: var(--warning);
+  font-weight: 500;
+}
+.meterDanger .limitsRowPercent {
+  color: var(--danger);
+  font-weight: 500;
+}
+.limitsTrack {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+.limitsFill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--fg-muted);
+}
+.meterWarning .limitsFill {
+  background: var(--warning);
+}
+.meterDanger .limitsFill {
+  background: var(--danger);
+}
+.limitsReset {
+  color: var(--fg-subtle);
+  font-size: var(--fs-tiny, var(--fs-small));
+}
+.contextPopover {
+  max-width: calc(100vw - 24px);
+}
+.contextPopover[data-positioned],
+.contextClosing[data-positioned] {
+  animation: none;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.contextClosing {
+  composes: contextPopover;
+  pointer-events: none;
+}
+.contextClosing.contextPopover[data-positioned] {
+  opacity: 0;
+}
+@starting-style {
+  .contextPopover[data-positioned] {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .contextPopover[data-positioned] {
+    transition: none;
+  }
+}
+.contextDetails {
+  display: grid;
+  gap: var(--space-2);
+  width: min(330px, 80vw);
+  padding: var(--space-3);
+  color: var(--fg-secondary);
+  font-size: var(--fs-ui);
+  font-variant-numeric: tabular-nums;
+}
+.contextHeading,
+.contextDetails li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.contextHeading {
+  justify-content: space-between;
+  color: var(--fg);
+}
+.contextBar {
+  display: flex;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--border);
+}
+.contextBar span {
+  flex-basis: 0;
+}
+.contextDetails summary {
   cursor: default;
+  color: var(--fg);
+}
+.contextDetails ul {
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  max-height: 220px;
+  overflow: auto;
+}
+.contextDetails li {
+  padding: var(--space-1) 0;
+}
+.contextDetails li i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+.contextDetails li span:last-child {
+  margin-left: auto;
+}
+.contextCompact {
+  justify-self: end;
 }

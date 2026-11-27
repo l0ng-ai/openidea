@@ -1,0 +1,71 @@
+---
+title: "Ruby"
+description: "Ruby LSP and Solargraph, interpreter detection with version managers, Rake, RSpec and Minitest runs, rdbg debugging and Rails."
+---
+
+OpenIDEA highlights Ruby files (`.rb`, `.rake`, `.gemspec`, `.ru`, `.rbi`, `.jbuilder`, `.podspec`, and `Gemfile`, `Rakefile`, `Podfile`, `Vagrantfile` and similar names) and ERB templates without setup. Code insight comes from Ruby LSP. Rake tasks, RSpec, Minitest and `rails server` are detected as run configurations, and debugging uses `rdbg` from Ruby's `debug` gem. See the [support matrix](/en/languages/index) for other languages.
+
+## Language servers
+
+| Server               | When it runs                                                                               |
+| -------------------- | ------------------------------------------------------------------------------------------ |
+| `ruby-lsp` (Shopify) | Default. Workspace root: `Gemfile`, `.ruby-version` or `.rubocop.yml`.                     |
+| `solargraph`         | Fallback: used only while Ruby LSP is not installed. Root: `Gemfile` or `.solargraph.yml`. |
+
+ERB files (`.erb`, `.html.erb` and friends) are highlighted but have no language server.
+
+## Setup
+
+### Ruby interpreter
+
+**Settings › Languages & Frameworks › Ruby › Ruby interpreter** chooses the Ruby that runs the `ruby`, `rake` and `rspec` configurations and whose standard library and Bundler gems appear under **External Libraries** in the project tree.
+
+**Auto** (default) picks the install matching `.ruby-version` (searched from the project upward), else the version pinned by mise or asdf, else `ruby` on `PATH`. The list shows Rubies installed by rbenv, rvm, chruby (`~/.rubies`, `/opt/rubies`), mise and asdf, Homebrew's Ruby, and the ones on `PATH` (version-manager shims excluded).
+
+### Installing the language server
+
+When a Ruby file opens and no server is installed, a notification offers **Install**. Everything is also listed in **Settings › Languages & Frameworks › Language Servers**.
+
+| Tool              | Installed with                                                                                                                                 |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Ruby LSP          | `gem install ruby-lsp` into the project's Ruby (it re-launches itself under Bundler, which breaks in a private gem home whose path has spaces) |
+| Solargraph        | `gem install` into the IDE's own tools folder                                                                                                  |
+| `rdbg` (debugger) | Not installed by the IDE: run `gem install debug` or add `debug` to the Gemfile                                                                |
+
+Both installs need `gem` on `PATH`. Gem executables are found even when the Ruby's gem `bin` directory is not on `PATH` (as with Homebrew's Ruby).
+
+## Run and test
+
+Detected when the project root has a `Gemfile`, `Rakefile`, `.ruby-version`, `config.ru` or a `.gemspec`:
+
+- **rails server** when `bin/rails` exists.
+- One **Rake** configuration per task defined in the `Rakefile`, including `namespace` blocks and `Rake::TestTask` / `RSpec::Core::RakeTask` tasks. `test`, `spec`, `*:test` and `*:spec` are test configurations.
+- **RSpec** when the project has `spec/`, `.rspec`, or `rspec` in the Gemfile.
+- Otherwise, with a `test/` folder and no `test` Rake task, a **minitest** configuration that loads every `*_test.rb` / `test_*.rb` under `test/`.
+
+With a `Gemfile`, these run through `bundle exec`. The **Ruby**, **Rake** and **RSpec** run configuration types have a **Run with Bundler (bundle exec)** option and a **Launcher** field for a binstub or other command.
+
+**Run Context Configuration** (`⌃⇧R` / `Ctrl+Shift+F10`):
+
+- A `*_spec.rb` file runs through RSpec with the file as the target.
+- A `*_test.rb` / `test_*.rb` file runs through `rake test` (as `TEST=<file>`) or the minitest configuration.
+- Any other `.rb` file runs with `ruby`, with the project's source folders added to the load path (`-I`).
+
+In Minitest and Test::Unit files, gutter icons run one test class, module or test method (`--name=Class#test_x`). Minitest results go to the test tree with each test's real file and line, through a reporter the IDE loads into the run without changing the project. **Rerun Failed Tests** is available. See [Testing](/en/guide/testing).
+
+**Run with Coverage** works for `ruby`, `bundle`, `rake`, `rspec` and `rails` runs through SimpleCov; a Bundler project needs `simplecov` in its Gemfile. See [Coverage](/en/guide/coverage).
+
+## Debugging
+
+**Debug** works for Ruby files and the detected Rake, RSpec, minitest and `rails server` configurations. The IDE starts `rdbg` from the project's Ruby (and `bundle` from the same install), so install the `debug` gem for that Ruby first. See [Debugging](/en/guide/debugging).
+
+## Framework support
+
+- **Rails**: a `rails server` configuration, the project's gems (Rails included) under External Libraries, ERB highlighting, and coverage of Rails runs. There is no Rails-specific navigation (routes, controllers to views) beyond what Ruby LSP provides.
+
+## Limitations
+
+- RSpec runs a whole file or suite; there are no gutter icons for single `describe` / `it` examples.
+- No attach or remote debugging for Ruby processes.
+- ERB templates have no code insight.
+- The IDE does not install the `debug` gem.

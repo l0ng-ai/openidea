@@ -2,27 +2,39 @@
  * IDEA's "Keyboard Shortcut" dialog: records a first (and optional second)
  * stroke and lists conflicts live; OK with conflicts asks whether to remove the
  * other assignments (Remove / Leave / Cancel). With `mouse` it is the "Mouse
- * Shortcut" dialog: a click on its pad records the button and modifiers.
+ * Shortcut" dialog: the pad records mouse buttons and wheel gestures.
  */
-import { useEffect, useMemo, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { Checkbox, Dialog, Icon, Kbd, T } from "@/ui";
 import type { Action } from "@/platform/actions";
-import { formatBinding, mouseStrokeOf, normalizeBinding, suspendKeyboardDispatch } from "@/platform/keymap";
+import { useEditorPrefs } from "@/platform/editorSettings";
+import {
+  formatBinding,
+  isWheelBinding,
+  mouseStrokeOf,
+  normalizeBinding,
+  parseDoubleModifier,
+  supportsWheelShortcut,
+  suspendKeyboardDispatch,
+  wheelStrokeOf,
+} from "@/platform/keymap";
+import { isPageSwipe } from "@/platform/pageSwipe";
 import { ask } from "@/workbench/messages";
 import { findConflicts, resolveBindings, type Conflict, type KeymapDraft } from "./model";
 import { groupPath } from "./groups";
 import { StrokeRecorder } from "./StrokeRecorder";
 import styles from "./Keymap.module.css";
-import { tx } from "@/platform/i18n";
+import { useTx } from "@/platform/i18n";
+import { usePlatform } from "@/platform/platformInfo";
 
 export interface RecordShortcutDialogProps {
-  action: Pick<Action, "id" | "title" | "category" | "when">;
-  actions: readonly Pick<Action, "id" | "title" | "category" | "when">[];
+  action: Pick<Action, "id" | "title" | "category" | "when" | "keyWhen">;
+  actions: readonly Pick<Action, "id" | "title" | "category" | "when" | "keyWhen">[];
   draft: KeymapDraft;
   onCancel: () => void;
   /** `removeConflicts`: also unbind the conflicting assignments. */
   onSubmit: (binding: string, conflicts: Conflict[], removeConflicts: boolean) => void;
-  /** Record a mouse shortcut (modified left clicks or side buttons) instead of keys. */
+  /** Record a mouse button or wheel shortcut. */
   mouse?: boolean;
 }
 
@@ -30,8 +42,15 @@ export function RecordShortcutDialog({ action, actions, draft, onCancel, onSubmi
   const [first, setFirst] = useState("");
   const [second, setSecond] = useState("");
   const [useSecond, setUseSecond] = useState(false);
+  const os = usePlatform((s) => s.os);
+  const tx = useTx();
+  const actionName = tx(action.title);
+  const rectangularSelection = action.id === "editor.createRectangularSelectionOnMouseDrag";
+  const wheelZoom = useEditorPrefs().general.wheelZoom;
 
-  const binding = mouse ? first : first && useSecond ? (second ? `${first} ${second}` : "") : first;
+  const allowsSecond = !isPageSwipe(first) && !parseDoubleModifier(first);
+  const binding = !mouse && allowsSecond && first && useSecond ? (second ? `${first} ${second}` : "") : first;
+  const zoomConflict = wheelZoom && isWheelBinding(binding) && /(?:^|\+)(Ctrl|Meta)\+/.test(binding);
   const conflicts = useMemo(
     () => (binding ? findConflicts(draft, binding, action.id, actions) : []),
     [binding, draft, action.id, actions],
@@ -65,43 +84,55 @@ export function RecordShortcutDialog({ action, actions, draft, onCancel, onSubmi
     <Dialog
       open
       onClose={onCancel}
-      title={mouse ? tx`Mouse Shortcut: ${action.title}` : tx`Keyboard Shortcut: ${action.title}`}
-      width={440}
+      title={mouse ? "Mouse Shortcut" : "Keyboard Shortcut"}
+      aria-label={mouse ? tx`Mouse Shortcut: ${actionName}` : tx`Keyboard Shortcut: ${actionName}`}
+      width={352}
       buttons={[
         { label: "OK", role: "default", disabled: !binding || already, onClick: () => void ok() },
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.recordBody}>
+      <div className={styles.shortcutBody}>
+        <div className={styles.actionSummary}>
+          <div className={styles.actionName}>{actionName}</div>
+          <div className={styles.actionPath}>
+            {groupPath(action)
+              .map((part) => tx(part))
+              .join(" › ")}
+          </div>
+        </div>
         {mouse ? (
-          <MouseRecorder value={first} onChange={setFirst} />
+          <MouseRecorder
+            value={first}
+            onChange={setFirst}
+            sideButtons={!rectangularSelection}
+            wheel={supportsWheelShortcut(action.id)}
+          />
         ) : (
           <KeyStrokes
             first={first}
             second={second}
-            useSecond={useSecond}
+            useSecond={useSecond && allowsSecond}
+            allowsSecond={allowsSecond}
             setFirst={setFirst}
             setSecond={setSecond}
             setUseSecond={setUseSecond}
           />
         )}
-        <div className={styles.conflictsLabel}>
-          <T>Conflicts:</T>
-        </div>
-        <div className={styles.conflicts} aria-live="polite">
+        {mouse && os === "linux" && rectangularSelection && /(?:^|\+)Button2$/.test(binding) && (
+          <div className={styles.recordHint}>
+            <T>On Linux, middle-button rectangular selection conflicts with primary selection paste.</T>
+          </div>
+        )}
+        <div className={styles.shortcutStatus} aria-live="polite">
           {already && (
-            <span className={styles.noConflicts}>
+            <span className={styles.recordHint}>
               <T>The action already has this shortcut</T>
             </span>
           )}
-          {!already && binding && conflicts.length === 0 && (
-            <span className={styles.noConflicts}>
+          {!already && binding && !zoomConflict && conflicts.length === 0 && (
+            <span className={styles.recordHint}>
               <T>No conflicts</T>
-            </span>
-          )}
-          {!binding && (
-            <span className={styles.noConflicts}>
-              <T>Press a shortcut</T>
             </span>
           )}
           {conflicts.length > 0 && (
@@ -109,11 +140,21 @@ export function RecordShortcutDialog({ action, actions, draft, onCancel, onSubmi
               <div className={styles.conflictTitle}>
                 <Icon name="warning" size={14} className={styles.conflictIcon} />
                 <span>
-                  <Kbd binding={binding} /> <T>is already assigned to:</T>
+                  <Kbd binding={binding} className={styles.conflictBinding} /> <T>is already assigned to:</T>
                 </span>
               </div>
               <ConflictList conflicts={conflicts} />
             </>
+          )}
+          {zoomConflict && (
+            <div className={styles.conflictTitle}>
+              <Icon name="warning" size={14} className={styles.conflictIcon} />
+              <span>
+                <T>
+                  This shortcut takes precedence over Ctrl/Command+Mouse Wheel font zoom when the action is available.
+                </T>
+              </span>
+            </div>
           )}
         </div>
       </div>
@@ -122,21 +163,26 @@ export function RecordShortcutDialog({ action, actions, draft, onCancel, onSubmi
 }
 
 function ConflictList({ conflicts }: { conflicts: readonly Conflict[] }) {
+  const tx = useTx();
   return (
-    <ul className={styles.conflictList}>
+    <ul className={styles.conflictList} aria-label={tx("Conflicts:")}>
       {conflicts.map((c) => (
         <li key={`${c.actionId}|${c.binding}`}>
-          <span className={styles.conflictAction}>{c.title}</span>
-          <span className={styles.conflictCategory}>
-            ({groupPath({ id: c.actionId, category: c.category }).join(" | ")})
-          </span>
-          <span className={styles.spacer} />
-          {c.kind === "prefix" && (
-            <span className={styles.conflictCategory}>
-              <T>chord prefix</T>
+          <div className={styles.conflictAction}>
+            <div>{tx(c.title)}</div>
+            <span className={styles.actionPath}>
+              {groupPath({ id: c.actionId, category: c.category })
+                .map((part) => tx(part))
+                .join(" › ")}
+              {c.kind === "prefix" && (
+                <>
+                  {" "}
+                  · <T>chord prefix</T>
+                </>
+              )}
             </span>
-          )}
-          <Kbd binding={c.binding} />
+          </div>
+          <Kbd binding={c.binding} className={styles.conflictBinding} />
         </li>
       ))}
     </ul>
@@ -147,28 +193,33 @@ interface KeyStrokesProps {
   first: string;
   second: string;
   useSecond: boolean;
+  allowsSecond: boolean;
   setFirst: (v: string) => void;
   setSecond: (v: string) => void;
   setUseSecond: (v: boolean) => void;
 }
 
-function KeyStrokes({ first, second, useSecond, setFirst, setSecond, setUseSecond }: KeyStrokesProps) {
+function KeyStrokes({ first, second, useSecond, allowsSecond, setFirst, setSecond, setUseSecond }: KeyStrokesProps) {
+  const tx = useTx();
   return (
     <>
-      <div className={styles.recordRow}>
-        <span className={styles.recordLabel}>
-          <T>First stroke:</T>
-        </span>
-        <StrokeRecorder autoFocus value={first} onChange={setFirst} aria-label="First stroke" />
-      </div>
-      <div className={styles.recordRow}>
-        <Checkbox checked={useSecond} onChange={setUseSecond} label="Second stroke:" />
+      <StrokeRecorder
+        autoFocus
+        className={styles.shortcutField}
+        value={first}
+        onChange={setFirst}
+        aria-label={tx("First stroke")}
+      />
+      <div className={styles.secondStroke}>
+        <Checkbox checked={useSecond} onChange={setUseSecond} disabled={!allowsSecond} label="Second stroke:" />
         <StrokeRecorder
+          className={styles.shortcutField}
           value={second}
           onChange={setSecond}
           disabled={!useSecond}
+          allowDoubleModifier={false}
           placeholder={useSecond ? "Press a shortcut" : ""}
-          aria-label="Second stroke"
+          aria-label={tx("Second stroke")}
         />
       </div>
       <div className={styles.recordHint}>
@@ -178,10 +229,37 @@ function KeyStrokes({ first, second, useSecond, setFirst, setSecond, setUseSecon
   );
 }
 
-/** Record modified left clicks and side buttons; shortcuts stay off while the dialog is open. */
-function MouseRecorder({ value, onChange }: { value: string; onChange: (binding: string) => void }) {
+/** Shortcuts stay off while the dialog records mouse gestures. */
+function MouseRecorder({
+  value,
+  onChange,
+  sideButtons,
+  wheel,
+}: {
+  value: string;
+  onChange: (binding: string) => void;
+  sideButtons: boolean;
+  wheel: boolean;
+}) {
+  const padRef = useRef<HTMLDivElement>(null);
   useEffect(() => suspendKeyboardDispatch(), []);
+  useEffect(() => {
+    const pad = padRef.current;
+    if (!pad || !wheel) return;
+    const recordWheel = (e: WheelEvent) => {
+      const stroke = wheelStrokeOf(e);
+      if (!stroke) return;
+      e.preventDefault();
+      e.stopPropagation();
+      onChange(stroke);
+    };
+    // React's wheel handler is passive.
+    pad.addEventListener("wheel", recordWheel, { passive: false });
+    return () => pad.removeEventListener("wheel", recordWheel);
+  }, [onChange, wheel]);
   const record = (e: MouseEvent<HTMLDivElement>) => {
+    // Rectangular selection only handles left and middle buttons.
+    if (!sideButtons && e.button > 1) return;
     const stroke = mouseStrokeOf(e.nativeEvent);
     if (!stroke) return;
     e.preventDefault();
@@ -190,6 +268,7 @@ function MouseRecorder({ value, onChange }: { value: string; onChange: (binding:
   };
   return (
     <div
+      ref={padRef}
       role="textbox"
       aria-readonly="true"
       aria-label="Mouse shortcut"
@@ -202,7 +281,13 @@ function MouseRecorder({ value, onChange }: { value: string; onChange: (binding:
         <span className={styles.recorded}>{formatBinding(value)}</span>
       ) : (
         <span className={styles.recorderPlaceholder}>
-          <T>Click here with Ctrl, Alt or Command held, or use a mouse side button</T>
+          {wheel ? (
+            <T>Scroll here, click with Ctrl, Alt or Command held, or use a middle or side mouse button</T>
+          ) : sideButtons ? (
+            <T>Click here with Ctrl, Alt or Command held, or use a middle or side mouse button</T>
+          ) : (
+            <T>Click here with Ctrl, Alt or Command held, or use the middle mouse button</T>
+          )}
         </span>
       )}
     </div>

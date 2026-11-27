@@ -45,9 +45,20 @@ pub fn search_path(config: &RunConfig) -> OsString {
         .unwrap_or_else(ide_core::tool_path::search_path)
 }
 
+/// [`search_path`] for a program started in `dir`: the `PATH` of the project holding it
+/// (its direnv `.envrc`) comes first.
+pub fn search_path_in(config: &RunConfig, dir: &Path) -> OsString {
+    config
+        .env
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("PATH"))
+        .map(|(_, v)| OsString::from(v))
+        .unwrap_or_else(|| ide_core::tool_path::search_path_in(dir))
+}
+
 /// `node_modules/.bin/<name>` in `dir` or an ancestor up to (and including) `root`.
 pub fn node_bin(name: &str, dir: &Path, root: &Path) -> Option<PathBuf> {
-    let names = crate::which::executable_names(name, cfg!(windows), std::env::var("PATHEXT").ok().as_deref());
+    let names = ide_core::process::executable_names(name, cfg!(windows), std::env::var("PATHEXT").ok().as_deref());
     for d in dir.ancestors() {
         let bin = d.join("node_modules").join(".bin");
         if let Some(found) = names.iter().map(|n| bin.join(n)).find(|p| p.is_file()) {
@@ -87,16 +98,15 @@ fn node_package_json(package: &str, dir: &Path, root: &Path) -> Option<PathBuf> 
 
 /// A tool from the project (`node_modules/.bin`) or the search path.
 pub fn find_tool(name: &str, config: &RunConfig, dir: &Path, root: &Path) -> Option<PathBuf> {
-    node_bin(name, dir, root).or_else(|| crate::which::find_executable(name, &search_path(config)))
+    node_bin(name, dir, root).or_else(|| ide_core::process::find_executable(name, &search_path_in(config, dir)))
 }
 
 /// Whether `argv` runs and exits successfully (version probes); output is discarded.
 pub fn probe(argv: &[String], dir: &Path, config: &RunConfig) -> bool {
     let Some((program, args)) = argv.split_first() else { return false };
-    let program = resolve(program, config);
-    ide_core::process::prepare(&mut Command::new(program))
+    let program = resolve(program, config, dir);
+    ide_core::process::prepare(Command::new(program).current_dir(dir))
         .args(args)
-        .current_dir(dir)
         .envs(&config.env)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -106,10 +116,10 @@ pub fn probe(argv: &[String], dir: &Path, config: &RunConfig) -> bool {
 }
 
 /// `program` as spawnable: bare names through the configuration's search path.
-fn resolve(program: &str, config: &RunConfig) -> PathBuf {
+fn resolve(program: &str, config: &RunConfig, dir: &Path) -> PathBuf {
     let p = Path::new(program);
     if p.components().count() == 1
-        && let Some(found) = crate::which::find_executable(program, &search_path(config))
+        && let Some(found) = ide_core::process::find_executable(program, &search_path_in(config, dir))
     {
         return found;
     }
@@ -167,7 +177,46 @@ pub fn python_command(config: &RunConfig) -> Option<PythonCommand> {
             return Some(PythonCommand { interpreter, target, manager });
         }
     }
-    None
+    manager_run_script(&tokens, manager)
+}
+
+/// `uv run [options] script.py …` / `uv run [options] -m module …` (#5874): the runner starts
+/// Python without naming it, so the interpreter part is the runner's command plus `python`.
+fn manager_run_script(tokens: &[String], manager: Option<String>) -> Option<PythonCommand> {
+    if manager.is_none() || tokens.get(1).map(String::as_str) != Some("run") {
+        return None;
+    }
+    let k = (2..tokens.len()).find(|&k| {
+        let t = tokens[k].as_str();
+        let value = tokens[k - 1].starts_with("--") && !tokens[k - 1].contains('=') && takes_value(&tokens[k - 1]);
+        !value && (t == "-m" || t == "--module" || (!t.starts_with('-') && t.ends_with(".py")))
+    })?;
+    let mut target = tokens[k..].to_vec();
+    if target[0] == "--module" {
+        target[0] = "-m".into();
+    }
+    let interpreter = tokens[..k].iter().cloned().chain(std::iter::once("python".to_owned())).collect();
+    Some(PythonCommand { interpreter, target, manager })
+}
+
+/// `uv run` / `poetry run` / `pdm run` options that take a separate value.
+fn takes_value(option: &str) -> bool {
+    matches!(
+        option,
+        "--with"
+            | "--with-editable"
+            | "--with-requirements"
+            | "--project"
+            | "--directory"
+            | "--python"
+            | "--package"
+            | "--extra"
+            | "--group"
+            | "--env-file"
+            | "--index"
+            | "--index-url"
+            | "--extra-index-url"
+    )
 }
 
 /// The interpreter next to a virtualenv's `bin/pytest`.
@@ -284,6 +333,18 @@ mod tests {
         assert_eq!(p.interpreter, ["uv", "run", "python"]);
         assert_eq!(p.target, ["-m", "pytest", "-k", "x"]);
         assert_eq!(p.manager.as_deref(), Some("uv"));
+
+        // uv options stay with the runner; debugpy goes after the `python` it implies (#5874).
+        let p = python_command(&cfg("uv", &["run", "--with", "rich", "--no-sync", "main.py", "a"])).unwrap();
+        assert_eq!(p.interpreter, ["uv", "run", "--with", "rich", "--no-sync", "python"]);
+        assert_eq!(p.target, ["main.py", "a"]);
+        let p = python_command(&cfg("uv", &["run", "--project", "member", "--module", "app"])).unwrap();
+        assert_eq!(p.interpreter, ["uv", "run", "--project", "member", "python"]);
+        assert_eq!(p.target, ["-m", "app"]);
+        let p = python_command(&cfg("uv", &["run", "--env-file", "x.py", "app.py"])).unwrap();
+        assert_eq!(p.target, ["app.py"], "an option's value is not the script");
+        assert_eq!(python_command(&cfg("uv", &["run", "ruff", "check"])), None);
+        assert_eq!(python_command(&cfg("cargo", &["run", "main.py"])), None);
 
         let p = python_command(&cfg("python3", &["main.py", "a"])).unwrap();
         assert_eq!(p.target, ["main.py", "a"]);

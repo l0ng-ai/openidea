@@ -2,9 +2,11 @@ import { call, commands } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
 import { tx } from "@/platform/i18n";
 import { chooseRepositoryRevision } from "./RevisionChooser";
-import { openDiff } from "./diffInput";
+import { openVcsDiff } from "./diffInput";
+import { GITLINK_MODE, loadDiffEntries } from "./gitDiffEntries";
 import { showPathComparison } from "./operations";
 import { displayPath } from "./compare";
+import { statusOf } from "./store";
 
 export async function comparePathsWithRevision(paths: string[], revision?: string) {
   const scope = await call(commands.vcsCompareScope(paths));
@@ -25,7 +27,7 @@ export async function comparePathsWithRevision(paths: string[], revision?: strin
       });
   if (!choice) return;
   if (scope.singleFile && !revision) {
-    await openDiff({
+    await openVcsDiff({
       path: paths[0]!,
       left: { type: "rev", rev: choice.rev, label: choice.rev },
       right: { type: "worktree" },
@@ -37,10 +39,14 @@ export async function comparePathsWithRevision(paths: string[], revision?: strin
   }
 }
 
-/** Returns false for a single file, whose existing Show Diff behavior is retained. */
+/** Changed submodule entries use the file diff even when their checkout is a directory. */
 export async function showDirectoryWorkingDiff(paths: string[]): Promise<boolean> {
   const scope = await call(commands.vcsCompareScope(paths));
   if (scope.singleFile) return false;
+  if (paths.length && paths.every((path) => statusOf(path))) {
+    const entries = await loadDiffEntries(paths.flatMap((path) => ["WT", ":0", "HEAD"].map((rev) => ({ path, rev }))));
+    if (entries?.some((entry) => entry?.mode === GITLINK_MODE)) return false;
+  }
   if (!scope.repositories.length) {
     notifications().notify({
       group: "vcs",

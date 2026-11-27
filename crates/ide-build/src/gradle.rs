@@ -41,6 +41,10 @@ pub struct GradleProject {
     /// Project-relative build script, if any.
     pub build_file: Option<String>,
     pub tasks: Vec<GradleTask>,
+    /// Configurations Gradle can resolve, or null before Gradle reports the project.
+    #[serde(default)]
+    #[specta(optional)]
+    pub resolvable_configurations: Option<Vec<String>>,
     /// Identity path of the nested build holding the project (`:lib` for `includeBuild`,
     /// `:buildSrc`); null for the opened build.
     #[serde(default)]
@@ -109,11 +113,11 @@ fn strip_comments(text: &str) -> String {
 /// Quoted string literals in `s`.
 fn literals(s: &str) -> Vec<String> {
     let mut out = Vec::new();
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '"' || c == '\'' {
-            out.push(chars.by_ref().take_while(|&n| n != c).collect());
-        }
+    let mut rest = s;
+    while let Some(start) = rest.find(['"', '\'']) {
+        let Some((value, used)) = literal(&rest[start..]) else { break };
+        out.push(value);
+        rest = &rest[start + used..];
     }
     out
 }
@@ -204,7 +208,7 @@ pub fn parse_settings(text: &str) -> Settings {
 }
 
 /// `a/b/../c` → `a/c`, without touching the filesystem.
-fn normalize(p: &Path) -> PathBuf {
+pub(crate) fn normalize(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in p.components() {
         match c {
@@ -218,21 +222,14 @@ fn normalize(p: &Path) -> PathBuf {
     out
 }
 
-/// The directory of the Gradle build under `root`: the root itself, or a direct
-/// subfolder, holding a settings or build script.
+/// The first automatically discovered build, for callers operating on one build.
 pub fn build_dir(root: &Path) -> Option<PathBuf> {
-    let has = |d: &Path| SETTINGS_FILES.iter().chain(BUILD_FILES).any(|f| d.join(f).is_file());
-    if has(root) {
-        return Some(root.to_path_buf());
-    }
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(root)
-        .ok()?
-        .flatten()
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()) && !e.file_name().to_string_lossy().starts_with('.'))
-        .map(|e| e.path())
-        .collect();
-    dirs.sort();
-    dirs.into_iter().find(|d| SETTINGS_FILES.iter().any(|f| d.join(f).is_file()))
+    build_dirs(root).into_iter().next()
+}
+
+fn build_dirs(root: &Path) -> Vec<PathBuf> {
+    let markers: Vec<_> = SETTINGS_FILES.iter().chain(BUILD_FILES).copied().collect();
+    ide_core::project_roots::discover(root, &markers)
 }
 
 fn wrapper(dir: &Path) -> String {
@@ -308,6 +305,7 @@ fn project_at(root: &Path, path: String, name: String, pdir: &Path) -> GradlePro
         path,
         name,
         tasks,
+        resolvable_configurations: None,
         build: None,
     }
 }
@@ -324,6 +322,8 @@ pub struct ReportedProject {
     pub build_dir: Option<String>,
     #[serde(default)]
     pub source_sets: Vec<ReportedSourceSet>,
+    #[serde(default)]
+    pub resolvable_configurations: Option<Vec<String>>,
     /// Toolchain language version, else target compatibility.
     #[serde(default)]
     pub java: Option<u32>,
@@ -342,6 +342,19 @@ pub struct ReportedSourceSet {
     /// Absolute resource folders.
     #[serde(default)]
     pub res: Vec<String>,
+    /// Set when Gradle changes the resources while copying them (filters, `expand`, renames,
+    /// includes / excludes, extra sources), which the Java language server's copy does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processed: Option<ProcessedResources>,
+}
+
+/// The task that copies a source set's resources, and where it writes them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessedResources {
+    /// Task name in its project (`processResources`).
+    pub task: String,
+    /// Absolute output folder.
+    pub dir: String,
 }
 
 const MODEL_LINE: &str = "@openidea-model\t";
@@ -351,9 +364,9 @@ pub fn parse_reported_projects(output: &str) -> Vec<ReportedProject> {
     output.lines().filter_map(|l| serde_json::from_str(l.trim_end().strip_prefix(MODEL_LINE)?).ok()).collect()
 }
 
-/// Source roots of the reported source sets: `(absolute folder, is test, is resources)`.
-pub fn reported_source_roots(reported: &[ReportedProject]) -> Vec<(PathBuf, ReportedRoot)> {
-    let mut out: Vec<(PathBuf, ReportedRoot)> = Vec::new();
+/// Source roots of the reported source sets: `(absolute folder, role, absolute folder of its project)`.
+pub fn reported_source_roots(reported: &[ReportedProject]) -> Vec<(PathBuf, ReportedRoot, PathBuf)> {
+    let mut out: Vec<(PathBuf, ReportedRoot, PathBuf)> = Vec::new();
     for p in reported {
         for set in &p.source_sets {
             let (src, res) = if set.test {
@@ -364,14 +377,14 @@ pub fn reported_source_roots(reported: &[ReportedProject]) -> Vec<(PathBuf, Repo
             for (dir, kind) in set.src.iter().map(|d| (d, src)).chain(set.res.iter().map(|d| (d, res))) {
                 let dir = PathBuf::from(dir);
                 // A folder shared by `main` and another set is `main`'s, as in IDEA.
-                if !out.iter().any(|(d, _)| *d == dir) {
-                    out.push((dir, kind));
+                if !out.iter().any(|(d, _, _)| *d == dir) {
+                    out.push((dir, kind, PathBuf::from(&p.dir)));
                 }
             }
         }
         // IDEA excludes the build folder of every module.
         if let Some(b) = &p.build_dir {
-            out.push((PathBuf::from(b), ReportedRoot::Excluded));
+            out.push((PathBuf::from(b), ReportedRoot::Excluded, PathBuf::from(&p.dir)));
         }
     }
     out
@@ -406,6 +419,7 @@ pub fn merge_reported_projects(root: &Path, model: &mut GradleModel, reported: &
             if p.build.as_deref().is_some_and(|b| b.ends_with(":buildSrc")) {
                 project.tasks.clear();
             }
+            project.resolvable_configurations = p.resolvable_configurations.clone();
             project.build = p.build.clone();
             project
         })
@@ -440,7 +454,9 @@ pub fn load(root: &Path) -> Option<GradleModel> {
 
 /// Loads exactly this build, without searching its child folders.
 pub fn load_build(root: &Path, dir: &Path) -> Option<GradleModel> {
-    let dir = root.join(dir);
+    // Linked builds are saved with forward slashes; rebuild the path so the launcher
+    // and module folders use the platform's separators.
+    let dir: PathBuf = root.join(dir).components().collect();
     if !SETTINGS_FILES.iter().chain(BUILD_FILES).any(|name| dir.join(name).is_file()) {
         return None;
     }
@@ -493,7 +509,7 @@ pub fn linked_project_key(root: &Path, dir: &str) -> String {
 /// Linked build identities without reading their scripts (also used by index hot paths).
 pub(crate) fn linked_dirs(root: &Path, settings: &ide_core::settings::GradleSettings) -> Vec<String> {
     match &settings.linked_projects {
-        None => build_dir(root).map(|dir| rel(root, &dir)).into_iter().collect(),
+        None => build_dirs(root).iter().map(|dir| rel(root, dir)).collect(),
         Some(dirs) => {
             let mut out = Vec::new();
             for dir in dirs {
@@ -570,11 +586,12 @@ fn is_dependency_configuration(name: &str) -> bool {
 /// `(group, artifact, version)` of the external dependencies a build script declares:
 /// `implementation 'g:a:v'`, `api("g:a:v:classifier@jar")`, and the map notation
 /// `implementation group: 'g', name: 'a', version: 'v'` (Groovy) / `group = "g", …` (Kotlin).
-/// Versions with interpolations, ranges and catalog aliases (`libs.x`) are skipped.
-pub fn script_dependencies(text: &str) -> Vec<(String, String, String)> {
+/// Versions written as `${gsonVersion}` are filled in from `properties` (`ext` values, see
+/// [`script_properties`]); ranges, unknown names and catalog aliases (`libs.x`) are skipped.
+pub fn script_dependencies(text: &str, properties: &BTreeMap<String, String>) -> Vec<(String, String, String)> {
     let text = strip_comments(text);
     let mut out = Vec::new();
-    for line in text.lines().flat_map(|l| l.split(['{', ';'])) {
+    for line in text.lines().flat_map(statements) {
         let line = line.trim_start();
         let name: String = line.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
         if name.is_empty() || !is_dependency_configuration(&name) {
@@ -596,6 +613,7 @@ pub fn script_dependencies(text: &str) -> Vec<(String, String, String)> {
             }),
         };
         if let Some((g, a, v)) = coordinate {
+            let v = interpolate(&v, properties);
             let plain = |s: &str| {
                 !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'))
             };
@@ -607,11 +625,354 @@ pub fn script_dependencies(text: &str) -> Vec<(String, String, String)> {
     out
 }
 
+/// `line` split at `{` and `;` outside quoted strings, so a `${version}` stays in one piece.
+fn statements(line: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut index = 0;
+    while index < line.len() {
+        let c = line[index..].chars().next().unwrap();
+        if c == '"' || c == '\'' {
+            index += literal(&line[index..]).map_or(line.len() - index, |(_, used)| used);
+            continue;
+        }
+        if matches!(c, '{' | '}' | ';' | '\n') {
+            out.push(&line[start..index]);
+            start = index + c.len_utf8();
+        }
+        index += c.len_utf8();
+    }
+    out.push(&line[start..]);
+    out
+}
+
+/// `apply from: 'x.gradle'` (Groovy) and `apply(from = "x.gradle.kts")` (Kotlin DSL)
+/// targets, as written in the script.
+pub fn applied_scripts(text: &str) -> Vec<String> {
+    let text = strip_comments(text);
+    let mut out = Vec::new();
+    for (index, word) in code_words(&text) {
+        if word != "apply" || !starts_word(&text, index) {
+            continue;
+        }
+        let mut rest = text[index + "apply".len()..].trim_start();
+        if let Some(inner) = rest.strip_prefix('(') {
+            rest = inner.trim_start();
+        }
+        let Some(rest) = rest.strip_prefix("from") else { continue };
+        let Some(rest) = rest.trim_start().strip_prefix(':').or_else(|| rest.trim_start().strip_prefix('=')) else {
+            continue;
+        };
+        let mut rest = rest.trim_start();
+        if let Some(inner) = rest.strip_prefix("file") {
+            let inner = inner.trim_start();
+            if let Some(inner) = inner.strip_prefix('(') {
+                rest = inner.trim_start();
+            }
+        }
+        if let Some((path, _)) = literal(rest) {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// Literal extra properties declared by Groovy's `ext` or Kotlin's `extra`.
+pub fn script_properties(text: &str) -> BTreeMap<String, String> {
+    let text = strip_comments(text);
+    let mut out = BTreeMap::new();
+    for (index, word) in code_words(&text) {
+        if !starts_word(&text, index) {
+            continue;
+        }
+        let rest = text[index + word.len()..].trim_start();
+        if word == "val" || word == "var" {
+            let (name, rest) = identifier(rest);
+            let Some(rest) = rest.trim_start().strip_prefix("by").map(str::trim_start) else { continue };
+            let Some(rest) = rest.strip_prefix("extra").map(str::trim_start) else { continue };
+            if let Some(rest) = rest.strip_prefix('(')
+                && let Some((value, used)) = literal(rest.trim_start())
+                && rest.trim_start()[used..].trim_start().starts_with(')')
+                && !name.is_empty()
+            {
+                out.insert(name.to_owned(), value);
+            }
+            continue;
+        }
+        if word != "ext" && word != "extra" {
+            continue;
+        }
+        if let Some(block) = rest.strip_prefix('{') {
+            if let Some(end) = matching_brace(block) {
+                out.extend(assignments(&block[..end]));
+            }
+        } else if let Some(rest) = rest.strip_prefix('.') {
+            let (name, rest) = identifier(rest);
+            if let Some(value) = assigned_literal(rest)
+                && !name.is_empty()
+            {
+                out.insert(name.to_owned(), value);
+            }
+        } else if let Some(rest) = rest.strip_prefix('[')
+            && let Some((name, used)) = literal(rest.trim_start())
+            && let Some(rest) = rest.trim_start()[used..].trim_start().strip_prefix(']')
+            && let Some(value) = assigned_literal(rest)
+        {
+            out.insert(name, value);
+        }
+    }
+    out
+}
+
+pub(crate) fn file_properties(build_dir: &Path) -> BTreeMap<String, String> {
+    let text = std::fs::read_to_string(build_dir.join("gradle.properties")).unwrap_or_default();
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.starts_with(['#', '!']) {
+                return None;
+            }
+            let separator = line.find(|c: char| c == '=' || c == ':' || c.is_whitespace())?;
+            let (key, rest) = line.split_at(separator);
+            let value = rest.trim_start().trim_start_matches(['=', ':']).trim_start();
+            (!key.is_empty()).then(|| (key.to_owned(), value.to_owned()))
+        })
+        .collect()
+}
+
+/// The build script of a project and, recursively, the scripts it applies with `apply from`,
+/// read from disk: absolute path and text. Targets that do not exist are skipped.
+pub fn scripts_of(root: &Path, project_dir: &Path, build_dir: &Path, build_file: &Path) -> Vec<(PathBuf, String)> {
+    const MAX_SCRIPTS: usize = 256;
+    const MAX_DEPTH: usize = 32;
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let first = normalize(&root.join(build_file));
+    let Ok(identity) = dunce::canonicalize(&first) else { return out };
+    seen.insert(identity);
+    let mut stack = vec![(first, 0)];
+    while let Some((path, depth)) = stack.pop() {
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        if depth < MAX_DEPTH {
+            let mut targets = Vec::new();
+            for spec in applied_scripts(&text) {
+                if seen.len() >= MAX_SCRIPTS {
+                    break;
+                }
+                if let Some(target) = resolve_script(&spec, &path, project_dir, build_dir)
+                    && let Ok(identity) = dunce::canonicalize(&target)
+                    && seen.insert(identity)
+                {
+                    targets.push((target, depth + 1));
+                }
+            }
+            stack.extend(targets.into_iter().rev());
+        }
+        out.push((path, text));
+    }
+    out
+}
+
+/// Relative targets are project-scoped, with a lenient fallback beside the applying script.
+fn resolve_script(spec: &str, script: &Path, project_dir: &Path, build_dir: &Path) -> Option<PathBuf> {
+    let spec = spec.trim();
+    if spec.contains("://") {
+        return None;
+    }
+    let properties = BTreeMap::from([
+        ("rootDir".into(), build_dir.to_string_lossy().into_owned()),
+        ("rootProject.projectDir".into(), build_dir.to_string_lossy().into_owned()),
+        ("projectDir".into(), project_dir.to_string_lossy().into_owned()),
+    ]);
+    let spec = interpolate(spec, &properties);
+    if spec.contains('$') {
+        return None;
+    }
+    let path = Path::new(&spec);
+    if path.is_absolute() {
+        return path.is_file().then(|| normalize(path));
+    }
+    let project_path = normalize(&project_dir.join(path));
+    if project_path.is_file() {
+        return Some(project_path);
+    }
+    let path = normalize(&script.parent()?.join(path));
+    path.is_file().then_some(path)
+}
+
+pub(crate) fn project_build_dir(root: &Path, model: &GradleModel, project: &GradleProject) -> PathBuf {
+    let dir = project.build.as_ref().and_then(|build| model.projects.iter().find(|p| &p.path == build));
+    root.join(dir.map_or(&model.dir, |p| &p.dir))
+}
+
+/// `2.8.9` for `${gsonVersion}` / `$gsonVersion` / `${ext.gsonVersion}`; unknown names and
+/// expressions are left as written, so ranges and catalogs stay skipped.
+fn interpolate(value: &str, properties: &BTreeMap<String, String>) -> String {
+    if !value.contains('$') {
+        return value.to_owned();
+    }
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '$' {
+            out.push(c);
+            continue;
+        }
+        let braced = chars.peek() == Some(&'{');
+        if braced {
+            chars.next();
+        }
+        let mut name = String::new();
+        if braced {
+            for n in chars.by_ref() {
+                if n == '}' {
+                    break;
+                }
+                name.push(n);
+            }
+        } else {
+            while let Some(&n) = chars.peek() {
+                if n.is_alphanumeric() || n == '_' || n == '.' {
+                    name.push(n);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+        }
+        let key = name.strip_prefix("ext.").or_else(|| name.strip_prefix("extra.")).unwrap_or(&name);
+        let bracket = name.strip_prefix("ext[").or_else(|| name.strip_prefix("extra[")).and_then(|rest| {
+            let (key, used) = literal(rest.trim_start())?;
+            (rest.trim_start()[used..].trim() == "]").then_some(key)
+        });
+        match properties.get(bracket.as_deref().unwrap_or(key)) {
+            Some(v) if !name.is_empty() => out.push_str(v),
+            _ => {
+                out.push('$');
+                if braced {
+                    out.push('{');
+                }
+                out.push_str(&name);
+                if braced {
+                    out.push('}');
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Whether `index` starts a whole word in `text` (not `reapply`, `my.apply`).
+fn starts_word(text: &str, index: usize) -> bool {
+    text[..index].chars().next_back().is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '.'))
+}
+
+/// Identifiers outside quoted strings, with their byte positions.
+fn code_words(text: &str) -> Vec<(usize, &str)> {
+    let mut out = Vec::new();
+    let mut index = 0;
+    while index < text.len() {
+        let c = text[index..].chars().next().unwrap();
+        if c == '"' || c == '\'' {
+            index += literal(&text[index..]).map_or(text.len() - index, |(_, used)| used);
+        } else if c.is_alphabetic() || c == '_' {
+            let (word, _) = identifier(&text[index..]);
+            out.push((index, word));
+            index += word.len();
+        } else {
+            index += c.len_utf8();
+        }
+    }
+    out
+}
+
+fn identifier(text: &str) -> (&str, &str) {
+    let end = text.find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(text.len());
+    text.split_at(end)
+}
+
+fn assigned_literal(text: &str) -> Option<String> {
+    let rest = text.trim_start().strip_prefix('=')?.trim_start();
+    let (value, used) = literal(rest)?;
+    // Do not turn a computed value (`'1.' + suffix`) into a concrete version.
+    let tail = rest[used..].trim_start_matches([' ', '\t', '\r']);
+    (tail.is_empty() || tail.starts_with(['\n', ';', '}'])).then_some(value)
+}
+
+/// The quoted string at the start of `s`, and how many bytes it spans.
+fn literal(s: &str) -> Option<(String, usize)> {
+    let quote = s.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+    let rest = &s[quote.len_utf8()..];
+    let mut index = 0;
+    while index < rest.len() {
+        let c = rest[index..].chars().next()?;
+        if c == quote {
+            return Some((rest[..index].to_owned(), quote.len_utf8() + index + c.len_utf8()));
+        }
+        if c == '\\' {
+            index += c.len_utf8();
+            index += rest[index..].chars().next()?.len_utf8();
+        } else if quote == '"' && rest[index..].starts_with("${") {
+            index += 2;
+            index += matching_brace(&rest[index..])? + 1;
+        } else {
+            index += c.len_utf8();
+        }
+    }
+    None
+}
+
+/// Byte index of the `}` closing a `{` that was already consumed, ignoring quoted text.
+fn matching_brace(text: &str) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut index = 0;
+    while index < text.len() {
+        let c = text[index..].chars().next()?;
+        if c == '"' || c == '\'' {
+            index += literal(&text[index..])?.1;
+            continue;
+        }
+        if c == '{' {
+            depth += 1;
+        } else if c == '}' {
+            depth -= 1;
+            if depth == 0 {
+                return Some(index);
+            }
+        }
+        index += c.len_utf8();
+    }
+    None
+}
+
+/// `name = 'value'` pairs in `text`.
+fn assignments(text: &str) -> Vec<(String, String)> {
+    statements(text)
+        .into_iter()
+        .filter_map(|statement| {
+            let (name, rest) = identifier(statement.trim_start());
+            let value = assigned_literal(rest)?;
+            (!name.is_empty()).then(|| (name.to_owned(), value))
+        })
+        .collect()
+}
+
 /// Every settings and build script of the model (for change detection).
 pub fn build_files(root: &Path, model: &GradleModel) -> Vec<PathBuf> {
     let dir = root.join(&model.dir);
     let mut out: Vec<PathBuf> = SETTINGS_FILES.iter().map(|f| dir.join(f)).filter(|p| p.is_file()).collect();
     out.extend(model.projects.iter().filter_map(|p| p.build_file.as_ref().map(|f| root.join(f))));
+    // Scripts a build script applies are build files too: editing one can change the model.
+    for project in &model.projects {
+        let Some(file) = project.build_file.as_deref() else { continue };
+        let build_dir = project_build_dir(root, model, project);
+        let properties = build_dir.join("gradle.properties");
+        if properties.is_file() {
+            out.push(properties);
+        }
+        let applied = scripts_of(root, &root.join(&project.dir), &build_dir, Path::new(file));
+        out.extend(applied.into_iter().skip(1).map(|(path, _)| path));
+    }
     // The settings of each nested build (its root project's folder).
     for p in model.projects.iter().filter(|p| p.build.as_deref() == Some(p.path.as_str())) {
         let nested = root.join(&p.dir);
@@ -629,6 +990,8 @@ pub fn build_files(root: &Path, model: &GradleModel) -> Vec<PathBuf> {
         catalogs.sort();
         out.extend(catalogs);
     }
+    out.sort();
+    out.dedup();
     out
 }
 
@@ -685,6 +1048,55 @@ pub(crate) fn has_war_plugin(script: &str) -> bool {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn default_linkage_discovers_all_shallow_builds() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        for file in [
+            "Cargo.toml",
+            "package.json",
+            "fixtures/kotlin-gradle/settings.gradle.kts",
+            "fixtures/kotlin-gradle/build.gradle.kts",
+            "fixtures/kotlin-gradle/tools/settings.gradle",
+            "services/backend/api/settings.gradle",
+            "standalone/build.gradle",
+            "ignored/src/settings.gradle",
+            "ignored/out/build.gradle",
+            "node_modules/example/settings.gradle",
+            "target/example/build.gradle",
+            "build/example/settings.gradle",
+            "dist/example/build.gradle",
+            "vendor/example/settings.gradle",
+            ".hidden/settings.gradle",
+            "too/deep/to/find/settings.gradle",
+        ] {
+            let path = root.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "").unwrap();
+        }
+        let models = super::load_linked(root, &Default::default());
+        assert_eq!(
+            models.iter().map(|m| m.dir.as_str()).collect::<Vec<_>>(),
+            ["fixtures/kotlin-gradle", "ignored/src", "services/backend/api", "standalone"]
+        );
+        std::fs::write(root.join("build.gradle.kts"), "").unwrap();
+        let models = super::load_linked(root, &Default::default());
+        assert_eq!(models.len(), 1);
+        assert!(models[0].dir.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn default_linkage_does_not_follow_symlinks() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::create_dir(root.join("real")).unwrap();
+        std::fs::write(root.join("real/build.gradle"), "").unwrap();
+        std::os::unix::fs::symlink(root.join("real"), root.join("alias")).unwrap();
+        let models = super::load_linked(root, &Default::default());
+        assert_eq!(models.iter().map(|m| m.dir.as_str()).collect::<Vec<_>>(), ["real"]);
+    }
+
+    #[test]
     fn a_path_from_the_ui_finds_the_saved_link() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("workspace");
@@ -716,7 +1128,10 @@ mod tests {
             std::fs::create_dir(root.join(dir)).unwrap();
             std::fs::write(root.join(dir).join("settings.gradle"), format!("rootProject.name = '{dir}'")).unwrap();
         }
-        assert_eq!(super::load_linked(root, &Default::default())[0].dir, "a");
+        assert_eq!(
+            super::load_linked(root, &Default::default()).iter().map(|m| m.dir.as_str()).collect::<Vec<_>>(),
+            ["a", "b"]
+        );
         let mut settings = ide_core::settings::GradleSettings {
             linked_projects: Some(vec!["b".into(), "./b".into(), "a".into()]),
             ..Default::default()
@@ -761,7 +1176,7 @@ dependencies {
     classpath 'not:a:library'
 }
 "#;
-        let deps = script_dependencies(script);
+        let deps = script_dependencies(script, &BTreeMap::new());
         let names: Vec<String> = deps.iter().map(|(g, a, v)| format!("{g}:{a}:{v}")).collect();
         assert_eq!(
             names,
@@ -773,6 +1188,291 @@ dependencies {
                 "com.h2database:h2:2.2.224",
             ]
         );
+    }
+
+    #[test]
+    fn applied_scripts_read_groovy_and_kotlin_forms() {
+        let script = r#"
+            apply plugin: 'java'
+            apply from: 'gradle/dependencies.gradle'
+            apply from: file('gradle/extra.gradle')
+            apply(from = "gradle/kotlin.gradle.kts")
+            apply(from = file("gradle/kotlin-file.gradle.kts"))
+            // apply from: 'commented.gradle'
+            reapply from: 'not-a-call.gradle'
+        "#;
+        assert_eq!(
+            applied_scripts(script),
+            [
+                "gradle/dependencies.gradle",
+                "gradle/extra.gradle",
+                "gradle/kotlin.gradle.kts",
+                "gradle/kotlin-file.gradle.kts"
+            ]
+        );
+    }
+
+    #[test]
+    fn ext_values_fill_in_dependency_versions() {
+        let script = r#"
+            ext {
+                gsonVersion = '2.8.9'
+                junit = "4.13.2"
+            }
+            ext.logback = '1.4.14'
+            dependencies {
+                implementation "com.google.code.gson:gson:${gsonVersion}"
+                testImplementation "junit:junit:$junit"
+                implementation "ch.qos.logback:logback-classic:${ext.logback}"
+                implementation 'org.plain:literal:1.0'
+                implementation "org.x:unknown:${missing}"
+            }
+        "#;
+        let names: Vec<String> = script_dependencies(script, &script_properties(script))
+            .into_iter()
+            .map(|(g, a, v)| format!("{g}:{a}:{v}"))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "com.google.code.gson:gson:2.8.9",
+                "junit:junit:4.13.2",
+                "ch.qos.logback:logback-classic:1.4.14",
+                "org.plain:literal:1.0",
+            ]
+        );
+    }
+
+    #[test]
+    fn extra_properties_support_brackets_and_kotlin_delegates() {
+        for declaration in [
+            "ext.x = '1.2'",
+            "ext { x = '1.2' }",
+            "ext[\"x\"] = '1.2'",
+            "extra[\"x\"] = \"1.2\"",
+            "val x by extra(\"1.2\")",
+        ] {
+            let script = format!("{declaration}\ndependencies {{ implementation \"g:a:${{x}}\" }}");
+            assert_eq!(
+                script_dependencies(&script, &script_properties(&script)),
+                [("g".into(), "a".into(), "1.2".into())],
+                "{declaration}"
+            );
+        }
+    }
+
+    #[test]
+    fn parsers_ignore_apply_and_ext_inside_strings() {
+        let script = r#"
+            println "apply from: 'fake.gradle'"
+            println "ext.x = 'bogus'"
+            ext.real = '1'
+        "#;
+        assert!(applied_scripts(script).is_empty());
+        assert_eq!(script_properties(script), BTreeMap::from([("real".into(), "1".into())]));
+    }
+
+    #[test]
+    fn dependency_statements_preserve_interpolation_and_escaped_quotes() {
+        let script = r#"dependencies { implementation "g:a:${v}"; api(group = "g", name = "b", version = "${v}-RC1") }; dependencies { runtimeOnly 'g:c:2' }"#;
+        let properties = BTreeMap::from([("v".into(), "1.2".into())]);
+        assert_eq!(
+            script_dependencies(script, &properties),
+            [
+                ("g".into(), "a".into(), "1.2".into()),
+                ("g".into(), "b".into(), "1.2-RC1".into()),
+                ("g".into(), "c".into(), "2".into())
+            ]
+        );
+        assert_eq!(
+            statements(r#"println "escaped\"; {still quoted}"; implementation 'g:a:1'"#),
+            [r#"println "escaped\"; {still quoted}""#, " implementation 'g:a:1'"]
+        );
+    }
+
+    #[test]
+    fn dependency_versions_skip_unresolved_names_and_expressions() {
+        let script = r#"dependencies {
+            implementation "g:missing:${unknown}"
+            implementation "g:expression:${1 + 2}"
+            implementation "g:cyclic:${cycle}"
+            implementation 'g:range:[1,2)'
+            implementation 'g:dynamic:1.+'
+        }"#;
+        let properties = BTreeMap::from([("cycle".into(), "${cycle}".into())]);
+        assert!(script_dependencies(script, &properties).is_empty());
+    }
+
+    #[test]
+    fn extra_property_references_support_qualified_and_bracket_access() {
+        let script = r#"dependencies {
+            implementation "g:a:${ext.x}"
+            implementation "g:b:${extra.x}"
+            implementation "g:c:${ext['x']}"
+            implementation "g:d:${extra["x"]}"
+        }"#;
+        let properties = BTreeMap::from([("x".into(), "1".into())]);
+        assert_eq!(script_dependencies(script, &properties).len(), 4);
+    }
+
+    #[test]
+    fn applied_scripts_are_read_recursively_and_survive_cycles() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("gradle")).unwrap();
+        std::fs::write(root.join("build.gradle"), "apply from: 'gradle/deps.gradle'\n").unwrap();
+        std::fs::write(root.join("gradle/deps.gradle"), "apply from: '$rootDir/gradle/more.gradle'\n").unwrap();
+        std::fs::write(root.join("gradle/more.gradle"), "apply from: 'deps.gradle'\n").unwrap();
+
+        let scripts: Vec<String> = scripts_of(root, root, root, Path::new("build.gradle"))
+            .into_iter()
+            .map(|(path, _)| path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/"))
+            .collect();
+        assert_eq!(scripts, ["build.gradle", "gradle/deps.gradle", "gradle/more.gradle"]);
+        assert_eq!(build_files(root, &load(root).unwrap()).len(), 3);
+    }
+
+    #[test]
+    fn applied_paths_prefer_the_project_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("gradle")).unwrap();
+        std::fs::write(root.join("build.gradle"), "apply from: 'gradle/deps.gradle'").unwrap();
+        std::fs::write(root.join("gradle/deps.gradle"), "apply from: 'versions.gradle'").unwrap();
+        std::fs::write(root.join("versions.gradle"), "right").unwrap();
+        std::fs::write(root.join("gradle/versions.gradle"), "wrong").unwrap();
+        let scripts = scripts_of(root, root, root, Path::new("build.gradle"));
+        assert_eq!(scripts.len(), 3);
+        assert_eq!(scripts[2].1, "right");
+    }
+
+    #[test]
+    fn nested_applied_paths_are_relative_to_the_project_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("gradle")).unwrap();
+        std::fs::write(root.join("build.gradle"), "apply from: 'gradle/a.gradle'").unwrap();
+        std::fs::write(root.join("gradle/a.gradle"), "apply from: 'gradle/b.gradle'").unwrap();
+        std::fs::write(root.join("gradle/b.gradle"), "").unwrap();
+        let scripts = scripts_of(root, root, root, Path::new("build.gradle"));
+        assert_eq!(scripts.len(), 3);
+        assert_eq!(scripts[2].0, root.join("gradle/b.gradle"));
+    }
+
+    #[test]
+    fn applied_paths_fall_back_to_the_applying_script_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("gradle")).unwrap();
+        std::fs::write(root.join("build.gradle"), "apply from: 'gradle/a.gradle'").unwrap();
+        std::fs::write(root.join("gradle/a.gradle"), "apply from: 'c.gradle'").unwrap();
+        std::fs::write(root.join("gradle/c.gradle"), "").unwrap();
+        let scripts = scripts_of(root, root, root, Path::new("build.gradle"));
+        assert_eq!(scripts.len(), 3);
+        assert_eq!(scripts[2].0, root.join("gradle/c.gradle"));
+    }
+
+    #[test]
+    fn applied_paths_resolve_gradle_directory_variables() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let project = root.join("app");
+        let script = project.join("gradle/deps.gradle");
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(root.join("shared.gradle"), "").unwrap();
+        std::fs::write(project.join("local.gradle"), "").unwrap();
+        for prefix in ["$rootDir", "${rootDir}", "$rootProject.projectDir", "${rootProject.projectDir}"] {
+            assert_eq!(
+                resolve_script(&format!("{prefix}/shared.gradle"), &script, &project, root),
+                Some(root.join("shared.gradle")),
+                "{prefix}"
+            );
+        }
+        for prefix in ["$projectDir", "${projectDir}"] {
+            assert_eq!(
+                resolve_script(&format!("{prefix}/local.gradle"), &script, &project, root),
+                Some(project.join("local.gradle")),
+                "{prefix}"
+            );
+        }
+        assert_eq!(
+            resolve_script(root.join("shared.gradle").to_str().unwrap(), &script, &project, root),
+            Some(root.join("shared.gradle"))
+        );
+    }
+
+    #[test]
+    fn applied_scripts_skip_urls_and_missing_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // Even a local path resembling a URL must not be read.
+        if !cfg!(windows) {
+            for scheme in ["http", "https"] {
+                let local = root.join(format!("{scheme}:/example.com/deps.gradle"));
+                std::fs::create_dir_all(local.parent().unwrap()).unwrap();
+                std::fs::write(local, "implementation 'g:remote:1'").unwrap();
+            }
+        }
+        std::fs::write(root.join("build.gradle"), "apply from: 'http://example.com/deps.gradle'\napply(from = \"https://example.com/deps.gradle\")\napply from: 'missing.gradle'").unwrap();
+        assert_eq!(scripts_of(root, root, root, Path::new("build.gradle")).len(), 1);
+    }
+
+    #[test]
+    fn applied_scripts_deduplicate_self_application_and_path_aliases() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("gradle")).unwrap();
+        std::fs::write(
+            root.join("build.gradle"),
+            "apply from: 'build.gradle'\napply from: 'gradle/../build.gradle'\napply from: 'gradle/a.gradle'",
+        )
+        .unwrap();
+        std::fs::write(root.join("gradle/a.gradle"), "apply from: '../build.gradle'").unwrap();
+        assert_eq!(scripts_of(root, root, root, Path::new("build.gradle")).len(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn applied_scripts_deduplicate_symlink_cycles() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("build.gradle"), "apply from: 'alias/build.gradle'").unwrap();
+        std::os::unix::fs::symlink(root, root.join("alias")).unwrap();
+        assert_eq!(scripts_of(root, root, root, Path::new("build.gradle")).len(), 1);
+    }
+
+    #[test]
+    fn applied_script_traversal_bounds_depth_and_total_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for i in 0..300 {
+            std::fs::write(root.join(format!("{i}.gradle")), format!("apply from: '{}.gradle'", i + 1)).unwrap();
+        }
+        let chain = scripts_of(root, root, root, Path::new("0.gradle"));
+        assert_eq!(chain.len(), 33);
+        let fanout: String = (0..300).map(|i| format!("apply from: '{i}.gradle'\n")).collect();
+        std::fs::write(root.join("build.gradle"), fanout).unwrap();
+        assert_eq!(scripts_of(root, root, root, Path::new("build.gradle")).len(), 256);
+    }
+
+    #[test]
+    fn applied_scripts_use_their_composite_build_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("included/app")).unwrap();
+        std::fs::write(root.join("build.gradle"), "").unwrap();
+        std::fs::write(root.join("included/build.gradle"), "").unwrap();
+        std::fs::write(root.join("included/app/build.gradle"), "apply from: \"${rootDir}/deps.gradle\"").unwrap();
+        std::fs::write(root.join("included/deps.gradle"), "implementation 'g:included:1'").unwrap();
+        let mut model = load(root).unwrap();
+        for (path, dir) in [(":included", "included"), (":included:app", "included/app")] {
+            let mut project = project_at(root, path.into(), path.into(), &root.join(dir));
+            project.build = Some(":included".into());
+            model.projects.push(project);
+        }
+        assert!(build_files(root, &model).contains(&root.join("included/deps.gradle")));
+        let model = crate::BuildModel { maven: None, gradle: vec![model], sbt: Vec::new() };
+        assert_eq!(crate::dependency_coordinates(root, &model)[0].artifact_id, "included");
     }
 
     use super::*;
@@ -938,6 +1638,11 @@ Pattern: clean<TaskName>: Cleans the output files of a task.
                 path: path.into(),
                 dir: ws.join(d).to_string_lossy().into_owned(),
                 build: build.map(Into::into),
+                resolvable_configurations: match path {
+                    ":" => Some(vec!["reviewTools".into(), "runtimeClasspath".into()]),
+                    ":lib:core" => Some(Vec::new()),
+                    _ => None,
+                },
                 ..ReportedProject::default()
             };
             format!("{MODEL_LINE}{}\n", serde_json::to_string(&project).unwrap())
@@ -966,6 +1671,12 @@ Pattern: clean<TaskName>: Cleans the output files of a task.
         );
         let build_src = &model.projects[2];
         assert!(build_src.tasks.is_empty(), "buildSrc tasks cannot run from the root build");
+        assert_eq!(
+            model.projects[0].resolvable_configurations,
+            Some(vec!["reviewTools".into(), "runtimeClasspath".into()])
+        );
+        assert_eq!(model.projects[1].resolvable_configurations, None);
+        assert_eq!(model.projects[4].resolvable_configurations, Some(Vec::new()));
         assert!(!model.projects[4].tasks.is_empty());
         assert!(build_files(&root, &model).contains(&ws.join("lib/settings.gradle")));
     }

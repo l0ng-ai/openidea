@@ -11,18 +11,28 @@ path = "src/bin/server.rs"
 
 [dependencies]
 encoding_rs.workspace = true
+ide-command.workspace = true
 ide-core.workspace = true
+ide-mcp.workspace = true
+futures.workspace = true
+tokio-tungstenite.workspace = true
 ide-text.workspace = true
 ide-vfs.workspace = true
 regex-syntax.workspace = true
+regex-lite = "0.1"
 ide-workspace.workspace = true
 ide-language.workspace = true
+blake3.workspace = true
 ide-index.workspace = true
 ide-syntax.workspace = true
 ide-search.workspace = true
 ide-lsp.workspace = true
 ide-vcs.workspace = true
 ide-dap.workspace = true
+ide-heap.workspace = true
+ide-jvm-attach.workspace = true
+ide-jvm-inspect.workspace = true
+ide-streams.workspace = true
 ide-build.workspace = true
 ide-analysis.workspace = true
 ide-coverage.workspace = true
@@ -39,21 +49,31 @@ globset.workspace = true
 ide-db.workspace = true
 ide-ssh.workspace = true
 ide-remote.workspace = true
+ide-web.workspace = true
 ide-jsonrpc.workspace = true
 ide-agent.workspace = true
 ide-notebook.workspace = true
 ide-extension.workspace = true
 ide-plugin.workspace = true
 ide-tools = { path = "../ide-tools" }
+ide-scaffold.workspace = true
 ide-docker = { path = "../ide-docker" }
+ide-flutter = { path = "../ide-flutter" }
 semver = "1"
 serde.workspace = true
-serde_json.workspace = true
+jsonschema = { version = "0.33", default-features = false }
+serde_json = { workspace = true, features = ["raw_value"] }
 toml.workspace = true
 specta.workspace = true
 specta-typescript.workspace = true
-tokio = { workspace = true, features = ["io-std"] }
+bytes = "1"
+flate2.workspace = true
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+tokio = { workspace = true, features = ["io-std", "net", "signal"] }
 tracing.workspace = true
+url = "2"
 tracing-subscriber.workspace = true
 parking_lot.workspace = true
 dunce.workspace = true
@@ -64,6 +84,7 @@ zip.workspace = true
 quick-xml = "0.42"
 
 [dev-dependencies]
+ide-heap = { workspace = true, features = ["testing"] }
 ide-ssh = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "test-util"] }
 criterion = { version = "0.5", default-features = false }

@@ -36,6 +36,17 @@ export function methodStop(outline: readonly OutlineItem[], caret: Pos, dir: 1 |
   return null;
 }
 
+/** The outermost type around `caret`, looking through namespaces and packages (C#, Kotlin scripts). */
+export function topLevelTypeAt(outline: readonly OutlineItem[], caret: Pos): OutlineItem | null {
+  let level: readonly OutlineItem[] = outline;
+  for (;;) {
+    const hit = level.find((i) => inside(i, caret));
+    if (!hit) return null;
+    if (hit.kind !== "namespace" && hit.kind !== "package") return TYPES.has(hit.kind) ? hit : null;
+    level = hit.children;
+  }
+}
+
 export interface CaretMember {
   /** Innermost method at the caret. */
   method: OutlineItem | null;
@@ -90,8 +101,28 @@ export function methodsInType(outline: readonly OutlineItem[], item: HierarchyIt
   return exact.length ? exact : named;
 }
 
+/**
+ * Methods of the type declared at `item` that override `signature` (`save(T, int)` as jdtls names
+ * it): those with the same signature, or `null` when one with the same name has another signature
+ * (`save(Order)` for a generic `save(T)`) and only the server can tell whether it overrides.
+ */
+export function overridersInType(
+  outline: readonly OutlineItem[],
+  item: HierarchyItem,
+  signatureName: string,
+): OutlineItem[] | null {
+  const type = typeOf(outline, item);
+  if (!type) return null;
+  const bare = baseName(signatureName);
+  const named = type.children.filter((c) => METHODS.has(c.kind) && baseName(c.name) === bare);
+  const exact = named.filter((c) => signature(c.name) === signature(signatureName));
+  return named.length > exact.length ? null : exact;
+}
+
 export interface SuperDeps {
   supertypes: (path: string, pos: Pos) => Promise<HierarchyItem[]>;
+  /** Direct subtypes, when the type hierarchy answers it (fallback for implementation requests). */
+  subtypes?: (path: string, pos: Pos) => Promise<HierarchyItem[]>;
   outline: (path: string) => Promise<OutlineItem[]>;
 }
 
@@ -115,19 +146,28 @@ export async function superMethodTargets(
   for (let d = 0; d < depth && level.length; d++) {
     const next: Array<{ path: string; pos: Pos }> = [];
     const found: SuperMethod[] = [];
-    for (const t of level) {
-      const supers = await deps.supertypes(t.path, t.pos).catch(() => [] as HierarchyItem[]);
+    // oxlint-disable-next-line no-await-in-loop -- levels are sequential; supertypes within a level are parallel
+    const allSupers = await Promise.all(
+      level.map((t) => deps.supertypes(t.path, t.pos).catch(() => [] as HierarchyItem[])),
+    );
+    const pending: HierarchyItem[] = [];
+    for (const supers of allSupers) {
       for (const s of supers) {
         const key = `${s.path}:${s.selectionRange.start.line}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        const methods = methodsInType(await deps.outline(s.path).catch(() => [] as OutlineItem[]), s, method);
-        if (methods.length)
-          for (const m of methods)
-            found.push({ location: { path: s.path, range: m.selection_range }, owner: s, method: m });
-        else next.push({ path: s.path, pos: s.selectionRange.start });
+        pending.push(s);
       }
     }
+    // oxlint-disable-next-line no-await-in-loop -- levels are sequential; outlines within a level are parallel
+    const outlines = await Promise.all(pending.map((s) => deps.outline(s.path).catch(() => [] as OutlineItem[])));
+    pending.forEach((s, i) => {
+      const methods = methodsInType(outlines[i]!, s, method);
+      if (methods.length)
+        for (const m of methods)
+          found.push({ location: { path: s.path, range: m.selection_range }, owner: s, method: m });
+      else next.push({ path: s.path, pos: s.selectionRange.start });
+    });
     if (found.length) return found;
     level = next;
   }

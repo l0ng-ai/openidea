@@ -4,7 +4,6 @@
  * active keymap (overrides of a bundled keymap, or the user keymap itself).
  */
 import { useMemo } from "react";
-import { create } from "zustand";
 import { useActions } from "@/platform/actions";
 import { call, commands, isTauri } from "@/platform/ipc";
 import type { Keymap } from "@/platform/keymap";
@@ -21,11 +20,8 @@ import {
 } from "./model";
 import { RecordShortcutDialog } from "./RecordShortcutDialog";
 
-export const useAssignShortcut = create<{ actionId: string | null }>(() => ({ actionId: null }));
-
-export function showAssignShortcut(actionId: string) {
-  useAssignShortcut.setState({ actionId });
-}
+import { useAssignShortcut } from "./assignShortcutStore";
+export { showAssignShortcut, useAssignShortcut } from "./assignShortcutStore";
 
 interface KeymapSettings {
   keymap: string;

@@ -1,0 +1,148 @@
+---
+title: "快速开始"
+description: "安装插件工具，生成一个 Rust 插件，构建后链接到 OpenIDEA 并运行它的命令。"
+---
+
+本文从零创建一个带两个命令的代码插件：先跑单元测试，再构建成 WebAssembly，最后不经安装直接加载到 IDE 中。
+
+## 准备
+
+- 已安装 OpenIDEA。
+- 通过 [rustup](https://rustup.rs) 安装的 Rust。`openidea-plugin build` 发现缺少 `wasm32-wasip2` target 时会通过 rustup 自动安装；也可以自己执行 `rustup target add wasm32-wasip2`。
+
+<Steps>
+  <Step title="安装 openidea-plugin 工具">
+    ```sh
+    cargo install --locked --git https://github.com/l0ng-ai/openidea ide-host --bin openidea-plugin
+    ```
+
+    这会从 `main` 分支构建工具。想和某个已发布的 IDE 版本保持一致，加上 `--tag v<version>`（例如 `--tag v0.1.40`）。每个 release 也附带 Linux x64 版本的二进制 `openidea-plugin-linux-x86_64.gz`。
+
+    `openidea-plugin --version` 会打印工具版本和它所校验的插件 API 版本。
+
+  </Step>
+
+  <Step title="生成插件">
+    ```sh
+    openidea-plugin new hello --id acme.hello
+    cd hello
+    ```
+
+    默认的 `command` 模板会生成：
+
+    | 文件 | 内容 |
+    | --- | --- |
+    | `plugin.toml` | 清单：id `acme.hello`，名称 `Hello`，两个命令，`editor.read` 能力 |
+    | `Cargo.toml` | 依赖 SDK 的 `cdylib` crate |
+    | `src/lib.rs` | 两个命令的实现，以及基于 SDK 模拟宿主的单元测试 |
+    | `README.md`、`.gitignore` | |
+
+    id 的格式是 `<publisher>.<name>`。发布时用前缀（这里是 `acme`）对应的发布者密钥签名；不传 `--id` 时 id 由文件夹名推导。`--name` 设置显示名称。
+
+    SDK 依赖指向本仓库中与工具版本对应的 tag（`{ git = "https://github.com/l0ng-ai/openidea", tag = "v…" }`）。传 `--sdk <path to sdk/rust/openidea-plugin>` 可以改用本地检出的 SDK。
+
+    其他模板：`--template theme`、`--template icon-theme`、`--template language`，这些都不需要代码。
+
+  </Step>
+
+  <Step title="运行单元测试">
+    ```sh
+    cargo test
+    ```
+
+    在本机上 SDK 连接的是一个模拟宿主，所以不启动 IDE 也能测试命令逻辑。见 [测试与调试](/zh/plugins/testing)。
+
+  </Step>
+
+  <Step title="构建组件">
+    ```sh
+    openidea-plugin build
+    ```
+
+    它会执行 `cargo build --release --target wasm32-wasip2`，把产物复制到 `dist/plugin.wasm`（清单里 `wasm` 指定的路径），然后运行 `openidea-plugin check`。`check` 按安装时完全相同的规则校验插件包，并打印用户安装时会被要求授予的权限：
+
+    ```text
+    acme.hello 0.1.0 — Hello
+      code: dist/plugin.wasm (…, plugin API 1.4)
+      categories: tools
+      contributes 2 × commands
+      capability editor.read (required, Low risk): Read the focused editor's file and selection
+    ok
+    ```
+
+    `openidea-plugin build --debug` 生成调试构建。
+
+  </Step>
+
+  <Step title="把文件夹链接到 IDE">
+    ```sh
+    openidea-plugin link
+    ```
+
+    `link` 会把当前文件夹写入 IDE 插件目录下的 `links.json`。链接的插件直接从文件夹读取，开发期间不用反复安装。`openidea-plugin links` 列出已链接的文件夹，`openidea-plugin unlink` 取消链接。
+
+    <Note>
+    插件目录是 `$OPENIDEA_PLUGINS_DIR`，未设置时为系统应用数据目录下的 `ai.l0ng.openidea/plugins`。从源码运行的 OpenIDEA 开发构建使用自己的数据目录，链接前请把 `OPENIDEA_PLUGINS_DIR` 指向它的 `plugins` 文件夹。见 [数据目录](/zh/reference/data-directories)。
+    </Note>
+
+  </Step>
+
+  <Step title="授权并运行命令">
+    1. 打开 **设置 › 插件**（macOS 上 `⌘,`，Windows/Linux 上 `Ctrl+Alt+S`）。插件出现在 **为开发而链接** 分组下，状态为 **需要授权**。
+    2. 选中它，点击 **查看权限…**，在“允许 Hello 运行？”对话框中点 **允许**。
+    3. 打开 **查找操作**（`⌘⇧A` / `Ctrl+Shift+A`），运行 **Hello: Say Hello**，会弹出通知 *Hello #1 from Hello!*。
+    4. 打开任意文件，运行 **Hello: Line Count of Active File**。命令返回的文本会显示给你。
+  </Step>
+</Steps>
+
+## 开发循环
+
+1. 修改 `src/lib.rs`（或 `plugin.toml`）。
+2. 执行 `openidea-plugin build`。
+3. 在 **设置 › 插件** 中选中插件，点击详情里的 **从磁盘重新加载** 按钮；或者在 **查找操作** 中运行 **重新加载插件**。
+
+出问题时，**设置 › 插件** 的插件详情会显示其状态和失败原因。日志的查看方式见 [测试与调试](/zh/plugins/testing)。
+
+## 代码说明
+
+```rust
+use openidea_plugin::{Error, Invocation, NotificationLevel, Plugin, host, register_plugin};
+
+#[derive(Default)]
+pub struct Main {
+    greetings: u32,
+}
+
+impl Plugin for Main {
+    fn run_command(&mut self, id: &str, ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
+        match id {
+            "say-hello" => {
+                self.greetings += 1;
+                let body = format!("Hello #{} from Hello!", self.greetings);
+                host::notify(NotificationLevel::Info, "Hello", &body);
+                Ok(None)
+            }
+            "line-count" => {
+                let editor = ctx.editor().ok_or("no file is open")?;
+                let text = editor.document()?.text;
+                Ok(Some(format!("{} lines in {}", text.lines().count(), editor.path())))
+            }
+            _ => Err(format!("unknown command {id}").into()),
+        }
+    }
+}
+
+register_plugin!(Main);
+```
+
+- 命令在 `plugin.toml` 中声明（`[[contributes.commands]]`），所以代码加载前它们就已出现在 **查找操作** 中。
+- `run_command` 收到命令 id 和调用上下文（所在窗口的项目和当前编辑器）。
+- `greetings` 保存在实例内存里，插件空闲被回收后会清零。需要持久保存的数据放进 `host::storage`（见 [生命周期与事件](/zh/plugins/lifecycle)）。
+- 读取编辑器需要 `editor.read` 能力；没有它时 `editor.document()` 返回 `Error::Denied`。
+
+## 下一步
+
+- [Manifest](/zh/plugins/manifest)：`plugin.toml` 的每个字段。
+- [命令与动作](/zh/plugins/guides/commands)：菜单、快捷键、`when` 子句和命令参数。
+- [示例插件](/zh/plugins/examples)：可以直接参考的完整插件。
+- [打包与签名](/zh/plugins/publishing/packaging)：把文件夹打成 `.oiplugin` 包。

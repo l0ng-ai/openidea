@@ -3,56 +3,93 @@
  * test runner) and run/debug/stop actions.
  */
 import { registerEditorContribution } from "@/editor/api";
-import { executeAction, getAction, registerActions } from "@/platform/actions";
-import { getContext, setContext } from "@/platform/context";
-import { onIdeEvent, type RunConfig } from "@/platform/ipc";
-import { useProject } from "@/platform/project";
-import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
-import { showContextMenu, lazyComponent, type MenuItem } from "@/ui";
+import { executeAction, executeActionOrThrow, getAction, registerActions } from "@/platform/actions";
+import { useBuildModel } from "@/platform/buildModel";
+import { getContext, setContext, useContextKeys } from "@/platform/context";
+import { call, commands, onIdeEvent, type RunConfig } from "@/platform/ipc";
+import { projectFolder, useProject } from "@/platform/project";
+import { parseRemoteLocation, projectLocation } from "@/platform/remote";
+import { isSameOrInside } from "@/platform/paths";
+import { agentRunSettings, onWorkflowSettingsChange } from "@/platform/workflowSettings";
+import { showContextMenu, lazyComponent, lazyWhen, type MenuItem } from "@/ui";
 import {
   menuGroupItems,
   useDebugRunSessions,
   notifications,
+  provideRunConfigurationChecks,
+  provideRunConfigurationLookup,
+  provideRunOutput,
   registerMenuGroup,
   registerOverlay,
   registerRunAnythingProvider,
+  registerRunConfigType,
   registerRunningProcessesProvider,
   registerServiceProvider,
   registerTitleItem,
   registerToolWindow,
 } from "@/workbench/contributions";
+import { useFlutterRunApps } from "@/workbench/flutterRunApps";
+import { restartFlutterDaemon, selectFlutterDevice, useFlutterDevices } from "@/workbench/flutterDevices";
 import { chooserJustClosed, ConfigChooserOverlay } from "./ConfigChooser";
 import {
   compiledDebugPlan,
   contextMenuItems,
   executeContext,
-  launchProduced,
+  debugBinary,
   modifyContext,
   prepareMenu,
   runContextAction,
 } from "./contextRun";
 import { runWithExecutor } from "./executors";
+import { notifyCwdError, withExpandedCwd } from "./cwdMacros";
 import { debugWithAgent, jdwpLaunch } from "./javaDebug";
+import { attachesToChild, debugAttachingToChild } from "./pluginAttach";
 import { RunDialogsOverlay } from "./dialogs";
 import { registerExternalTools } from "./externalTools";
-import { EditConfigsOverlay } from "./EditConfigsDialog";
 import { openImport } from "./importConfigs";
+import { registerComposerInstall } from "./composerInstall";
+import { registerNpmInstall } from "./npmInstall";
+import { registerPubspecCommands } from "./pubspec";
 import { registerGoActions } from "./goActions";
+import { registerRunTabActions } from "./runTabs";
 import { invalidateGoModules } from "./goModules";
 import { invalidatePythonPackages } from "./pythonPackages";
 import { RunWidget } from "./RunWidget";
+import { packageBinsRunAnything, watchPackageBinsChanges } from "./packageBins";
 import { runConfigsRunAnything } from "./runAnything";
-import { cleanupRemovedProject, recordRun, runServiceProvider } from "./services";
+import { runDirectory } from "./navigate";
+import {
+  cleanupRemovedProject,
+  registerRunServiceActions,
+  runServiceProvider,
+  watchServiceRunningCount,
+} from "./services";
 import { liveServiceSession, serviceSessions } from "./serviceSessions";
+import { ServiceImportHost } from "./serviceImport";
+import { selectedBuildTarget } from "./buildTarget";
+import { configurationChecks } from "./configurationChecks";
 import { runBeforeLaunch } from "./beforeLaunch";
-import { compoundChildren } from "./configs";
-import { remoteDebugBlocked } from "./remote";
+import { compoundChildren, createdConfigs } from "./configs";
+import { containerDebuggable, remoteDebugBlocked } from "./remote";
+import { debugInContainer } from "./containerDebug";
 import { isDebugOnly, registerBuiltinTypes } from "./types";
-import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
+import { isZigBuildStep, zigDebugTarget } from "./zigDebug";
+import { junitType } from "./junitType";
+import {
+  installBuildTomcatSync,
+  listenForApplicationDeactivation,
+  showApplicationUpdate,
+  updatableSessions,
+} from "./applicationUpdate";
+import { hotReload, hotReloadSession, hotRestart, syncFlutterRunApps } from "./flutterHotReload";
+import { registerFlutterBuildActions } from "./flutterBuild";
 import { npmGutter } from "./npmGutter";
+import { launchSettingsGutter } from "./launchSettingsGutter";
 import { runGutter } from "./runGutter";
+import { markdownCommandGutter } from "./markdownCommands";
 import { gradleDelegation } from "./gradleRun";
 import { activateStackTrace, useStackTraces } from "./stackTrace";
+import { activateThreadDumps } from "./threadDump/actions";
 import { clearRuntimeCache } from "./runtimes";
 import {
   adoptTemporary,
@@ -64,21 +101,64 @@ import {
   setBeforeLaunchRunner,
   loadConfigs,
   failedTests,
+  baseConfigOf,
   onRunExited,
   rerunFailed,
   rerunSession,
   resetRuns,
   runningSessions,
   saveUserConfigs,
+  dropStaleContextConfigs,
   selectConfig,
   selectedConfig,
   startRun,
+  debugSingleInstance,
+  startSampleOutput,
   stopSession,
+  subscribeOutput,
   trackRecentConfigurations,
   useRun,
+  isLive,
 } from "./store";
+import { rerunFailedConfigs } from "./testing/rerun";
+import { TEST_TREE_FOCUS, testTree } from "./testTree";
+import { startAgentRun, trimAgentArchive, type AgentRunRequest } from "./agentRuns";
 import { compoundTargets, selectedTarget } from "./sessionTargets";
 import { tx } from "@/platform/i18n";
+import { UNITY_CONFIG_KIND, showUnityAttach } from "./unity";
+
+function trackFailedTestSelection(): () => void {
+  let signature = "";
+  let generation = 0;
+  const update = () => {
+    const state = useRun.getState();
+    const id =
+      (state.activeSession && failedTests(state.activeSession).length ? state.activeSession : null) ??
+      [...state.sessions].reverse().find((s) => failedTests(s.id).length > 0)?.id;
+    const session = state.sessions.find((s) => s.id === id);
+    const base = session && baseConfigOf(session);
+    const paths = id ? failedTests(id) : [];
+    const next = JSON.stringify([id, session?.status, base, paths]);
+    if (next === signature) return;
+    signature = next;
+    const request = ++generation;
+    setContext("run.canRerunFailed", false);
+    if (!session || isLive(session) || !base) return;
+    const selection = rerunFailedConfigs(base, paths);
+    if (selection instanceof Promise) {
+      void selection.then((configs) => {
+        if (request === generation) setContext("run.canRerunFailed", configs.length > 0);
+      });
+    } else setContext("run.canRerunFailed", selection.length > 0);
+  };
+  const stop = useRun.subscribe(update);
+  update();
+  return () => {
+    generation++;
+    stop();
+    setContext("run.canRerunFailed", false);
+  };
+}
 
 function hasProject() {
   return !!useProject.getState().project;
@@ -96,7 +176,11 @@ async function runSelected() {
     useRun.setState({ chooserOpen: true, chooserMode: "run" });
     return;
   }
-  const target = selectedTarget(config.id, useRun.getState().sessions, useDebugRunSessions.getState().sessions);
+  // As in IDEA, Run starts another instance of a configuration that allows multiple instances;
+  // otherwise it restarts the running one.
+  const target = config.allowParallel
+    ? null
+    : selectedTarget(config.id, useRun.getState().sessions, useDebugRunSessions.getState().sessions);
   if (target) {
     target.rerun?.();
     return;
@@ -104,40 +188,85 @@ async function runSelected() {
   await startRun(config);
 }
 
-async function debugConfig(config: RunConfig, chain: readonly string[] = []) {
+async function debugConfig(config: RunConfig, chain: readonly string[] = [], show?: boolean) {
   if (config.kind === "compound") {
-    if (!(await prepareLaunch(config, chain))) return;
+    if (!(await prepareLaunch(config, chain, show))) return;
     const children = compoundChildren(config, useRun.getState().configs);
-    await Promise.all(children.map((c) => debugConfig(c, [...chain, config.id])));
+    await Promise.all(children.map((c) => debugConfig(c, [...chain, config.id], show)));
     return;
   }
   if (remoteDebugBlocked(config)) return;
-  if (!(await prepareLaunch(config, chain))) return;
-  recordRun(config.id);
-  // Remote JVM Debug, Go Remote…: the debugger attaches, nothing is launched here.
-  if (isDebugOnly(config) && getAction("debug.startConfig")) {
-    await executeAction("debug.startConfig", config);
+  await debugSingleInstance(config, () => debugLaunch(config, chain, show));
+}
+
+async function debugLaunch(config: RunConfig, chain: readonly string[], show?: boolean): Promise<void> {
+  try {
+    config = await withExpandedCwd(config);
+  } catch (e) {
+    return notifyCwdError(config, e);
+  }
+  if (!(await prepareLaunch(config, chain, show))) return;
+  if (config.kind === UNITY_CONFIG_KIND) return showUnityAttach(config);
+  // Python on a Docker / Compose target: debugpy in the container, the debugger attaches.
+  if (containerDebuggable(config) && getAction("debug.attach")) {
+    await debugInContainer(config);
     return;
   }
-  // A single compiled file (rustc / clang): build with debug info, then debug the binary.
+  // A plugin configuration whose debugger attaches to a process the run starts.
+  if (attachesToChild(config) && getAction("debug.attach")) {
+    await debugAttachingToChild(config, { show, prepared: true });
+    return;
+  }
+  // Remote JVM Debug, Go Remote…: the debugger attaches, nothing is launched here.
+  if (isDebugOnly(config) && getAction("debug.startConfig")) {
+    await executeAction("debug.startConfig", show === false ? { config, show: false } : config);
+    return;
+  }
+  // A single compiled file (rustc / clang / zig): build with debug info, then debug the binary.
   const compiled = await compiledDebugPlan(config);
   if (compiled?.debug) {
-    await launchProduced(compiled, true);
+    await debugBinary(compiled.debug, config, show);
     return;
   }
   // "Build and run using: Gradle": the JavaExec JVM gets the agent, the debugger attaches to it.
-  const delegated = getAction("debug.attach") ? await gradleDelegation(config) : null;
+  let delegated: RunConfig | null;
+  try {
+    delegated = getAction("debug.attach") ? await gradleDelegation(config) : null;
+  } catch (error) {
+    notifications().notify({
+      group: "run",
+      level: "error",
+      title: `Cannot run '${config.name}'`,
+      body: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
   if (delegated) {
-    await debugWithAgent(delegated);
+    await debugWithAgent(delegated, show);
     return;
   }
   // Maven / Gradle: the build tool starts the JVM with a debug agent, the debugger attaches.
   if (jdwpLaunch(config) && getAction("debug.attach")) {
-    await debugWithAgent(config);
+    await debugWithAgent(config, show);
     return;
   }
+  // `zig build run` (and other steps that run an executable) have no adapter of their own: debug
+  // through the executable config, which builds the binary first and launches it under CodeLLDB.
+  if (isZigBuildStep(config)) {
+    const target = zigDebugTarget(config, useRun.getState().configs);
+    if (target && getAction("debug.startConfig")) {
+      // Run the executable's before-launch build, then keep the clicked step as the session's
+      // origin so the Run widget, tab identity, rerun and stop follow what the user asked to debug.
+      if (!(await prepareLaunch(target, [config.id], show))) return;
+      await executeAction(
+        "debug.startConfig",
+        show === false ? { config: target, origin: config, show: false } : { config: target, origin: config },
+      );
+      return;
+    }
+  }
   if (getAction("debug.startConfig")) {
-    await executeAction("debug.startConfig", config);
+    await executeAction("debug.startConfig", show === false ? { config, show: false } : config);
     return;
   }
   notifications().notify({
@@ -147,7 +276,7 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = []) {
     body: tx`Running '${config.name}' without the debugger.`,
     key: "run-no-debugger",
   });
-  await startRun(config, undefined, undefined, { prepared: true });
+  await startRun(config, undefined, undefined, { prepared: true, show });
 }
 
 async function debugSelected() {
@@ -169,6 +298,22 @@ async function runContext(debug: boolean, arg?: unknown) {
 async function runCurrentFile(debug: boolean) {
   await runContext(debug);
   selectConfig(CURRENT_FILE);
+}
+
+/** Flutter Attach: `flutter attach` with the selected Flutter configuration, to an app started elsewhere. */
+async function flutterAttachSelected() {
+  await ensureConfigs();
+  const config = selectedConfig();
+  if (config?.kind !== "flutter") {
+    notifications().notify({
+      group: "run",
+      level: "info",
+      title: "Select a Flutter run configuration to attach with",
+      key: "run-flutter-attach",
+    });
+    return;
+  }
+  await executeAction("debug.startConfig", { ...config, params: { ...config.params, request: "attach" } });
 }
 
 function nothingToRun() {
@@ -240,7 +385,22 @@ function stopAction(arg?: unknown) {
     })),
     ...menuGroupItems("stopProcess", { paths: [] }),
   ].filter((i): i is MenuItem & { run: () => void } => "run" in i && !!i.run);
-  if (items.length === 0) return;
+  // A Debug launch has no Run process: with nothing else to stop, the title-bar Stop reaches
+  // the debug session itself (the Debug window need not be focused).
+  if (items.length === 0) {
+    if (debug.length === 0) return;
+    if (debug.length === 1) {
+      debug[0]!.stop();
+      return;
+    }
+    const anchor = document.querySelector("[data-run-chooser]")?.getBoundingClientRect();
+    const at = anchor ? { x: anchor.left, y: anchor.bottom + 4 } : { x: window.innerWidth / 2 - 120, y: 44 };
+    showContextMenu(at, [
+      { kind: "header", label: "Stop Process" },
+      ...debug.map((s): MenuItem => ({ label: s.name, verbatim: true, icon: "debug", run: () => s.stop() })),
+    ]);
+    return;
+  }
   if (items.length === 1) {
     items[0]!.run();
     return;
@@ -263,11 +423,11 @@ function rerunActive() {
 }
 
 function useRunningCount(): number | null {
-  return useRun((s) => s.sessions.filter((x) => x.status === "running" || x.status === "starting").length || null);
+  return useRun((s) => s.sessions.filter(isLive).length || null);
 }
 
 const CONFIG_FILES =
-  /(?:^|\/)(?:\.openidea\/run\.toml|package\.json|deno\.jsonc?|Cargo\.toml|build\.gradle(?:\.kts)?|pom\.xml|go\.(?:mod|work)|pyproject\.toml|setup\.cfg|pytest\.ini|manage\.py|Makefile|justfile|CMakeLists\.txt|CMakeCache\.txt|index-[^/]+\.json)$/;
+  /(?:^|\/)(?:\.openidea\/run(?:\.local)?\.toml|package\.json|deno\.jsonc?|Cargo\.toml|build\.gradle(?:\.kts)?|pom\.xml|go\.(?:mod|work)|pyproject\.toml|setup\.cfg|pytest\.ini|manage\.py|Makefile|justfile|CMakeLists\.txt|CMakeCache\.txt|index-[^/]+\.json)$/;
 
 let reloadTimer: ReturnType<typeof setTimeout> | undefined;
 function scheduleReload() {
@@ -275,14 +435,32 @@ function scheduleReload() {
   reloadTimer = setTimeout(() => void loadConfigs(), 300);
 }
 
+const useEditConfigsOpen = () => useRun((s) => s.editorOpen);
+
 export function activate(): () => void {
   const disposers: Array<() => void> = [
+    // The performance harness (`perf/`): a console streaming generated output.
+    import.meta.env.DEV || import.meta.env.MODE === "perf"
+      ? registerActions([
+          {
+            id: "run.sampleOutput",
+            title: "Stream Sample Output",
+            category: "Run",
+            hidden: true,
+            run: async ({ arg }) => {
+              const { lines = 20_000, perFrame = 200 } = (arg ?? {}) as { lines?: number; perFrame?: number };
+              await startSampleOutput(lines, perFrame);
+            },
+          },
+        ])
+      : () => {},
     registerToolWindow({
       id: "run",
       title: "Run",
       icon: "toolwindow-run",
       anchor: "bottom",
       stripe: "onUse",
+      sessionContent: true,
       order: 5,
       component: lazyComponent(() => import("./RunView").then((m) => m.RunView)),
       headerContent: lazyComponent(() => import("./RunView").then((m) => m.RunTabs)),
@@ -290,36 +468,70 @@ export function activate(): () => void {
     }),
     registerTitleItem({ id: "run.widget", title: "Run Widget", align: "right", priority: 0, component: RunWidget }),
     registerRunAnythingProvider(runConfigsRunAnything),
+    registerRunAnythingProvider(packageBinsRunAnything),
+    watchPackageBinsChanges(),
     registerBuiltinTypes(),
+    registerRunConfigType(junitType),
     registerGoActions(),
+    registerFlutterBuildActions(),
+    registerRunTabActions(),
+    registerComposerInstall(),
+    registerNpmInstall(),
+    registerPubspecCommands(),
     registerOverlay({ id: "run.chooser", component: ConfigChooserOverlay }),
-    registerOverlay({ id: "run.editConfigs", component: EditConfigsOverlay }),
+    registerOverlay({
+      id: "run.editConfigs",
+      component: lazyWhen(useEditConfigsOpen, () => import("./EditConfigsDialog").then((m) => m.EditConfigsOverlay)),
+    }),
     registerOverlay({ id: "run.dialogs", component: RunDialogsOverlay }),
+    registerOverlay({ id: "run.serviceImport", component: ServiceImportHost }),
+    registerOverlay({ id: "run.serviceImport", component: ServiceImportHost }),
     registerServiceProvider(runServiceProvider),
+    registerRunServiceActions(),
+    watchServiceRunningCount(),
     registerRunningProcessesProvider({
       id: "run",
       running: () =>
         serviceSessions(useRun.getState().sessions, useDebugRunSessions.getState().serviceSessions)
           .filter(liveServiceSession)
           .map((s) => ({ name: s.config.name })),
+      // A closing window asks first, then shows the progress while these shut down; `kill`
+      // is the second Stop that SIGKILLs instead of waiting.
+      stop: (kill) => {
+        // The first call asks to stop; with `kill` the second one reaches the backend while
+        // the session is already stopping, which turns it into SIGKILL.
+        for (const s of useRun.getState().sessions.filter(isLive)) {
+          void stopSession(s.id);
+          if (kill) void stopSession(s.id);
+        }
+        for (const d of useDebugRunSessions.getState().sessions) {
+          d.stop();
+          if (kill) d.stop();
+        }
+      },
     }),
     onWorkflowSettingsChange((w) => w.console, applyConsoleSettings),
     registerExternalTools(),
     activateStackTrace(),
+    activateThreadDumps(),
     listenForApplicationDeactivation(),
+    installBuildTomcatSync(),
     trackRecentConfigurations(),
+    trackFailedTestSelection(),
     useDebugRunSessions.subscribe(() => setContext("run.updatableRunning", updatableSessions().length > 0)),
     // A removed workspace member (or a closed project) takes its sessions,
     // temporary configurations and Services groups with it.
     // Only while the same project stays open: closing it tears its runs down separately.
     useProject.subscribe((s, prev) => {
       if (!s.project || s.project.root !== prev.project?.root) return;
-      const before = prev.project.workspace?.projects ?? [];
-      const after = s.project.workspace?.projects ?? [];
+      const before = prev.project.workspace?.projects ?? [prev.project.root];
+      const after = s.project.workspace?.projects ?? [s.project.root];
       for (const root of before) if (!after.includes(root)) void cleanupRemovedProject(root);
     }),
     registerEditorContribution({ id: "run.targets", order: 55, extensions: runGutter }),
     registerEditorContribution({ id: "run.npmScripts", order: 58, extensions: npmGutter }),
+    registerEditorContribution({ id: "run.markdownCommands", order: 58, extensions: markdownCommandGutter }),
+    registerEditorContribution({ id: "run.launchSettings", order: 58, extensions: launchSettingsGutter }),
     registerMenuGroup({
       id: "run.context",
       menus: ["editor", "projectView", "editorTab"],
@@ -350,6 +562,14 @@ export function activate(): () => void {
         icon: "debug",
         when: "projectOpen",
         run: () => debugSelected(),
+      },
+      {
+        id: "run.attachUnity",
+        title: "Attach to Unity Process",
+        category: "Run",
+        icon: "debug",
+        when: "projectOpen",
+        run: () => showUnityAttach(),
       },
       {
         id: "run.runContext",
@@ -387,12 +607,85 @@ export function activate(): () => void {
         run: ({ arg }) => stopAction(arg),
       },
       {
+        id: "run.stopProcess",
+        title: "Stop",
+        category: "Run",
+        hidden: true,
+        run: async ({ arg }) => {
+          if (typeof arg !== "number") return;
+          const session = useRun.getState().sessions.find((s) => s.runId === arg);
+          if (session) await stopSession(session.id);
+          else await call(commands.runStop(arg));
+        },
+      },
+      {
         id: "run.rerun",
         title: "Rerun",
         category: "Run",
         icon: "rerun",
         when: "projectOpen && activeToolWindow == 'run'",
         run: () => rerunActive(),
+      },
+      {
+        id: "run.flutterChooseDevice",
+        title: "Select Flutter Device…",
+        category: "Run",
+        when: "flutterProject",
+        run: () => {
+          const chooserOpen = !useFlutterDevices.getState().chooserOpen;
+          useFlutterDevices.setState({ chooserOpen });
+          if (chooserOpen) void call(commands.flutterDevicesRefresh()).catch(() => undefined);
+        },
+      },
+      {
+        id: "run.flutterSelectDevice",
+        title: "Use Flutter Device",
+        category: "Run",
+        hidden: true,
+        when: "flutterProject",
+        run: ({ arg }) => {
+          if (typeof arg === "string") selectFlutterDevice(arg);
+        },
+      },
+      {
+        id: "run.flutterRestartDaemon",
+        title: "Restart Flutter Daemon",
+        category: "Run",
+        when: "flutterProject",
+        run: () => restartFlutterDaemon(),
+      },
+      {
+        id: "run.flutterAttach",
+        title: "Flutter Attach",
+        category: "Run",
+        icon: "debug",
+        description: "Attach the debugger to the app of the selected Flutter configuration, started elsewhere",
+        when: "flutterProject",
+        run: () => flutterAttachSelected(),
+      },
+      {
+        id: "run.flutterHotReload",
+        title: "Hot Reload",
+        category: "Run",
+        icon: "hot-reload",
+        description: "Flutter: inject the changed sources into the running app",
+        when: "run.flutterHotReloadable",
+        run: () => {
+          const session = hotReloadSession();
+          if (session) hotReload(session.id);
+        },
+      },
+      {
+        id: "run.flutterHotRestart",
+        title: "Hot Restart",
+        category: "Run",
+        icon: "refresh",
+        description: "Flutter: restart the app, discarding its state",
+        when: "run.flutterHotReloadable",
+        run: () => {
+          const session = hotReloadSession();
+          if (session) hotRestart(session.id);
+        },
       },
       {
         id: "run.chooseConfig",
@@ -467,7 +760,8 @@ export function activate(): () => void {
         run: async ({ arg }) => {
           await ensureConfigs();
           const config = configFromArg(arg);
-          if (config) await debugConfig(config);
+          const show = arg && typeof arg === "object" && "show" in arg ? (arg as { show?: boolean }).show : undefined;
+          if (config) await debugConfig(config, [], show);
         },
       },
       {
@@ -475,14 +769,14 @@ export function activate(): () => void {
         title: "Rerun Failed Tests",
         category: "Run",
         icon: "rerun",
-        when: "projectOpen",
+        when: "projectOpen && run.canRerunFailed",
         keywords: ["failed tests", "rerun"],
-        run: () => {
+        run: async () => {
           const s = useRun.getState();
           const id =
             (s.activeSession && failedTests(s.activeSession).length ? s.activeSession : null) ??
             [...s.sessions].reverse().find((x) => failedTests(x.id).length > 0)?.id;
-          if (!id || !rerunFailed(id))
+          if (!id || !(await rerunFailed(id)))
             notifications().notify({
               group: "run",
               level: "info",
@@ -490,6 +784,62 @@ export function activate(): () => void {
               key: "run-rerun-failed",
             });
         },
+      },
+      {
+        id: "run.expandAllTests",
+        title: "Expand All",
+        category: "Run",
+        icon: "expand-all",
+        when: "projectOpen && activeToolWindow == 'run'",
+        keyWhen: TEST_TREE_FOCUS,
+        run: () => testTree.expandAll?.(),
+      },
+      {
+        id: "run.collapseAllTests",
+        title: "Collapse All",
+        category: "Run",
+        icon: "collapse-all",
+        when: "projectOpen && activeToolWindow == 'run'",
+        keyWhen: TEST_TREE_FOCUS,
+        run: () => testTree.collapseAll?.(),
+      },
+      {
+        id: "run.exportTestResults",
+        title: "Export Test Results…",
+        description: "Save the test results as an HTML report or IDEA's XML",
+        category: "Run",
+        icon: "export",
+        when: "projectOpen && activeToolWindow == 'run'",
+        keywords: ["test", "results", "report", "html", "xml", "save"],
+        enabled: () => testTree.exportResults !== null,
+        run: () => testTree.exportResults?.(),
+      },
+      {
+        id: "run.toggleTestDurations",
+        title: "Show Test Durations",
+        category: "Run",
+        when: "projectOpen",
+        enabled: () => testTree.toggleDurations !== null,
+        toggled: () => testTree.showDurations === true,
+        run: () => testTree.toggleDurations?.(),
+      },
+      {
+        id: "run.toggleTrackRunningTest",
+        title: "Track Running Test",
+        category: "Run",
+        when: "projectOpen",
+        enabled: () => testTree.toggleTrackRunning !== null,
+        toggled: () => testTree.trackRunning === true,
+        run: () => testTree.toggleTrackRunning?.(),
+      },
+      {
+        id: "run.toggleSelectFirstFailedTest",
+        title: "Select First Failed Test When Finished",
+        category: "Run",
+        when: "projectOpen",
+        enabled: () => testTree.toggleSelectFirstFailed !== null,
+        toggled: () => testTree.selectFirstFailed === true,
+        run: () => testTree.toggleSelectFirstFailed?.(),
       },
       {
         id: "run.reloadConfigs",
@@ -503,6 +853,45 @@ export function activate(): () => void {
         },
       },
       {
+        id: "run.agentStart",
+        title: "Run Agent Command",
+        description:
+          "Runs `{ name, command, cwd, env }` from the MCP server's `run_command` in the agent tab `name`; throws when it did not start.",
+        category: "Run",
+        hidden: true,
+        when: "projectOpen",
+        run: ({ arg }) => startAgentRun(arg as AgentRunRequest),
+      },
+      {
+        id: "run.pluginStart",
+        title: "Run Plugin Configuration",
+        category: "Run",
+        hidden: true,
+        when: "projectOpen",
+        run: async ({ arg }) => {
+          const a = arg as {
+            config: import("@/bindings").RunConfig;
+            debug: boolean;
+            onExit: (code: number | null, stopped: boolean) => void;
+          };
+          if (a.debug && attachesToChild(a.config)) {
+            if (!getAction("debug.attach")) throw new Error("Debugger unavailable");
+            const session = await debugAttachingToChild(a.config, { onExit: a.onExit });
+            if (!session || session.status === "failed") throw new Error("Run did not start");
+            if (session.runId === null && session.status === "finished") a.onExit(session.exitCode, !!session.stopped);
+            return;
+          }
+          if (a.debug) {
+            if (!getAction("debug.pluginStart")) throw new Error("Debugger unavailable");
+            await executeActionOrThrow("debug.pluginStart", a);
+            return;
+          }
+          const session = await startRun(a.config, undefined, undefined, { onExit: a.onExit });
+          if (!session || session.status === "failed") throw new Error("Run did not start");
+          if (session.runId === null && session.status === "finished") a.onExit(session.exitCode, !!session.stopped);
+        },
+      },
+      {
         id: "run.runConfig",
         title: "Run Configuration",
         category: "Run",
@@ -511,7 +900,16 @@ export function activate(): () => void {
         run: async ({ arg }) => {
           await ensureConfigs();
           const config = configFromArg(arg);
-          if (config) await startRun(config);
+          if (!config) return;
+          // `{ config, onExit }`: told when the process exits, or right away when it didn't start.
+          const onExit = (arg as { onExit?: (code: number | null, stopped: boolean) => void } | null)?.onExit;
+          if (typeof onExit !== "function") {
+            await startRun(config);
+            return;
+          }
+          const session = await startRun(config, undefined, undefined, { onExit });
+          if (!session || session.status === "failed") onExit(null, false);
+          else if (session.runId === null && session.status === "finished") onExit(session.exitCode, !!session.stopped);
         },
       },
       {
@@ -545,47 +943,111 @@ export function activate(): () => void {
       {
         id: "run.createConfig",
         title: "Create Run Configuration",
-        description: "Saves the given `RunConfig` as a user configuration and opens it in Edit Configurations.",
+        description:
+          "Saves the given `RunConfig` as a user configuration and opens it in Edit Configurations; a saved one with its id opens unchanged.",
         category: "Run",
         hidden: true,
         when: "projectOpen",
         run: async ({ arg }) => {
           if (!arg || typeof arg !== "object") return;
           await ensureConfigs();
-          const config: RunConfig = { ...(arg as RunConfig), detected: false };
+          const config = arg as RunConfig;
           const { configs, temporary } = useRun.getState();
-          const user = configs.filter((c) => !c.detected && !temporary.includes(c.id) && c.id !== config.id);
-          await saveUserConfigs([...user, config]);
+          const created = createdConfigs(configs, temporary, config);
+          if (created) await saveUserConfigs(created);
           selectConfig(config.id);
           useRun.setState({ editorOpen: true, chooserOpen: false, editTarget: config.id });
         },
       },
     ]),
     onIdeEvent("runExited", (e) => onRunExited(e.run, e.code)),
-    // Lets other title items follow the selected configuration (e.g. Build shows only for compiled ones).
-    useRun.subscribe((s) => {
-      setContext("run.selectedKind", s.configs.find((c) => c.id === s.selectedId)?.kind ?? "");
-      setContext("run.updatableRunning", updatableSessions().length > 0);
+    onIdeEvent("projectRootsChanged", scheduleReload),
+    // Lets other title items follow the selected configuration (e.g. Build targets the selected run configuration).
+    (() => {
+      const syncBuildTarget = () => {
+        const s = useRun.getState();
+        const selected = s.configs.find((c) => c.id === s.selectedId);
+        const projectRoot = useProject.getState().project?.root ?? null;
+        const gradle = useBuildModel.getState().model?.gradle ?? [];
+        const build = selectedBuildTarget(selected, s.configs, projectRoot, gradle);
+        setContext("run.selectedKind", selected?.kind ?? "");
+        setContext("run.cmakeBuild", build.cmake);
+        setContext("run.buildTarget", build.target);
+        setContext("run.buildTargetName", build.name);
+      };
+      syncBuildTarget();
+      const unsubRun = useRun.subscribe((s) => {
+        syncBuildTarget();
+        setContext("run.updatableRunning", updatableSessions().length > 0);
+        syncFlutterRunApps(s.sessions);
+        setContext("run.flutterHotReloadable", !!hotReloadSession());
+      });
+      const unsubModel = useBuildModel.subscribe(syncBuildTarget);
+      const unsubProject = useProject.subscribe((s, prev) => {
+        if (s.project?.root !== prev.project?.root) syncBuildTarget();
+      });
+      return () => {
+        unsubRun();
+        unsubModel();
+        unsubProject();
+        setContext("run.selectedKind", "");
+        setContext("run.cmakeBuild", null);
+        setContext("run.buildTarget", null);
+        setContext("run.buildTargetName", null);
+      };
+    })(),
+    useFlutterRunApps.subscribe(() => setContext("run.flutterHotReloadable", !!hotReloadSession())),
+    // Agent tabs (`run_command`): the archive keeps at most Settings' number of them.
+    useRun.subscribe((s, prev) => {
+      if (s.sessions !== prev.sessions) trimAgentArchive();
     }),
-    useProject.subscribe((s, prev) => {
-      if (s.project?.root === prev.project?.root && s.project?.trusted === prev.project?.trusted) return;
-      resetRuns();
-      useStackTraces.setState({ tabs: [], dialog: null });
-      if (s.project) void loadConfigs();
-    }),
+    onWorkflowSettingsChange(() => agentRunSettings(), trimAgentArchive),
+    (() => {
+      let prevLocation = projectLocation(useProject.getState().project?.root);
+      return useProject.subscribe((s, prev) => {
+        const nextLocation = projectLocation(s.project?.root);
+        if (nextLocation === prevLocation && s.project?.trusted === prev.project?.trusted) return;
+        const wasRemote = !!prevLocation && parseRemoteLocation(prevLocation) !== null;
+        prevLocation = nextLocation;
+        resetRuns(!wasRemote);
+        useStackTraces.setState({ tabs: [], dialog: null });
+        if (s.project) void loadConfigs();
+      });
+    })(),
   ];
 
   setBeforeLaunchRunner(runBeforeLaunch);
   disposers.push(() => setBeforeLaunchRunner(null));
+  provideRunConfigurationChecks(configurationChecks);
+  disposers.push(() => provideRunConfigurationChecks(undefined));
+  provideRunOutput({ subscribe: subscribeOutput });
+  disposers.push(() => provideRunOutput(undefined));
+  provideRunConfigurationLookup((kind, directory) => {
+    const { project } = useProject.getState();
+    if (!project?.trusted) return false;
+    const owner = projectFolder(project, directory);
+    if (!owner || !isSameOrInside(directory, owner.root)) return false;
+    return useRun.getState().configs.some((config) => {
+      if (config.kind !== kind) return false;
+      const path = runDirectory(config.module ?? config.cwd);
+      return isSameOrInside(path, owner.root) && projectFolder(project, path)?.root === owner.root;
+    });
+  });
+  disposers.push(() => provideRunConfigurationLookup(undefined));
   if (hasProject()) void loadConfigs();
 
   // Reload when run.toml or build files change on disk (cheap; detection is fast).
   disposers.push(
     onIdeEvent("fsChanged", (e) => {
       const paths = [...e.created, ...e.modified, ...e.removed];
+      // A file that moved or was deleted leaves its context configuration behind.
+      dropStaleContextConfigs(e.removed);
       if (paths.some((p) => /(?:^|\/)go\.(?:mod|work)$/.test(p))) invalidateGoModules();
       if (paths.some((p) => p.endsWith("/__init__.py"))) invalidatePythonPackages();
       if (paths.some((p) => CONFIG_FILES.test(p))) scheduleReload();
+    }),
+    useContextKeys.subscribe((s, prev) => {
+      if (prev["build.running"] && !s["build.running"]) scheduleReload();
     }),
     onIdeEvent("runExited", (e) => {
       if (useRun.getState().sessions.some((s) => s.runId === e.run && s.config.kind === "cmake")) scheduleReload();

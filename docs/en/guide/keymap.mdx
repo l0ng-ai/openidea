@@ -1,0 +1,91 @@
+---
+title: "Keymaps"
+description: "Choose a keymap, change, add and remove shortcuts, create your own keymap, and edit bindings in settings.toml."
+---
+
+A keymap maps actions to keyboard and mouse shortcuts. Every command in OpenIDEA is an action with a stable id, so any of them can get a shortcut.
+
+## Bundled keymaps
+
+| Keymap                | Id                 | Notes                                                                                 |
+| --------------------- | ------------------ | ------------------------------------------------------------------------------------- |
+| **macOS**             | `intellij-macos`   | IntelliJ IDEA's macOS keymap. Default on macOS.                                       |
+| **Windows**           | `intellij-windows` | IntelliJ IDEA's Windows keymap. Default on Windows and Linux.                         |
+| **VS Code (macOS)**   | `vscode-macos`     | Visual Studio Code's defaults.                                                        |
+| **VS Code (Windows)** | `vscode-windows`   | The macOS VS Code keymap with `⌘` read as `Ctrl`, plus VS Code's Windows differences. |
+| **Eclipse (macOS)**   | `eclipse-macos`    | IntelliJ IDEA's Eclipse keymap for macOS.                                             |
+| **Eclipse**           | `eclipse-windows`  | IntelliJ IDEA's Eclipse keymap.                                                       |
+
+The default shortcuts are listed in the [shortcut reference](/en/reference/shortcuts). Inside the IDE, **Help › Keymap Reference** lists every bound action of the active keymap and filters by action name, action id or shortcut.
+
+## Switch keymaps
+
+Open **Settings › Keymap** and pick one in **Keymap:**. You can also switch from the Welcome screen (**Customize** › **Keymap**) or with **View › Quick Switch Scheme…** › **Keymap**.
+
+If you have changed shortcuts on a bundled keymap, switching to another bundled keymap carries your changes over.
+
+## Change a shortcut
+
+In **Settings › Keymap**, find the action:
+
+- Type in **Search actions** to filter by name, or
+- Click **Find Actions by Shortcut** and press a shortcut to see which actions use it.
+
+Actions are grouped as **Main Menu** (File to Help), **Editor Actions**, **Tool Windows**, **Other** and **Plugins**.
+
+Right-click an action, or select it and press Enter or double-click, to open its menu:
+
+- **Add Keyboard Shortcut**: press the keys in the dialog. Check **Second stroke:** for a two-stroke chord such as `⌘K ⌘C`. The dialog lists conflicts; when you confirm, choose **Remove** to take the shortcut away from the other actions, or **Leave** to keep both.
+- **Add Mouse Shortcut**: click with Ctrl, Alt or Command held, or press a mouse side button.
+- **Remove** a single shortcut of the action.
+- **Reset Shortcuts** to go back to the keymap's defaults for that action.
+
+Changes are saved with **Apply** or **OK**.
+
+<Tip>
+  Faster: open **Find Action** (`⇧⌘A` / `Ctrl+Shift+A`), highlight an action and press `⌥↵` / `Alt+Enter` to assign a
+  shortcut to it directly.
+</Tip>
+
+## Your own keymaps
+
+The gear button next to **Keymap:** has:
+
+- **Duplicate…**: copy the selected keymap under a new name. Your keymap keeps the bundled one as its parent and stores only its differences.
+- **Rename…** and **Delete** for keymaps you created.
+- **Restore Defaults**: drop all your changes to the selected keymap.
+
+## Keymaps in settings.toml
+
+Keymap settings are global and live in `settings.toml` (see [Settings reference](/en/reference/settings)):
+
+```toml
+keymap = "intellij-macos"
+
+[keymapOverrides]
+"navigate.gotoFile" = ["Meta+P"]
+"code.reformat" = ["Meta+Alt+L", "Meta+Shift+F"]
+"vcs.push" = []
+```
+
+- `keymap` is a bundled keymap id or the id of one of your keymaps.
+- `keymapOverrides` maps an action id to its shortcuts on top of a bundled keymap. An empty list unbinds the action.
+- `customKeymaps.<id>` holds a keymap you created: `name`, `parent` (a bundled keymap id) and its own `overrides`.
+
+Shortcut syntax:
+
+| Syntax                   | Meaning                                                                                         |
+| ------------------------ | ----------------------------------------------------------------------------------------------- |
+| `Meta+Shift+O`           | Modifiers `Meta`, `Ctrl`, `Alt`, `Shift` joined with `+` to a key. `Meta` is `⌘` on macOS.      |
+| `Meta+K Meta+C`          | A chord: strokes separated by a space.                                                          |
+| `Shift Shift`            | A modifier pressed twice.                                                                       |
+| `Alt Alt+Up`             | A modifier pressed twice and held, then a key.                                                  |
+| `Button4`, `Alt+Button1` | Mouse buttons, 1-based: `Button1` is the left button, `Button4` and `Button5` the side buttons. |
+
+Keys are matched by their physical position, so `⌥` combinations work on macOS layouts that type symbols with Option. To find an action's id, look it up in the bundled keymap files, for example [`intellij-macos.ts`](https://github.com/l0ng-ai/openidea/blob/main/src/platform/keymaps/intellij-macos.ts).
+
+## Shortcuts that don't reach the IDE
+
+Some keys are taken by the operating system or another app before OpenIDEA sees them, for example macOS's `⌃⌘D` (Look Up in Dictionary) or a GPU overlay's hotkeys on Windows. Change the conflicting system or app shortcut, or assign another shortcut in OpenIDEA.
+
+Vim mode can also claim keys in the editor; see [Vim mode](/en/guide/vim).

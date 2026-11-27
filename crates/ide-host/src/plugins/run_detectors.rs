@@ -42,6 +42,12 @@ pub struct Detector {
     pub args: Vec<String>,
     #[serde(default)]
     pub test: bool,
+    /// Optional output parser, including the API 1.4 plugin export.
+    #[serde(default)]
+    pub framework: Option<String>,
+    /// Output stream transport (API 1.18): `"pipes"` (default) or `"pty"`.
+    #[serde(default, alias = "outputMode")]
+    pub output_mode: Option<ide_plugin::PluginOutputMode>,
 }
 
 /// Detectors of enabled plugins.
@@ -85,6 +91,18 @@ impl ExtensionPoint for RunDetectorsPoint {
 
     fn prepare(&self, pkg: &Package, decl: toml::Value) -> Result<Prepared, String> {
         let d: Detector = decode(POINT_ID, decl)?;
+        if d.framework.is_some() {
+            pkg.manifest.needs_api("runDetectors.framework", 4)?;
+        }
+        if d.framework.as_ref().is_some_and(|v| v.is_empty() || v.len() > 64) {
+            return Err("invalid test framework".into());
+        }
+        if d.output_mode.is_some() {
+            pkg.manifest.needs_api("runDetectors.outputMode", 18)?;
+        }
+        if d.test && d.output_mode == Some(ide_plugin::PluginOutputMode::Pty) {
+            return Err(format!("run detector {:?}: test configurations cannot emulate a terminal", d.id));
+        }
         validate_item_id(&d.id, "run detector id")?;
         if d.name.trim().is_empty() || d.name.len() > 128 {
             return Err(format!("run detector {:?}: `name` must be 1–128 bytes", d.id));
@@ -110,48 +128,128 @@ impl ExtensionPoint for RunDetectorsPoint {
 }
 
 type Pins = Arc<RwLock<HashMap<(String, String), ProgramPin>>>;
+pub(super) type DynamicConfigurations =
+    Arc<RwLock<std::collections::BTreeMap<(String, PathBuf), Vec<ide_plugin::PluginRunConfiguration>>>>;
 
 /// [`ExternalDetection`] over the detectors and the approved programs.
 pub struct PluginRunDetection {
     pub(crate) store: Arc<RunDetectors>,
     pub(crate) pins: Pins,
+    pub(crate) dynamic: DynamicConfigurations,
+    pub(crate) project_pins: super::api::ProjectPins,
 }
 
-fn config_id(plugin: &str, detector: &str) -> String {
+/// `RunConfig.extras.params` keys carrying an API 1.9 configuration's debugger.
+pub const DEBUG_LANGUAGE: &str = "debugLanguage";
+pub const DEBUG_ATTACH: &str = "debugAttach";
+pub const DEBUG_ATTACH_CONTAINS: &str = "debugAttachContains";
+
+pub(super) fn config_id(plugin: &str, detector: &str) -> String {
     format!("{EXTERNAL_PREFIX}{plugin}:{detector}")
 }
 
 impl PluginRunDetection {
-    fn pin(&self, plugin: &str, d: &Detector) -> Option<ProgramPin> {
+    fn pin(&self, plugin: &str, d: &Detector, root: Option<&Path>) -> Option<ProgramPin> {
         let cap = Capability::Process(d.command.trim().to_owned());
-        self.pins.read().get(&(plugin.to_owned(), cap.to_string())).cloned()
+        root.and_then(|root| self.project_pins.read().get(&(plugin.into(), cap.to_string(), root.into())).cloned())
+            .or_else(|| self.pins.read().get(&(plugin.to_owned(), cap.to_string())).cloned())
     }
 }
 
 impl ExternalDetection for PluginRunDetection {
     fn detect(&self, root: &Path) -> Vec<RunConfig> {
         let items = self.store.items.read().clone();
-        items
+        let mut configs: Vec<_> = items
             .into_iter()
-            .filter(|(_, plugin, d)| self.pin(plugin, d).is_some() && d.files.iter().any(|f| root.join(f).exists()))
+            .filter(|(_, plugin, d)| {
+                self.pin(plugin, d, Some(root)).is_some() && d.files.iter().any(|f| root.join(f).exists())
+            })
             .map(|(_, plugin, d)| RunConfig {
                 id: config_id(&plugin, &d.id),
                 name: d.name.clone(),
                 kind: "plugin".into(),
                 command: d.command.trim().to_owned(),
                 args: d.args.clone(),
-                cwd: None,
+                cwd: Some(root.to_path_buf().into()),
                 env: Default::default(),
                 detected: true,
                 is_test: d.test,
                 debug_adapter: None,
                 allow_parallel: false,
-                extras: Default::default(),
+                extras: ide_run::RunExtras {
+                    params: d.framework.clone().map(|f| [("framework".into(), f)].into()).unwrap_or_default(),
+                    emulate_terminal: d.output_mode == Some(ide_plugin::PluginOutputMode::Pty),
+                    ..Default::default()
+                },
             })
-            .collect()
+            .collect();
+        for ((plugin, project), entries) in self.dynamic.read().iter().filter(|((_, project), _)| project == root) {
+            for c in entries {
+                let cap = Capability::Process(c.program.clone());
+                if !self.project_pins.read().contains_key(&(plugin.clone(), cap.to_string(), project.clone()))
+                    && !self.pins.read().contains_key(&(plugin.clone(), cap.to_string()))
+                {
+                    continue;
+                }
+                let mut config = RunConfig {
+                    id: String::new(),
+                    name: c.name.clone(),
+                    kind: "plugin".into(),
+                    command: c.program.clone(),
+                    args: c.args.clone(),
+                    cwd: Some(root.to_path_buf().into()),
+                    env: Default::default(),
+                    detected: true,
+                    is_test: c.test,
+                    debug_adapter: None,
+                    allow_parallel: false,
+                    extras: ide_run::RunExtras {
+                        emulate_terminal: c.output_mode == ide_plugin::PluginOutputMode::Pty,
+                        ..Default::default()
+                    },
+                };
+                config.id = config_id(plugin, &c.id);
+                config.cwd = Some(c.cwd.as_ref().map(|p| root.join(p)).unwrap_or_else(|| root.to_path_buf()).into());
+                if let Some(framework) = &c.framework {
+                    config.extras.params.insert("framework".into(), framework.clone());
+                }
+                config.env = c.env.iter().cloned().collect();
+                match &c.debugger {
+                    Some(ide_plugin::PluginDebugger::Launch { language }) => {
+                        config.extras.params.insert(DEBUG_LANGUAGE.into(), language.clone());
+                    }
+                    Some(ide_plugin::PluginDebugger::AttachChild { kind, command_contains }) => {
+                        config.extras.params.insert(DEBUG_ATTACH.into(), kind.clone());
+                        if let Some(text) = command_contains {
+                            config.extras.params.insert(DEBUG_ATTACH_CONTAINS.into(), text.clone());
+                        }
+                    }
+                    None => {}
+                }
+                configs.push(config);
+            }
+        }
+        configs
     }
 
     fn launch(&self, config: &RunConfig) -> Result<PathBuf, String> {
+        let dynamic = self.dynamic.read();
+        if let Some(((plugin, root), c)) =
+            dynamic.iter().flat_map(|(k, entries)| entries.iter().map(move |c| (k, c))).find(|((plugin, root), c)| {
+                config_id(plugin, &c.id) == config.id && config.cwd.as_ref().is_some_and(|cwd| cwd.starts_with(root))
+            })
+        {
+            let cap = Capability::Process(c.program.clone()).to_string();
+            let pin = self
+                .project_pins
+                .read()
+                .get(&(plugin.clone(), cap.clone(), root.clone()))
+                .cloned()
+                .or_else(|| self.pins.read().get(&(plugin.clone(), cap)).cloned())
+                .ok_or_else(|| "run program is no longer granted".to_owned())?;
+            return pin.verify().map(Path::to_path_buf);
+        }
+        drop(dynamic);
         let items = self.store.items.read();
         let (plugin, d) = items
             .iter()
@@ -159,9 +257,40 @@ impl ExternalDetection for PluginRunDetection {
             .map(|(_, p, d)| (p.clone(), d.clone()))
             .ok_or_else(|| "the plugin that detected this configuration is no longer enabled".to_owned())?;
         drop(items);
-        let pin = self.pin(&plugin, &d).ok_or_else(|| {
+        let pin = self.pin(&plugin, &d, config.cwd.as_ref().map(|p| p.as_ref())).ok_or_else(|| {
             format!("allow process:{} for plugin {plugin} in Settings › Plugins to run this configuration", d.command)
         })?;
         pin.verify().map(Path::to_path_buf)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ide_extension::ExtensionPoint;
+
+    #[test]
+    fn detector_output_mode_requires_api_18_and_rejects_tests() {
+        let point = RunDetectorsPoint::new(Arc::default());
+        let base_toml = |extra: &str| {
+            let src = format!("id = \"test\"\nname = \"Test\"\nversion = \"1.0.0\"\n{extra}\n");
+            let manifest = ide_extension::Manifest::parse(&src).unwrap();
+            ide_extension::Package::new(manifest, std::env::temp_dir())
+        };
+        let decl = |test: bool, mode: &str| -> toml::Value {
+            toml::from_str(&format!(
+                "id = \"run\"\nname = \"Run\"\nfiles = [\"m\"]\ncommand = \"tool\"\ntest = {test}\noutputMode = \"{mode}\"\n"
+            ))
+            .unwrap()
+        };
+
+        let old = base_toml("engines.openidea = \"^1.17\"");
+        assert!(point.prepare(&old, decl(false, "pty")).unwrap_err().contains("1.18"));
+
+        let current = base_toml("engines.openidea = \"^1.18\"");
+        assert!(point.prepare(&current, decl(false, "pty")).is_ok());
+        assert!(point.prepare(&current, decl(false, "pipes")).is_ok());
+        assert!(point.prepare(&current, decl(true, "pipes")).is_ok());
+        assert!(point.prepare(&current, decl(true, "pty")).unwrap_err().contains("test"));
     }
 }

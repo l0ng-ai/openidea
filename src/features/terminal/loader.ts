@@ -4,6 +4,7 @@
  * exist before it has loaded.
  */
 import type * as Runtime from "./runtime";
+import { useProject } from "@/platform/project";
 
 export type TerminalRuntime = typeof Runtime;
 
@@ -16,5 +17,8 @@ export function terminalRuntime(): TerminalRuntime | null {
 }
 
 export function loadTerminalRuntime(): Promise<TerminalRuntime> {
-  return (pending ??= import("./runtime").then((m) => (loaded = m)));
+  return (pending ??= import("./runtime").then((m) => {
+    m.syncTerminalProject(useProject.getState().project?.root ?? null);
+    return (loaded = m);
+  }));
 }

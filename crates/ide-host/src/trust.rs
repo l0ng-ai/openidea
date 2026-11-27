@@ -1,4 +1,5 @@
 //! User-owned project execution decisions. Project settings never grant trust.
+use crate::catalogue::TrustClass;
 use ide_core::{IdeError, IdeResult};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -16,7 +17,22 @@ pub struct TrustDecisions {
 pub struct TrustStore {
     file: PathBuf,
     state: Mutex<IdeResult<TrustDecisions>>,
+    /// Folders trusted for this process only, by the client that started it ([`TRUSTED_ROOT_ENV`]).
+    inherited: Mutex<Vec<PathBuf>>,
+    remote_file: PathBuf,
+    remote: Mutex<IdeResult<RemoteDecisions>>,
 }
+
+/// This machine's decisions about remote projects, by location (see [`TrustStore::remote_decision`]).
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct RemoteDecisions {
+    trusted: Vec<String>,
+    restricted: Vec<String>,
+}
+
+/// Set by the desktop when it starts the server in a dev container of a folder the user trusts
+/// there: the project folder in the container, trusted without asking again. Never persisted.
+pub const TRUSTED_ROOT_ENV: &str = "OPENIDEA_TRUSTED_ROOT";
 
 impl TrustStore {
     pub fn load(config: &Path, data: &Path) -> Self {
@@ -34,7 +50,37 @@ impl TrustStore {
             }
             Err(e) => Err(e.into()),
         };
-        Self { file, state: Mutex::new(state) }
+        let remote_file = data.join("remote-project-trust.json");
+        let remote = match std::fs::read(&remote_file) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| IdeError::invalid(e.to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(RemoteDecisions::default()),
+            Err(e) => Err(e.into()),
+        };
+        Self { file, state: Mutex::new(state), inherited: Mutex::default(), remote_file, remote: Mutex::new(remote) }
+    }
+
+    /// The decision made on this machine for the remote project at `location` (`None`: none yet).
+    /// Commands a remote window runs here follow it, not the server's own trust.
+    pub fn remote_decision(&self, location: &str) -> IdeResult<Option<bool>> {
+        let remote = self.remote.lock().clone()?;
+        Ok(if remote.restricted.iter().any(|l| l == location) {
+            Some(false)
+        } else if remote.trusted.iter().any(|l| l == location) {
+            Some(true)
+        } else {
+            None
+        })
+    }
+
+    pub fn decide_remote(&self, location: &str, trusted: bool) -> IdeResult<()> {
+        let mut state = self.remote.lock();
+        let mut next = state.clone()?;
+        next.trusted.retain(|l| l != location);
+        next.restricted.retain(|l| l != location);
+        if trusted { &mut next.trusted } else { &mut next.restricted }.push(location.to_owned());
+        persist(&self.remote_file, &next)?;
+        *state = Ok(next);
+        Ok(())
     }
 
     pub fn decisions(&self) -> IdeResult<TrustDecisions> {
@@ -45,7 +91,35 @@ impl TrustStore {
         let root = dunce::canonicalize(path)?;
         let decisions = self.decisions()?;
         Ok(!decisions.restricted.contains(&root)
-            && (decisions.projects.contains(&root) || decisions.locations.iter().any(|p| root.starts_with(p))))
+            && (decisions.projects.contains(&root)
+                || decisions.locations.iter().any(|p| root.starts_with(p))
+                || self.inherited.lock().contains(&root)))
+    }
+
+    pub fn window_trusted(&self, root: &Path) -> IdeResult<bool> {
+        if !self.trusted(root)? {
+            return Ok(false);
+        }
+        if let Some(workspace) = ide_workspace::workspace::Workspace::load(root)?
+            && !workspace.is_container(root)
+        {
+            for member in workspace.projects.iter().filter(|p| *p != root && p.exists()) {
+                if !self.trusted(member)? {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    /// Trusts `path` for this process without recording a decision (see [`TRUSTED_ROOT_ENV`]).
+    pub fn inherit(&self, path: &Path) -> IdeResult<()> {
+        let root = dunce::canonicalize(path)?;
+        let mut inherited = self.inherited.lock();
+        if !inherited.contains(&root) {
+            inherited.push(root);
+        }
+        Ok(())
     }
 
     pub fn decide(&self, path: &Path, trusted: bool, folder: bool) -> IdeResult<()> {
@@ -74,6 +148,21 @@ impl TrustStore {
         Ok(())
     }
 
+    pub fn add_location(&self, path: &Path) -> IdeResult<()> {
+        let root = dunce::canonicalize(path)?;
+        if !root.is_dir() {
+            return Err(IdeError::invalid("trusted location must be an existing directory"));
+        }
+        let mut state = self.state.lock();
+        let mut next = state.clone()?;
+        if !next.locations.contains(&root) {
+            next.locations.push(root);
+            persist(&self.file, &next)?;
+            *state = Ok(next);
+        }
+        Ok(())
+    }
+
     pub fn remove_location(&self, path: &Path) -> IdeResult<()> {
         let mut state = self.state.lock();
         let mut next = state.clone()?;
@@ -84,13 +173,68 @@ impl TrustStore {
     }
 }
 
-fn persist(file: &Path, state: &TrustDecisions) -> IdeResult<()> {
+fn persist<T: Serialize>(file: &Path, state: &T) -> IdeResult<()> {
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let bytes = serde_json::to_vec_pretty(state).map_err(|e| IdeError::internal(e.to_string()))?;
     ide_vfs::write_atomic(file, &bytes)?;
     Ok(())
+}
+
+type McpServers = std::collections::BTreeMap<String, ide_core::settings::AgentMcpServer>;
+
+/// Workspace MCP servers (a project's `agents.mcpServers`) the user turned on in Settings, by a
+/// fingerprint of the project and the server's definition. Agents start a workspace server only
+/// while its definition is one the user turned on, so a server added or changed in the project's
+/// file stays off until then.
+pub struct McpServerApprovals {
+    file: PathBuf,
+    approved: Mutex<std::collections::BTreeSet<String>>,
+}
+
+impl McpServerApprovals {
+    pub fn load(data: &Path) -> Self {
+        let file = data.join("mcp-server-approvals.json");
+        let approved = std::fs::read(&file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        Self { file, approved: Mutex::new(approved) }
+    }
+
+    fn fingerprint(root: &Path, name: &str, server: &ide_core::settings::AgentMcpServer) -> String {
+        // Turning a server off and on again doesn't change what it runs.
+        let server = ide_core::settings::AgentMcpServer { enabled: true, ..server.clone() };
+        let bytes = serde_json::to_vec(&(root, name, server)).expect("MCP server serializes");
+        blake3::hash(&bytes).to_hex().to_string()
+    }
+
+    pub fn approved(&self, root: &Path, name: &str, server: &ide_core::settings::AgentMcpServer) -> bool {
+        self.approved.lock().contains(&Self::fingerprint(root, name, server))
+    }
+
+    pub fn approve(&self, root: &Path, name: &str, server: &ide_core::settings::AgentMcpServer) -> IdeResult<()> {
+        let fingerprint = Self::fingerprint(root, name, server);
+        let mut approved = self.approved.lock();
+        if approved.contains(&fingerprint) {
+            return Ok(());
+        }
+        let mut next = approved.clone();
+        next.insert(fingerprint);
+        if let Some(parent) = self.file.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let bytes = serde_json::to_vec_pretty(&next).map_err(|e| IdeError::internal(e.to_string()))?;
+        ide_vfs::write_atomic(&self.file, &bytes)?;
+        *approved = next;
+        Ok(())
+    }
+
+    /// `workspace` with the servers the user hasn't turned on switched off.
+    pub fn apply(&self, root: &Path, mut workspace: McpServers) -> McpServers {
+        for (name, server) in &mut workspace {
+            server.enabled &= self.approved(root, name, server);
+        }
+        workspace
+    }
 }
 
 impl crate::Host {
@@ -100,16 +244,36 @@ impl crate::Host {
     }
 
     pub async fn refresh_project_trust(&self) -> IdeResult<()> {
+        // A background project that is being opened read the trust before this decision and
+        // is not among the projects yet: once its open is over, the loop below corrects it.
+        Self::in_place(|| self.mcp_background.wait_for_open());
         for project in self.projects().into_iter().filter(|p| !p.light) {
-            let trusted = self.trust.trusted(&project.root).unwrap_or(false);
+            let trusted = self.trust.window_trusted(&project.root).unwrap_or(false);
+            let roots = project.content_roots();
             let previous = project.trusted.swap(trusted, std::sync::atomic::Ordering::AcqRel);
             if previous == trusted {
                 continue;
             }
+            // Maven reactor modules outside the project are content roots of a trusted project only.
+            if project.content_roots() != roots {
+                project.refresh_index_scope();
+                let p = project.clone();
+                tokio::task::spawn_blocking(move || p.refresh_repositories());
+                project.sink.emit(ide_core::IdeEvent::ProjectRootsChanged { root: project.root.clone().into() });
+            }
             if let Some(bridge) = &project.kotlin_bridge {
                 bridge.schedule();
             }
+            if let Some(phpstan) = &project.phpstan {
+                phpstan.interrupt();
+            }
+            if let Some(watch) = &project.tsc_watch {
+                watch.apply(&self.runtime);
+            }
             if !trusted {
+                if let Some(plugins) = self.plugin_host() {
+                    plugins.withdraw_project_run_targets(&project.root);
+                }
                 project.lsp.set_execution_allowed(false);
             }
             project.repos();
@@ -117,10 +281,23 @@ impl crate::Host {
                 if let Some(cmd) = self.environment.project_opened(&project.root, &project.sink) {
                     self.environment.spawn_post_start(cmd, project.root.clone(), project.sink.clone());
                 }
+                self.environment.direnv_opened(&project.root, &project.sink);
+                {
+                    let p = project.clone();
+                    self.runtime.spawn_blocking(move || {
+                        crate::github_auth::apply_to_project(&p);
+                    });
+                }
                 project.lsp.set_execution_allowed(true);
+                project.lsp.prewarm_java_configuration();
             } else {
                 self.environment.project_closed();
+                self.environment.direnv_closed(&project.root);
+                crate::github_auth::clear_project_env(&project);
                 project.agents.shutdown();
+                project.flutter.stop();
+                project.devtools.stop();
+                project.widget_preview.stop();
                 self.processes.kill_project(&project.root);
                 project.notebooks.restrict().await;
                 let windows: Vec<_> = self
@@ -139,231 +316,25 @@ impl crate::Host {
                 }
             }
             project.lsp.reconfigure().await;
+            crate::ops::sdk::container_python::ensure(self, &project);
             project.sink.emit(ide_core::IdeEvent::ProjectTrustChanged { root: project.root.clone().into(), trusted });
         }
+        // Trust decides which projects are served without a window. The step waits for a
+        // background open under way and reads files: not on an async worker.
+        Self::in_place(|| self.apply_background_policy());
         Ok(())
     }
 }
 
-/// Commands which only inspect/edit source or operate user-owned application state.
-/// New execution commands are denied until deliberately classified here.
-pub fn restricted_command_allowed(cmd: &str) -> bool {
-    if [
-        "fs_",
-        "doc_",
-        "syntax_",
-        "search_",
-        "nav_",
-        "history_",
-        "spell_",
-        "analysis_",
-        "structural_",
-        "refactor_",
-        "bytes_",
-        "window_",
-        "window_group_",
-        "term_",
-        "settings_",
-        "project_trust_",
-        "ssh_",
-        "git_credential",
-    ]
-    .iter()
-    .any(|p| cmd.starts_with(p))
-    {
-        return true;
-    }
-    matches!(
-        cmd,
-        "app_info"
-            | "app_build_info"
-            | "app_log_location"
-            | "app_check_update"
-            | "app_startup_update_check"
-            | "app_install_update"
-            | "caches_schedule_invalidation"
-            | "clear_caches"
-            | "clipboard_file_list"
-            | "clipboard_has_files"
-            | "clipboard_set_file_list"
-            | "jdk_download_vendors"
-            | "jdk_download_releases"
-            | "jdk_download_location"
-            | "jdk_download"
-            | "run_system_env"
-            | "run_gradle_jvm_args_script"
-            | "proxy_check_connection"
-            | "docker_settings"
-            | "docker_save_settings"
-            | "docker_set_registry_password"
-            | "docker_run_env"
-            | "db_console_path"
-            | "db_export_file"
-            | "vcs_write_patch"
-            | "app_metrics"
-            | "app_quit"
-            | "app_cancel_quit"
-            | "app_restart"
-            | "languages"
-            | "menu_refresh"
-            | "menu_model"
-            | "menu_configure"
-            | "menu_set_disabled"
-            | "prepare_workspace_edit"
-            | "apply_workspace_edit"
-            | "undo_workspace_edit"
-            | "redo_workspace_edit"
-            | "lsp_servers"
-            | "lsp_resend_diagnostics"
-            | "recent_projects"
-            | "remove_recent_project"
-            | "recent_project_groups"
-            | "set_recent_project_groups"
-            | "open_project"
-            | "close_project"
-            | "project_current"
-            | "project_roots"
-            | "index_status"
-            | "index_file_extensions"
-            | "jvm_file_presentations"
-            | "deploy_coverage"
-            | "deploy_test_connection"
-            | "find_files"
-            | "find_dirs"
-            | "find_symbols"
-            | "mark_recent"
-            | "remove_recent"
-            | "recent_files"
-            | "web_goto"
-            | "path_completions"
-            | "web_unresolved_references"
-            | "project_rename"
-            | "light_edit_open"
-            | "workspace_create"
-            | "workspace_update"
-            | "workspace_attach"
-            | "cancel_request"
-            | "cancel_task"
-            | "log_frontend"
-            | "env_reload"
-            | "remote_invoke"
-            | "remote_current"
-            | "remote_disconnect"
-            | "remote_connect"
-            | "remote_bootstrap_list"
-            | "remote_list"
-            | "remote_open"
-            | "remote_of"
-            | "web_browsers"
-            | "web_url"
-            | "web_open"
-            | "debug_attachable_processes"
-            | "agent_subscribe"
-            | "agent_entries"
-            | "agent_commands"
-            | "agent_unqueue"
-            | "agent_cancel"
-            | "agent_archive"
-            | "agent_unarchive"
-            | "agent_registry_list"
-            | "agent_registry_install"
-            | "agent_registry_remove"
-            | "coverage_import"
-            | "system_font_families"
-            | "user_font_data"
-            | "plugin_subscribe"
-            | "plugin_list"
-            | "plugin_set_active_file"
-            | "plugin_set_theme"
-            | "plugin_set_theme_frame"
-            | "plugin_catalog"
-            | "plugin_assets"
-            | "plugin_market"
-            | "plugin_market_url"
-            | "plugin_set_market_url"
-            | "plugin_market_download"
-            | "plugin_unpack_package"
-            | "plugin_stage_package"
-            | "plugin_preview_install"
-            | "plugin_read_intellij_theme"
-            | "plugin_installed_intellij_themes"
-            | "notebook_open"
-            | "notebook_get"
-            | "notebook_edit"
-            | "notebook_save"
-            | "notebook_undo"
-            | "notebook_redo"
-            | "notebook_reload"
-            | "notebook_close"
-            | "notebook_interrupt"
-            | "run_stop"
-            | "run_list"
-            | "debug_stop"
-            | "debug_sessions"
-            | "vcs_clone"
-            | "vcs_init"
-            | "vcs_status"
-            | "vcs_roots"
-            | "vcs_branch_info"
-            | "vcs_line_hunks"
-            | "vcs_file_at"
-            | "vcs_blame"
-            | "vcs_block_history"
-            | "vcs_log"
-            | "vcs_log_refs"
-            | "vcs_log_users"
-            | "vcs_log_details"
-            | "vcs_log_details_batch"
-            | "vcs_log_index"
-            | "vcs_revision_children"
-            | "vcs_revision_files"
-            | "vcs_open_external_log"
-            | "vcs_commit_files"
-            | "vcs_commits_changes"
-            | "vcs_branches"
-            | "vcs_stashes"
-            | "vcs_conflict_versions"
-            | "vcs_diff_text"
-            | "vcs_diff_hunks"
-            | "vcs_detected_git"
-            | "vcs_config_get"
-            | "vcs_tags"
-            | "vcs_remotes"
-            | "vcs_worktrees"
-            | "vcs_diff_with_worktree"
-            | "vcs_compare_scope"
-            | "vcs_compare_paths"
-            | "vcs_diff_revisions"
-            | "vcs_merge_base"
-            | "vcs_shelves"
-            | "vcs_shelf_patch"
-            | "vcs_changelists_load"
-    ) || cmd.starts_with("plugin:")
-}
-
-/// Commands that change which plugin code runs: allowed where no project is open (the
-/// welcome screen), otherwise only in a trusted project.
-pub fn projectless_command_allowed(cmd: &str) -> bool {
-    matches!(
-        cmd,
-        "plugin_install_dir"
-            | "plugin_uninstall"
-            | "plugin_set_enabled"
-            | "plugin_grant"
-            | "plugin_set_capability"
-            | "plugin_roll_back"
-            | "plugin_reload"
-    )
-}
-
 impl crate::Host {
-    pub fn authorize_command(&self, window: &str, command: &str) -> IdeResult<()> {
-        if restricted_command_allowed(command) {
+    /// Whether `window` may run a command of class `trust`.
+    pub fn authorize(&self, window: &str, trust: TrustClass) -> IdeResult<()> {
+        if trust == TrustClass::Always {
             return Ok(());
         }
         match self.project(window) {
             Ok(project) => project.require_trust(),
-            Err(_) if projectless_command_allowed(command) => Ok(()),
+            Err(_) if trust == TrustClass::OutsideRestricted => Ok(()),
             Err(error) => Err(error),
         }
     }
@@ -382,5 +353,23 @@ impl TrustStore {
         let trusted = self.trusted(&root)?;
         let state = self.decisions()?;
         Ok(TrustStatus { decided: trusted || state.restricted.contains(&root), root: root.into(), trusted })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn remote_project_decisions_are_kept_on_this_machine() {
+        let tmp = tempfile::tempdir().unwrap();
+        let load = || super::TrustStore::load(&tmp.path().join("config"), &tmp.path().join("data"));
+        let store = load();
+        let here = r#"[{"kind":"ssh","config":"box"},"/srv/app"]"#;
+        assert_eq!(store.remote_decision(here).unwrap(), None);
+        store.decide_remote(here, true).unwrap();
+        assert_eq!(store.remote_decision(here).unwrap(), Some(true));
+        assert_eq!(store.remote_decision(r#"[{"kind":"ssh","config":"box"},"/srv/other"]"#).unwrap(), None);
+        store.decide_remote(here, false).unwrap();
+        assert_eq!(load().remote_decision(here).unwrap(), Some(false));
     }
 }

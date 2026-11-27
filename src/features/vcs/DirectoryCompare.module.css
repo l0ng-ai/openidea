@@ -1,0 +1,226 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-editor);
+  container: directory-compare / inline-size;
+  --table-inset: var(--space-1);
+  --table-padding: calc(var(--table-inset) + var(--space-2));
+  --status-width: var(--h-control);
+}
+.paths {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--status-width) minmax(0, 1fr);
+  column-gap: var(--space-2);
+  flex: none;
+  padding: 0 var(--table-padding) var(--space-2);
+  color: var(--fg-secondary);
+  font-size: var(--fs-ui);
+}
+.path {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.pathInput {
+  flex: 1;
+  min-width: 0;
+}
+.path:last-child {
+  grid-column: 3;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  flex: none;
+  padding: 6px 12px;
+}
+.toolbarGroup {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.filter {
+  width: min(220px, 100%);
+  margin-inline-start: auto;
+}
+.progress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  margin-left: var(--space-2);
+  color: var(--fg-subtle);
+}
+.error {
+  flex: none;
+  padding: 0 12px 6px;
+  color: var(--danger);
+  font-size: var(--fs-small);
+}
+.notice {
+  flex: none;
+  padding: 0 12px 6px;
+  color: var(--fg-subtle);
+}
+.body {
+  flex: 1;
+  min-height: 0;
+  border-top: 1px solid var(--border);
+}
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.table {
+  --list-inset: var(--table-inset);
+  --name-track: minmax(min(96px, 20%), 1fr);
+  --size-track: minmax(0, 72px);
+  --date-track: minmax(0, 132px);
+  --compare-columns: var(--name-track) var(--size-track) var(--date-track) var(--status-width) var(--date-track)
+    var(--size-track) var(--name-track);
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.head,
+.row {
+  display: grid;
+  grid-template-columns: var(--compare-columns);
+  align-items: center;
+  column-gap: var(--space-2);
+  width: 100%;
+}
+.head {
+  flex: none;
+  height: var(--h-row);
+  padding-inline: var(--table-padding);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.head,
+.paths {
+  overflow: hidden;
+}
+.list {
+  flex: 1;
+  min-height: 0;
+  font-size: var(--fs-ui);
+}
+.head,
+.list,
+.paths {
+  scrollbar-gutter: stable;
+}
+.head::-webkit-scrollbar,
+.paths::-webkit-scrollbar {
+  width: 10px;
+}
+.cell {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Plain text cells: a narrow column ends in an ellipsis instead of clipping both edges. */
+.size,
+.date {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+.size {
+  text-align: right;
+}
+.date {
+  text-align: center;
+}
+@container directory-compare (max-width: 680px) {
+  .table {
+    --compare-columns: minmax(0, 1fr) 56px var(--status-width) 56px minmax(0, 1fr);
+  }
+  .date {
+    display: none;
+  }
+}
+@container directory-compare (max-width: 380px) {
+  .table {
+    --compare-columns: minmax(0, 1fr) var(--status-width) minmax(0, 1fr);
+  }
+  .size {
+    display: none;
+  }
+}
+.marker {
+  justify-content: center;
+}
+.leftOnly,
+.rightOnly {
+  color: var(--vcs-added);
+}
+.different {
+  color: var(--vcs-modified);
+}
+.section {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.message {
+  padding: 12px;
+  color: var(--fg-faint);
+  text-align: center;
+}
+.folder {
+  font-weight: 600;
+}
+.select {
+  height: var(--h-control-small);
+  font-size: var(--fs-small);
+}
+.sync {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-small);
+  color: inherit;
+  opacity: 0.7;
+}
+.sync.planned {
+  opacity: 1;
+  --icon-color: var(--accent);
+}
+.sync:not(:disabled):hover {
+  background: var(--bg-toolbar-hover);
+  opacity: 1;
+}
+.sync:disabled {
+  cursor: default;
+}

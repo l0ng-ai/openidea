@@ -6,18 +6,15 @@ use crate::{
 use ide_core::{IdeError, IdeEvent, IdeResult};
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::collections::VecDeque;
+use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Manager, WebviewWindow};
 
-/// Wait for the selection's asynchronous `hide` calls to take effect before moving the peers.
-const FRAME_SETTLE_AFTER_SELECT: Duration = Duration::from_millis(50);
-/// Wait for a drag/resize to stop before copying its frame to the hidden peers.
-const FRAME_SETTLE_AFTER_MOVE: Duration = Duration::from_millis(100);
-/// Coalesces the move/resize events a drag emits.
-static FRAME_SYNC_GENERATION: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(target_os = "macos"))]
+mod frames;
+
+type Group = ide_workspace::window_groups::WindowGroup;
 
 #[derive(Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -38,10 +35,14 @@ pub fn current(app: &AppHandle, caller: &str) -> Vec<WindowTab> {
         .filter_map(|label| {
             let window = app.get_webview_window(label)?;
             let project = host.project(label).ok();
-            let name = project
-                .as_ref()
-                .map(|p| ide_host::ops::project::info(p).name)
-                .unwrap_or_else(|| window.title().unwrap_or_default());
+            let name = project.as_ref().map(|p| ide_host::ops::project::info(p).display_name).unwrap_or_else(|| {
+                // Taken its launch but not finished opening: name the tab after that project.
+                state
+                    .pending(label)
+                    .and_then(|launch| launch.project)
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                    .unwrap_or_else(|| window.title().unwrap_or_default())
+            });
             Some(WindowTab {
                 label: label.clone(),
                 name,
@@ -56,165 +57,18 @@ fn changed(app: &AppHandle) {
     app.state::<AppState>().sink.emit(IdeEvent::WindowGroupsChanged);
 }
 
-/// Whether `to` already presents `from`'s frame, so moving it would only make it flicker.
-fn same_frame(from: &WebviewWindow, to: &WebviewWindow) -> bool {
-    let (Ok(from_max), Ok(to_max)) = (from.is_maximized(), to.is_maximized()) else { return false };
-    let (Ok(from_full), Ok(to_full)) = (from.is_fullscreen(), to.is_fullscreen()) else { return false };
-    if from_max != to_max || from_full != to_full {
-        return false;
-    }
-    let same_monitor = match (from.current_monitor(), to.current_monitor()) {
-        (Ok(Some(a)), Ok(Some(b))) => a.position() == b.position() && a.size() == b.size(),
-        // An unmapped window may not report a monitor; treat only equal states as matching.
-        (Ok(None), Ok(None)) | (Err(_), Err(_)) => true,
-        _ => false,
-    };
-    if !same_monitor {
-        return false;
-    }
-    from_full
-        || from_max
-        || (from.outer_position().ok() == to.outer_position().ok() && from.inner_size().ok() == to.inner_size().ok())
-}
-
-/// Moves a hidden window onto `from`'s monitor. A restored window keeps its normal position on
-/// the monitor it last occupied; maximizing or going fullscreen there would make the window
-/// visibly jump across displays when its tab is selected.
-fn place_on_monitor(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
-    // Wayland does not let clients place top-level windows; maximizing stays on that output.
-    #[cfg(target_os = "linux")]
-    if crate::linux_window_state::is_wayland() {
-        return Ok(());
-    }
-    let err = |e: tauri::Error| IdeError::internal(e.to_string());
-    if let Some(monitor) = from.current_monitor().map_err(err)? {
-        to.set_position(*monitor.position()).map_err(err)?;
-    }
-    Ok(())
-}
-
-fn copy_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
-    if same_frame(from, to) {
-        return Ok(());
-    }
-    let err = |e: tauri::Error| IdeError::internal(e.to_string());
-    let fullscreen = from.is_fullscreen().map_err(err)?;
-    if fullscreen {
-        #[cfg(target_os = "macos")]
-        crate::macos::transfer_fullscreen(from, to).map_err(err)?;
-        #[cfg(not(target_os = "macos"))]
-        {
-            to.set_fullscreen(false).map_err(err)?;
-            place_on_monitor(from, to)?;
-            from.set_fullscreen(false).map_err(err)?;
-            to.set_fullscreen(true).map_err(err)?;
-        }
-        return Ok(());
-    }
-    to.set_fullscreen(false).map_err(err)?;
-    let maximized = from.is_maximized().map_err(err)?;
-    if !maximized {
-        to.unmaximize().map_err(err)?;
-        to.set_position(from.outer_position().map_err(err)?).map_err(err)?;
-        // `set_size` excludes GTK's CSD shadow, which tao's inner size includes on Wayland.
-        #[cfg(target_os = "linux")]
-        let size = crate::linux_window_state::content_size(&from.as_ref().window()).map_err(err)?;
-        #[cfg(not(target_os = "linux"))]
-        let size = from.inner_size().map_err(err)?;
-        #[cfg(target_os = "linux")]
-        crate::linux_window_state::normal_size_requested(to.app_handle(), to.label(), size);
-        to.set_size(size).map_err(err)?;
-    } else {
-        // Maximize the target on the source's monitor, not on the monitor it happened to
-        // occupy while hidden.
-        to.unmaximize().map_err(err)?;
-        place_on_monitor(from, to)?;
-        to.maximize().map_err(err)?;
-    }
-    Ok(())
-}
-
-/// Keeps hidden group members at the selected window's frame. Selecting a tab then only
-/// changes which window is visible instead of moving or resizing one on screen.
-fn sync_member_frames(app: &AppHandle, selected: &str) {
-    let Some(group) = app.state::<WindowsState>().groups.lock().group(selected).cloned() else { return };
-    if group.selected != selected {
-        return;
-    }
-    let Some(from) = app.get_webview_window(selected) else { return };
-    if from.is_fullscreen().unwrap_or(false) || from.is_minimized().unwrap_or(false) || simple_fullscreen(selected) {
-        return;
-    }
-    for member in group.members.iter().filter(|member| member.as_str() != selected) {
-        let Some(to) = app.get_webview_window(member) else { continue };
-        // A visible peer is the one being presented; never move it behind the user's back.
-        if to.is_visible().unwrap_or(false) {
-            continue;
-        }
-        if let Err(error) = copy_frame(&from, &to) {
-            tracing::warn!("cannot align window {member} with {selected}: {}", error.message);
-        }
-    }
-}
-
-/// A presented group window moved or resized. Align its hidden peers after the user stops, so
-/// the next tab selection is only a visibility change.
+/// A presented group window moved or resized. Native tabs (macOS) share one frame already.
 pub fn frame_changed(app: &AppHandle, label: &str) {
-    let Some(group) = app.state::<WindowsState>().groups.lock().group(label).cloned() else { return };
-    if group.selected != label {
-        return;
-    }
-    let generation = FRAME_SYNC_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
-    let app = app.clone();
-    let label = label.to_owned();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(FRAME_SETTLE_AFTER_MOVE).await;
-        if FRAME_SYNC_GENERATION.load(Ordering::Relaxed) != generation {
-            return;
-        }
-        if !app.state::<WindowsState>().quitting() {
-            sync_member_frames(&app, &label);
-        }
-    });
-}
-
-fn simple_fullscreen(label: &str) -> bool {
-    #[cfg(target_os = "macos")]
-    return crate::macos::is_simple_fullscreen(label);
     #[cfg(not(target_os = "macos"))]
-    {
-        let _ = label;
-        false
-    }
+    frames::frame_changed(app, label);
+    #[cfg(target_os = "macos")]
+    let _ = (app, label);
 }
 
-#[cfg(target_os = "macos")]
-fn set_simple_fullscreen(window: &WebviewWindow, on: bool) -> IdeResult<()> {
-    crate::macos::set_simple_fullscreen(window, on).map_err(|e| IdeError::internal(e.to_string()))
-}
-
-/// Fullscreen for `window`. On macOS a grouped window uses simple fullscreen, for every member
-/// at once: the group stays in one Space and each member keeps the screen's size, so switching
-/// projects is only showing one window and hiding the others.
+/// Fullscreen for `window`. On macOS a group is one native tab group, which AppKit takes into a
+/// fullscreen Space as a whole.
 pub fn toggle_fullscreen(window: &WebviewWindow) -> IdeResult<bool> {
     let err = |e: tauri::Error| IdeError::internal(e.to_string());
-    #[cfg(target_os = "macos")]
-    {
-        let simple = simple_fullscreen(window.label());
-        let app = window.app_handle();
-        let members = app.state::<WindowsState>().groups.lock().group(window.label()).map(|g| g.members.clone());
-        if simple || (members.is_some() && !window.is_fullscreen().map_err(err)?) {
-            set_simple_fullscreen(window, !simple)?;
-            for member in members.iter().flatten().filter(|m| *m != window.label()) {
-                if let Some(other) = app.get_webview_window(member)
-                    && simple_fullscreen(member) == simple
-                {
-                    set_simple_fullscreen(&other, !simple)?;
-                }
-            }
-            return Ok(!simple);
-        }
-    }
     let on = !window.is_fullscreen().map_err(err)?;
     window.set_fullscreen(on).map_err(err)?;
     Ok(on)
@@ -224,61 +78,37 @@ pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
     let to = app.get_webview_window(target).ok_or_else(|| IdeError::not_found("Window closed"))?;
     let state = app.state::<WindowsState>();
     let previous = state.groups.lock().select(caller, target)?;
-    // In a fullscreen group the target already covers the screen, or does so before it is shown.
-    let simple = previous.selected != target && simple_fullscreen(&previous.selected);
-    let result = (|| {
-        #[cfg(target_os = "macos")]
-        if simple && !simple_fullscreen(target) {
-            set_simple_fullscreen(&to, true)?;
-        }
-        if !simple
-            && previous.selected != target
-            && let Some(from) = app.get_webview_window(&previous.selected)
-        {
-            copy_frame(&from, &to)?;
-        }
-        to.unminimize().map_err(|e| IdeError::internal(e.to_string()))?;
-        to.show().map_err(|e| IdeError::internal(e.to_string()))?;
-        to.set_focus().map_err(|e| IdeError::internal(e.to_string()))?;
-        for member in &previous.members {
-            if member != target
-                && let Some(window) = app.get_webview_window(member)
-            {
-                window.hide().map_err(|e| IdeError::internal(e.to_string()))?;
-            }
-        }
-        Ok(())
-    })();
+    #[cfg(target_os = "macos")]
+    let result = native_select(app, &previous, &to);
+    #[cfg(not(target_os = "macos"))]
+    let result = frames::present(app, &previous, target, &to);
     if result.is_err() {
         let _ = state.groups.lock().select(caller, &previous.selected);
-        for member in &previous.members {
-            if let Some(window) = app.get_webview_window(member) {
-                if member == &previous.selected {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                } else {
-                    let _ = window.hide();
-                }
-            }
+        #[cfg(target_os = "macos")]
+        if let Some(window) = app.get_webview_window(&previous.selected) {
+            let _ = native_select(app, &previous, &window);
         }
+        #[cfg(not(target_os = "macos"))]
+        frames::restore_selection(app, &previous);
     } else if !state.quitting() {
-        // Align the members that are now hidden while they stay invisible, so the next
-        // selection does not move or resize a window on screen. Hiding is asynchronous;
-        // wait for it before moving a peer that is still on screen.
-        let app = app.clone();
-        let target = target.to_owned();
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(FRAME_SETTLE_AFTER_SELECT).await;
-            if !app.state::<WindowsState>().quitting() {
-                sync_member_frames(&app, &target);
-            }
-        });
+        #[cfg(not(target_os = "macos"))]
+        frames::selected(app, target);
     }
     changed(app);
+    // A tab shown in a fullscreen group is in full screen too; its title bar asks again.
+    app.state::<AppState>().sink.emit(IdeEvent::WindowFullscreenChanged);
     result
 }
 
+/// Shows `to` as the selected tab of the group's native tab group.
 #[cfg(target_os = "macos")]
+fn native_select(app: &AppHandle, group: &Group, to: &WebviewWindow) -> IdeResult<()> {
+    let members = group.members.iter().filter_map(|m| app.get_webview_window(m)).collect();
+    let anchor = app.get_webview_window(&group.selected).unwrap_or_else(|| to.clone());
+    to.unminimize().map_err(|e| IdeError::internal(e.to_string()))?;
+    crate::macos::sync_tab_group(members, &anchor, to).map_err(|e| IdeError::internal(e.to_string()))
+}
+
 pub fn join(app: &AppHandle, anchor: &str, new_window: &str) -> IdeResult<()> {
     let state = app.state::<WindowsState>();
     state.groups.lock().join(anchor, new_window)?;
@@ -296,10 +126,6 @@ pub fn merge(app: &AppHandle, caller: &str) -> IdeResult<()> {
     // Native fullscreen puts each window in a separate Space; leave it before grouping.
     for label in &members {
         if let Some(window) = app.get_webview_window(label) {
-            #[cfg(target_os = "macos")]
-            if label != caller && simple_fullscreen(label) {
-                set_simple_fullscreen(&window, false)?;
-            }
             window.set_fullscreen(false).map_err(|e| IdeError::internal(e.to_string()))?;
         }
     }
@@ -308,29 +134,33 @@ pub fn merge(app: &AppHandle, caller: &str) -> IdeResult<()> {
 }
 
 pub fn detach(app: &AppHandle, caller: &str) -> IdeResult<()> {
+    let err = |e: tauri::Error| IdeError::internal(e.to_string());
     let state = app.state::<WindowsState>();
-    let next = state.groups.lock().detach(caller);
-    if let Some(next) = next {
-        // The tab that stays keeps the fullscreen; the detached window opens beside it.
+    let Some(next) = state.groups.lock().detach(caller) else {
+        changed(app);
+        return Ok(());
+    };
+    let window = app.get_webview_window(caller);
+    // A tab moved out of a fullscreen group stays fullscreen in a Space of its own.
+    #[cfg(target_os = "macos")]
+    if let Some(window) = &window {
+        crate::macos::move_tab_to_new_window(window).map_err(err)?;
+    }
+    if let Some(next) = app.get_webview_window(&next) {
         #[cfg(target_os = "macos")]
-        let simple = simple_fullscreen(caller);
-        if let Some(window) = app.get_webview_window(&next) {
-            #[cfg(target_os = "macos")]
-            if simple && !simple_fullscreen(&next) {
-                set_simple_fullscreen(&window, true)?;
-            }
-            window.show().map_err(|e| IdeError::internal(e.to_string()))?;
+        if state.groups.lock().group(next.label()).is_some() {
+            select(app, next.label(), next.label())?;
         }
-        if let Some(window) = app.get_webview_window(caller) {
-            #[cfg(target_os = "macos")]
-            if simple {
-                set_simple_fullscreen(&window, false)?;
-            }
-            if let Ok(position) = window.outer_position() {
-                let _ = window.set_position(tauri::PhysicalPosition::new(position.x + 32, position.y + 32));
-            }
-            windows::focus(&window);
+        #[cfg(not(target_os = "macos"))]
+        next.show().map_err(err)?;
+    }
+    if let Some(window) = window {
+        if !window.is_fullscreen().map_err(err)?
+            && let Ok(position) = window.outer_position()
+        {
+            let _ = window.set_position(tauri::PhysicalPosition::new(position.x + 32, position.y + 32));
         }
+        windows::focus(&window);
     }
     changed(app);
     Ok(())
@@ -338,42 +168,60 @@ pub fn detach(app: &AppHandle, caller: &str) -> IdeResult<()> {
 
 pub fn destroyed(app: &AppHandle, caller: &str) {
     let Some(state) = app.try_state::<WindowsState>() else { return };
-    #[cfg(target_os = "macos")]
-    let simple = crate::macos::forget_simple_fullscreen(app, caller);
     let next = state.groups.lock().detach(caller);
+    let batch_done_keep = {
+        let mut batch = state.tab_closes.lock();
+        if let Some(b) = batch.as_mut()
+            && b.pending.remove(caller)
+            && b.pending.is_empty()
+        {
+            Some(batch.take().unwrap().keep)
+        } else {
+            None
+        }
+    };
+    let next_closing = next.as_deref().is_some_and(|label| state.is_closing(label));
+    let more_closing = state.has_other_pending_closes(caller);
     if !state.quitting() {
-        if let Some(window) = next.and_then(|label| app.get_webview_window(&label)) {
-            #[cfg(target_os = "macos")]
-            if simple && !simple_fullscreen(window.label()) {
-                let _ = set_simple_fullscreen(&window, true);
+        if let Some(keep) = batch_done_keep {
+            if let Some(window) = app.get_webview_window(&keep)
+                && !window.is_focused().unwrap_or(false)
+            {
+                windows::focus(&window);
             }
+        } else if !next_closing && let Some(window) = next.as_deref().and_then(|label| app.get_webview_window(label)) {
             windows::focus(&window);
         }
-        let app = app.clone();
-        tauri::async_runtime::spawn(async move {
-            let _ = persist(&app).await;
-        });
-    }
-    changed(app);
-    let advance = state.tab_closes.lock().as_mut().is_some_and(|batch| {
-        let closing = batch.pending.front().is_some_and(|l| l == caller);
-        if closing {
-            batch.pending.pop_front();
+        if !more_closing {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = persist(&app).await;
+            });
         }
-        closing
-    });
-    if advance {
-        close_next(app);
+    }
+    if !next_closing || !more_closing {
+        changed(app);
     }
 }
 
-/// Tabs left to close; the first one is closing now.
+/// Tabs closing together in a batch (Close Other / Left / Right Tabs), keeping `keep`.
 pub struct TabCloses {
-    keep: String,
-    pending: VecDeque<String>,
+    pub(crate) keep: String,
+    pub(crate) pending: HashSet<String>,
 }
 
-/// Closes `labels` one at a time so each project's unsaved-changes prompt is shown in turn, then selects `keep`.
+impl TabCloses {
+    pub(crate) fn contains(&self, label: &str) -> bool {
+        self.pending.contains(label)
+    }
+
+    pub(crate) fn has_other(&self, exclude: &str) -> bool {
+        self.pending.iter().any(|l| l != exclude)
+    }
+}
+
+/// Closes `labels` in parallel without flipping tabs; any tab that needs a confirmation prompt
+/// acquires the prompt turn and raises itself, and `keep` stays selected when the batch finishes.
 pub fn close_tabs(app: &AppHandle, caller: &str, keep: &str, labels: Vec<String>) -> IdeResult<()> {
     let state = app.state::<WindowsState>();
     let members = state
@@ -385,92 +233,273 @@ pub fn close_tabs(app: &AppHandle, caller: &str, keep: &str, labels: Vec<String>
     if !members.iter().any(|m| m == keep) {
         return Err(IdeError::invalid("The window is not in this group"));
     }
-    let pending = members.into_iter().filter(|m| m != keep && labels.contains(m)).collect();
+    let targets: Vec<String> = members.into_iter().filter(|m| m != keep && labels.contains(m)).collect();
+    if targets.is_empty() {
+        return Ok(());
+    }
+    let pending: HashSet<String> = targets.iter().cloned().collect();
     *state.tab_closes.lock() = Some(TabCloses { keep: keep.to_owned(), pending });
-    close_next(app);
+    // Pre-register every target before invoking `close()` so early responders see the full cohort.
+    for label in &targets {
+        state.close_requested(label);
+    }
+    let mut any_sent = false;
+    for label in targets {
+        if let Some(window) = app.get_webview_window(&label)
+            && window.close().is_ok()
+        {
+            any_sent = true;
+            continue;
+        }
+        if let Some(b) = state.tab_closes.lock().as_mut() {
+            b.pending.remove(&label);
+        }
+        state.close_settled(&label);
+    }
+    if !any_sent {
+        *state.tab_closes.lock() = None;
+        if let Some(window) = app.get_webview_window(keep) {
+            windows::focus(&window);
+        }
+    }
     Ok(())
 }
 
-/// The closing tab's project vetoed (its unsaved-changes prompt was cancelled): leave the rest open.
+/// The closing tab stayed open (either its prompt was cancelled or it returned to Welcome).
 pub fn cancel_close(app: &AppHandle, caller: &str) {
     let state = app.state::<WindowsState>();
-    let mut batch = state.tab_closes.lock();
-    if batch.as_ref().is_some_and(|b| b.pending.front().is_some_and(|l| l == caller)) {
-        *batch = None;
+    let cancelled_batch = {
+        let mut batch = state.tab_closes.lock();
+        if batch.as_ref().is_some_and(|b| b.pending.contains(caller)) { batch.take() } else { None }
+    };
+    if let Some(batch) = cancelled_batch {
+        // A vetoed Close Other/Left/Right Tabs leaves the remaining tabs open too.
+        state.abort_batch(batch.pending.into_iter().filter(|l| l != caller));
+        state.close_settled(caller);
+        return;
+    }
+    state.close_settled(caller);
+    // For a red-button group close where this tab stayed open (e.g. returned to Welcome),
+    // select it so closing siblings disappear behind it without flashing.
+    if state.groups.lock().group(caller).is_some()
+        && let Some(window) = app.get_webview_window(caller)
+    {
+        windows::focus(&window);
+    }
+    if !state.has_other_pending_closes(caller) && !state.quitting() {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = persist(&app).await;
+        });
     }
 }
 
-fn close_next(app: &AppHandle) {
+/// Waits for the caller's interactive prompt turn in a parallel batch close and brings it forward.
+/// Returns `false` if the batch was cancelled while waiting (the caller should stay open quietly).
+pub async fn begin_prompt(app: &AppHandle, window: &WebviewWindow) -> bool {
+    let label = window.label();
     let state = app.state::<WindowsState>();
     loop {
-        let next = {
-            let mut batch = state.tab_closes.lock();
-            let Some(b) = batch.as_mut() else { return };
-            match b.pending.front() {
-                Some(label) => Ok(label.clone()),
-                None => Err(batch.take().unwrap().keep),
+        let notified = state.close_notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+
+        match state.try_acquire_prompt(label) {
+            Ok(true) => {
+                windows::focus(window);
+                return true;
             }
-        };
-        match next {
-            Ok(label) => {
-                if let Some(window) = app.get_webview_window(&label) {
-                    windows::focus(&window);
-                    if window.close().is_ok() {
-                        return;
-                    }
-                }
-                if let Some(b) = state.tab_closes.lock().as_mut() {
-                    b.pending.pop_front();
-                }
+            Ok(false) => {
+                notified.await;
             }
-            Err(keep) => {
-                if let Some(window) = app.get_webview_window(&keep) {
-                    windows::focus(&window);
-                }
-                return;
+            Err(()) => {
+                state.take_aborted(label);
+                return false;
             }
         }
     }
 }
 
-#[derive(Serialize, Deserialize)]
-struct SavedGroup {
-    projects: Vec<PathBuf>,
-    selected: usize,
+pub fn end_prompt(app: &AppHandle, caller: &str) {
+    app.state::<WindowsState>().release_prompt(caller);
 }
 
+/// Coordinates the final hide/destroy step across windows closing together.
+/// Returns `false` if the batch was cancelled while waiting (the caller must stay open).
+pub async fn ready_to_close(app: &AppHandle, window: &WebviewWindow) -> bool {
+    let label = window.label();
+    let state = app.state::<WindowsState>();
+    if !state.mark_ready(label) {
+        return false;
+    }
+
+    const BARRIER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+    const POLL_STEP: std::time::Duration = std::time::Duration::from_millis(250);
+    let mut waited_idle = std::time::Duration::ZERO;
+    let mut last_tick = std::time::Instant::now();
+
+    loop {
+        let notified = state.close_notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+
+        if state.take_aborted(label) {
+            return false;
+        }
+
+        let (cohort, keep_label) = close_cohort(app, &state, label);
+        let any_undecided =
+            cohort.iter().any(|peer| peer != label && app.get_webview_window(peer).is_some() && !state.is_ready(peer));
+
+        if !any_undecided {
+            finish_cohort_visuals(app, &state, label, &cohort, keep_label.as_deref());
+            state.close_notify.notify_waiters();
+            return true;
+        }
+
+        match tokio::time::timeout(POLL_STEP, notified).await {
+            Ok(()) => {
+                waited_idle = std::time::Duration::ZERO;
+                last_tick = std::time::Instant::now();
+            }
+            Err(_) => {
+                // Never time out while another tab is waiting on the user's answer to a dialog.
+                if state.has_prompt_holder() {
+                    waited_idle = std::time::Duration::ZERO;
+                } else {
+                    waited_idle += last_tick.elapsed();
+                    if waited_idle >= BARRIER_TIMEOUT {
+                        let single = vec![label.to_owned()];
+                        if !state.claim_hide(&single).is_empty() && state.groups.lock().group(label).is_none() {
+                            windows::hide_windows(vec![window.clone()]);
+                        }
+                        return true;
+                    }
+                }
+                last_tick = std::time::Instant::now();
+            }
+        }
+    }
+}
+
+fn close_cohort(app: &AppHandle, state: &WindowsState, label: &str) -> (Vec<String>, Option<String>) {
+    if state.quitting() {
+        let pending = state.pending_closes();
+        let mut cohort: Vec<String> = windows::project_window_labels(app)
+            .into_iter()
+            .filter(|l| l == label || pending.iter().any(|p| p == l))
+            .collect();
+        if !cohort.iter().any(|l| l == label) {
+            cohort.push(label.to_owned());
+        }
+        return (cohort, None);
+    }
+    if let Some((keep, pending)) = state
+        .tab_closes
+        .lock()
+        .as_ref()
+        .filter(|b| b.pending.contains(label))
+        .map(|b| (b.keep.clone(), b.pending.iter().cloned().collect::<Vec<_>>()))
+    {
+        return (pending, Some(keep));
+    }
+    let pending = state.pending_closes();
+    let group_members = state.groups.lock().group(label).map(|g| g.members.clone());
+    if let Some(members) = group_members {
+        let mut cohort: Vec<String> =
+            members.into_iter().filter(|m| m == label || pending.iter().any(|p| p == m)).collect();
+        if !cohort.iter().any(|l| l == label) {
+            cohort.push(label.to_owned());
+        }
+        return (cohort, None);
+    }
+    (vec![label.to_owned()], None)
+}
+
+/// Applies the visual transition once every peer in `cohort` is ready to close:
+/// - Whole closing window or whole closing tab group (or quit): hide all of them in a single frame.
+/// - Partial tab group close (Close Other Tabs, single tab close, or keeper returning to Welcome):
+///   ensure a surviving tab is selected so the closing tabs tear down invisibly behind it.
+fn finish_cohort_visuals(
+    app: &AppHandle,
+    state: &WindowsState,
+    label: &str,
+    cohort: &[String],
+    keep_label: Option<&str>,
+) {
+    if state.quitting() {
+        let to_hide = state.claim_hide(cohort);
+        let windows: Vec<_> = to_hide.into_iter().filter_map(|l| app.get_webview_window(&l)).collect();
+        windows::hide_windows(windows);
+        return;
+    }
+    let group_snapshot = state.groups.lock().group(label).cloned();
+    if let Some(group) = group_snapshot {
+        let cohort_set: HashSet<&str> = cohort.iter().map(String::as_str).collect();
+        let all_closing = group.members.iter().all(|m| cohort_set.contains(m.as_str()));
+        if all_closing {
+            let to_hide = state.claim_hide(&group.members);
+            let windows: Vec<_> = to_hide.into_iter().filter_map(|l| app.get_webview_window(&l)).collect();
+            windows::hide_windows(windows);
+        } else {
+            let survivor = keep_label
+                .filter(|k| !cohort_set.contains(*k))
+                .map(str::to_owned)
+                .or_else(|| group.members.iter().find(|m| !cohort_set.contains(m.as_str())).cloned());
+            // Only switch tabs if the currently visible tab is one of the closing ones.
+            if cohort_set.contains(group.selected.as_str())
+                && let Some(survivor) = survivor
+                && !state.claim_hide(cohort).is_empty()
+                && let Some(window) = app.get_webview_window(&survivor)
+            {
+                windows::focus(&window);
+            }
+        }
+    } else {
+        let to_hide = state.claim_hide(cohort);
+        let windows: Vec<_> = to_hide.into_iter().filter_map(|l| app.get_webview_window(&l)).collect();
+        windows::hide_windows(windows);
+    }
+}
+
+/// Window labels in creation order: `main`, then `project-1`, `project-2`, ….
+fn labels_in_order(app: &AppHandle) -> Vec<String> {
+    let mut labels: Vec<String> = app.webview_windows().into_keys().collect();
+    labels.sort_by_key(|l| (l != "main", l.rsplit('-').next().and_then(|n| n.parse::<u32>().ok()), l.clone()));
+    labels
+}
+
+/// Saves the open project windows (groups and single windows) for "Reopen projects on startup".
+/// Nothing is written while quitting, so the windows open at quit are the ones reopened.
 pub async fn persist(app: &AppHandle) -> IdeResult<()> {
     let state = app.state::<WindowsState>();
-    let _write = state.groups_persist.lock().await;
+    let mut previous = state.groups_persist.lock().await;
     if state.quitting() {
         return Ok(());
     }
-    let groups = state.groups.lock().groups().to_vec();
     let host = app.state::<AppState>();
-    let saved: Vec<_> = groups
-        .iter()
-        .filter_map(|group| {
-            let projects: Vec<_> = group
-                .members
-                .iter()
-                .filter_map(|label| {
-                    host.project(label)
-                        .ok()
-                        .map(|p| p.root.clone())
-                        .or_else(|| state.pending(label).and_then(|l| l.project).map(Into::into))
-                })
-                .collect();
-            (projects.len() == group.members.len()).then(|| SavedGroup {
-                projects,
-                selected: group.members.iter().position(|l| l == &group.selected).unwrap_or(0),
-            })
-        })
-        .collect();
-    // A restored member may have taken its launch but not finished opening yet.
-    if saved.len() != groups.len() {
-        return Ok(());
-    }
     let path = host.config_dir.join("window-groups.json");
+    if previous.is_none() {
+        *previous = Some(read_session(path.clone()).await);
+    }
+    let groups = state.groups.lock().groups().to_vec();
+    let windows = labels_in_order(app);
+    let project_of = |label: &str| {
+        if let Some(path) = windows::window_project_path(app, label) {
+            return Some(path);
+        }
+        // Taken its launch, not finished opening: keep the remote location or local folder.
+        state.pending(label).and_then(|launch| {
+            launch
+                .remote
+                .as_ref()
+                .map(|remote| PathBuf::from(crate::remote_dev::remote_location(&remote.target, &remote.path)))
+                .or_else(|| launch.project.clone().map(Into::into))
+        })
+    };
+    let Some(saved) = ide_workspace::window_groups::session(&groups, &windows, project_of) else {
+        return Ok(());
+    };
     tauri::async_runtime::spawn_blocking(move || {
         let bytes = serde_json::to_vec(&saved).map_err(|e| IdeError::internal(e.to_string()))?;
         ide_vfs::write_atomic(&path, &bytes).map(|_| ())
@@ -479,51 +508,77 @@ pub async fn persist(app: &AppHandle) -> IdeResult<()> {
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
+/// The saved session; empty when there is none or it can't be read.
+async fn read_session(path: PathBuf) -> Vec<ide_workspace::window_groups::SavedWindows> {
+    let read = tauri::async_runtime::spawn_blocking(move || match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    })
+    .await
+    .map_err(|e| e.to_string())
+    .and_then(|r| r);
+    read.unwrap_or_else(|e| {
+        tracing::warn!("cannot read the saved windows: {e}");
+        Vec::new()
+    })
+}
+
 pub async fn restore(app: &AppHandle, caller: &str) -> IdeResult<()> {
     if caller != "main" {
         return Ok(());
     }
     let state = app.state::<WindowsState>();
     let host = app.state::<AppState>();
-    let project = host.project(caller)?;
-    if !project.settings.effective().general.reopen_last_project || state.groups_restored.swap(true, Ordering::SeqCst) {
+    // A remote window has no local project. Leave the flag clear until this window has
+    // one, so the call that runs once the connection is up can still restore its siblings.
+    let Some(root) = windows::window_project_path(app, caller) else {
+        return Ok(());
+    };
+    let settings = ide_host::ops::project::settings_get(&host.host, caller);
+    if !settings.general.reopen_last_project || state.groups_restored.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
-    let path = host.config_dir.join("window-groups.json");
-    let saved: Vec<SavedGroup> = tauri::async_runtime::spawn_blocking(move || -> IdeResult<_> {
-        match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| IdeError::invalid(e.to_string())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-            Err(e) => Err(e.into()),
+    let saved = {
+        let mut previous = state.groups_persist.lock().await;
+        if previous.is_none() {
+            *previous = Some(read_session(host.config_dir.join("window-groups.json")).await);
         }
-    })
-    .await
-    .map_err(|e| IdeError::internal(e.to_string()))??;
-    if let Some(group) = saved.iter().find(|g| g.projects.contains(&project.root)) {
+        previous.clone().unwrap_or_default()
+    };
+    // The caller's own group first (it already shows one of its projects), then every other
+    // group and single window that was open at quit. Missing folders are skipped.
+    let owns = |group: &ide_workspace::window_groups::SavedWindows| {
+        group.projects.iter().any(|path| windows::same_saved_project(path, &root))
+    };
+    let order = saved.iter().filter(|group| owns(group)).chain(saved.iter().filter(|group| !owns(group)));
+    for group in order {
         let mut labels = Vec::new();
-        let mut selected = caller.to_owned();
+        let mut selected = None;
         for path in &group.projects {
-            let label = if path == &project.root {
+            let label = if windows::same_saved_project(path, &root) {
                 Some(caller.to_owned())
-            } else if path.is_dir() {
-                let window = match windows::find_project_window(app, path) {
-                    Some(w) => w,
-                    None => windows::create_restored_window(app, path.clone())?,
-                };
-                Some(window.label().to_owned())
             } else {
-                None
+                match windows::reopen_saved_window(app, path) {
+                    Ok(Some(w)) => Some(w.label().to_owned()),
+                    Ok(None) => None,
+                    Err(e) => {
+                        tracing::warn!("cannot reopen {}: {e}", path.display());
+                        None
+                    }
+                }
             };
             if let Some(label) = label {
                 if group.projects.get(group.selected) == Some(path) {
-                    selected = label.clone();
+                    selected = Some(label.clone());
                 }
                 labels.push(label);
             }
         }
         if labels.len() > 1 {
-            state.groups.lock().merge(labels, caller)?;
-            select(app, caller, &selected)?;
+            let selected = selected.unwrap_or_else(|| labels[0].clone());
+            state.groups.lock().merge(labels, &selected)?;
+            select(app, &selected, &selected)?;
         }
     }
     Ok(())

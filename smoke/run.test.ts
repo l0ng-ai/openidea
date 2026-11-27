@@ -1,5 +1,5 @@
 /**
- * Running and testing each language's `fixtures/` project the way the Run tool window does:
+ * Running and testing each language's `fixtures/` projects the way the Run tool window does:
  * the backend detects the configurations, the run store starts them (with its test
  * reporting), parses the output into the test tree, and reruns the failed tests.
  */
@@ -50,19 +50,68 @@ const env = (config: RunConfig, vars: Record<string, string>): RunConfig => ({
 });
 const args = (config: RunConfig, extra: string[]): RunConfig => ({ ...config, args: [...config.args, ...extra] });
 
-const CASES: Record<string, Case> = {
-  typescript: {
-    fixture: "ts-app",
-    setup: (root) => execFileSync("npm", ["install", "--no-audit", "--no-fund"], { cwd: root, stdio: "ignore" }),
-    run: { config: "npm:start", prints: "Total: $134.97" },
-    tests: {
-      config: "npm:test",
-      failing: (c) => env(c, { OPENIDEA_FAIL: "1" }),
-      passed: 4,
-      failed: "intentionally fails (set OPENIDEA_FAIL=1)",
-      file: "tests/cart.test.ts",
+const npmInstall = (root: string) =>
+  execFileSync("npm", ["install", "--no-audit", "--no-fund"], { cwd: root, stdio: "ignore" });
+
+/** Each language's fixtures, run one after the other (the JavaScript test runners' in the TypeScript job). */
+const CASES: Record<string, Case | Case[]> = {
+  typescript: [
+    {
+      fixture: "ts-app",
+      setup: npmInstall,
+      run: { config: "npm:start", prints: "Total: $134.97" },
+      tests: {
+        config: "npm:test",
+        failing: (c) => env(c, { OPENIDEA_FAIL: "1" }),
+        passed: 4,
+        failed: "intentionally fails (set OPENIDEA_FAIL=1)",
+        file: "tests/cart.test.ts",
+      },
     },
-  },
+    {
+      fixture: "playwright-app",
+      setup: npmInstall,
+      tests: {
+        config: "npm:test",
+        failing: (c) => env(c, { OPENIDEA_FAIL: "1" }),
+        passed: 5,
+        failed: "intentionally fails (set OPENIDEA_FAIL=1)",
+        file: "tests/checkout.spec.ts",
+      },
+    },
+    {
+      fixture: "node-test-app",
+      tests: {
+        config: "npm:test",
+        failing: (c) => env(c, { OPENIDEA_FAIL: "1" }),
+        passed: 4,
+        failed: "intentionally fails (set OPENIDEA_FAIL=1)",
+        file: "test/inventory.test.js",
+      },
+    },
+    {
+      fixture: "mocha-app",
+      setup: npmInstall,
+      tests: {
+        config: "npm:test",
+        failing: (c) => env(c, { OPENIDEA_FAIL: "1" }),
+        passed: 4,
+        failed: "intentionally fails (set OPENIDEA_FAIL=1)",
+        file: "test/pricing.spec.js",
+      },
+    },
+    {
+      fixture: "jasmine-app",
+      setup: npmInstall,
+      tests: {
+        config: "npm:test",
+        failing: (c) => env(c, { OPENIDEA_FAIL: "1" }),
+        passed: 4,
+        failed: "intentionally fails (set OPENIDEA_FAIL=1)",
+        file: "spec/cartSpec.js",
+      },
+    },
+  ],
   python: {
     fixture: "python-app",
     // A project venv with pytest, as the fixture's README sets it up.
@@ -122,19 +171,52 @@ const CASES: Record<string, Case> = {
       file: "LibraryTest.kt",
     },
   },
+  php: {
+    fixture: "php-app",
+    setup: (root) =>
+      execFileSync("composer", ["install", "--no-interaction", "--no-progress"], { cwd: root, stdio: "ignore" }),
+    run: { config: "composer:quote", prints: "Bluebird Electronics: VAT $34.20, clearance fee $5.00" },
+    tests: {
+      config: "phpunit",
+      failing: (c) => env(c, { OPENIDEA_FAIL: "1" }),
+      passed: 13,
+      failed: "it intentionally fails (set OPENIDEA_FAIL=1)",
+      file: "ThresholdCustomsTest.php",
+    },
+  },
+  // The failing run uses the fixture's dedicated `test-failing` step (`zig build` forwards
+  // no args to the test binary, so a failing test can't be switched on through the config).
+  zig: {
+    fixture: "zig-app",
+    run: { config: "zig:run", prints: "Total: $134.97" },
+    tests: {
+      config: "zig:test-failing",
+      failing: (c) => c,
+      passed: 0,
+      failed: "intentionally fails",
+      file: "src/failing.zig",
+    },
+  },
 };
 
 let server: Server | null = null;
 let disconnect: (() => void) | null = null;
 let base = "";
 
-afterEach(() => {
+async function close() {
   // As switching projects does: run ids restart with each server.
   resetRuns();
   disconnect?.();
-  server?.close();
-  if (base) rmSync(base, { recursive: true, force: true });
-});
+  disconnect = null;
+  await server?.close();
+  server = null;
+  // A language server's own process (jdtls's JVM) can outlive the server's for a moment:
+  // deleting its data directory has to wait for it.
+  if (base) rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 1000 });
+  base = "";
+}
+
+afterEach(close);
 
 async function open(c: Case): Promise<string> {
   base = realpathSync(mkdtempSync(join(tmpdir(), "openidea-smoke-")));
@@ -180,8 +262,7 @@ async function runToEnd(config: RunConfig, timeoutMs = 8 * 60_000): Promise<{ id
   return { id: session.id, output };
 }
 
-async function smoke(language: string) {
-  const c = CASES[language]!;
+async function smoke(c: Case) {
   await open(c);
 
   if (c.run) {
@@ -200,7 +281,10 @@ async function smoke(language: string) {
   }
 
   // Tests, with the intentionally failing one switched on: one failure, located, the rest passed.
-  const { id, output } = await runToEnd(c.tests.failing(config(c.tests.config)));
+  // Switched on in the saved configuration, as reruns launch the configuration as it is saved now.
+  const failing = c.tests.failing(config(c.tests.config));
+  useRun.setState((s) => ({ configs: s.configs.map((x) => (x.id === failing.id ? failing : x)) }));
+  const { id, output } = await runToEnd(failing);
   const tests = runtime(id)!.tests!;
   const log = `\n--- output ---\n${output.slice(-80).join("\n")}`;
   expect(tests.counts(), log).toMatchObject({ passed: c.tests.passed, failed: 1 });
@@ -215,7 +299,7 @@ async function smoke(language: string) {
   // Rerun Failed Tests runs that one test only.
   const rerunOutput: string[] = [];
   const before = useRun.getState().sessions.find((s) => s.id === id)!.startedAt;
-  expect(rerunFailed(id), "Rerun Failed Tests is offered").toBe(true);
+  expect(await rerunFailed(id), "Rerun Failed Tests is offered").toBe(true);
   const ended = () => {
     const s = useRun.getState().sessions.find((s) => s.id === id)!;
     return s.startedAt > before && s.endedAt !== null && s.endedAt >= s.startedAt;
@@ -227,6 +311,13 @@ async function smoke(language: string) {
   expect(again.firstFailure()?.name).toBe(c.tests.failed);
 }
 
-for (const language of Object.keys(CASES)) {
-  test(language, () => smoke(language));
+for (const [language, cases] of Object.entries(CASES)) {
+  test(language, async () => {
+    for (const [i, c] of [cases].flat().entries()) {
+      // oxlint-disable-next-line no-await-in-loop -- the previous case's server and run state must be torn down before the next starts.
+      if (i > 0) await close();
+      // oxlint-disable-next-line no-await-in-loop -- cases share the global server, project and run store, so they run one at a time.
+      await smoke(c);
+    }
+  });
 }

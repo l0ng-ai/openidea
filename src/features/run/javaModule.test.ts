@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { IpcError, type RunConfig } from "@/platform/ipc";
-import { findJavaModule, prepareJavaLaunch } from "@/platform/javaLaunch";
+import { useProject } from "@/platform/project";
+import { findJavaModule, prepareJavaLaunch, prepareJavaModule } from "@/platform/javaLaunch";
 import { _resetI18nForTests, setLocale } from "@/platform/i18n";
 import { provideNotificationService } from "@/workbench/contributions";
 import { applicationConfig } from "./application";
@@ -28,12 +29,22 @@ const ipc = vi.hoisted(() => {
         projectRoot: "/p",
         classPaths: ["/p/app/target/classes"],
         modulePaths: [],
+        pathListSeparator: ":",
         javaHome: null,
         javaExec: "java",
         shortenCommandLine: null,
         errors: [],
         errorCount: 0,
         hints: [],
+      }),
+    ),
+    javaJunitRunner: vi.fn(() =>
+      ok({
+        classPaths: ["/p/app/target/test-classes", "/runner.jar"],
+        vmArgs: ["-Xmx1g", "-Dopenidea.fail=true"],
+        env: { TZ: "UTC" },
+        workingDirectory: "/p/app/work",
+        surefire: ["argLine", "systemPropertyVariables"],
       }),
     ),
   };
@@ -67,24 +78,135 @@ beforeEach(() => {
 afterEach(() => {
   resetRuns();
   _resetI18nForTests();
+  useProject.setState({ project: null });
 });
 
 it.each(["sibling", "/outside/modules"])("runs from %s using the stored module's classpath", async (cwd) => {
   const session = await startRun({ ...config, module: "app", cwd });
   expect(session?.status).toBe("running");
-  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, true, expect.any(Number));
+  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith(
+    "app",
+    false,
+    false,
+    "automatic",
+    expect.any(Number),
+    expect.anything(),
+  );
   expect(ipc.runStart).toHaveBeenCalledWith(
     expect.objectContaining({ cwd, args: ["-cp", "/p/app/target/classes", "a.Main"] }),
     expect.anything(),
+    expect.any(Number),
   );
   expect(ipc.findFiles).not.toHaveBeenCalled();
 });
 
+const launchInfo = (build: "succeeded" | "failed" | "withErrors") => ({
+  build,
+  projectRoot: "/p",
+  classPaths: ["/p/app/target/classes"],
+  modulePaths: [],
+  javaHome: null,
+  javaExec: "java",
+  shortenCommandLine: null,
+  errors: build === "succeeded" ? [] : [{ path: "/p/app/src/Main.java", line: 1, column: 1, message: "boom" }],
+  errorCount: build === "succeeded" ? 0 : 1,
+  hints: [],
+});
+
+it.each(["noBuild", "rebuild"] as const)("passes the %s build policy to the resolver", async (buildPolicy) => {
+  await startRun({ ...config, module: "app", buildPolicy });
+  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith(
+    "app",
+    false,
+    false,
+    buildPolicy,
+    expect.any(Number),
+    expect.anything(),
+  );
+});
+
+it("always applies the launch policy after a Before launch Build Project", async () => {
+  useProject.setState({ project: { root: "/p" } as never });
+  await startRun({ ...config, module: "app" });
+  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith(
+    "app",
+    false,
+    false,
+    "automatic",
+    expect.any(Number),
+    expect.anything(),
+  );
+  useProject.setState({ project: null });
+});
+
+it("does not start a configuration whose build failed", async () => {
+  ipc.javaResolveLaunch.mockResolvedValueOnce({ status: "ok", data: launchInfo("failed") });
+  const session = await startRun({ ...config, module: "app", buildPolicy: "make" });
+  expect(session?.status).toBe("failed");
+  expect(ipc.runStart).not.toHaveBeenCalled();
+});
+
+it("starts with the last compiled classes for makeAndContinueOnErrors", async () => {
+  ipc.javaResolveLaunch.mockResolvedValueOnce({ status: "ok", data: launchInfo("withErrors") });
+  const session = await startRun({ ...config, module: "app", buildPolicy: "makeAndContinueOnErrors" });
+  expect(session?.status).toBe("running");
+  expect(ipc.runStart).toHaveBeenCalled();
+});
+
+it.each([undefined, "automatic", "make", "rebuild"] as const)(
+  "does not launch scoped compilation-error bytecode under %s",
+  async (buildPolicy) => {
+    ipc.javaResolveLaunch.mockResolvedValueOnce({ status: "ok", data: launchInfo("withErrors") });
+    const session = await startRun({ ...config, module: "app", buildPolicy });
+    expect(session?.status).toBe("failed");
+    expect(ipc.runStart).not.toHaveBeenCalled();
+  },
+);
+
 it("finds the source module for an old saved configuration without a module", async () => {
   await startRun({ ...config, cwd: "/outside/modules" });
   expect(ipc.findFiles).toHaveBeenCalledWith("Main.java", 1000);
-  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, true, expect.any(Number));
-  expect(ipc.runStart).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/outside/modules" }), expect.anything());
+  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith(
+    "app",
+    false,
+    false,
+    "automatic",
+    expect.any(Number),
+    expect.anything(),
+  );
+  expect(ipc.runStart).toHaveBeenCalledWith(
+    expect.objectContaining({ cwd: "/outside/modules" }),
+    expect.anything(),
+    expect.any(Number),
+  );
+});
+
+it.each([null, "/elsewhere"])("recovers an attached module from its indexed path with cwd %s", async (cwd) => {
+  const root = "/p";
+  const member = "/other/spring";
+  const module = `${member}/web`;
+  useProject.setState({
+    project: { root, workspace: { version: 1, name: "demo", projects: [root, member] } } as never,
+  });
+  ipc.findFiles.mockResolvedValueOnce({
+    status: "ok",
+    data: [{ path: `${module}/src/main/java/a/Main.java`, relPath: "spring/web/src/main/java/a/Main.java" }],
+  });
+  const session = await startRun({ ...config, cwd });
+  expect(session?.status).toBe("running");
+  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith(
+    module,
+    false,
+    false,
+    "automatic",
+    expect.any(Number),
+    expect.anything(),
+  );
+  expect(ipc.runStart).toHaveBeenCalledWith(
+    expect.objectContaining({ cwd: cwd ?? module, module }),
+    expect.anything(),
+    expect.any(Number),
+  );
 });
 
 it.each([["-cp", "lib/*"], []])("colours Spring Boot runs without classpath resolution (%j)", async (...classpath) => {
@@ -95,8 +217,16 @@ it.each([["-cp", "lib/*"], []])("colours Spring Boot runs without classpath reso
   expect(ipc.runStart).toHaveBeenCalledWith(
     expect.objectContaining({ args: ["-Dspring.output.ansi.enabled=always", ...args] }),
     expect.anything(),
+    expect.any(Number),
   );
-  expect(ipc.javaResolveLaunch).not.toHaveBeenCalled();
+  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith(
+    "app",
+    false,
+    false,
+    "automatic",
+    expect.any(Number),
+    expect.anything(),
+  );
   expect(boot.args).toBe(args);
   expect(args).not.toContain("-Dspring.output.ansi.enabled=always");
 });
@@ -104,15 +234,29 @@ it.each([["-cp", "lib/*"], []])("colours Spring Boot runs without classpath reso
 it.each(["never", "detect", "always"])("preserves an explicit Spring Boot console setting (%s)", async (value) => {
   const args = [`-Dspring.output.ansi.enabled=${value}`, "-cp", "lib/*", "a.Main"];
   await startRun({ ...config, kind: "spring-boot", args });
-  expect(ipc.runStart).toHaveBeenCalledWith(expect.objectContaining({ args }), expect.anything());
-  expect(ipc.javaResolveLaunch).not.toHaveBeenCalled();
+  expect(ipc.runStart).toHaveBeenCalledWith(expect.objectContaining({ args }), expect.anything(), expect.any(Number));
+  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith(
+    "app",
+    false,
+    false,
+    "automatic",
+    expect.any(Number),
+    expect.anything(),
+  );
 });
 
 it("keeps plain Java runs with an explicit classpath free of Spring Boot options", async () => {
   const args = ["-cp", "lib/*", "a.Main"];
   await startRun({ ...config, args });
-  expect(ipc.runStart).toHaveBeenCalledWith(expect.objectContaining({ args }), expect.anything());
-  expect(ipc.javaResolveLaunch).not.toHaveBeenCalled();
+  expect(ipc.runStart).toHaveBeenCalledWith(expect.objectContaining({ args }), expect.anything(), expect.any(Number));
+  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith(
+    "app",
+    false,
+    false,
+    "automatic",
+    expect.any(Number),
+    expect.anything(),
+  );
 });
 
 it("adds the Spring Boot console option once when resolving the module classpath", async () => {
@@ -122,6 +266,7 @@ it("adds the Spring Boot console option once when resolving the module classpath
       args: ["-Dspring.output.ansi.enabled=always", "-cp", "/p/app/target/classes", "a.Main"],
     }),
     expect.anything(),
+    expect.any(Number),
   );
 });
 
@@ -171,6 +316,26 @@ it.each([
   expect(ipc.runStart).not.toHaveBeenCalled();
 });
 
+it("says which build errors kept a module from being imported", async () => {
+  const problems = ["web/pom.xml: Plugin org.apache.maven.plugins:maven-compiler-plugin:9.9.9 could not be resolved"];
+  ipc.javaResolveLaunch.mockResolvedValueOnce({
+    status: "error",
+    error: {
+      kind: "invalidInput",
+      message: "jdtls: /p/web is not a Java project",
+      data: { type: "javaBuildProblems", problems },
+    },
+  } as never);
+  const session = await startRun({ ...config, module: "web" });
+  expect(session?.status).toBe("failed");
+  const output = runtime(session!.id)!
+    .console.lines.map((line) => line.text)
+    .join("\n");
+  expect(output).toContain(`Java module 'web' could not be imported because its build has errors: ${problems[0]}.`);
+  expect(output).not.toContain("Wait for Java project import");
+  expect(ipc.runStart).not.toHaveBeenCalled();
+});
+
 it.each([
   ["unavailable", "jdtls is not installed (Settings › Languages & Frameworks › Language Servers)"],
   ["unavailable", "jdtls exited with code 1: wrong Java version"],
@@ -196,4 +361,45 @@ it("translates import recovery guidance for a root Spring Boot configuration", a
       { request: 1, signal: new AbortController().signal },
     ),
   ).rejects.toThrow("Java 模块 '.' 尚未导入");
+});
+
+it("does not resolve or launch when saving fails", async () => {
+  const saveAll = vi.fn().mockRejectedValue(new Error("save failed"));
+  await expect(
+    prepareJavaLaunch(config, {
+      request: 1,
+      signal: new AbortController().signal,
+      saveAll,
+    }),
+  ).rejects.toThrow("save failed");
+  await expect(prepareJavaModule(config, saveAll)).rejects.toThrow("save failed");
+  expect(ipc.javaResolveLaunch).not.toHaveBeenCalled();
+  expect(ipc.runStart).not.toHaveBeenCalled();
+});
+
+it("gives the JUnit runner's JVM the module's Surefire configuration", async () => {
+  const report = vi.fn();
+  const junit: RunConfig = {
+    ...config,
+    module: "app",
+    isTest: true,
+    args: ["-ea", "-cp", "${testClasspath}", "ai.openidea.junit.Runner", "a.MainTest#adds"],
+    env: { TZ: "Europe/Paris" },
+  };
+  const { resolved } = await prepareJavaLaunch(junit, { request: 1, signal: new AbortController().signal, report });
+  expect(ipc.javaJunitRunner).toHaveBeenCalledWith("app", ["/p/app/target/classes"]);
+  expect(resolved).toMatchObject({
+    args: [
+      "-Xmx1g",
+      "-Dopenidea.fail=true",
+      "-ea",
+      "-cp",
+      "/p/app/target/test-classes:/runner.jar",
+      "ai.openidea.junit.Runner",
+      "a.MainTest#adds",
+    ],
+    env: { TZ: "Europe/Paris" },
+    cwd: "/p/app/work",
+  });
+  expect(report).toHaveBeenCalledWith("Applying the Surefire configuration: argLine, systemPropertyVariables\n");
 });

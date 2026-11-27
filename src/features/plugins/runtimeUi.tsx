@@ -4,19 +4,66 @@
  * workbench events it subscribed to (`events.subscribe`), reported in
  * batches.
  */
+import { readClipboardPlainText, readClipboardPng, writeClipboardText } from "@/platform/clipboard";
+import { choosePath, chooseSavePath } from "@/platform/choosePath";
+import { providePluginTestParser, providePluginTestSelector } from "@/workbench/contributions";
+import {
+  contentTabData,
+  contentTabKey,
+  handleContentTabReplyText,
+  openPluginDiffRequest,
+  PLUGIN_CONTENT_EDITOR_KIND,
+  WASM_CONTENT_VIEW,
+} from "./views/contentTab";
 import { create } from "zustand";
-import type { EventKind, PluginEvent, StatusItem, WorkbenchEvent } from "@/bindings";
-import { onEditorEvent } from "@/editor/api";
-import { executeAction, getAction, onActionExecuted } from "@/platform/actions";
-import { onIdeEvent } from "@/platform/ipc";
-import { openExternalUrl } from "@/platform/openUrl";
+import { refreshRunTargets, startRunTargets } from "./runTargets";
+import type {
+  ClipboardAnswer,
+  CommitAnswer,
+  CommandAnswer,
+  CommitRequest,
+  EventKind,
+  PluginContextKey,
+  PluginEvent,
+  ProjectInfo,
+  Prompt,
+  StatusItem,
+  StatusMenuEntry,
+  WorkbenchEvent,
+} from "@/bindings";
+import { useRef, useState } from "react";
+import { EditorSelection } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
+import { setPluginDecorations } from "./decorations";
+import { setPluginConsoleRules } from "./consoleRules";
+import { editorsFor, onEditorEvent, useEditorRegistry, type TextEditorHandle } from "@/editor/api";
+import { executeAction, executeActionOrThrow, getAction, onActionExecuted } from "@/platform/actions";
+import { clearContext, setContext, type ContextValue } from "@/platform/context";
+import { isTauri, onIdeEvent } from "@/platform/ipc";
+import { onLocalDiagnostics } from "@/platform/localDiagnostics";
+import { isOpenable, openExternalUrl } from "@/platform/openUrl";
+import { tx, VerbatimTextContext } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
+import { isRemoteWindow } from "@/platform/remote";
+import { ipcPath } from "@/platform/paths";
 import { shortcutLabel } from "@/platform/keymap";
 import { BarButton } from "@/ui/BarButton";
-import { maybeEditorService, registerStatusItem } from "@/workbench/contributions";
+import { Menu, type MenuItem } from "@/ui";
+import { notifications, maybeCommitService, maybeEditorService, registerStatusItem } from "@/workbench/contributions";
+import { pickItems, promptInput } from "@/workbench/inputDialogs";
+import { confirm } from "@/workbench/messages";
 import { removeTask, upsertTask, useTasks } from "@/workbench/tasks";
+import { editorContext } from "./editorContext";
 import { pluginsBackend } from "./backend";
+import { askNetPermission } from "./netAsk";
+import { confirmRemoteClipboardRead, confirmRemoteCopy, confirmRemoteOpen } from "./remoteAsk";
+import { usePluginT } from "./pluginText";
+import { setPluginOutput } from "./views/outputStore";
+import { PLUGIN_LOG_EDITOR_KIND } from "./views/logEditor";
+import type { PluginLogEditorData } from "./views/logTab";
 import { bumpView, deliverViewMessage } from "./views/viewStore";
+import { revealWindowView } from "./views/viewWindows";
+import { openPluginDialog } from "./views/dialog";
 import { runPluginCommand, usePlugins } from "./store";
 
 // --- status bar items ---------------------------------------------------------
@@ -27,11 +74,22 @@ export const usePluginStatusItems = create<{ items: Map<ItemKey, { pluginId: str
   items: new Map(),
 }));
 
-function setStatusItem(pluginId: string, id: string, item: StatusItem | null) {
+let statusRevision = 0;
+let statusRequest = 0;
+const globalStatus = new Map<ItemKey, { pluginId: string; item: StatusItem }>();
+const windowStatus = new Map<ItemKey, { pluginId: string; item: StatusItem }>();
+
+function setStatusItem(pluginId: string, id: string, item: StatusItem | null, window = false) {
+  statusRevision++;
+  const key: ItemKey = `${pluginId}/${id}`;
+  const scope = window ? windowStatus : globalStatus;
+  if (item) scope.set(key, { pluginId, item });
+  else scope.delete(key);
+  const effective = windowStatus.get(key) ?? globalStatus.get(key);
   usePluginStatusItems.setState((s) => {
     const items = new Map(s.items);
-    if (item) items.set(`${pluginId}/${id}`, { pluginId, item });
-    else items.delete(`${pluginId}/${id}`);
+    if (effective) items.set(key, effective);
+    else items.delete(key);
     return { items };
   });
 }
@@ -64,18 +122,69 @@ function PluginStatusItemView({ itemKey }: { itemKey: ItemKey }) {
   const running = usePluginStatusItems((s) => s.items.get(itemKey));
   const declared = useDeclaredStatusItems((s) => s.items.get(itemKey));
   const entry = running ?? declared;
+  const t = usePluginT(entry?.pluginId ?? "");
+  const anchor = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
   if (!entry) return null;
   const { pluginId, item } = entry;
   const command = item.command;
+  // Declared items were translated with their declaration.
+  const translate = running ? t : (text: string) => text;
+  const tooltip = item.tooltip ? translate(item.tooltip) : undefined;
+  const text = translate(item.text);
+  const menu = running ? (item.menu ?? []) : [];
+  const onClick = menu.length
+    ? () => setOpen((o) => !o)
+    : command
+      ? () => void runPluginCommand(pluginId, command)
+      : undefined;
   return (
-    <BarButton
-      tooltip={item.tooltip ?? undefined}
-      aria-label={item.tooltip ?? item.text}
-      onClick={command ? () => void runPluginCommand(pluginId, command) : undefined}
-    >
-      {item.text}
-    </BarButton>
+    <VerbatimTextContext.Provider value={true}>
+      <BarButton
+        ref={anchor}
+        tooltip={tooltip}
+        aria-label={tooltip ?? text}
+        aria-haspopup={menu.length ? "menu" : undefined}
+        aria-expanded={menu.length ? open : undefined}
+        onClick={onClick}
+      >
+        {text}
+      </BarButton>
+      {menu.length > 0 && (
+        <Menu
+          open={open}
+          onClose={() => setOpen(false)}
+          anchor={anchor}
+          placement="top-end"
+          items={statusMenuItems(pluginId, menu, translate)}
+          aria-label={tooltip ?? text}
+        />
+      )}
+    </VerbatimTextContext.Provider>
   );
+}
+
+/** A status item's menu (`ui.set-status-item-menu`): an action runs its plugin command with its argument. */
+export function statusMenuItems(
+  pluginId: string,
+  menu: readonly StatusMenuEntry[],
+  translate: (text: string) => string,
+): MenuItem[] {
+  return menu.map((entry): MenuItem => {
+    switch (entry.kind) {
+      case "separator":
+        return { kind: "separator" };
+      case "header":
+        return { kind: "header", label: translate(entry.label) };
+      case "action":
+        return {
+          label: translate(entry.label),
+          verbatim: true,
+          shortcut: entry.description ?? undefined,
+          run: () => void runPluginCommand(pluginId, entry.command, entry.argument),
+        };
+    }
+  });
 }
 
 /** The item's name in the status bar menu: its plugin's, plus what it declares (tooltip or text). */
@@ -122,6 +231,7 @@ function projectStatusItems(): () => void {
     useDeclaredStatusItems.subscribe((s, prev) => s.items !== prev.items && sync()),
   ];
   refreshStatusItems();
+  refreshContextKeys();
   return () => {
     unsubscribe.forEach((u) => u());
     for (const r of registered.values()) r.dispose();
@@ -135,10 +245,76 @@ function projectStatusItems(): () => void {
  * window's project is open and trusted, so call it again when that happens.
  */
 function refreshStatusItems() {
+  const request = ++statusRequest;
+  const revision = statusRevision;
   void pluginsBackend()
     .statusItems()
-    .then((items) => items.forEach((i) => setStatusItem(i.pluginId, i.id, i.item)))
+    .then((items) => {
+      if (request !== statusRequest) return;
+      if (revision !== statusRevision) {
+        refreshStatusItems();
+        return;
+      }
+      globalStatus.clear();
+      windowStatus.clear();
+      usePluginStatusItems.setState({ items: new Map() });
+      items.forEach((i) => setStatusItem(i.pluginId, i.id, i.item, i.window));
+    })
     .catch(() => {});
+}
+
+function applyPluginContext(pluginId: string, key: string, value: string | null) {
+  const name = `plugin.${pluginId}.${key}`;
+  let parsed: ContextValue;
+  try {
+    parsed = value === null ? undefined : JSON.parse(value);
+  } catch {
+    parsed = undefined;
+  }
+  if (parsed === undefined) clearContext(name);
+  else setContext(name, parsed);
+}
+
+const appliedContextKeys = new Map<string, Set<string>>();
+let contextFetching = false;
+let contextDirty = false;
+
+function applyContextKeys(keys: PluginContextKey[]) {
+  const fresh = new Map<string, Set<string>>();
+  for (const k of keys) {
+    applyPluginContext(k.pluginId, k.key, k.value);
+    if (!fresh.has(k.pluginId)) fresh.set(k.pluginId, new Set());
+    fresh.get(k.pluginId)!.add(k.key);
+  }
+  for (const [id, applied] of appliedContextKeys) {
+    for (const key of applied) {
+      if (!fresh.get(id)?.has(key)) applyPluginContext(id, key, null);
+    }
+  }
+  appliedContextKeys.clear();
+  for (const [id, set] of fresh) appliedContextKeys.set(id, set);
+}
+
+/**
+ * Re-reads the effective context keys of every plugin from the backend (the event does
+ * not say whether a change was window- or global-scoped) and drops keys it no longer
+ * reports. One fetch at a time: changes that arrive meanwhile cost a single follow-up.
+ */
+function refreshContextKeys() {
+  if (contextFetching) {
+    contextDirty = true;
+    return;
+  }
+  contextFetching = true;
+  contextDirty = false;
+  pluginsBackend()
+    .contextKeys()
+    .then(applyContextKeys)
+    .catch(() => {})
+    .finally(() => {
+      contextFetching = false;
+      if (contextDirty) refreshContextKeys();
+    });
 }
 
 // --- tasks --------------------------------------------------------------------
@@ -178,10 +354,45 @@ function onTaskEvent(e: Extract<PluginEvent, { type: "taskStarted" | "taskProgre
 
 /** Batches are sent at most this often; the backend batches again per plugin. */
 const POST_INTERVAL_MS = 500;
+/** Caret events keep labels responsive instead of waiting for the batch. */
+const CARET_FLUSH_MS = 120;
+/** The caret is at rest after this long; conversation loads wait for it. */
+const CARET_SETTLE_MS = 600;
 
 let wanted = new Set<EventKind>();
 let queue: WorkbenchEvent[] = [];
 let postTimer: ReturnType<typeof setTimeout> | null = null;
+let postDue = 0;
+let settleTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingCaret: { editor: TextEditorHandle; project: ProjectInfo | null; doc: number; path: string } | null = null;
+
+function invalidateCaret() {
+  if (settleTimer) clearTimeout(settleTimer);
+  settleTimer = null;
+  pendingCaret = null;
+  queue = queue.filter((event) => event.kind !== "caretMoved");
+}
+
+function isCurrentCaret(caret: NonNullable<typeof pendingCaret>): boolean {
+  return (
+    pendingCaret === caret &&
+    useEditorRegistry.getState().active === caret.editor &&
+    caret.editor.ctx.doc === caret.doc &&
+    caret.editor.ctx.path === caret.path &&
+    useProject.getState().project === caret.project
+  );
+}
+
+function flush() {
+  postTimer = null;
+  if (pendingCaret && !isCurrentCaret(pendingCaret)) invalidateCaret();
+  const batch = queue;
+  queue = [];
+  if (!batch.length) return;
+  void pluginsBackend()
+    .postEvents(batch)
+    .catch(() => {});
+}
 
 /**
  * Re-reads the event kinds plugins want. Besides `subscriptionsChanged`
@@ -191,29 +402,70 @@ let postTimer: ReturnType<typeof setTimeout> | null = null;
 export function refreshEventKinds() {
   void pluginsBackend()
     .eventKinds()
-    .then((kinds) => (wanted = new Set(kinds)))
+    .then((kinds) => {
+      wanted = new Set(kinds);
+      if (wanted.has("settings-changed")) post({ kind: "settingsChanged", value: [] });
+    })
     .catch(() => {});
 }
 
 function post(event: WorkbenchEvent) {
+  // A caret event replaces the queued one for the same file: only the latest
+  // position matters, and moving the caret must not flood every plugin batch.
+  if (event.kind === "caretMoved") {
+    const queued = queue.findIndex((queued) => queued.kind === "caretMoved" && queued.value.path === event.value.path);
+    if (queued >= 0) queue.splice(queued, 1);
+  }
   queue.push(event);
-  if (postTimer) return;
-  postTimer = setTimeout(() => {
-    postTimer = null;
-    const batch = queue;
-    queue = [];
-    void pluginsBackend()
-      .postEvents(batch)
-      .catch(() => {});
-  }, POST_INTERVAL_MS);
+  const delay = event.kind === "caretMoved" ? CARET_FLUSH_MS : POST_INTERVAL_MS;
+  const due = Date.now() + delay;
+  // Keep whichever timer fires first (a caret event shortens a pending batch).
+  if (postTimer) {
+    if (due >= postDue) return;
+    clearTimeout(postTimer);
+  }
+  postDue = due;
+  postTimer = setTimeout(flush, delay);
 }
 
 /** Reports the events plugins subscribed to: files opened and saved, actions run, repositories changed. */
 function trackWorkbenchEvents(): () => void {
   refreshEventKinds();
+  const offActive = useEditorRegistry.subscribe((s, prev) => {
+    if (s.active !== prev.active) invalidateCaret();
+  });
+  const offProject = useProject.subscribe((s, prev) => {
+    if (s.project !== prev.project) invalidateCaret();
+  });
   const offEditor = onEditorEvent((e) => {
+    if (e.type === "docClosed" && e.doc === pendingCaret?.doc) invalidateCaret();
     if (e.type === "docOpened" && wanted.has("file-opened")) post({ kind: "fileOpened", value: e.path });
+    if (e.type === "docClosed" && wanted.has("file-closed")) post({ kind: "fileClosed", value: e.path });
+    if (e.type === "inputModeChanged" && wanted.has("input-mode-changed"))
+      post({ kind: "inputModeChanged", value: { path: e.path, mode: e.mode, sub: e.sub } });
     if (e.type === "docSaved" && wanted.has("file-saved")) post({ kind: "fileSaved", value: e.path });
+    if (e.type === "caretMoved" && wanted.has("caret-moved")) {
+      const editor = useEditorRegistry.getState().active;
+      if (!editor || editor.ctx.doc !== e.doc || editor.ctx.path !== e.path) return;
+      if (pendingCaret && !isCurrentCaret(pendingCaret)) invalidateCaret();
+      const identity = { editor, project: useProject.getState().project, doc: e.doc, path: e.path };
+      pendingCaret = identity;
+      const caret = { path: e.path, line: e.line, col: e.col, settled: false };
+      post({ kind: "caretMoved", value: caret });
+      // Once the caret rests, send one settled event: a plugin may then load the
+      // conversation behind the label. Movement keeps postponing it.
+      if (settleTimer) clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => {
+        if (!isCurrentCaret(identity)) return;
+        settleTimer = null;
+        post({ kind: "caretMoved", value: { ...caret, settled: true } });
+      }, CARET_SETTLE_MS);
+    }
+    if (e.type === "docChanged" && wanted.has("document-changed"))
+      post({
+        kind: "documentChanged",
+        value: { path: e.path, project: null, baseVersion: e.baseVersion, version: e.version, changes: e.changes },
+      });
   });
   const offActions = onActionExecuted((id, _arg, source) => {
     if (!wanted.has("action-performed")) return;
@@ -223,22 +475,236 @@ function trackWorkbenchEvents(): () => void {
       value: { action: id, title: action?.title ?? id, source, shortcut: shortcutLabel(id) ?? null },
     });
   });
+  const offSettings = onIdeEvent("settingsChanged", () => {
+    if (wanted.has("settings-changed")) post({ kind: "settingsChanged", value: [] });
+  });
   const offVcs = onIdeEvent("vcsChanged", (e) => {
     if (wanted.has("vcs-changed")) post({ kind: "vcsChanged", value: e.root });
   });
+  // Diagnostics arrive from language servers and builds without a file event; plugins
+  // that draw them (Inspection Lens) re-read the snapshot when this fires. Typo and
+  // other UI-side inspections publish through localDiagnostics instead, without an
+  // `IdeEvent::diagnostics`, so wire both sources to the same notification.
+  const problemsChanged = () => {
+    if (wanted.has("problems-changed")) post({ kind: "problemsChanged" });
+  };
+  const offProblems = onIdeEvent("diagnostics", problemsChanged);
+  const offLocalProblems = onLocalDiagnostics(problemsChanged);
   return () => {
     offEditor();
+    offActive();
+    offProject();
     offActions();
     offVcs();
+    offSettings();
+    offProblems();
+    offLocalProblems();
     if (postTimer) clearTimeout(postTimer);
     postTimer = null;
+    invalidateCaret();
     queue = [];
   };
+}
+
+const openPrompts = new Map<string, AbortController>();
+
+/** The user's answer in the shape `plugin_answer_prompt` takes: `null` when dismissed. */
+async function askUser(prompt: Prompt, signal: AbortSignal): Promise<string[] | null> {
+  switch (prompt.kind) {
+    case "pickFile":
+    case "pickDirectory": {
+      if (signal.aborted) return null;
+      try {
+        let path: string | null;
+        if (prompt.kind === "pickDirectory") {
+          path = await choosePath(
+            { directory: true, title: prompt.title, defaultPath: prompt.initial ?? undefined },
+            signal,
+          );
+        } else {
+          const options = { title: prompt.title, filters: prompt.filters };
+          path = prompt.save
+            ? await chooseSavePath({ ...options, defaultPath: prompt.name ?? undefined }, signal)
+            : await choosePath({ ...options, directory: false }, signal);
+        }
+        if (signal.aborted) return null;
+        return path ? [ipcPath(path)] : null;
+      } catch (error) {
+        if (!signal.aborted)
+          notifications().notify({
+            level: "error",
+            title: prompt.kind === "pickDirectory" ? tx("Cannot choose a directory") : tx("Cannot choose a file"),
+            body: String(error),
+          });
+        return null;
+      }
+    }
+    case "quickPick":
+      return pickItems({ title: prompt.title, items: prompt.items, multiple: prompt.multiple, signal, verbatim: true });
+    case "input": {
+      const text = await promptInput({
+        title: prompt.prompt,
+        initial: prompt.value ?? "",
+        validate: () => null,
+        keepWhitespace: true,
+        multiline: prompt.multiline,
+        signal,
+        verbatim: true,
+      });
+      return text === null ? null : [text];
+    }
+    case "confirm":
+      return (await confirm({ title: prompt.title, message: prompt.message, ok: tx("OK"), signal, verbatim: true }))
+        ? []
+        : null;
+    case "netPermission":
+      // The host's own question: answered before this (`answerPrompt`).
+      return null;
+  }
+}
+
+async function answerPrompt(promptId: string, prompt: Prompt, pluginId: string) {
+  const controller = new AbortController();
+  openPrompts.set(promptId, controller);
+  const answer =
+    prompt.kind === "netPermission"
+      ? await askNetPermission(pluginId, prompt.host, prompt.sessionOnly, controller.signal)
+      : await askUser(prompt, controller.signal);
+  openPrompts.delete(promptId);
+  if (controller.signal.aborted) return;
+  await pluginsBackend()
+    .answerPrompt(promptId, answer)
+    .catch(() => {});
+}
+
+/** Answers a plugin's request to this window's Commit view (`commit` API). */
+async function answerCommit(requestId: string, request: CommitRequest) {
+  const commit = maybeCommitService();
+  let answer: CommitAnswer;
+  try {
+    if (request.kind === "selection") {
+      const selection = commit ? await commit.selection() : null;
+      answer = selection ? { kind: "selection", selection } : { kind: "noRepository" };
+    } else if (!commit) {
+      answer = { kind: "noRepository" };
+    } else {
+      answer = commit.setMessage(request.revision, request.message) ? { kind: "done" } : { kind: "stale" };
+    }
+  } catch {
+    // The selection could not be read (e.g. a file vanished): the plugin sees a stale draft.
+    answer = { kind: "stale" };
+  }
+  await pluginsBackend()
+    .answerCommit(requestId, answer)
+    .catch(() => {});
+}
+
+/**
+ * Reads this machine's clipboard for a plugin command the user ran (`ui.read-clipboard`). A remote
+ * window's plugin runs on its server, so the user confirms first. A read that fails is reported, not
+ * sent as an empty clipboard.
+ */
+async function answerClipboard(requestId: string, pluginId: string) {
+  const controller = new AbortController();
+  openPrompts.set(requestId, controller);
+  let answer: ClipboardAnswer;
+  try {
+    if (isRemoteWindow() && !(await confirmRemoteClipboardRead(pluginId, controller.signal))) {
+      answer = { kind: "refused" };
+    } else {
+      const [text, png] = await Promise.allSettled([readClipboardPlainText(), readClipboardPng()]);
+      const plain = (text.status === "fulfilled" && text.value) || null;
+      const image = png.status === "fulfilled" ? png.value : null;
+      // Either kind read is an answer; nothing read and a failure is not an empty clipboard.
+      if (text.status === "rejected" && !image) throw text.reason;
+      if (png.status === "rejected" && !plain) throw png.reason;
+      answer = { kind: "content", text: plain, png: image };
+    }
+  } catch (error) {
+    answer = { kind: "failed", message: error instanceof Error ? error.message : String(error) };
+  }
+  openPrompts.delete(requestId);
+  if (controller.signal.aborted) return;
+  await pluginsBackend()
+    .answerClipboard(requestId, answer)
+    .catch(() => {});
+}
+
+async function answerCommand(e: Extract<PluginEvent, { type: "executeCommand" }>) {
+  let answer: CommandAnswer;
+  try {
+    const command = usePlugins
+      .getState()
+      .ui.find((c) => c.point === "commands" && e.id === `plugin.${c.pluginId}.${(c.decl as { id: string }).id}`);
+    if (command) {
+      const value = await pluginsBackend().runCommand(
+        command.pluginId,
+        (command.decl as { id: string }).id,
+        e.arg,
+        editorContext(),
+        [],
+        undefined,
+        e.chain,
+      );
+      answer = { kind: "value", value };
+    } else if (getAction(e.id)) {
+      await executeAction(e.id, e.arg);
+      answer = { kind: "value", value: null };
+    } else answer = { kind: "notFound" };
+  } catch (error) {
+    answer = { kind: "failed", value: error instanceof Error ? error.message : String(error) };
+  }
+  await pluginsBackend()
+    .answerCommand(e.requestId, answer)
+    .catch(() => {});
 }
 
 /** Handles the runtime UI events; returns whether `e` was one. */
 export function handleRuntimeEvent(e: PluginEvent): boolean {
   switch (e.type) {
+    case "runTargetsChanged":
+      void refreshRunTargets().catch(() => {});
+      return true;
+    case "decorationsChanged":
+      setPluginDecorations(e.pluginId, e.sets);
+      return true;
+    case "consoleRulesChanged":
+      setPluginConsoleRules(e.pluginId, e.rules);
+      return true;
+    case "editorOpen": {
+      const r = e.selection;
+      void maybeEditorService()?.openFile(e.path, {
+        focus: true,
+        selection: r ? { line: r.start.line, col: r.start.col, endLine: r.end.line, endCol: r.end.col } : undefined,
+      });
+      return true;
+    }
+    case "editorRanges": {
+      for (const editor of editorsFor(e.path)) {
+        const doc = editor.view.state.doc;
+        const ranges = e.ranges.map((r) => {
+          if (r.start.line >= doc.lines || r.end.line >= doc.lines) return null;
+          const start = doc.line(r.start.line + 1),
+            end = doc.line(r.end.line + 1);
+          if (r.start.col > start.length || r.end.col > end.length) return null;
+          return EditorSelection.range(start.from + r.start.col, end.from + r.end.col);
+        });
+        if (!ranges.length || ranges.some((r) => r == null)) continue;
+        const valid = ranges.filter((r) => r != null);
+        if (e.reveal) editor.view.dispatch({ effects: EditorView.scrollIntoView(valid[0]!, { y: "center" }) });
+        else editor.view.dispatch({ selection: EditorSelection.create(valid) });
+      }
+      return true;
+    }
+    case "executeCommand":
+      void answerCommand(e);
+      return true;
+    case "contextChanged":
+      refreshContextKeys();
+      return true;
+    case "windowStatusItemChanged":
+      setStatusItem(e.pluginId, e.id, e.item, true);
+      return true;
     case "statusItemChanged":
       setStatusItem(e.pluginId, e.id, e.item);
       return true;
@@ -250,44 +716,218 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
     case "subscriptionsChanged":
       refreshEventKinds();
       return true;
+    case "websocketReady":
+      post({ kind: "websocketReady", value: { pluginId: e.pluginId, connection: e.connection } });
+      return true;
     case "viewChanged":
       bumpView(e.pluginId, e.view);
       return true;
     case "viewMessage":
       deliverViewMessage(e.pluginId, e.view, e.message);
       return true;
+    case "windowRequest":
+      void handleWindowRequest(e);
+      return true;
+    case "contentTabReply":
+      handleContentTabReplyText(
+        e.pluginId,
+        JSON.stringify({
+          op: "content-tab-reply",
+          requestId: e.requestId,
+          ...JSON.parse(JSON.stringify(e.reply), (_k, v: unknown) => (v === null ? undefined : v)),
+        }),
+      );
+      return true;
+    case "openDiff":
+      try {
+        const { diff, fileName } = e;
+        openPluginDiffRequest(
+          {
+            ...diff,
+            leftLabel: diff.leftLabel ?? undefined,
+            rightLabel: diff.rightLabel ?? undefined,
+            title: diff.title ?? undefined,
+            fileName: fileName ?? undefined,
+          },
+          (diff.left?.length ?? 0) + (diff.right?.length ?? 0),
+        );
+      } catch (err) {
+        console.warn(`plugin ${e.pluginId} diff:`, err);
+      }
+      return true;
     case "openTerminal":
       // The program was approved (`process:`) and verified by the host.
       void executeAction("terminal.runCommand", { program: e.program, args: e.args, name: e.title, cwd: e.cwd });
+      return true;
+    case "outputChanged":
+      setPluginOutput(e.pluginId, e.channel, e.text);
+      return true;
+    case "revealOutput":
+      setPluginOutput(e.pluginId, e.channel, e.text);
+      void maybeEditorService()?.openInput({
+        kind: PLUGIN_LOG_EDITOR_KIND,
+        key: `pluginOutput:${JSON.stringify([e.pluginId, e.channel])}`,
+        data: {
+          pluginId: e.pluginId,
+          view: "",
+          key: e.channel,
+          title: tx`Output: ${e.channel}`,
+          program: "",
+          args: [],
+          toggles: [],
+          origin: "output",
+        } satisfies PluginLogEditorData,
+      });
+      return true;
+    case "openLogTab":
+      void maybeEditorService()?.openInput({
+        kind: PLUGIN_LOG_EDITOR_KIND,
+        key: `pluginLog:${JSON.stringify([e.pluginId, "", e.key])}`,
+        data: {
+          pluginId: e.pluginId,
+          view: "",
+          key: e.key,
+          title: e.title,
+          program: e.log.program,
+          args: e.log.args,
+          toggles: e.log.toggles,
+          origin: "code",
+        } satisfies PluginLogEditorData,
+      });
       return true;
     case "openLocation":
       void maybeEditorService()?.openFile(e.path, { selection: { line: e.line, col: e.column }, focus: true });
       return true;
     case "copyToClipboard":
-      void navigator.clipboard?.writeText(e.text);
+      if (isRemoteWindow()) void copyRemoteText(e.pluginId, e.text);
+      else void writeClipboardText(e.text);
+      return true;
+    case "openProject":
+      void executeAction("file.openProjectPath", { path: e.path, newWindow: e.newWindow });
       return true;
     case "openUrl":
-      void openExternalUrl(e.url);
+      if (isRemoteWindow()) void openRemoteUrl(e.pluginId, e.url);
+      else void openExternalUrl(e.url);
+      return true;
+    case "promptRequested":
+      void answerPrompt(e.promptId, e.prompt, e.pluginId);
+      return true;
+    case "promptClosed":
+      openPrompts.get(e.promptId)?.abort();
+      openPrompts.delete(e.promptId);
+      return true;
+    case "promptWaiting":
+      bringWindowToFront();
+      return true;
+    case "commitRequested":
+      void answerCommit(e.requestId, e.request);
+      return true;
+    case "clipboardRequested":
+      void answerClipboard(e.requestId, e.pluginId);
+      return true;
+    case "revealView":
+      if (!openPluginDialog(e.pluginId, e.view)) revealWindowView(e.pluginId, e.view);
       return true;
     default:
       return false;
   }
 }
 
+/** A remote window's plugin code runs on its server: what it opens here, the user confirms first. */
+async function openRemoteUrl(pluginId: string, url: string) {
+  if (isOpenable(url) && (await confirmRemoteOpen(pluginId, url))) await openExternalUrl(url);
+}
+
+/** A remote window's plugin code runs on its server: what it copies here, the user confirms first. */
+async function copyRemoteText(pluginId: string, text: string) {
+  if (await confirmRemoteCopy(pluginId, text)) await writeClipboardText(text).catch(() => {});
+}
+
+/** Another window ran a command of a plugin whose prompt is open here: show this window. */
+function bringWindowToFront() {
+  if (!isTauri()) return;
+  void import("@tauri-apps/api/window")
+    .then(async ({ getCurrentWindow }) => {
+      const w = getCurrentWindow();
+      if (await w.isMinimized()) await w.unminimize();
+      await w.setFocus();
+    })
+    .catch(() => undefined);
+}
+
 /**
  * The backend refuses the event kinds and status items until this window's
  * project is open and trusted (`authorize_command`), but startup asks before
- * that: ask again when it changes.
+ * that: ask again when it changes. Any new project object counts, even with the same
+ * root and trust: connecting another backend publishes one and changes where calls go.
  */
 function refreshOnProjectChange(): () => void {
   return useProject.subscribe((s, prev) => {
-    if (s.project?.root === prev.project?.root && s.project?.trusted === prev.project?.trusted) return;
+    if (s.project === prev.project) return;
+    statusRevision++;
+    globalStatus.clear();
+    windowStatus.clear();
+    usePluginStatusItems.setState({ items: new Map() });
     refreshEventKinds();
     refreshStatusItems();
+    refreshContextKeys();
   });
 }
 
 export function startRuntimeUi(): () => void {
-  const disposers = [projectStatusItems(), trackWorkbenchEvents(), refreshOnProjectChange()];
+  const stopParser = providePluginTestParser((config, chunk) => pluginsBackend().parseTestResults(config, chunk));
+  const disposers = [
+    startRunTargets(),
+    stopParser,
+    providePluginTestSelector((config, tests) => pluginsBackend().selectTests(config, tests)),
+    projectStatusItems(),
+    trackWorkbenchEvents(),
+    refreshOnProjectChange(),
+  ];
   return () => disposers.reverse().forEach((d) => d());
+}
+
+async function handleWindowRequest(e: Extract<PluginEvent, { type: "windowRequest" }>) {
+  const r = e.request;
+  try {
+    if (r.kind === "databaseConnect") {
+      if (!getAction("db.pluginConnect")) throw new Error(tx("Database service unavailable"));
+      await executeActionOrThrow("db.pluginConnect", r.id);
+      await pluginsBackend().answerCommand(e.requestId, { kind: "value", value: null });
+      return;
+    }
+    if (r.kind === "contentTab") {
+      const raw = JSON.parse(JSON.stringify(r.tab), (_k, v: unknown) => (v === null ? undefined : v)) as object;
+      const data = contentTabData(e.pluginId, WASM_CONTENT_VIEW, raw, JSON.stringify(raw).length);
+      const editor = maybeEditorService();
+      if (!editor) throw new Error("Editor unavailable");
+      await editor.openInput({
+        kind: PLUGIN_CONTENT_EDITOR_KIND,
+        key: contentTabKey(e.pluginId, WASM_CONTENT_VIEW, data.key),
+        data,
+      });
+      await pluginsBackend().answerCommand(e.requestId, { kind: "value", value: null });
+      return;
+    }
+    const finish = (status: number | null, stopped: boolean) => {
+      if (r.kind === "run") void pluginsBackend().finishOperation(r.operation, status, stopped);
+      else if (stopped) void pluginsBackend().closeTerminalSession(r.operation);
+    };
+    if (r.kind === "run") {
+      if (!getAction("run.pluginStart")) throw new Error("Run service unavailable");
+      await executeActionOrThrow("run.pluginStart", { config: r.config, debug: r.debug, onExit: finish });
+    } else {
+      if (!getAction("terminal.pluginSession")) throw new Error("Terminal service unavailable");
+      await executeActionOrThrow("terminal.pluginSession", {
+        ...r,
+        onExit: finish,
+        spawn: (cols: number, rows: number, output: import("@tauri-apps/api/core").Channel<string>) =>
+          pluginsBackend().terminalSessionSpawn(r.operation, cols, rows, output),
+      });
+    }
+    if (e.requestId) await pluginsBackend().answerCommand(e.requestId, { kind: "value", value: null });
+  } catch (error) {
+    if (r.kind === "run") await pluginsBackend().finishOperation(r.operation, null, false);
+    if (e.requestId) await pluginsBackend().answerCommand(e.requestId, { kind: "failed", value: String(error) });
+  }
 }

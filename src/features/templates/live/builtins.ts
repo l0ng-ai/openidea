@@ -116,6 +116,47 @@ const ts = group("JavaScript / TypeScript", "ts", TS_LANGS, [
   { abbrev: "useEffect", description: "React useEffect hook", body: "useEffect(() => {\n\t$END$\n}, [$DEPS$]);" },
 ]);
 
+/** React components named after the file; the TSX variants declare a `Props` type. */
+function reactComponents(tsx: boolean): LiveTemplate[] {
+  const ext = tsx ? "tsx" : "jsx";
+  const props = tsx ? "type Props = {};\n\n" : "";
+  const param = tsx ? "{}: Props" : "";
+  const render = (t: string) => `${t}return (\n${t}\t<div>\n${t}\t\t$END$\n${t}\t</div>\n${t});\n`;
+  const variables = [v("NAME", "componentName(fileNameWithoutExtension())", '"Component"', true)];
+  const defs: Def[] = [
+    {
+      abbrev: "rfc",
+      description: tsx ? "React function component with Props" : "React function component",
+      body: `${props}export default function $NAME$(${param}) {\n${render("\t")}}`,
+    },
+    {
+      abbrev: "rfce",
+      description: tsx
+        ? "React function component with Props and export default"
+        : "React function component with export default",
+      body: `${props}function $NAME$(${param}) {\n${render("\t")}}\n\nexport default $NAME$;`,
+    },
+    {
+      abbrev: "rafce",
+      description: tsx
+        ? "React arrow function component with Props and export default"
+        : "React arrow function component with export default",
+      body: `${props}const $NAME$ = (${param}) => {\n${render("\t")}};\n\nexport default $NAME$;`,
+    },
+    {
+      abbrev: "rcc",
+      description: tsx ? "React class component with Props" : "React class component",
+      body: `import React from "react";\n\n${props}export default class $NAME$ extends React.Component${tsx ? "<Props>" : ""} {\n\trender() {\n${render("\t\t")}\t}\n}`,
+    },
+  ];
+  return group(
+    "JavaScript / TypeScript",
+    "ts",
+    [tsx ? "typescriptreact" : "javascriptreact"],
+    defs.map((d) => ({ ...d, id: `${d.abbrev}.${ext}`, variables })),
+  );
+}
+
 const python = group(
   "Python",
   "py",
@@ -183,6 +224,58 @@ const go = group(
     { abbrev: "p", description: "fmt.Println", body: "fmt.Println($END$)" },
     { abbrev: "pf", description: "fmt.Printf", body: 'fmt.Printf("$FMT$\\n", $END$)' },
     { abbrev: "go", description: "goroutine", body: "go func() {\n\t$END$\n}()" },
+  ],
+);
+
+const zig = group(
+  "Zig",
+  "zig",
+  ["zig"],
+  [
+    {
+      abbrev: "fn",
+      description: "Function",
+      body: "fn $NAME$($PARAMS$) $RET$ {\n\t$END$\n}",
+      variables: [v("RET", undefined, '"void"')],
+    },
+    {
+      abbrev: "pfn",
+      description: "Public function",
+      body: "pub fn $NAME$($PARAMS$) $RET$ {\n\t$END$\n}",
+      variables: [v("RET", undefined, '"void"')],
+    },
+    { abbrev: "main", description: "main function", body: "pub fn main() !void {\n\t$END$\n}" },
+    {
+      abbrev: "test",
+      description: "Test block",
+      body: 'test "$NAME$" {\n\t$END$\n}',
+      variables: [v("NAME", undefined, '"it works"')],
+    },
+    { abbrev: "st", description: "Struct type", body: "pub const $NAME$ = struct {\n\t$END$\n};" },
+    { abbrev: "en", description: "Enum type", body: "pub const $NAME$ = enum {\n\t$END$\n};" },
+    { abbrev: "un", description: "Tagged union type", body: "pub const $NAME$ = union(enum) {\n\t$END$\n};" },
+    { abbrev: "if", description: "if statement", body: "if ($COND$) {\n\t$END$\n}" },
+    { abbrev: "ife", description: "if / else", body: "if ($COND$) {\n\t$END$\n} else {\n\t\n}" },
+    {
+      abbrev: "iferr",
+      description: "if result / error",
+      body: "if ($EXPR$) |$VAL$| {\n\t$END$\n} else |$ERR$| {\n\t\n}",
+      variables: [v("VAL", undefined, '"value"'), v("ERR", undefined, '"err"')],
+    },
+    { abbrev: "while", description: "while loop", body: "while ($COND$) {\n\t$END$\n}" },
+    {
+      abbrev: "for",
+      description: "for loop",
+      body: "for ($ITER$) |$ITEM$| {\n\t$END$\n}",
+      variables: [v("ITER"), v("ITEM", undefined, '"item"')],
+    },
+    { abbrev: "defer", description: "defer block", body: "defer {\n\t$END$\n}" },
+    { abbrev: "const", description: "const declaration", body: "const $NAME$ = $END$;" },
+    { abbrev: "var", description: "var declaration", body: "var $NAME$ = $END$;" },
+    { abbrev: "try", description: "try expression", body: "try $END$;" },
+    { abbrev: "catch", description: "catch block", body: "$EXPR$ catch {\n\t$END$\n}" },
+    { abbrev: "sw", description: "switch expression", body: "switch ($EXPR$) {\n\t$END$\n}" },
+    { abbrev: "p", description: "std.debug.print", body: 'std.debug.print("{any}\\n", .{$END$});' },
   ],
 );
 
@@ -347,7 +440,7 @@ const surround = [
   ...group(
     "Surround",
     "surround.html",
-    ["html", "xml", "vue", "svelte", "markdown"],
+    ["html", "xml", "axaml", "vue", "svelte", "markdown"],
     [
       {
         abbrev: "T",
@@ -493,8 +586,11 @@ const sqlCode = group(
 export const BUILTIN_TEMPLATES: readonly LiveTemplate[] = [
   ...rust,
   ...ts,
+  ...reactComponents(false),
+  ...reactComponents(true),
   ...python,
   ...go,
+  ...zig,
   ...java,
   ...kotlin,
   ...php,

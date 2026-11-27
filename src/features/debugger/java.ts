@@ -2,7 +2,8 @@
  * Java debugging through Microsoft java-debug, a jdtls bundle: jdtls starts its
  * DAP server (`vscode.java.startDebugSession`) and the session connects to that
  * port (`debugServer`). Application configurations are launched by java-debug;
- * JVMs started by Maven / Gradle with a JDWP agent are attached to.
+ * JVMs started by Maven / Gradle with a JDWP agent are attached to. Modules that
+ * jdtls doesn't serve debug with java-analyzer's own adapter (`java-analyzer dap`).
  */
 import { executeAction } from "@/platform/actions";
 import { call, commands, IpcError, nextRequestId, type LaunchConfig, type RunConfig } from "@/platform/ipc";
@@ -13,12 +14,16 @@ import {
   joinJavaArgs,
   parseJavaArgs,
   prepareJavaLaunch,
+  remoteJavaAgentNote,
   type JavaPreparation,
 } from "@/platform/javaLaunch";
-import { notifications } from "@/workbench/contributions";
+import { maybeEditorService, notifications } from "@/workbench/contributions";
+import { withEnvFiles } from "./launch";
 
 export const JAVA_ADAPTER = "java-debug";
 export const KOTLIN_ADAPTER = "kotlin-debug-adapter";
+export const JAVA_ANALYZER_ADAPTER = "java-analyzer";
+const KOTLIN_LSP = "kotlin-lsp";
 
 export function isJavaDebuggable(rc: RunConfig): boolean {
   return isJvmApplication(rc) && [JAVA_ADAPTER, KOTLIN_ADAPTER].includes(rc.debugAdapter ?? JAVA_ADAPTER);
@@ -30,6 +35,42 @@ function join(base: string, p: string) {
   return rel === "." || rel === "" ? base : `${base.replace(/\/$/, "")}/${rel}`;
 }
 
+/** Last path segment: jdtls names a Java project after the folder it imported. */
+function baseName(p: string): string {
+  const s = p.replace(/[\\/]+$/, "");
+  const cut = Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\"));
+  return cut >= 0 ? s.slice(cut + 1) : s;
+}
+/** The name jdtls knows this folder's Java project by: Eclipse's project descriptor for an Eclipse
+ * project, the Maven artifactId for a module (jdtls names those after the artifact, not the
+ * folder), and the folder name when neither says anything.
+ */
+export async function javaProjectName(root: string): Promise<string> {
+  const descriptor = await readText(join(root, ".project"));
+  const eclipse = /<name>([^<]+)<\/name>/.exec(descriptor)?.[1]?.trim();
+  if (eclipse) return eclipse;
+  const artifact = /<artifactId>\s*([^<\s]+)\s*<\/artifactId>/.exec(ownPom(await readText(join(root, "pom.xml"))))?.[1];
+  if (artifact && !artifact.includes("${")) return artifact;
+  return baseName(root);
+}
+
+/** A child module's own part of its POM: its <artifactId> follows the <parent> block, which names the parent. */
+const ownPom = (pom: string) => pom.replace(/<parent>[\s\S]*?<\/parent>/, "");
+
+/** A dependency-only Maven module (`packaging=pom`): jdtls has no Java project for it. */
+async function isPomOnlyModule(root: string): Promise<boolean> {
+  return /<packaging>\s*pom\s*<\/packaging>/.test(ownPom(await readText(join(root, "pom.xml"))));
+}
+
+/** A file of the project, or "" when it is missing (or when there is no filesystem bridge). */
+async function readText(path: string): Promise<string> {
+  try {
+    return await call(commands.fsReadText(path));
+  } catch {
+    return "";
+  }
+}
+
 /** Conventional JVM source sets, including Kotlin kept in a Java source directory.
  * A mixed module uses Kotlin's adapter, which also accepts Java line breakpoints.
  */
@@ -37,6 +78,7 @@ export async function moduleHasKotlinSources(cwd: string): Promise<boolean> {
   const pending = [join(cwd, "src")];
   while (pending.length) {
     const path = pending.pop()!;
+    // oxlint-disable-next-line no-await-in-loop -- source-set traversal uses a shared pending stack and returns as soon as a .kt file is found
     const entries = await call(commands.fsReadDir(path)).catch(() => []);
     for (const entry of entries) {
       if (entry.excluded) continue;
@@ -45,6 +87,31 @@ export async function moduleHasKotlinSources(cwd: string): Promise<boolean> {
       if (entry.kind === "dir") pending.push(entry.path);
     }
   }
+  return false;
+}
+
+/**
+ * Whether the debugger for the JVMs of `module` is installed. Maven / Gradle start those JVMs
+ * before the debugger attaches, so a missing Kotlin debugger is offered here, before the build
+ * runs: "Install and Debug" installs it and calls `retry`. An installed kotlin-lsp debugs Kotlin
+ * itself (the backend falls back to kotlin-debug-adapter only when it can't).
+ */
+export async function jvmAttachDebuggerReady(module: string, root: string, retry: () => void): Promise<boolean> {
+  if (!(await moduleHasKotlinSources(module ? join(root, module) : root))) return true;
+  const tools = await call(commands.toolsList()).catch(() => []);
+  const missing = (name: string) => tools.find((t) => t.name === name)?.status === "missing";
+  if (!missing(KOTLIN_ADAPTER) || !missing(KOTLIN_LSP)) return true;
+  notifications().notify({
+    group: "run",
+    level: "warning",
+    key: "debug.start",
+    title: "The Kotlin debugger is not installed",
+    body: "This module has Kotlin sources, so debugging it needs the Kotlin debugger (kotlin-debug-adapter).",
+    sticky: true,
+    actions: [
+      { label: "Install and Debug", run: () => void executeAction("tools.install", KOTLIN_ADAPTER).then(retry) },
+    ],
+  });
   return false;
 }
 
@@ -79,17 +146,21 @@ export async function javaLaunchConfig(
   root: string,
   preparation?: JavaPreparation,
 ): Promise<LaunchConfig> {
-  const cwd = rc.cwd ? join(root, rc.cwd) : root;
+  rc = await withEnvFiles(rc, root);
   const parsed = parseJavaArgs(rc.args);
   if (!parsed.mainClass) throw new Error(`No main class in '${rc.name}'`);
   preparation?.signal.throwIfAborted();
-  const { module, info, resolved } = await prepareJavaLaunch(
-    rc,
-    preparation ?? {
+  const { module, info, resolved } = await prepareJavaLaunch(rc, {
+    ...(preparation ?? {
       request: nextRequestId(),
       signal: new AbortController().signal,
-    },
-  );
+      saveAll: async () => {
+        await maybeEditorService()?.saveAll();
+      },
+    }),
+    debug: true,
+  });
+  const cwd = resolved.cwd ? join(root, resolved.cwd) : root;
   if (info.errorCount > 0 && !preparation?.report)
     notifications().notify({
       group: "run",
@@ -103,6 +174,17 @@ export async function javaLaunchConfig(
   const classPaths = parsed.explicitClasspath
     ? parsed.explicitClasspath.split(info.pathListSeparator)
     : info.classPaths;
+  // java-debug starts the JVM itself, bypassing the Run process that echoes its
+  // command line. Echo the equivalent launch here so Debug and Run stay comparable.
+  preparation?.report?.(`${joinJavaArgs([resolved.command, ...resolved.args])}\n`);
+  const agentNote = await remoteJavaAgentNote(rc);
+  if (agentNote) preparation?.report?.(agentNote);
+  // The host adds JetBrains Runtime's flag for it, or says in the console why the session runs without.
+  const enhanced = {
+    ...(rc.params?.enhancedClassRedefinition === "true" ? { enhancedClassRedefinition: true } : {}),
+    // A plugin executor's launch ("Debug with …"): the host adds that plugin's Java agent.
+    ...(rc.executor ? { executor: rc.executor } : {}),
+  };
   if (kotlin) {
     return {
       name: rc.name,
@@ -120,11 +202,40 @@ export async function javaLaunchConfig(
         javaExec: resolved.command,
         vmArguments: [...consoleVmArgs(rc), ...parsed.vmArgs],
         programArgs: parsed.programArgs,
+        ...enhanced,
+      }),
+    };
+  }
+  if ((await call(commands.javaDebugAdapter(module))) === JAVA_ANALYZER_ADAPTER) {
+    preparation?.signal.throwIfAborted();
+    return {
+      name: rc.name,
+      adapter: JAVA_ANALYZER_ADAPTER,
+      request: "launch",
+      program: null,
+      args: [],
+      cwd,
+      env: { ...rc.env },
+      extraJson: JSON.stringify({
+        projectRoot: join(root, module),
+        mainClass: parsed.mainClass,
+        classPaths,
+        modulePaths: info.modulePaths,
+        javaExec: resolved.command === "java" ? undefined : resolved.command,
+        vmArgs: [...consoleVmArgs(rc), ...parsed.vmArgs],
+        args: parsed.programArgs,
+        ...enhanced,
       }),
     };
   }
   const port = await debugServer(module, preparation?.signal);
   preparation?.signal.throwIfAborted();
+  // java-debug resolves the Java project for Evaluate on its own from `mainClass` only when
+  // the class belongs to a project it knows; name the project it imported so that works for
+  // classes compiled outside the language server's build (plain folders, custom outputs).
+  const projectRoot = info.projectRoot ?? join(root, module);
+  // A launch from a dependency-only POM names no project: java-debug finds the main class's own.
+  const project = (await isPomOnlyModule(projectRoot)) ? undefined : await javaProjectName(projectRoot);
   return {
     name: rc.name,
     adapter: JAVA_ADAPTER,
@@ -139,6 +250,7 @@ export async function javaLaunchConfig(
       mainClass: parsed.mainClass,
       classPaths,
       modulePaths: info.modulePaths,
+      projectName: project,
       javaExec: resolved.command === "java" ? undefined : resolved.command,
       vmArgs: joinJavaArgs([...consoleVmArgs(rc), ...parsed.vmArgs]),
       args: joinJavaArgs(parsed.programArgs),
@@ -146,6 +258,7 @@ export async function javaLaunchConfig(
       shortenCommandLine: info.shortenCommandLine ?? "none",
       console: "internalConsole",
       stopOnEntry: false,
+      ...enhanced,
     }),
   };
 }
@@ -179,7 +292,23 @@ export async function javaAttachConfig(target: JavaAttachTarget, root: string): 
       extraJson: JSON.stringify({ projectRoot: cwd, hostName: target.hostName, port: target.port, timeout: 30_000 }),
     };
   }
+  if ((await call(commands.javaDebugAdapter(target.module))) === JAVA_ANALYZER_ADAPTER) {
+    return {
+      name: target.name,
+      adapter: JAVA_ANALYZER_ADAPTER,
+      request: "attach",
+      program: null,
+      args: [],
+      cwd,
+      env: {},
+      extraJson: JSON.stringify({ projectRoot: cwd, hostName: target.hostName, port: target.port, timeout: 30_000 }),
+    };
+  }
   const port = await debugServer(target.module);
+  // java-debug resolves the Java project for Evaluate from `mainClass` only when the class is in
+  // a project it imported; a JDWP attach cannot even see the main class, so name the project the
+  // language server imported (the directory name of the module it opened).
+  const project = await javaProjectName(cwd);
   return {
     name: target.name,
     adapter: JAVA_ADAPTER,
@@ -188,6 +317,12 @@ export async function javaAttachConfig(target: JavaAttachTarget, root: string): 
     args: [],
     cwd: target.module ? join(root, target.module) : root,
     env: {},
-    extraJson: JSON.stringify({ debugServer: port, hostName: target.hostName, port: target.port, timeout: 30_000 }),
+    extraJson: JSON.stringify({
+      debugServer: port,
+      hostName: target.hostName,
+      port: target.port,
+      timeout: 30_000,
+      projectName: project,
+    }),
   };
 }

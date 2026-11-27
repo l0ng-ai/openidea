@@ -39,7 +39,7 @@ export async function applySuggestion(
     const abs = `${root}/${target.path}`;
     const text = await call(commands.fsReadText(abs));
     const { patch, start, lines } = buildSuggestionPatch(text, target, suggestion);
-    const outcome = await call(commands.vcsApplyPatch(connectedRoot(), patch));
+    const outcome = await call(commands.vcsApplyPatch(connectedRoot(), patch, null));
     const files = outcome.conflicts.join(", ");
     if (files) throw new Error(tx`Conflicts in ${files}`);
     if (commitMessage) {

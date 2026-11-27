@@ -52,6 +52,7 @@ export async function allPages<T>(page: (cursor: string | null) => Promise<GHCon
   const out: T[] = [];
   let cursor: string | null = null;
   for (;;) {
+    // oxlint-disable-next-line no-await-in-loop -- cursor pagination: each page must be fetched and appended in order before requesting the next cursor.
     const c: GHConnection<T> | null = await page(cursor);
     if (!c) return out;
     out.push(...c.nodes);
@@ -181,13 +182,18 @@ export async function pullRequestTemplates(): Promise<GHRepositoryPullRequestTem
  * A page of the commit's status check rollup (`getRepositoryCommitStatusContexts`).
  * @public
  */
-export async function commitStatusContextsPage(oid: string, cursor: string | null, pageSize = 100) {
+export async function commitStatusContextsPage(
+  oid: string,
+  cursor: string | null,
+  pageSize = 100,
+  target?: GHRepositoryCoordinates & { root: string },
+) {
   const data = await graphql<{
     repository: {
       object: { statusCheckRollup: { contexts: GHConnection<GHCommitStatusRollupContext> } | null } | null;
-    };
-  }>(Q.getRepositoryCommitStatusContexts, { ...repoVariables(), oid, pageSize, cursor });
-  return data.repository.object?.statusCheckRollup?.contexts ?? null;
+    } | null;
+  }>(Q.getRepositoryCommitStatusContexts, { ...repoVariables(target), oid, pageSize, cursor }, target?.root);
+  return data.repository?.object?.statusCheckRollup?.contexts ?? null;
 }
 
 /**

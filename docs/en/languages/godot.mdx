@@ -1,0 +1,84 @@
+---
+title: "Godot"
+description: "Edit GDScript with the Godot editor's language server, run and debug scenes, and open scripts from Godot in OpenIDEA."
+---
+
+OpenIDEA works with Godot 4 projects (folders with a `project.godot` file). GDScript code intelligence and debugging come from the Godot editor itself: its language server and debug adapter run inside the editor, and OpenIDEA connects to them. Nothing has to be installed besides Godot.
+
+## Supported files
+
+| Files                                                                                             | Language       | What you get                                                                                                               |
+| ------------------------------------------------------------------------------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `.gd`                                                                                             | GDScript       | Highlighting, outline and folding (tree-sitter), code intelligence from Godot, breakpoints. Indents with tabs, like Godot. |
+| `.gdshader`, `.gdshaderinc`                                                                       | Godot Shader   | Highlighting (C-like) and comments. No language server.                                                                    |
+| `.tscn`, `.tres`, `.godot`, `.import`, `export_presets.cfg`, `override.cfg`, `extension_list.cfg` | Godot Resource | INI-style highlighting. Scenes (`.tscn`) can be run directly.                                                              |
+
+C# scripts in a Godot .NET project are handled like any other C# code; see [C# and .NET](/en/languages/csharp).
+
+## Find the Godot executable
+
+OpenIDEA looks for Godot in this order:
+
+1. The executable chosen in **Settings › Languages & Frameworks › Language Servers**, entry **godot** (stored as `tools.godot` in settings).
+2. The search path, under the names `godot`, `godot4`, `godot-4`, `Godot`, `godot-mono` and `godot4-mono`.
+3. Usual install locations:
+   - macOS: `Godot.app`, `Godot_mono.app` or `Godot 4.app` in `/Applications` or `~/Applications`, and Steam.
+   - Windows: Scoop, WinGet, `%LOCALAPPDATA%\Programs\Godot`, `Program Files\Godot`, and Steam.
+   - Linux: Flatpak (`org.godotengine.Godot`), Snap (`godot-4`, `godot`), and Steam.
+
+If Godot is somewhere else, set the executable on that settings page. When it cannot be found, running a Godot configuration reports "Godot was not found".
+
+## Code intelligence
+
+The GDScript language server lives in the Godot editor and speaks LSP over TCP. When you open a `.gd` file, OpenIDEA:
+
+1. connects to `127.0.0.1:6005`, Godot's default language server port, if an editor is listening there; otherwise
+2. starts a headless editor for the project (`godot --headless --editor --path <project> --lsp-port <free port>`) and connects once it is ready. The first start imports the project and can take a while; OpenIDEA waits up to two minutes.
+
+A Godot editor you opened yourself is never shut down by OpenIDEA. To keep the editor and the IDE talking to the same server, open the project in Godot before you open it in OpenIDEA. If you changed the language server port in Godot (**Editor Settings › Network › Language Server**), the IDE will not find the running editor and starts its own headless one instead.
+
+What you get depends on what Godot's server provides: completion, hover, go to definition, symbols and diagnostics, among others. Features the server lacks, such as inlay hints, are simply absent.
+
+## Run
+
+For each `project.godot` at the project root or in a subfolder, OpenIDEA creates a **Godot Project** run configuration (named `Godot Project (<folder>)` for a subfolder). It runs `godot --path .` in that folder, which starts the project's main scene.
+
+To run one scene, right-click a `.tscn` file and run it, or open it and use **Run › Run Context Configuration** (`⌃⇧R` / `Ctrl+Shift+F10`). This runs `godot --path . res://<scene>`.
+
+You can also add a **Godot** configuration in **Run › Edit Configurations…**. Its fields:
+
+| Field                 | Meaning                                                                 |
+| --------------------- | ----------------------------------------------------------------------- |
+| **Project directory** | The folder with `project.godot`.                                        |
+| **Scene**             | A scene such as `res://levels/level_1.tscn`. Empty runs the main scene. |
+| **Arguments**         | Extra Godot command-line options, e.g. `--debug-collisions`.            |
+
+## Debug
+
+Debugging GDScript goes through the Godot editor's debug adapter (DAP over TCP).
+
+- **Debug a Godot configuration.** OpenIDEA connects to an editor listening on `127.0.0.1:6006`, Godot's default debug adapter port. If none is running, it starts a headless editor for the project on a free port. The editor then plays the scene with its own run settings. A headless editor started this way ends with the debug session.
+- **Attach to Godot.** This configuration type (debug only, defaults `localhost` and port `6006`) debugs the game the Godot editor is already running. Open the project in the Godot editor, play a scene (F5 / F6), then start the configuration. The port is set in Godot under **Editor Settings › Network › Debug Adapter**.
+
+Breakpoints, the call stack, variables and stepping work as with other languages; see [Debugging](/en/guide/debugging).
+
+<Note>
+  Godot matches scripts by their real path. OpenIDEA resolves symlinks in the project path before it sends breakpoints,
+  so a project opened through a symlinked folder (such as `/tmp` on macOS) still stops at breakpoints.
+</Note>
+
+## Open scripts from Godot
+
+To make Godot open scripts in OpenIDEA, use Godot's external editor setting (**Editor Settings › Text Editor › External**): turn on **Use External Editor**, set **Exec Path** to the OpenIDEA executable (on macOS, the executable inside `OpenIDEA.app/Contents/MacOS/`), and set **Exec Flags** to:
+
+```text
+{project} --file {file} --line {line} --column {col}
+```
+
+OpenIDEA then opens the project and puts the caret at the given position. The arguments are the same as for Unity; see [Unity](/en/languages/unity) for how they work.
+
+## Limitations
+
+- GDScript code intelligence needs a Godot 4 editor, either running or startable headless. There is no built-in GDScript analysis without it.
+- Godot Shader and resource files have highlighting only.
+- Debugging works through the editor's adapter only; there is no debugging of exported builds.

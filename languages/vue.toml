@@ -6,6 +6,10 @@ block-comment = ["<!--", "-->"]
 indent = { tab-size = 2, insert-spaces = true }
 ui-mode = "Vue"
 
+# Rainbow brackets › angle: editor syntax nodes of markup tags, whose `<` `>` pair up.
+[rainbow-brackets]
+tags = ["OpenTag", "CloseTag", "SelfClosingTag"]
+
 [[language-servers]]
 name = "vue-language-server"
 command = "vue-language-server"
@@ -18,6 +22,7 @@ install-hint = "npm i -g @vue/language-server typescript@6"
 # reaches it through `tsserver/request`, which the client forwards to vtsls.
 [[language-servers]]
 name = "vtsls"
+tsserver-project = true
 command = "vtsls"
 args = ["--stdio"]
 root-markers = ["tsconfig.json", "jsconfig.json", "package.json"]
@@ -38,6 +43,18 @@ enabled = "never"
 [language-servers.initialization-options.javascript.updateImportsOnFileMove]
 enabled = "never"
 
+# Inlay hints (off in vtsls by default): parameter names at literal arguments, inferred
+# variable types and enum member values. Editor › Inlay Hints decides which are shown.
+[language-servers.initialization-options.typescript.inlayHints]
+parameterNames = { enabled = "literals", suppressWhenArgumentMatchesName = true }
+variableTypes = { enabled = true, suppressWhenTypeMatchesName = true }
+enumMemberValues = { enabled = true }
+
+[language-servers.initialization-options.javascript.inlayHints]
+parameterNames = { enabled = "literals", suppressWhenArgumentMatchesName = true }
+variableTypes = { enabled = true, suppressWhenTypeMatchesName = true }
+enumMemberValues = { enabled = true }
+
 [[language-servers]]
 name = "oxlint"
 command = "oxlint"
@@ -45,3 +62,47 @@ args = ["--lsp"]
 root-markers = [".oxlintrc.json", ".oxlintrc.jsonc", "oxlint.config.ts", "oxlint.config.mts"]
 require-root-marker = true
 install-hint = "npm i -D oxlint"
+
+# ESLint: only below a project's ESLint configuration; the server runs the project's own eslint.
+[[language-servers]]
+name = "eslint"
+command = "vscode-eslint-language-server"
+args = ["--stdio"]
+root-markers = ["eslint.config.js", "eslint.config.mjs", "eslint.config.cjs", "eslint.config.ts", "eslint.config.mts", "eslint.config.cts", ".eslintrc", ".eslintrc.js", ".eslintrc.cjs", ".eslintrc.json", ".eslintrc.yml", ".eslintrc.yaml", "package.json#eslintConfig"]
+require-root-marker = true
+install-hint = "npm i -g vscode-langservers-extracted"
+
+[language-servers.settings]
+# Read by every request (`experimental.useFlatConfig`); ESLint picks flat or legacy config itself.
+experimental = {}
+validate = "on"
+run = "onType"
+quiet = false
+onIgnoredFiles = "off"
+rulesCustomizations = []
+nodePath = ""
+problems = { shortenToSingleLine = false }
+workingDirectory = { mode = "auto" }
+codeAction = { disableRuleComment = { enable = true, location = "separateLine" }, showDocumentation = { enable = true } }
+# vscode-eslint reads it for every source.fixAll request (Actions on Save, Code Cleanup).
+# No `rules`: an empty list there means no rule gets fixed.
+codeActionOnSave = { mode = "all" }
+
+# Tailwind CSS: class completion, hover and diagnostics, only in a project that uses Tailwind
+# (`tailwind.config.*` or `tailwindcss` in package.json). After the language's own servers,
+# which answer hover first.
+[[language-servers]]
+name = "tailwindcss-language-server"
+command = "tailwindcss-language-server"
+args = ["--stdio"]
+root-markers = ["tailwind.config.*", "package.json#dependencies.tailwindcss", "package.json#devDependencies.tailwindcss"]
+require-root-marker = true
+install-hint = "npm i -g @tailwindcss/language-server"
+
+# Components run in the browser: breakpoints in them are hit by a JavaScript Debug configuration.
+[debugger]
+adapter = "js-debug"
+command = "js-debug-adapter"
+args = ["${port}", "127.0.0.1"]
+transport = "tcp"
+install-hint = "Install JavaScript Debugger (vscode-js-debug) in Settings › Languages & Frameworks › Language Servers"

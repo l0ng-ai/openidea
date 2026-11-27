@@ -1,7 +1,7 @@
 .row {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   color: var(--fg-strong);
   cursor: default;
 }
@@ -56,6 +56,16 @@
 }
 .disabled .on {
   background: var(--border);
+}
+.radio {
+  border-radius: 50%;
+}
+.radio.on::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
 }
 .native:focus-visible + .box {
   outline: 2px solid var(--focus-ring);

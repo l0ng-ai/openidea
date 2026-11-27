@@ -1,21 +1,45 @@
 /**
- * Settings › Languages & Frameworks › Language Servers, laid out like the
- * Plugins page: language servers and debug adapters in a list on the left
- * (+ adds a server of one's own, − removes it), the selected tool's install
- * actions and settings on the right. Settings are staged in the dialog and
+ * Settings › Languages & Frameworks › Language Servers: languages on the left,
+ * the selected language's tools on the right, grouped by kind (language
+ * servers, formatters, debuggers, plugins). Selecting a tool shows its install
+ * actions and settings under its table. Settings are staged in the dialog and
  * written on Apply / OK; installs run right away.
  */
-import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import clsx from "clsx";
 import type { ToolInfo } from "@/bindings";
-import { Badge, Button, EmptyState, IconButton, ProgressBar, SearchField, Spinner, T } from "@/ui";
+import {
+  Badge,
+  Button,
+  Checkbox,
+  EmptyState,
+  fileIconName,
+  Icon,
+  IconButton,
+  ProgressBar,
+  Radio,
+  SearchField,
+  Spinner,
+  T,
+} from "@/ui";
+import { sampleFileName } from "@/platform/fileTypes";
+import type { LanguageChoice } from "./backend";
 import { onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { useSettingsForm } from "@/workbench/contributions";
-import { languageNames, NewServerDialog, ServerSettings, ToolSettings, useLanguageChoices } from "./ServerSettings";
+import { useSettingsForm, useSettingsPageFocus } from "@/workbench/contributions";
+import {
+  languageNames,
+  NewServerDialog,
+  Section,
+  ServerSettings,
+  setServerEnabled,
+  ToolSettings,
+  useLanguageChoices,
+} from "./ServerSettings";
 import { serverKey, type ServerEntry } from "./serverConfig";
 import {
   cancelInstall,
+  checkToolUpdates,
   installTool,
   refreshTools,
   STATUS_LABEL,
@@ -26,8 +50,6 @@ import {
 import styles from "./LanguageServersPage.module.css";
 import { tx } from "@/platform/i18n";
 
-type Filter = "all" | "missing" | "installed";
-
 const STATUS_TONE: Record<ToolInfo["status"], "success" | "accent" | "warning"> = {
   installed: "success",
   onPath: "accent",
@@ -35,21 +57,113 @@ const STATUS_TONE: Record<ToolInfo["status"], "success" | "accent" | "warning"> 
   missing: "warning",
 };
 
-const KIND_LABEL: Record<ToolInfo["kind"], string> = {
-  languageServer: "Language server",
-  debugger: "Debugger",
-  plugin: "Plugin",
-  formatter: "Formatter",
-};
+const KINDS: ReadonlyArray<[ToolInfo["kind"], string]> = [
+  ["languageServer", "Language Servers"],
+  ["formatter", "Formatters"],
+  ["debugger", "Debuggers"],
+  ["plugin", "Plugins"],
+  ["cli", "Command-Line Tools"],
+];
 
-export function filterTools(tools: readonly ToolInfo[], query: string, filter: Filter): ToolInfo[] {
+/** Tools that serve no language (e.g. the Dev Containers CLI) are listed under this name. */
+const OTHER = "Other Tools";
+
+export interface LanguageEntry {
+  name: string;
+  tools: ToolInfo[];
+  /** Tools to install so the language works: a server when none is available, likewise a debugger. */
+  missing: ToolInfo[];
+  state: "ready" | "partial" | "none";
+}
+
+const available = (t: ToolInfo) => t.status !== "missing";
+
+function firstToInstall(tools: readonly ToolInfo[]): ToolInfo | undefined {
+  return tools.find((t) => t.canInstall) ?? tools[0];
+}
+
+function languageEntry(name: string, tools: ToolInfo[]): LanguageEntry {
+  const servers = tools.filter((t) => t.kind === "languageServer");
+  const debuggers = tools.filter((t) => t.kind === "debugger");
+  const noServer = servers.length > 0 && !servers.some(available);
+  const noDebugger = debuggers.length > 0 && !debuggers.some(available);
+  const missing = [noServer && firstToInstall(servers), noDebugger && firstToInstall(debuggers)].filter(
+    (t): t is ToolInfo => !!t,
+  );
+  const state = !missing.length ? "ready" : noServer && (noDebugger || !debuggers.length) ? "none" : "partial";
+  return { name, tools, missing, state };
+}
+
+/** Widely used languages first, most used first; the rest follow by name. */
+const POPULAR = [
+  "JavaScript",
+  "TypeScript",
+  "Python",
+  "Java",
+  "C#",
+  "HTML",
+  "CSS",
+  "SQL",
+  "Shell Script",
+  "C++",
+  "C",
+  "Go",
+  "PHP",
+  "Rust",
+  "Kotlin",
+  "Swift",
+  "Ruby",
+  "Dart",
+  "Lua",
+  "Scala",
+  "PowerShell",
+  "Vue",
+  "Svelte",
+  "Astro",
+  "Elixir",
+  "Haskell",
+  "Zig",
+];
+
+/** A language's place in the list: JSX variants right after their language. */
+function popularity(name: string): number {
+  const base = name.replace(/ JSX$/, "");
+  const i = POPULAR.indexOf(base);
+  return i < 0 ? POPULAR.length : i + (base === name ? 0 : 0.5);
+}
+
+/** One entry per language the tools serve, popular languages first; tools serving none come last. */
+export function groupByLanguage(tools: readonly ToolInfo[]): LanguageEntry[] {
+  const byName = new Map<string, ToolInfo[]>();
+  for (const t of tools)
+    for (const lang of t.languages.length ? t.languages : [OTHER]) {
+      const list = byName.get(lang) ?? [];
+      list.push(t);
+      byName.set(lang, list);
+    }
+  return [...byName]
+    .sort(([a], [b]) => (a === OTHER ? 1 : b === OTHER ? -1 : popularity(a) - popularity(b) || a.localeCompare(b)))
+    .map(([name, list]) => languageEntry(name, list));
+}
+
+/**
+ * Languages whose name or one of whose tools matches `query`, those matched by name first
+ * (names starting with the query before the rest); `needsSetup` keeps the ones missing tools.
+ */
+export function filterLanguages(langs: readonly LanguageEntry[], query: string, needsSetup: boolean): LanguageEntry[] {
   const q = query.trim().toLowerCase();
-  return tools.filter((t) => {
-    if (filter === "missing" && t.status !== "missing") return false;
-    if (filter === "installed" && t.status === "missing") return false;
-    if (!q) return true;
-    return [t.name, t.displayName, t.command, ...t.languages].some((s) => s.toLowerCase().includes(q));
-  });
+  const rank = (l: LanguageEntry) => {
+    if (!q) return 0;
+    const name = l.name.toLowerCase();
+    if (name.startsWith(q)) return name === q ? 0 : 1;
+    if (name.includes(q)) return 2;
+    return l.tools.some((t) => [t.name, t.displayName, t.command].some((s) => s.toLowerCase().includes(q))) ? 3 : -1;
+  };
+  return langs
+    .map((l) => [l, rank(l)] as const)
+    .filter(([l, r]) => r >= 0 && (!needsSetup || l.missing.length > 0))
+    .sort((a, b) => a[1] - b[1])
+    .map(([l]) => l);
 }
 
 /** A server added in this dialog, listed before Apply checks its executable. */
@@ -73,18 +187,19 @@ function pendingTool(name: string, entry: ServerEntry, languages: string[]): Too
     defaultArgs: [],
     defaultInitializationOptions: null,
     alternatives: [],
+    companion: false,
   };
 }
 
-function JobRow({ name, job }: { name: string; job: InstallJob }) {
+function JobRow({ tool, job }: { tool: ToolInfo; job: InstallJob }) {
   return (
     <div className={styles.job}>
-      <ProgressBar value={job.fraction} aria-label={tx`Installing ${name}`} className={styles.jobBar} />
+      <ProgressBar value={job.fraction} aria-label={tx`Installing ${tool.displayName}`} className={styles.jobBar} />
       <div className={styles.jobLine}>
         <span className={styles.jobMessage} title={job.message ?? undefined}>
           {job.message ?? "Starting…"}
         </span>
-        <Button size="small" variant="ghost" onClick={() => cancelInstall(name)}>
+        <Button size="small" variant="ghost" onClick={() => cancelInstall(tool.name)}>
           <T>Cancel</T>
         </Button>
       </div>
@@ -92,57 +207,186 @@ function JobRow({ name, job }: { name: string; job: InstallJob }) {
   );
 }
 
-function ToolRow({
-  tool,
+/** "1.40.2 · On PATH", or the status alone. */
+function statusText(tool: ToolInfo, pending: boolean): string {
+  if (pending) return tx("New");
+  const status = tx(STATUS_LABEL[tool.status]);
+  return tool.version ? `${tool.version} · ${status}` : status;
+}
+
+function ToolTable({
+  tools,
   selected,
-  off,
   pending,
+  disabled,
+  label,
   onSelect,
+  leading,
+  trailing,
+  before,
+  after,
 }: {
-  tool: ToolInfo;
-  selected: boolean;
-  off: boolean;
-  pending: boolean;
-  onSelect: () => void;
+  tools: ToolInfo[];
+  selected: string | null;
+  pending: ReadonlySet<string>;
+  disabled: (t: ToolInfo) => boolean;
+  label: string;
+  onSelect: (name: string) => void;
+  /** A control before each tool's name, e.g. the radio or on/off box that says whether it runs. */
+  leading?: (t: ToolInfo) => ReactNode;
+  /** A tag after each tool's name. */
+  trailing?: (t: ToolInfo) => ReactNode;
+  /** Rows above and below the tools (a group's Automatic and None choices). */
+  before?: ReactNode;
+  after?: ReactNode;
 }) {
+  const busy = useTools((s) => s.jobs);
+  const updates = useTools((s) => s.updates);
   return (
-    <li className={clsx(styles.row, selected && styles.rowSelected)}>
-      <button
-        type="button"
-        className={clsx(styles.rowMain, off && styles.rowOff)}
-        aria-current={selected || undefined}
-        data-tool={tool.name}
-        title={`${tool.displayName} — ${tool.languages.join(", ")}`}
-        onClick={onSelect}
-      >
-        <Badge dot tone={pending ? "accent" : STATUS_TONE[tool.status]}>
-          {pending ? tx("New") : STATUS_LABEL[tool.status]}
-        </Badge>
-        <span className={styles.rowName}>{tool.displayName}</span>
-        {pending && (
-          <span className={styles.kindTag}>
-            <T>New</T>
-          </span>
-        )}
-        {tool.kind !== "languageServer" && (
-          <span className={styles.kindTag}>
-            <T>{KIND_LABEL[tool.kind]}</T>
-          </span>
-        )}
-        {off && (
-          <span className={styles.kindTag}>
-            <T>Disabled</T>
-          </span>
-        )}
-        <span className={styles.rowLanguages}>{tool.languages.join(", ")}</span>
-      </button>
-    </li>
+    <ul className={styles.table} aria-label={label}>
+      {before}
+      {tools.map((t) => (
+        <li key={t.name} className={clsx(styles.tableRow, t.name === selected && styles.tableRowSelected)}>
+          {leading && <span className={styles.lead}>{leading(t)}</span>}
+          <button
+            type="button"
+            className={styles.tableMain}
+            aria-current={t.name === selected || undefined}
+            data-tool={t.name}
+            onClick={() => onSelect(t.name)}
+          >
+            <Badge dot tone={pending.has(t.name) ? "accent" : STATUS_TONE[t.status]}>
+              {pending.has(t.name) ? tx("New") : STATUS_LABEL[t.status]}
+            </Badge>
+            <span className={clsx(styles.toolName, disabled(t) && styles.toolOff)}>{t.displayName}</span>
+            {!leading && disabled(t) && (
+              <span className={styles.tag}>
+                <T>Disabled</T>
+              </span>
+            )}
+            {trailing?.(t)}
+            {t.status === "installed" && updates[t.name] && (
+              <span className={clsx(styles.tag, styles.updateTag)}>
+                <T>Update</T>
+              </span>
+            )}
+            <span className={styles.toolStatus}>{statusText(t, pending.has(t.name))}</span>
+          </button>
+          {t.status === "missing" && t.canInstall && !pending.has(t.name) && (
+            <button
+              type="button"
+              className={styles.linkButton}
+              disabled={!!busy[t.name]}
+              aria-label={tx`Install ${t.displayName}`}
+              onClick={() => void installTool(t.name)}
+            >
+              <T>Install</T>
+            </button>
+          )}
+        </li>
+      ))}
+      {after}
+    </ul>
   );
 }
 
-function Details({ tool, pending }: { tool: ToolInfo; pending: boolean }) {
+/** "ty (Python)" is just "ty" next to "Language server for Python". */
+function shortName(t: ToolInfo, languages: readonly string[]): string {
+  const suffix = /^(.*) \((.+)\)$/.exec(t.displayName);
+  return suffix && languages.includes(suffix[2]!) ? suffix[1]! : t.displayName;
+}
+
+/**
+ * Interchangeable servers (a server and its `fallback`s) as one radio group:
+ * Automatic keeps them all on so the first one available runs, or exactly one
+ * runs, or none. The server that will run is tagged.
+ */
+function ServerChoice({
+  names,
+  tools,
+  servers,
+  ...table
+}: {
+  names: string[];
+  tools: ToolInfo[];
+  servers: Record<string, ServerEntry>;
+  selected: string | null;
+  pending: ReadonlySet<string>;
+  disabled: (t: ToolInfo) => boolean;
+  onSelect: (name: string) => void;
+}) {
+  const form = useSettingsForm();
+  const group = useId();
+  const members = names.map((n) => tools.find((t) => t.name === n)).filter((t): t is ToolInfo => !!t);
+  const common = members.reduce<string[]>(
+    (acc, t) => acc.filter((l) => t.languages.includes(l)),
+    members[0]!.languages,
+  );
+  const label = common.length ? tx`Language server for ${common.join(", ")}` : tx("Language server");
+  const enabled = names.filter((n) => servers[n]?.enabled !== false);
+  const value =
+    enabled.length === names.length
+      ? "auto"
+      : enabled.length === 0
+        ? "none"
+        : enabled.length === 1
+          ? enabled[0]!
+          : null;
+  const running = members.find((t) => enabled.includes(t.name) && t.status !== "missing");
+  const choose = (choice: string) => {
+    for (const n of names) setServerEnabled(form, n, choice === "auto" || choice === n);
+  };
+  const order = members.map((t) => shortName(t, common)).join(" → ");
+  const extra = (choice: "auto" | "none", text: string, hint: string) => (
+    <li className={styles.tableRow}>
+      <span className={styles.lead}>
+        <Radio name={group} checked={value === choice} onChange={() => choose(choice)} aria-label={text} />
+      </span>
+      <button type="button" className={styles.tableMain} onClick={() => choose(choice)}>
+        <span className={styles.toolName}>{text}</span>
+        <span className={styles.toolStatus}>{hint}</span>
+      </button>
+    </li>
+  );
+  return (
+    <div className={styles.group} role="radiogroup" aria-label={label}>
+      <div className={styles.groupTitle}>
+        {label}
+        <span className={styles.groupHint}>
+          <T>Only one runs at a time</T>
+        </span>
+      </div>
+      <ToolTable
+        {...table}
+        tools={members}
+        label={label}
+        leading={(t) => (
+          <Radio
+            name={group}
+            checked={value === t.name}
+            onChange={() => choose(t.name)}
+            aria-label={tx`Use only ${t.displayName}`}
+          />
+        )}
+        trailing={(t) =>
+          t === running && (
+            <span className={clsx(styles.tag, styles.runTag)}>
+              <T>In use</T>
+            </span>
+          )
+        }
+        before={extra("auto", tx("Automatic"), tx`First available: ${order}`)}
+        after={extra("none", tx("None"), tx("No language server for these files"))}
+      />
+    </div>
+  );
+}
+
+/** The selected tool under its table: install actions, progress, log and settings. */
+function ToolDetails({ tool, language, pending }: { tool: ToolInfo; language: string; pending: boolean }) {
   const job = useTools((s) => s.jobs[tool.name]);
   const last = useTools((s) => s.logs[tool.name]);
+  const update = useTools((s) => (tool.status === "installed" ? s.updates[tool.name] : undefined));
   const [logOpen, setLogOpen] = useState(false);
   const log = job?.lines ?? last?.lines ?? [];
   const lastError = !job && last?.error !== "Cancelled" ? last?.error : null;
@@ -153,58 +397,64 @@ function Details({ tool, pending }: { tool: ToolInfo; pending: boolean }) {
     !tool.canInstall &&
     tool.status === "missing" &&
     (tool.unavailableReason ?? (tool.kind === "plugin" ? tool.installHint : null));
+  const shared = tool.languages.filter((l) => l !== language);
+  const others = shared.join(", ");
   return (
     <div className={styles.details} aria-label={`${tool.displayName} details`}>
-      <div className={styles.header}>
-        <div className={styles.headerText}>
-          <div className={styles.title}>
-            <span>{tool.displayName}</span>
-            {pending ? (
-              <Badge tone="accent">
-                <T>New</T>
-              </Badge>
-            ) : (
-              <Badge tone={STATUS_TONE[tool.status]}>{STATUS_LABEL[tool.status]}</Badge>
-            )}
-          </div>
-          <div className={styles.subtitle}>
-            <T>{KIND_LABEL[tool.kind]}</T>
-            {tool.version && <> · {tool.version}</>}
-            {tool.homepage && (
-              <>
-                {" · "}
-                <a href={tool.homepage} target="_blank" rel="noreferrer">
-                  <T>Homepage</T>
-                </a>
-              </>
-            )}
-          </div>
-        </div>
-        <div className={styles.actions}>
-          {tool.canInstall && (
-            <Button
-              size="small"
-              variant={tool.status === "missing" ? "primary" : "secondary"}
-              disabled={busy}
-              title={
-                tool.installMethod ? tx`Installs into the IDE's own tools folder via ${tool.installMethod}` : undefined
-              }
-              onClick={() => void installTool(tool.name)}
-              aria-label={
-                tool.status === "installed" ? tx`Reinstall ${tool.displayName}` : tx`Install ${tool.displayName}`
-              }
-            >
-              {tool.status === "installed" ? "Reinstall" : "Install"}
-            </Button>
-          )}
-          {tool.canUninstall && (
-            <Button size="small" variant="ghost" disabled={busy} onClick={() => void uninstallTool(tool.name)}>
-              <T>Uninstall</T>
-            </Button>
+      <div className={styles.detailsHeader}>
+        <div className={styles.detailsText}>
+          <span className={styles.detailsTitle}>{tool.displayName}</span>
+          {tool.homepage && (
+            <a href={tool.homepage} target="_blank" rel="noreferrer">
+              <T>Homepage</T>
+            </a>
           )}
         </div>
+        {tool.canInstall && (
+          <Button
+            size="small"
+            variant={tool.status === "missing" || update ? "primary" : "secondary"}
+            disabled={busy}
+            title={
+              tool.status === "onPath" && tool.path
+                ? tx`Installs a copy into the IDE's own tools folder, used instead of ${tool.path}`
+                : tool.installMethod
+                  ? tx`Installs into the IDE's own tools folder via ${tool.installMethod}`
+                  : undefined
+            }
+            onClick={() => void installTool(tool.name)}
+            aria-label={
+              update
+                ? tx`Update ${tool.displayName}`
+                : tool.status === "installed"
+                  ? tx`Reinstall ${tool.displayName}`
+                  : tx`Install ${tool.displayName}`
+            }
+          >
+            {update
+              ? tx("Update")
+              : tool.status === "installed"
+                ? tx("Reinstall")
+                : tool.status === "onPath"
+                  ? tx("Install IDE Copy")
+                  : tx("Install")}
+          </Button>
+        )}
+        {tool.canUninstall && (
+          <Button size="small" variant="ghost" disabled={busy} onClick={() => void uninstallTool(tool.name)}>
+            <T>Uninstall</T>
+          </Button>
+        )}
       </div>
-      {job && <JobRow name={tool.displayName} job={job} />}
+      {shared.length > 0 && (
+        <div className={styles.comment}>{tx`Also used for ${others}; settings apply to all of them.`}</div>
+      )}
+      {update && !job && (
+        <div className={styles.notice} role="note">
+          {tx`Version ${update.latest} is available.`}
+        </div>
+      )}
+      {job && <JobRow tool={tool} job={job} />}
       {lastError && (
         <div className={styles.error} role="alert">
           {lastError}
@@ -232,7 +482,6 @@ function Details({ tool, pending }: { tool: ToolInfo; pending: boolean }) {
           )}
         </div>
       )}
-
       {tool.kind === "languageServer" ? (
         <ServerSettings tool={tool} pending={pending} />
       ) : (
@@ -242,13 +491,160 @@ function Details({ tool, pending }: { tool: ToolInfo; pending: boolean }) {
   );
 }
 
+/** The language's file-type icon, as in the Project view. */
+function LanguageIcon({ name, known }: { name: string; known: readonly LanguageChoice[] }) {
+  const lang = known.find((l) => l.name === name);
+  const sample = lang
+    ? sampleFileName({
+        extensions: lang.extensions ?? [],
+        filenames: lang.filenames,
+      })
+    : null;
+  return <Icon name={name === OTHER ? "package" : sample ? fileIconName(sample) : "file-text"} size={16} />;
+}
+
+const STATE_BADGE: Record<LanguageEntry["state"], ["success" | "warning", string]> = {
+  ready: ["success", "Ready"],
+  partial: ["warning", "Partly set up"],
+  none: ["warning", "Not set up"],
+};
+
+function LanguageDetails({
+  language,
+  selectedTool,
+  pending,
+  servers,
+  known,
+  onSelectTool,
+}: {
+  language: LanguageEntry;
+  known: readonly LanguageChoice[];
+  selectedTool: string | null;
+  pending: ReadonlySet<string>;
+  servers: Record<string, ServerEntry>;
+  onSelectTool: (name: string) => void;
+}) {
+  const form = useSettingsForm();
+  const jobs = useTools((s) => s.jobs);
+  const [tone, stateLabel] = STATE_BADGE[language.state];
+  const installable = language.missing.filter((t) => t.canInstall && !jobs[t.name]);
+  const count = installable.length;
+  const disabled = (t: ToolInfo) => servers[t.name]?.enabled === false;
+  const selected = language.tools.find((t) => t.name === selectedTool) ?? language.tools[0] ?? null;
+  const pane = useRef<HTMLDivElement>(null);
+  // The tool's row is already listed; its details open under its table.
+  const reveal = (name: string) => {
+    onSelectTool(name);
+    pane.current
+      ?.querySelector<HTMLElement>(`[data-tool="${CSS.escape(name)}"]`)
+      ?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+  };
+  const table = {
+    selected: selected?.name ?? null,
+    pending,
+    disabled,
+    onSelect: onSelectTool,
+  };
+  return (
+    <div ref={pane} className={styles.language} aria-label={tx`${language.name} tools`}>
+      <div className={styles.languageHeader}>
+        <LanguageIcon name={language.name} known={known} />
+        <span className={styles.languageTitle}>{language.name === OTHER ? tx(OTHER) : language.name}</span>
+        {language.name !== OTHER && <Badge tone={tone}>{tx(stateLabel)}</Badge>}
+        <span className={styles.grow} />
+        {installable.length > 0 && (
+          <Button size="small" onClick={() => installable.forEach((t) => void installTool(t.name))}>
+            {tx`Install Missing (${count})`}
+          </Button>
+        )}
+      </div>
+      {language.missing.length > 0 && (
+        <div className={styles.banner} role="note">
+          <T>Not installed:</T>
+          {language.missing.map((t) => (
+            <button key={t.name} type="button" className={styles.linkButton} onClick={() => reveal(t.name)}>
+              {t.displayName}
+            </button>
+          ))}
+        </div>
+      )}
+      {KINDS.map(([kind, title]) => {
+        const tools = language.tools.filter((t) => t.kind === kind);
+        if (!tools.length) return null;
+        // Interchangeable servers form a radio group each; the rest run alongside them.
+        // A group belongs to this language when all of its servers serve it (kmp-lsp is in
+        // the Java group and the Kotlin one).
+        const names = new Set(tools.map((t) => t.name));
+        const groups =
+          kind === "languageServer"
+            ? [
+                ...new Map(
+                  tools
+                    .filter((t) => t.alternatives.length > 1 && t.alternatives.every((n) => names.has(n)))
+                    .map((t) => [t.alternatives.join("\n"), t.alternatives]),
+                ).values(),
+              ]
+            : [];
+        const grouped = new Set(groups.flat());
+        const rest = tools.filter((t) => !grouped.has(t.name));
+        const toggles = kind === "languageServer";
+        return (
+          <Section key={kind} title={title}>
+            {groups.map((g) => (
+              <ServerChoice key={g.join("\n")} names={g} tools={tools} servers={servers} {...table} />
+            ))}
+            {rest.length > 0 && (
+              <div className={styles.group}>
+                {groups.length > 0 && (
+                  <div className={styles.groupTitle}>
+                    <T>Additional servers</T>
+                    <span className={styles.groupHint}>
+                      <T>Run alongside the one above</T>
+                    </span>
+                  </div>
+                )}
+                <ToolTable
+                  {...table}
+                  tools={rest}
+                  label={tx(title)}
+                  leading={
+                    toggles
+                      ? (t) => (
+                          <Checkbox
+                            checked={!disabled(t)}
+                            onChange={(on) => setServerEnabled(form, t.name, on)}
+                            aria-label={tx`Use ${t.displayName}`}
+                          />
+                        )
+                      : undefined
+                  }
+                />
+              </div>
+            )}
+            {selected && tools.includes(selected) && (
+              <ToolDetails
+                key={selected.name}
+                tool={selected}
+                language={language.name}
+                pending={pending.has(selected.name)}
+              />
+            )}
+          </Section>
+        );
+      })}
+    </div>
+  );
+}
+
 export function LanguageServersPage() {
-  const { tools, loaded, loading, error } = useTools();
+  const { tools, loaded, loading, error, checkingUpdates } = useTools();
   const form = useSettingsForm();
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<Filter>("all");
-  const [selectedName, setSelectedName] = useState<string | null>(null);
+  const [needsSetup, setNeedsSetup] = useState(false);
+  const [selectedLanguage, setSelectedLanguage] = useState<string | null>(null);
+  const [selectedTool, setSelectedTool] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const list = useRef<HTMLUListElement>(null);
   const known = useLanguageChoices();
   const staged = form.useValue("languageServers") as Record<string, ServerEntry> | undefined;
   const servers = useMemo(() => staged ?? {}, [staged]);
@@ -256,6 +652,8 @@ export function LanguageServersPage() {
 
   useEffect(() => {
     void refreshTools();
+    // Asks each install source once per session; the refresh button asks again.
+    if (!useTools.getState().updatesChecked) void checkToolUpdates();
     // Applied paths and servers change what is found and listed.
     return onIdeEvent("settingsChanged", (e) => {
       if (!e.key || /^(tools|languageServers)(\.|$)/.test(e.key)) void refreshTools();
@@ -275,48 +673,62 @@ export function LanguageServersPage() {
     return { all: list, pending: added };
   }, [tools, servers, applied, known]);
 
-  const shown = useMemo(() => filterTools(all, query, filter), [all, query, filter]);
-  const ready = shown.filter((t) => t.status !== "missing");
-  const missing = shown.filter((t) => t.status === "missing");
-  const ordered = [...ready, ...missing];
-  const selected = ordered.find((t) => t.name === selectedName) ?? ordered[0] ?? null;
-  const missingCount = all.filter((t) => t.status === "missing").length;
-  const removable = !!selected && (servers[selected.name]?.languages?.length ?? 0) > 0;
+  const languages = useMemo(() => groupByLanguage(all), [all]);
+  const shown = useMemo(() => filterLanguages(languages, query, needsSetup), [languages, query, needsSetup]);
+  // A tool picked outside the list (a server just added) brings its language along.
+  const current = shown.find((l) => l.name === selectedLanguage);
+  const selected =
+    (selectedTool && !current?.tools.some((t) => t.name === selectedTool)
+      ? shown.find((l) => l.tools.some((t) => t.name === selectedTool))
+      : current) ??
+    shown[0] ??
+    null;
+  const tool = selected?.tools.find((t) => t.name === selectedTool) ?? null;
+  const removable = !!tool && (servers[tool.name]?.languages?.length ?? 0) > 0;
+
+  const selectLanguage = (name: string) => {
+    setSelectedLanguage(name);
+    setSelectedTool(null);
+  };
+
+  // Opened as `languages.servers#<tool>` (the status bar's Language Servers popup): that tool's
+  // language and details.
+  const { focus, consume } = useSettingsPageFocus();
+  useEffect(() => {
+    if (!focus) return;
+    const frame = requestAnimationFrame(() => {
+      setNeedsSetup(false);
+      setQuery("");
+      setSelectedLanguage(null);
+      setSelectedTool(focus);
+      consume();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [focus, consume]);
+
+  const selectedName = selected?.name;
+  useEffect(() => {
+    if (!selectedName) return;
+    list.current?.querySelector<HTMLElement>(`[data-language="${CSS.escape(selectedName)}"]`)?.scrollIntoView?.({
+      block: "nearest",
+    });
+  }, [selectedName]);
 
   const onListKey = (e: KeyboardEvent<HTMLUListElement>) => {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
     e.preventDefault();
-    const i = selected ? ordered.indexOf(selected) : -1;
-    const next = ordered[Math.min(ordered.length - 1, Math.max(0, i + (e.key === "ArrowDown" ? 1 : -1)))];
+    const i = selected ? shown.indexOf(selected) : -1;
+    const next = shown[Math.min(shown.length - 1, Math.max(0, i + (e.key === "ArrowDown" ? 1 : -1)))];
     if (!next) return;
-    setSelectedName(next.name);
-    e.currentTarget.querySelector<HTMLElement>(`[data-tool="${CSS.escape(next.name)}"]`)?.focus();
+    selectLanguage(next.name);
+    e.currentTarget.querySelector<HTMLElement>(`[data-language="${CSS.escape(next.name)}"]`)?.focus();
   };
-
-  const group = (title: string, list: ToolInfo[]) =>
-    list.length > 0 && (
-      <>
-        <li className={styles.groupHeader} role="presentation">
-          <T>{title}</T> <span className={styles.groupCount}>{list.length}</span>
-        </li>
-        {list.map((t) => (
-          <ToolRow
-            key={t.name}
-            tool={t}
-            selected={t === selected}
-            off={servers[t.name]?.enabled === false}
-            pending={pending.has(t.name)}
-            onSelect={() => setSelectedName(t.name)}
-          />
-        ))}
-      </>
-    );
 
   return (
     <div className={styles.page}>
       <p className={styles.intro}>
         {tx(
-          "Language servers and debug adapters used by the IDE. Missing tools can be installed into the IDE's own tools folder; nothing is downloaded until you click Install.",
+          "Language servers, formatters and debug adapters for each language. Missing tools can be installed into the IDE's own tools folder; nothing is downloaded until you click Install.",
         )}
       </p>
       {error && (
@@ -333,47 +745,60 @@ export function LanguageServersPage() {
               size="small"
               title="Remove Language Server"
               disabled={!removable}
-              onClick={() => selected && form.set(serverKey(selected.name), null)}
+              onClick={() => tool && form.set(serverKey(tool.name), null)}
             />
             <span className={styles.toolbarSep} aria-hidden />
-            {loading ? (
+            {loading || checkingUpdates ? (
               <Spinner size={14} label="Checking tools" />
             ) : (
               <IconButton
                 icon="refresh"
                 size="small"
                 title="Re-check installed tools"
-                onClick={() => void refreshTools()}
+                onClick={() => {
+                  void refreshTools();
+                  void checkToolUpdates();
+                }}
               />
             )}
-            <SearchField
-              className={styles.search}
-              value={query}
-              onChange={setQuery}
-              placeholder="Filter by tool or language"
-              aria-label="Filter language servers"
+            <IconButton
+              icon="filter"
+              size="small"
+              title="Show Only Languages Missing Tools"
+              pressed={needsSetup}
+              onClick={() => setNeedsSetup(!needsSetup)}
             />
           </div>
-          <div className={styles.segmented} role="radiogroup" aria-label={tx("Show")}>
-            {(["all", "missing", "installed"] as const).map((f) => (
-              <button
-                key={f}
-                type="button"
-                role="radio"
-                aria-checked={filter === f}
-                className={clsx(styles.segment, filter === f && styles.segmentOn)}
-                onClick={() => setFilter(f)}
-              >
-                {f === "all" ? tx("All") : f === "missing" ? tx`Missing (${missingCount})` : tx("Available")}
-              </button>
+          <SearchField
+            className={styles.search}
+            value={query}
+            onChange={setQuery}
+            placeholder="Language or tool"
+            aria-label="Filter languages"
+          />
+          <ul ref={list} className={styles.list} aria-label={tx("Languages")} onKeyDown={onListKey}>
+            {shown.map((l) => (
+              <li key={l.name} className={clsx(styles.row, l === selected && styles.rowSelected)}>
+                <button
+                  type="button"
+                  className={styles.rowMain}
+                  aria-current={l === selected || undefined}
+                  data-language={l.name}
+                  onClick={() => selectLanguage(l.name)}
+                >
+                  <LanguageIcon name={l.name} known={known} />
+                  <span className={styles.rowName}>{l.name === OTHER ? tx(OTHER) : l.name}</span>
+                  {l.missing.length > 0 && (
+                    <span className={styles.rowHint}>
+                      {l.state === "none" ? tx("Not set up") : tx`${l.missing.length} missing`}
+                    </span>
+                  )}
+                </button>
+              </li>
             ))}
-          </div>
-          <ul className={styles.list} aria-label={tx("Language servers and debug adapters")} onKeyDown={onListKey}>
-            {group("Available", ready)}
-            {group("Missing", missing)}
             {loaded && shown.length === 0 && (
               <li className={styles.listEmpty}>
-                <T>No tools match.</T>
+                <T>No languages match.</T>
               </li>
             )}
             {!loaded && !error && (
@@ -384,9 +809,17 @@ export function LanguageServersPage() {
           </ul>
         </div>
         {selected ? (
-          <Details key={selected.name} tool={selected} pending={pending.has(selected.name)} />
+          <LanguageDetails
+            key={selected.name}
+            language={selected}
+            selectedTool={selectedTool}
+            pending={pending}
+            servers={servers}
+            known={known}
+            onSelectTool={setSelectedTool}
+          />
         ) : (
-          <EmptyState className={styles.detailsEmpty} title={loaded ? "No tool selected" : "Loading…"} />
+          <EmptyState className={styles.detailsEmpty} title={loaded ? "No language selected" : "Loading…"} />
         )}
       </div>
       {adding && (
@@ -395,9 +828,10 @@ export function LanguageServersPage() {
           onClose={() => setAdding(false)}
           onAdded={(name) => {
             setAdding(false);
-            setFilter("all");
+            setNeedsSetup(false);
             setQuery("");
-            setSelectedName(name);
+            setSelectedLanguage(null);
+            setSelectedTool(name);
           }}
         />
       )}

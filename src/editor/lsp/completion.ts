@@ -13,9 +13,9 @@ import {
   completeFromList,
   completionStatus,
   currentCompletions,
+  moveCompletionSelection,
   pickedCompletion,
   selectedCompletion,
-  snippet,
   startCompletion,
   type Completion,
   type CompletionContext,
@@ -23,8 +23,17 @@ import {
   type CompletionResult,
   type CompletionSource,
 } from "@codemirror/autocomplete";
-import { EditorSelection, Prec, type Text } from "@codemirror/state";
-import { EditorView, ViewPlugin, keymap, type ViewUpdate } from "@codemirror/view";
+import { EditorSelection, EditorState, Prec, StateEffect, StateField, type Text } from "@codemirror/state";
+import {
+  EditorView,
+  ViewPlugin,
+  getTooltip,
+  keymap,
+  repositionTooltips,
+  showTooltip,
+  type Rect,
+  type ViewUpdate,
+} from "@codemirror/view";
 import {
   call,
   commands,
@@ -43,20 +52,28 @@ import {
   typeColumnText,
   withoutDuplicates,
 } from "./completionItems";
-import { lspSnippetToCm, snippetVariables } from "./snippet";
+import { applySnippet } from "@/editor/core/cm/linkedSnippet";
+import { lspSnippetToCm, lspSnippetToPlainWithCaret, snippetVariables } from "./snippet";
 import { docOf, isUnavailable, lspDoc, lspRequest, reportLspError } from "./lsp";
 import { offsetToPos, posToOffset, textEditsToChanges } from "./positions";
 import { isEmptyMarkup, renderCode, renderMarkup } from "./markdown";
 import { selectableText } from "@/ui/selectableText";
-import { iconNode } from "./iconMarkup";
+import { iconNode } from "@/ui/iconNode";
 import { parameterInfoOrLeave, triggerSignatureHelp } from "./signature";
 import { featureBackoff } from "./availability";
-import { pathCompletionSource } from "./fileReferences";
+import { pathCompletionSource, pathContext, pathLike } from "./fileReferences";
+import { cssVariablePrefix, cssVariableSource, STYLESHEETS, type VariableOption } from "./cssVariables";
+import { javaDeclarationAt, variableNameSource } from "./variableNames";
 import { editorPrefs } from "@/platform/editorSettings";
 import { tx } from "@/platform/i18n";
 import { showHint } from "./hint";
 import { inplaceRenameActive } from "./inplaceRename";
-import { phpConstructDocumentation } from "./phpConstructs";
+import { languageSemantics } from "./semantic";
+import { remoteChange } from "@/editor/api";
+import { tooltipBounds } from "@/editor/core/cm/setup";
+import { completionLabelOffset } from "./theme";
+import { expectedFromSignature, expectedFromText, mentionedNames, smartItems } from "./smartCompletion";
+import { pythonInheritanceGraph } from "@/editor/navigation/inheritanceGraph";
 
 interface RequestContext {
   doc: number;
@@ -157,6 +174,43 @@ function resetLookupDocs() {
   docWaiters.clear();
 }
 
+const DOC_MIN_WIDTH = 220;
+const DOC_MAX_WIDTH = 440;
+const DOC_MAX_HEIGHT = 320;
+const DOC_GAP = 6;
+
+/**
+ * Places the documentation beside the lookup, on whichever side has more room,
+ * with the two popups' top edges aligned. Room is measured to the window's
+ * edges, so a narrow editor still has space for a readable pane; when even the
+ * window is too narrow, the pane keeps a readable width rather than covering the
+ * options.
+ */
+export function positionCompletionInfo(
+  _view: EditorView,
+  list: Rect,
+  _option: Rect,
+  _info: Rect,
+  space: Rect,
+): { style: string; class: string } {
+  const windowWidth = document.documentElement.clientWidth;
+  const rightRoom = windowWidth - list.right - DOC_GAP;
+  const leftRoom = list.left - DOC_GAP;
+  const side = rightRoom >= leftRoom ? "right" : "left";
+  const room = side === "right" ? rightRoom : leftRoom;
+  const width = Math.max(DOC_MIN_WIDTH, Math.min(DOC_MAX_WIDTH, room));
+  return {
+    class: `cm-completionInfo-${side}`,
+    style: [
+      "top: 0",
+      // `left`/`right` names the side the pane sits on; the offset goes on the opposite edge.
+      `${side === "right" ? "left" : "right"}: calc(100% + ${DOC_GAP}px)`,
+      `max-width: ${width}px`,
+      `max-height: ${Math.min(DOC_MAX_HEIGHT, space.bottom - list.top)}px`,
+    ].join("; "),
+  };
+}
+
 /**
  * F1 while the lookup is open: shows the selected item's docs beside it
  * (`shown`), or reports that they are already showing (`showing`) so the
@@ -229,6 +283,14 @@ export function applyLspCompletion(
     .map((c) => ({ from: mapOld(c.from), to: mapOld(c.to), insert: c.insert }))
     .filter((c) => c.to <= start || c.from >= end);
 
+  const atCarets = applyAtCarets(view, completion, item, start, end, extra);
+  if (atCarets) {
+    if (item === completion.lsp && !item.additionalEdits.length && item.data != null)
+      void applyLateEdits(view, completion, start);
+    runCommand(view, item, atCarets === true ? [] : atCarets);
+    return;
+  }
+
   let insertedParens: ReturnType<typeof callParens> = null;
   let bareCall: number | null = null;
   if (item.isSnippet) {
@@ -238,7 +300,8 @@ export function applyLspCompletion(
       start = tr.changes.mapPos(start, 1);
       end = tr.changes.mapPos(end, 1);
     }
-    snippet(lspSnippetToCm(item.insertText, snippetVariables(req.path)))(view, completion, start, end);
+    const source = lspSnippetToCm(item.insertText, snippetVariables(req.path));
+    applySnippet(view, [{ from: start, to: end, snippet: source }], completion);
     // A call snippet without a stop (`ArrayList<>()`): the caret goes inside until
     // signature help says there is nothing to pass.
     const head = view.state.selection.main.head;
@@ -280,6 +343,80 @@ export function applyLspCompletion(
   runCommand(view, item);
 }
 
+/**
+ * With several carets, the item goes in at each caret whose text around it matches the main
+ * caret's (the typed prefix, and what a replacing edit overwrites), as IDEA completes at all
+ * carets. Snippets go in as plain text with the caret at their first stop, since fields cannot
+ * be edited at several places at once. False with a single caret, or no other caret matches.
+ * For an item its server inserts: the other carets the server's edit is to be repeated at.
+ */
+function applyAtCarets(
+  view: EditorView,
+  completion: LspCompletion,
+  item: CompletionItem,
+  start: number,
+  end: number,
+  extra: { from: number; to: number; insert: string }[],
+): boolean | number[] {
+  const state = view.state;
+  const { ranges, mainIndex } = state.selection;
+  if (ranges.length < 2) return false;
+  const head = state.selection.main.head;
+  // The server inserts the item at the main caret; `caretAfterServerInsert` repeats it at the
+  // others that have the same text before them.
+  if (serverInserts(item)) {
+    const prefix = state.sliceDoc(start, head);
+    return ranges
+      .filter((r, i) => i !== mainIndex && r.empty && r.head >= prefix.length)
+      .filter((r) => state.sliceDoc(r.head - prefix.length, r.head) === prefix)
+      .map((r) => r.head);
+  }
+  if (head < start || head > end) return false;
+  const prefix = state.sliceDoc(start, head);
+  const suffix = state.sliceDoc(head, end);
+  const sites: { from: number; to: number; main: boolean }[] = [];
+  ranges.forEach((r, i) => {
+    if (i === mainIndex) return sites.push({ from: start, to: end, main: true });
+    if (!r.empty) return;
+    const from = r.head - prefix.length;
+    const to = r.head + suffix.length;
+    if (from < 0 || to > state.doc.length) return;
+    if (state.sliceDoc(from, r.head) !== prefix || state.sliceDoc(r.head, to) !== suffix) return;
+    sites.push({ from, to, main: false });
+  });
+  if (sites.length < 2) return false;
+  sites.sort((a, b) => a.from - b.from);
+  for (let i = 1; i < sites.length; i++) if (sites[i]!.from < sites[i - 1]!.to) return false;
+  if (extra.some((c) => sites.some((site) => c.from < site.to && c.to > site.from))) return false;
+
+  // Parentheses depend on what follows each site: `a.cr|` gets them, `b.cr|()` does not.
+  const textAt = (site: { from: number; to: number }): { text: string; caret: number } => {
+    if (item.isSnippet) return lspSnippetToPlainWithCaret(item.insertText, snippetVariables(completion.req.path));
+    const parens = editorPrefs().completion.insertParentheses
+      ? callParens(item, state.doc.lineAt(site.from), site.from, site.to)
+      : null;
+    const text = item.insertText + (parens ? "()" : "");
+    return { text, caret: text.length - (parens === "inside" ? 1 : 0) };
+  };
+  const texts = sites.map(textAt);
+  const changes = state.changes([
+    ...extra,
+    ...sites.map((site, i) => ({ from: site.from, to: site.to, insert: texts[i]!.text })),
+  ]);
+  const cursors = sites.map((site, i) => EditorSelection.cursor(changes.mapPos(site.from, -1) + texts[i]!.caret));
+  view.dispatch({
+    changes,
+    selection: EditorSelection.create(
+      cursors,
+      sites.findIndex((site) => site.main),
+    ),
+    userEvent: "input.complete",
+    annotations: pickedCompletion.of(completion),
+    scrollIntoView: true,
+  });
+  return true;
+}
+
 const CALLABLE = new Set(["function", "method", "constructor"]);
 /** Lines where a callable is named, not called (imports, `use` paths). */
 const IMPORT_LINE = /^\s*(import|from|use|pub\s+use|export\s+\{|#include|require)\b/;
@@ -296,9 +433,11 @@ export function callParens(
   start: number,
   end: number,
 ): "inside" | "after" | null {
-  if (item.isSnippet || !item.kind || !CALLABLE.has(item.kind) || /[(<[{]/.test(item.insertText)) return null;
+  // An empty text is inserted by the item's server command (kotlin-lsp), parentheses included.
+  if (item.isSnippet || !item.kind || !CALLABLE.has(item.kind) || !item.insertText || /[(<[{]/.test(item.insertText))
+    return null;
   const next = line.text.charAt(end - line.from);
-  if (next && /[(\p{L}\p{N}_$]/u.test(next)) return null;
+  if (next && /[(\p{L}\p{N}_$'"`]/u.test(next)) return null;
   if (IMPORT_LINE.test(line.text.slice(0, start - line.from))) return null;
   const sig = item.labelDetail ?? item.detail ?? "";
   return /^\s*\(\s*\)/.test(sig) || /^\s*fn\s*\(\s*\)|^\s*\(\)\s*(=>|->|:)/.test(sig) ? "after" : "inside";
@@ -321,24 +460,153 @@ async function applyLateEdits(view: EditorView, c: LspCompletion, insertedAt: nu
   view.dispatch({ changes: edits, userEvent: "input.complete" });
 }
 
+/**
+ * Where the caret was when an item its server inserts was picked, and the other carets to
+ * repeat the edit at, until that edit lands (`null`: none).
+ */
+interface ServerInsert {
+  at: number;
+  others: readonly number[];
+  /** The item is a call that takes arguments: the caret goes inside an inserted `()`. */
+  inside?: boolean;
+}
+const awaitServerInsert = StateEffect.define<ServerInsert | null>();
+const serverInsertAt = StateField.define<ServerInsert | null>({
+  create: () => null,
+  update(value, tr) {
+    for (const e of tr.effects) if (e.is(awaitServerInsert)) return e.value;
+    // The edit landed, or the caret moved on before it did.
+    if (value === null || tr.annotation(remoteChange) || tr.selection) return null;
+    return {
+      at: tr.changes.mapPos(value.at, -1),
+      others: value.others.map((p) => tr.changes.mapPos(p, -1)),
+      inside: value.inside,
+    };
+  },
+});
+
+/** The server's edit repeated at other carets: applied as a local edit, so it reaches the document model. */
+const mirrorServerInsert = StateEffect.define<{
+  changes: { from: number; to: number; insert: string }[];
+  main: number;
+}>();
+const applyServerInsertMirror = EditorView.updateListener.of((u) => {
+  for (const tr of u.transactions)
+    for (const e of tr.effects) {
+      if (!e.is(mirrorServerInsert)) continue;
+      const { view } = u;
+      const doc = u.state.doc;
+      const { changes, main } = e.value;
+      queueMicrotask(() => {
+        if (!view.dom.isConnected || view.state.doc !== doc) return;
+        const mirror = view.state.changes(changes);
+        const cursors = [
+          { pos: mirror.mapPos(main, 1), main: true },
+          ...changes.map((c) => ({ pos: mirror.mapPos(c.from, -1) + c.insert.length, main: false })),
+        ].sort((a, b) => a.pos - b.pos);
+        view.dispatch({
+          changes: mirror,
+          selection: EditorSelection.create(
+            cursors.map((c) => EditorSelection.cursor(c.pos)),
+            cursors.findIndex((c) => c.main),
+          ),
+          userEvent: "input.complete",
+        });
+      });
+    }
+});
+
+/**
+ * The server's edit inserts the item at the caret: the caret goes after it, as after any other
+ * completion (a remote insertion at the caret would otherwise leave it in front).
+ */
+const caretAfterServerInsert = EditorState.transactionFilter.of((tr) => {
+  const pending = tr.startState.field(serverInsertAt, false);
+  const at = pending?.at;
+  const caret = tr.startState.selection.main;
+  if (
+    pending == null ||
+    at == null ||
+    !tr.docChanged ||
+    !tr.annotation(remoteChange) ||
+    !caret.empty ||
+    caret.head !== at
+  )
+    return tr;
+  let edit: { from: number; to: number; insert: string } | null = null;
+  tr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+    if (!edit && fromA <= at && toA >= at) edit = { from: fromA, to: toA, insert: inserted.toString() };
+  });
+  const landed = edit as { from: number; to: number; insert: string } | null;
+  if (!landed) return tr;
+  const mainAfter = tr.changes.mapPos(at, 1);
+  // Further carets (picked with several): the same edit around each, where the text matches.
+  const replaced = tr.startState.sliceDoc(landed.from, landed.to);
+  const before = at - landed.from;
+  const after = landed.to - at;
+  const others: { from: number; to: number }[] = [];
+  for (const head of pending.others) {
+    const from = head - before;
+    const to = head + after;
+    if (from < 0 || to > tr.startState.doc.length || tr.startState.sliceDoc(from, to) !== replaced) continue;
+    if (tr.changes.touchesRange(from, to)) continue;
+    others.push({ from: tr.changes.mapPos(from, 1), to: tr.changes.mapPos(to, -1) });
+  }
+  const inside =
+    pending.inside && /\(\)$/.test(landed.insert) && tr.newDoc.sliceString(mainAfter - 2, mainAfter) === "()";
+  const selection = EditorSelection.cursor(inside ? mainAfter - 1 : mainAfter);
+  if (!others.length) return [tr, { selection, sequential: true }];
+  // Not part of this transaction: a remote one is not sent back to the document model.
+  const changes = others
+    .sort((a, b) => a.from - b.from)
+    .map((o) => ({ from: o.from, to: o.to, insert: landed.insert }));
+  return [tr, { selection, effects: mirrorServerInsert.of({ changes, main: mainAfter }), sequential: true }];
+});
+
 /** Client-side commands handled by the editor itself (VS Code ids servers commonly send). */
 const CLIENT_COMMANDS = new Set(["editor.action.triggerParameterHints", "editor.action.triggerSuggest"]);
 
-function runCommand(view: EditorView, item: CompletionItem) {
+/** A function or method whose signature lists parameters (`(name: String)`), as far as the item tells. */
+function takesArguments(item: Pick<CompletionItem, "kind" | "labelDetail" | "detail">): boolean {
+  if (item.kind && !CALLABLE.has(item.kind)) return false;
+  return /^\s*\(\s*[^)\s]/.test(item.labelDetail ?? item.detail ?? "");
+}
+
+/** kotlin-lsp inserts the item itself (`jetbrains.kotlin.completion.apply`): nothing goes in here. */
+function serverInserts(item: CompletionItem): boolean {
+  const cmd = item.command?.command;
+  return !!cmd && !item.insertText && !CLIENT_COMMANDS.has(cmd) && !cmd.startsWith("editor.");
+}
+
+function runCommand(view: EditorView, item: CompletionItem, others: readonly number[] = []) {
   const command = item.command;
   if (!command?.command) return;
   const cmd = command.command;
+  const serverInserted = serverInserts(item);
+  if (serverInserted)
+    view.dispatch({
+      effects: awaitServerInsert.of({ at: view.state.selection.main.head, others, inside: takesArguments(item) }),
+    });
   if (cmd === "editor.action.triggerParameterHints") setTimeout(() => triggerSignatureHelp(view), 0);
   else if (cmd === "editor.action.triggerSuggest") setTimeout(() => startCompletion(view), 0);
   else if (!CLIENT_COMMANDS.has(cmd) && !cmd.startsWith("editor.")) {
     const doc = docOf(view);
     // Server commands (auto-import, postfix…); resulting edits come back as workspace/applyEdit.
     if (doc)
-      void lspRequest(() => commands.lspExecuteCommand(doc.doc, command)).catch((e: unknown) =>
-        reportLspError(view, e, false),
-      );
+      void lspRequest(() => commands.lspExecuteCommand(doc.doc, command))
+        .catch((e: unknown) => reportLspError(view, e, false))
+        .finally(() => {
+          // The edit arrives before the command's answer; allow for the document update.
+          if (serverInserted)
+            setTimeout(() => {
+              if (view.dom.isConnected && view.state.field(serverInsertAt, false) != null)
+                view.dispatch({ effects: awaitServerInsert.of(null) });
+            }, SERVER_INSERT_WAIT_MS);
+        });
   }
 }
+
+const SERVER_INSERT_WAIT_MS = 1000;
 
 // ---------------------------------------------------------------------------
 // Source
@@ -353,14 +621,24 @@ function cancelInflight() {
   inflight = null;
 }
 
+/** Inside a stylesheet's `var(`, where `cssVariableSource` lists the project's custom properties instead of the server or the document's words. */
+function inVarCall(ctx: CompletionContext): boolean {
+  const language = ctx.state.facet(lspDoc)?.language ?? "";
+  if (!STYLESHEETS.has(language) || !isTauri()) return false;
+  const line = ctx.state.doc.lineAt(ctx.pos);
+  return cssVariablePrefix(line.text.slice(0, ctx.pos - line.from)) !== null;
+}
+
 /** Language-data completion sources (keywords etc.), used when no server answers. */
 async function fallback(ctx: CompletionContext): Promise<CompletionResult | null> {
+  if (inVarCall(ctx)) return null;
   const sources = ctx.state.languageDataAt<CompletionSource | readonly (string | Completion)[]>(
     "autocomplete",
     ctx.pos,
   );
   for (const s of sources) {
     const source = typeof s === "function" ? s : completeFromList(s);
+    // oxlint-disable-next-line no-await-in-loop -- falls back to the next source only when this one has no result; first answer wins
     const r = await source(ctx);
     if (r) return r;
   }
@@ -369,7 +647,7 @@ async function fallback(ctx: CompletionContext): Promise<CompletionResult | null
 
 export function makeCompletion(item: CompletionItem, req: RequestContext): LspCompletion {
   if (item.kind === "keyword" && isEmptyMarkup(item.documentation)) {
-    const value = phpConstructDocumentation(req.language, item.label);
+    const value = languageSemantics(req.language)?.constructDocumentation?.(item.label);
     if (value) item = { ...item, documentation: { kind: "markdown", value } };
   }
   // The lookup handles commit characters itself (focused lookups only, see `lookupKeys`).
@@ -395,11 +673,9 @@ export function makeCompletion(item: CompletionItem, req: RequestContext): LspCo
  * for none) and `typeText` (the right-aligned type column), like LSP items.
  */
 const contributedSource: CompletionSource = async (ctx) => {
-  const results: CompletionResult[] = [];
-  for (const source of ctx.state.languageDataAt<CompletionSource>("openideaCompletion", ctx.pos)) {
-    const result = await source(ctx);
-    if (result) results.push(result);
-  }
+  const sources = ctx.state.languageDataAt<CompletionSource>("openideaCompletion", ctx.pos);
+  const answers = await Promise.all(sources.map((source) => source(ctx)));
+  const results = answers.filter((r): r is CompletionResult => !!r);
   return mergeResults(results);
 };
 
@@ -428,10 +704,11 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
   const doc = ctx.state.facet(lspDoc);
   if (!doc || doc.readOnly) return null;
   const word = ctx.matchBefore(WORD_BEFORE);
-  const trigger = triggerCharacter(ctx.state.sliceDoc(Math.max(0, ctx.pos - 2), ctx.pos));
+  const trigger = triggerCharacter(ctx.state.sliceDoc(Math.max(0, ctx.pos - 128), ctx.pos), doc.language);
   if (!ctx.explicit && !word && !trigger) return null;
   if (!ctx.explicit && word && !trigger && /^\d/.test(word.text)) return null;
-  if (completionBackoff.active(doc.doc)) return fallback(ctx);
+  const smart = ctx.state.field(smartLookup, false) ?? false;
+  if (!ctx.explicit && completionBackoff.active(doc.doc)) return smart ? null : fallback(ctx);
   cancelInflight();
   const id = nextRequestId();
   inflight = id;
@@ -444,16 +721,44 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
       () => commands.lspCompletion(id, doc.doc, offsetToPos(ctx.state.doc, ctx.pos), trigger),
       () => inflight === id,
     );
+    completionBackoff.clear(doc.doc);
   } catch (e) {
     if (isUnavailable(e)) {
       completionBackoff.mark(doc.doc);
-      return fallback(ctx);
+      return smart ? null : fallback(ctx);
     }
     return null;
   } finally {
     if (inflight === id) inflight = null;
   }
-  if (ctx.aborted || !list.items.length) return list.items.length ? null : fallback(ctx);
+  if (ctx.aborted || !list.items.length) return list.items.length || smart ? null : fallback(ctx);
+  let lower: ReadonlySet<CompletionItem> = new Set();
+  if (smart) {
+    const expected = await expectedType(ctx, doc.doc, word?.from ?? ctx.pos);
+    if (ctx.aborted) return null;
+    if (!expected) {
+      smartHint(ctx, tx("No expected type at the caret"));
+      return null;
+    }
+    const from = word?.from ?? ctx.pos;
+    const graph = doc.language === "python" ? await pythonInheritanceGraph().catch(() => []) : [];
+    const bases = new Map<string, string[]>();
+    for (const c of graph) bases.set(c.name, [...(bases.get(c.name) ?? []), ...c.bases]);
+    const smartResult = await smartItems(list.items, expected, (item) => resolveItem(doc.doc, item), {
+      typed: word?.text ?? "",
+      member: ctx.state.sliceDoc(from - 1, from) === ".",
+      mentioned: mentionedNames(ctx.state.doc.toString()),
+      bases: (name) => bases.get(name) ?? [],
+      aborted: () => ctx.aborted,
+    });
+    if (ctx.aborted) return null;
+    list = { ...list, items: smartResult.items };
+    lower = smartResult.lower;
+    if (!list.items.length) {
+      smartHint(ctx, tx`No suggestions of type ${expected}`);
+      return null;
+    }
+  }
   const req: RequestContext = { doc: doc.doc, path: doc.path, language: doc.uiMode, pos: ctx.pos, text: ctx.state.doc };
   const prefs = editorPrefs().completion;
   const typed = word?.text ?? "";
@@ -462,6 +767,7 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
       ? list.items.filter((it) => matchesCase(it.filterText ?? it.label, typed, prefs.caseSensitivity))
       : list.items,
   );
+  if (inVarCall(ctx)) items = items.filter((it) => !it.label.startsWith("--"));
   // A server snippet named like a live template (jdtls `sout`, `fori`) would be listed twice; the template wins.
   if (items.some((it) => it.kind === "snippet")) {
     const own = await contributedSource(ctx);
@@ -471,9 +777,17 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
   }
   return {
     from: word ? word.from : ctx.pos,
-    options: items.map((item) => makeCompletion(item, req)),
-    // "All letters" must re-check case on every keystroke.
-    validFor: list.isIncomplete || (prefs.matchCase && prefs.caseSensitivity === "all") ? undefined : VALID_FOR,
+    options: items.map((item) => {
+      const option = makeCompletion(item, req);
+      // Smart Type: an item that may fit (`Any`) follows the ones that do.
+      if (lower.has(item)) option.boost = -10;
+      return option;
+    }),
+    // "All letters" must re-check case on every keystroke; Smart Type resolved only what matched the typed letters.
+    validFor:
+      list.isIncomplete || (prefs.matchCase && prefs.caseSensitivity === "all") || (smart && typed)
+        ? undefined
+        : VALID_FOR,
     filter: true,
   };
 }
@@ -559,11 +873,67 @@ function exclusiveSource(ctx: CompletionContext): CompletionSource | null {
   return null;
 }
 
+/**
+ * Smart Type completion: while its lookup is open, the language server's items are narrowed to
+ * the caret's expected type and the other sources stay out.
+ */
+const setSmartLookup = StateEffect.define<boolean>();
+const smartLookup = StateField.define<boolean>({
+  create: () => false,
+  update: (value, tr) => tr.effects.reduce((v, e) => (e.is(setSmartLookup) ? e.value : v), value),
+});
+
+/** Ends Smart Type mode when its lookup closes or finds nothing. */
+const endSmartLookup = EditorView.updateListener.of((u) => {
+  if (!u.state.field(smartLookup) || completionStatus(u.startState) === null || completionStatus(u.state) !== null)
+    return;
+  queueMicrotask(() => {
+    if (u.view.state.field(smartLookup) && completionStatus(u.view.state) === null)
+      u.view.dispatch({ effects: setSmartLookup.of(false) });
+  });
+});
+
+/** The type expected at `from`: an annotated assignment, a `return`, else the active parameter's. */
+async function expectedType(ctx: CompletionContext, doc: number, from: number): Promise<string | null> {
+  const fromText = expectedFromText(ctx.state, from);
+  if (fromText) return fromText;
+  const help = await lspRequest(() => commands.lspSignatureHelp(doc, offsetToPos(ctx.state.doc, from))).catch(
+    () => null,
+  );
+  return expectedFromSignature(help);
+}
+
+/** Says why the Smart Type lookup is empty, in place of the generic "No suggestions". */
+function smartHint(ctx: CompletionContext, text: string) {
+  if (!ctx.view) return;
+  explicitPending.delete(ctx.view);
+  showHint(ctx.view, text, { timeout: 2000 });
+}
+
+/** ⌃Space: Basic completion, leaving Smart Type mode as IDEA does. */
+export function basicCompletion(view: EditorView): boolean {
+  if (view.state.field(smartLookup, false)) view.dispatch({ effects: setSmartLookup.of(false) });
+  return explicitCompletion(view);
+}
+
+/** ⌃⇧Space: the lookup lists only what fits the expected type at the caret. */
+export function smartTypeCompletion(view: EditorView): boolean {
+  closeCompletion(view);
+  view.dispatch({ effects: setSmartLookup.of(true) });
+  const started = explicitCompletion(view);
+  if (!started) view.dispatch({ effects: setSmartLookup.of(false) });
+  return started;
+}
+
 /** Show suggestions as you type: sources only answer explicit requests when it is off. */
 function gated(source: CompletionSource): CompletionSource {
   return (ctx) => {
+    if (ctx.state.field(smartLookup, false) && source !== claimingLspSource) return null;
     const only = exclusiveSource(ctx);
     if (only) return source === contributedSource ? only(ctx) : null;
+    // At a Java declaration's name only names fit: IDEA lists no live templates there, and
+    // jdtls' own name proposals repeat the type (`orderBookOrderBook`).
+    if (source !== variableNameSource && javaDeclarationAt(ctx)) return null;
     if (!ctx.explicit && (!editorPrefs().completion.autoPopup || inplaceRenameActive(ctx.state))) return null;
     if (!editorPrefs().completion.sortAlphabetically) return source(ctx);
     return Promise.resolve(source(ctx)).then(
@@ -630,6 +1000,12 @@ const lookupKeys = Prec.highest(
   }),
 );
 
+function moveLookup(view: EditorView, forward: boolean): boolean {
+  if (completionStatus(view.state) !== "active") return false;
+  focusedLookups.add(view);
+  return moveCompletionSelection(forward)(view);
+}
+
 /** IDEA inserts a sole candidate right away on explicit invocation (Code Completion › Automatically insert single suggestions). */
 const AUTO_INSERT_DELAY = 80; // past CodeMirror's interactionDelay
 
@@ -657,12 +1033,18 @@ const lookupTracker = ViewPlugin.fromClass(
         if (options.length === 1 && editorPrefs().completion.autoInsertSingle) {
           const doc = u.state.doc;
           setTimeout(() => {
-            const now = currentCompletions(view.state);
+            const state = view.state;
+            const now = currentCompletions(state);
+            const { head } = state.selection.main;
+            const line = state.doc.lineAt(head);
+            const column = head - line.from;
+            // Keep the lookup open so Tab can replace the remaining identifier.
             if (
-              view.state.doc === doc &&
-              completionStatus(view.state) === "active" &&
+              state.doc === doc &&
+              completionStatus(state) === "active" &&
               now.length === 1 &&
-              now[0] === options[0]
+              now[0] === options[0] &&
+              identifierEnd(line.text, column) === column
             )
               acceptCompletion(view);
           }, AUTO_INSERT_DELAY);
@@ -672,7 +1054,7 @@ const lookupTracker = ViewPlugin.fromClass(
   },
 );
 
-/** ⌃Space: explicit completion (a focused lookup; a sole candidate is inserted at once). */
+/** ⌃Space: explicit completion with a focused lookup. */
 export function explicitCompletion(view: EditorView): boolean {
   explicitPending.add(view);
   const started = startCompletion(view);
@@ -685,6 +1067,13 @@ export function explicitCompletion(view: EditorView): boolean {
 // Rendering
 
 function kindBadge(c: Completion): Node | null {
+  const swatch = (c as VariableOption).swatch;
+  if (swatch) {
+    const span = document.createElement("span");
+    span.className = "cm-lsp-kind cm-lsp-swatch";
+    span.style.setProperty("--swatch", swatch);
+    return span;
+  }
   if (!isLsp(c) && "icon" in c) {
     const icon = (c as RichCompletion).icon;
     if (icon) return iconNode(icon, 16, "cm-lsp-kind");
@@ -735,41 +1124,96 @@ function sortToggle(view: EditorView): HTMLElement {
   return button;
 }
 
-/** IDEA's advertiser bar under the list (one tip: "Press ↵ to insert, ⇥ to replace") and its Sort by Name toggle. */
-const completionFooter = ViewPlugin.fromClass(
+const completionPopup = ViewPlugin.fromClass(
   class {
     constructor(private view: EditorView) {}
     update(u: ViewUpdate) {
-      if (completionStatus(u.state) !== "active") return;
+      // The lookup can show partial results while another source is still pending.
+      const popup = u.state
+        .facet(showTooltip)
+        .map((tooltip) => tooltip && getTooltip(this.view, tooltip))
+        .find((tooltip) => tooltip?.dom.classList.contains("cm-lsp-completion"));
+      if (!popup) return;
+      popup.offset ??= { x: -completionLabelOffset, y: 0 };
+      const t = popup.dom;
       this.view.requestMeasure({
-        read: () => null,
-        write: () => {
-          const scope = this.view.dom.ownerDocument;
-          const tooltips = [
-            ...this.view.dom.querySelectorAll<HTMLElement>(".cm-tooltip-autocomplete"),
-            ...scope.querySelectorAll<HTMLElement>(".cm-tooltip-autocomplete"),
-          ];
-          for (const t of tooltips) {
-            if (t.querySelector(":scope > .cm-lsp-completion-footer")) continue;
-            const footer = document.createElement("div");
+        key: this,
+        read: () => {
+          const { left, right } = tooltipBounds(this.view);
+          return {
+            width: `${Math.max(0, Math.floor(right - left))}px`,
+            fontSize: getComputedStyle(this.view.contentDOM).fontSize,
+          };
+        },
+        write: ({ width, fontSize }) => {
+          if (!t.isConnected) return;
+          const widthChanged = t.style.getPropertyValue("--cm-completion-max-width") !== width;
+          if (widthChanged) t.style.setProperty("--cm-completion-max-width", width);
+          // The body-level tooltip does not inherit the editor's temporary font zoom.
+          const fontChanged = t.style.getPropertyValue("--openidea-editor-font-size") !== fontSize;
+          if (fontChanged) t.style.setProperty("--openidea-editor-font-size", fontSize);
+          let footer = t.querySelector<HTMLElement>(":scope > .cm-lsp-completion-footer");
+          if (!footer) {
+            footer = document.createElement("div");
             footer.className = "cm-lsp-completion-footer";
             const tip = document.createElement("span");
             tip.textContent = tx("Press ↵ to insert, ⇥ to replace");
+            tip.title = tip.textContent;
             footer.append(tip, sortToggle(this.view));
-            t.appendChild(footer);
           }
+          // CodeMirror appends a fresh list when the candidates change.
+          const list = t.querySelector(":scope > ul");
+          const footerMoved = list && list.nextElementSibling !== footer;
+          if (footerMoved) list.after(footer);
+          // CodeMirror has already measured the lookup. Reposition it before this frame paints.
+          if (widthChanged || fontChanged || footerMoved) repositionTooltips(this.view);
         },
       });
     }
   },
 );
 
+let pluginClaim: { pos: number; claimed: Promise<boolean> } | null = null;
+
+const claimingLspSource: CompletionSource = (ctx) => {
+  const result = Promise.resolve(lspCompletionSource(ctx));
+  pluginClaim = {
+    pos: ctx.pos,
+    claimed: result.then((r) => !!r?.options.some((o) => isLsp(o) && o.lsp.server === 0)).catch(() => false),
+  };
+  return result;
+};
+
+const PATH_ONLY_WHEN_PATH_LIKE = new Set(["php", "blade"]);
+
+export function offersPaths(language: string, before: string): boolean {
+  if (!PATH_ONLY_WHEN_PATH_LIKE.has(language)) return true;
+  const found = pathContext(before, language);
+  return !!found && pathLike(found.prefix);
+}
+
+const pathFallbackSource: CompletionSource = async (ctx) => {
+  const line = ctx.state.doc.lineAt(ctx.pos);
+  if (!offersPaths(ctx.state.facet(lspDoc)?.language ?? "", line.text.slice(0, ctx.pos - line.from))) return null;
+  const claim = pluginClaim;
+  if (claim && claim.pos === ctx.pos && (await claim.claimed)) return null;
+  return pathCompletionSource(ctx);
+};
+
 export function completionExtension() {
   return [
     lookupKeys,
     prefetchResolve,
+    smartLookup,
+    endSmartLookup,
     autocompletion({
-      override: [gated(lspCompletionSource), gated(contributedSource), gated(pathCompletionSource)],
+      override: [
+        gated(claimingLspSource),
+        gated(contributedSource),
+        gated(pathFallbackSource),
+        gated(cssVariableSource),
+        gated(variableNameSource),
+      ],
       icons: false,
       addToOptions: [
         { render: kindBadge, position: 20 },
@@ -783,11 +1227,18 @@ export function completionExtension() {
         );
       },
       tooltipClass: () => "cm-lsp-completion",
+      positionInfo: positionCompletionInfo,
     }),
-    completionFooter,
+    completionPopup,
     lookupTracker,
+    serverInsertAt,
+    caretAfterServerInsert,
+    applyServerInsertMirror,
     Prec.highest(
       keymap.of([
+        // macOS: ⌃N / ⌃P are line down / up in text, so they move through the lookup as ↓ / ↑ do.
+        { mac: "Ctrl-n", run: (view) => moveLookup(view, true) },
+        { mac: "Ctrl-p", run: (view) => moveLookup(view, false) },
         {
           key: "Tab",
           run: (view) => {

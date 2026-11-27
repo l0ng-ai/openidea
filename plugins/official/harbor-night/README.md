@@ -4,7 +4,7 @@ An OpenIDEA theme plugin, **Harbor Night**: a dark theme with slate surfaces, a
 teal accent and a warm syntax palette. It is also where new themes start:
 `openidea-plugin new --template theme` copies its theme files, or copy this
 folder. Full documentation, the token reference and porting guides are in
-[`docs/plugins/themes.md`](../../../docs/plugins/themes.md).
+[`plugins/themes.md`](../../themes.md).
 
 ```
 harbor-night/

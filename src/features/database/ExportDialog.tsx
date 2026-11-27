@@ -2,6 +2,7 @@
  * IDEA's Export Data dialog: extractor (format) and its options on the left,
  * a live preview on the right; copies to the clipboard or writes a file.
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { useEffect, useMemo, useState } from "react";
 import { call, commands } from "@/platform/ipc";
 import { Checkbox, Dialog, IconButton, Input, Select, T } from "@/ui";
@@ -9,6 +10,7 @@ import { notifications } from "@/workbench/contributions";
 import {
   DEFAULT_EXPORT_OPTIONS,
   EXPORT_FORMATS,
+  SQL_FORMATS,
   exportData,
   type ExportData,
   type ExportFormat,
@@ -76,7 +78,7 @@ export function ExportDialog({
 
   const browse = async () => {
     try {
-      const { save } = await import("@tauri-apps/plugin-dialog");
+      const { save } = await import("@/platform/dialog");
       const f = EXPORT_FORMATS.find((x) => x.id === format)!;
       const path = await save({ defaultPath: file, filters: [{ name: f.label, extensions: [f.extension] }] });
       if (path) setFile(path);
@@ -118,7 +120,7 @@ export function ExportDialog({
         {
           label: "Copy to Clipboard",
           onClick: () => {
-            void navigator.clipboard?.writeText(text());
+            void writeClipboardText(text());
             closeDialog();
           },
         },
@@ -168,7 +170,7 @@ export function ExportDialog({
           <CodePreview
             className={styles.exportPreviewText}
             aria-label="Export preview"
-            sql={format === "sql"}
+            sql={SQL_FORMATS.has(format)}
             text={preview + (data.rows.length > PREVIEW_ROWS ? `\n… ${data.rows.length - PREVIEW_ROWS} more rows` : "")}
           />
         </div>

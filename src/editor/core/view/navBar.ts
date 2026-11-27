@@ -24,9 +24,10 @@ export function navSegments(
   project: { root: string; name: string } | null,
   path: string,
   chain: readonly OutlineItem[],
+  directory = false,
 ): NavSegment[] {
   const out: NavSegment[] = [];
-  const parent = parentOf(path);
+  const parent = directory ? path : parentOf(path);
   if (project && (parent === project.root || parent.startsWith(project.root + "/"))) {
     out.push({ kind: "dir", path: project.root, label: project.name, root: true });
     const rel = parent.slice(project.root.length + 1);
@@ -36,6 +37,7 @@ export function navSegments(
       out.push({ kind: "dir", path: dir, label: part });
     }
   } else out.push({ kind: "dir", path: parent, label: nameOf(parent) || parent });
+  if (directory) return out;
   const file = nameOf(path);
   out.push({ kind: "file", path, label: file });
   const stem = file.includes(".") ? file.slice(0, file.lastIndexOf(".")) || file : file;
@@ -63,6 +65,17 @@ export function dirChildren(entries: readonly FileEntry[]): NavChild[] {
 /** Children of a file or symbol segment: its outline items (one level). */
 export function symbolChildren(path: string, items: readonly OutlineItem[]): NavChild[] {
   return items.map((item) => ({ kind: "symbol", path, label: item.name, item }));
+}
+
+/**
+ * The segment whose children are the siblings of `chain[index]` (IDEA / PyCharm
+ * breadcrumb chooser): the file for a top-level symbol, else its enclosing symbol.
+ */
+export function siblingSegment(path: string, chain: readonly OutlineItem[], index: number): NavSegment {
+  const parent = index > 0 ? chain[index - 1]! : null;
+  return parent
+    ? { kind: "symbol", path, label: parent.name, item: parent }
+    : { kind: "file", path, label: nameOf(path) };
 }
 
 export function iconOf(x: NavSegment | NavChild): string {

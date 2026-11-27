@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { FIT_INTERVAL_MS, PROCESS_RESIZE_DELAY_MS, fitScheduler, settledResize } from "./fit";
+import { FIT_SETTLE_MS, PROCESS_RESIZE_DELAY_MS, fitScheduler, settledResize } from "./fit";
 import { isAllowedIdeShortcut, terminalKeyAction } from "./keys";
 import { matchCounter } from "./FindBar";
 import { buildSearchDecorations } from "./theme";
@@ -17,6 +17,8 @@ import {
 } from "./store";
 import type { SessionSnapshot } from "./session";
 import { usePlatform } from "@/platform/platformInfo";
+import { useProject } from "@/platform/project";
+import type { Settings } from "@/bindings";
 import { buildTheme, mix, parseColor, terminalFont, toHex } from "./theme";
 
 describe("theme", () => {
@@ -81,8 +83,35 @@ describe("terminal links", () => {
     expect(l?.kind === "file" && [l.path, l.line, l.col]).toEqual(["/Users/me/p/App.tsx", 14, 3]);
   });
 
+  it("keeps the directories and drive of Windows paths", () => {
+    const loc = (text: string) =>
+      findTerminalLinks(text).map((l) => (l.kind === "file" ? [l.text, l.path, l.line, l.col] : l.text));
+    expect(loc("  --> src\\bin\\main.rs:10:5")).toEqual([["src\\bin\\main.rs:10:5", "src\\bin\\main.rs", 10, 5]]);
+    expect(loc("    at run (C:\\p\\web\\index.js:3:7)")).toEqual([
+      ["C:\\p\\web\\index.js:3:7", "C:\\p\\web\\index.js", 3, 7],
+    ]);
+    expect(loc("C:\\p\\Program.cs(10,5): error CS1002")).toEqual([
+      ["C:\\p\\Program.cs(10,5)", "C:\\p\\Program.cs", 10, 5],
+    ]);
+    expect(loc(".\\main.go:5:2: undefined: x")).toEqual([[".\\main.go:5:2", ".\\main.go", 5, 2]]);
+    expect(loc("D:/p/a/b.ts:4")).toEqual([["D:/p/a/b.ts:4", "D:/p/a/b.ts", 4, undefined]]);
+  });
+
   it("ignores plain numbers and URL ports", () => {
     expect(findTerminalLinks("12:30 http://localhost:3000").map((l) => l.kind)).toEqual(["url"]);
+  });
+
+  it("opens file:// URLs as file locations", () => {
+    const line = "[ERROR] file:///develop/mc/src/main/kotlin/top/A%20B.kt:15:56 Unresolved reference 'x'.";
+    expect(findTerminalLinks(line)).toEqual([
+      expect.objectContaining({ kind: "file", path: "/develop/mc/src/main/kotlin/top/A B.kt", line: 15, col: 56 }),
+    ]);
+    expect(findTerminalLinks("see file:///C:/work/a.kt:3")).toEqual([
+      expect.objectContaining({ kind: "file", path: "C:/work/a.kt", line: 3, col: undefined }),
+    ]);
+    expect(findTerminalLinks("file://host/srv/x.txt")).toEqual([
+      expect.objectContaining({ kind: "file", path: "/srv/x.txt", line: undefined }),
+    ]);
   });
 
   it("trims trailing punctuation from URLs", () => {
@@ -173,6 +202,19 @@ describe("terminal keys", () => {
     }
   });
 
+  it("pastes on plain Ctrl+V only on Windows", () => {
+    const ctrlV = key({ key: "v", code: "KeyV", ctrlKey: true });
+    try {
+      usePlatform.setState({ os: "windows" });
+      expect(terminalKeyAction(ctrlV, false)).toEqual({ kind: "paste" });
+      usePlatform.setState({ os: "linux" });
+      expect(terminalKeyAction(ctrlV, false)).toEqual({ kind: "send", data: "\x16" });
+    } finally {
+      usePlatform.setState({ os: "macos" });
+    }
+    expect(terminalKeyAction(ctrlV, false)).toEqual({ kind: "send", data: "\x16" });
+  });
+
   it("keeps Ctrl+C as interrupt on macOS even with a selection", () => {
     usePlatform.setState({ os: "macos" });
     expect(terminalKeyAction(key({ key: "c", code: "KeyC", ctrlKey: true }), true)).not.toEqual({ kind: "copy" });
@@ -195,6 +237,23 @@ describe("terminal keys", () => {
     expect(terminalKeyAction(key({ key: "a" }), false)).toEqual({ kind: "pass" });
   });
 
+  it("sends Shift+Enter as Esc+Return, a newline for Claude Code instead of submitting", () => {
+    expect(terminalKeyAction(key({ key: "Enter", code: "Enter", shiftKey: true }), false)).toEqual({
+      kind: "send",
+      data: "\x1b\r",
+    });
+    expect(terminalKeyAction(key({ key: "Enter", code: "NumpadEnter", shiftKey: true }), true)).toEqual({
+      kind: "send",
+      data: "\x1b\r",
+    });
+    expect(terminalKeyAction(key({ key: "Enter", code: "Enter" }), false)).toEqual({ kind: "pass" });
+    for (const mod of [{ ctrlKey: true }, { altKey: true }, { metaKey: true }]) {
+      expect(terminalKeyAction(key({ key: "Enter", code: "Enter", shiftKey: true, ...mod }), false)).toEqual({
+        kind: "pass",
+      });
+    }
+  });
+
   it("clears a selection with Escape before sending it", () => {
     expect(terminalKeyAction(key({ key: "Escape" }), true)).toEqual({ kind: "clearSelection" });
     expect(terminalKeyAction(key({ key: "Escape", shiftKey: true }), true)).toEqual({ kind: "send", data: "\x1b" });
@@ -209,12 +268,19 @@ describe("terminal keys", () => {
       ["Ctrl+Shift+K", "vcs.push"],
       ["Shift+Escape", "toolwindow.hideActive"],
       ["Ctrl+W Ctrl+F", "terminal.find"],
+      ["Ctrl+T", "terminal.newInEditor"],
+      ["Ctrl+N", "terminal.new"],
     ];
     expect(isAllowedIdeShortcut("Ctrl+Shift+A", bindings)).toBe(true);
     expect(isAllowedIdeShortcut("Ctrl+N", bindings)).toBe(true);
     expect(isAllowedIdeShortcut("Ctrl+Shift+K", bindings)).toBe(true);
     expect(isAllowedIdeShortcut("Shift+Escape", bindings)).toBe(true);
     expect(isAllowedIdeShortcut("Ctrl+W", bindings)).toBe(true);
+    // terminal.newInEditor only escapes in an editor terminal tab, and terminal.new only in the tool window.
+    expect(isAllowedIdeShortcut("Ctrl+T", bindings, false)).toBe(false);
+    expect(isAllowedIdeShortcut("Ctrl+T", bindings, true)).toBe(true);
+    expect(isAllowedIdeShortcut("Ctrl+N", [["Ctrl+N", "terminal.new"]], false)).toBe(true);
+    expect(isAllowedIdeShortcut("Ctrl+N", [["Ctrl+N", "terminal.new"]], true)).toBe(false);
     // Ctrl+E (end of line) and actions outside the list stay with the shell.
     expect(isAllowedIdeShortcut("Ctrl+E", bindings)).toBe(false);
     expect(isAllowedIdeShortcut("Ctrl+K", bindings)).toBe(false);
@@ -259,6 +325,16 @@ describe("terminal find", () => {
     const d = buildSearchDecorations((n) => (n === "--match" ? "#8fa5d6" : n === "--bg-app" ? "#000000" : ""));
     for (const v of Object.values(d)) expect(v).toMatch(/^#[0-9a-f]{6}$/);
     expect(d.matchOverviewRuler).toBe("#8fa5d6");
+
+    const fromSearchTokens = buildSearchDecorations((n) => {
+      if (n === "--bg-app") return "#191a1c";
+      if (n === "--bg-search-match") return "#ba9752";
+      if (n === "--bg-search-match-current") return "#f2c55c";
+      return "";
+    });
+    expect(fromSearchTokens.matchBackground).toBe("#ba9752");
+    expect(fromSearchTokens.activeMatchBackground).toBe("#f2c55c");
+    expect(fromSearchTokens.activeMatchBorder).toBe("#f2c55c");
   });
 });
 
@@ -285,7 +361,7 @@ describe("split layout", () => {
 });
 
 describe("terminalFont", () => {
-  const BASE = '"JetBrains Mono Variable", "JetBrains Mono", ui-monospace, Menlo, monospace';
+  const BASE = '"JetBrains Mono", "JetBrains Mono Variable", ui-monospace, Menlo, monospace';
   const t = {
     useEditorFont: true,
     fontFamily: "JetBrains Mono",
@@ -295,7 +371,7 @@ describe("terminalFont", () => {
     columnWidth: 1,
   };
   const editor = { fontFamily: "JetBrains Mono", fontSize: 10, lineHeight: 12 };
-  const head = (family: string) => family.slice(0, family.indexOf('"Symbols Nerd Font Mono"'));
+  const head = (family: string) => family.slice(0, family.indexOf('"Symbols Nerd Font"'));
 
   it.each([
     // #26: "Use editor font" with the default family must reach the bundled face, not the system monospace.
@@ -303,13 +379,13 @@ describe("terminalFont", () => {
       "editor font, default family",
       t,
       editor,
-      `"JetBrains Mono Variable", "JetBrains Mono", ${BASE.replace(", monospace", "")}, `,
+      `"JetBrains Mono", "JetBrains Mono Variable", ${BASE.replace(", monospace", "")}, `,
     ],
     [
       "editor font, no editor settings",
       t,
       undefined,
-      `"JetBrains Mono Variable", "JetBrains Mono", ${BASE.replace(", monospace", "")}, `,
+      `"JetBrains Mono", "JetBrains Mono Variable", ${BASE.replace(", monospace", "")}, `,
     ],
     [
       "editor font, custom family",
@@ -321,13 +397,13 @@ describe("terminalFont", () => {
       "editor font, editor fallback",
       t,
       { ...editor, fallbackFont: "PingFang SC" },
-      `"JetBrains Mono Variable", "JetBrains Mono", "PingFang SC", ${BASE.replace(", monospace", "")}, `,
+      `"JetBrains Mono", "JetBrains Mono Variable", "PingFang SC", ${BASE.replace(", monospace", "")}, `,
     ],
     [
       "own font, default family",
       { ...t, useEditorFont: false },
       editor,
-      `"JetBrains Mono Variable", "JetBrains Mono", ${BASE.replace(", monospace", "")}, `,
+      `"JetBrains Mono", "JetBrains Mono Variable", ${BASE.replace(", monospace", "")}, `,
     ],
     [
       "own font, custom + fallback",
@@ -343,24 +419,25 @@ describe("terminalFont", () => {
   });
 
   it("resolves bundled Inter in inherited, independent and fallback selections", () => {
-    expect(terminalFont(t, { ...editor, fontFamily: "Inter" }, BASE).family).toMatch(/^"Inter Variable", "Inter",/);
+    expect(terminalFont(t, { ...editor, fontFamily: "Inter" }, BASE).family).toMatch(/^"Inter", "Inter Variable",/);
     expect(terminalFont({ ...t, useEditorFont: false, fontFamily: "Inter" }, editor, BASE).family).toMatch(
-      /^"Inter Variable", "Inter",/,
+      /^"Inter", "Inter Variable",/,
     );
     expect(terminalFont({ ...t, fallbackFontFamily: "Inter" }, editor, BASE).family).toContain(
-      '"Inter Variable", "Inter"',
+      '"Inter", "Inter Variable"',
     );
-    expect(terminalFont(t, { ...editor, fallbackFont: "Inter" }, BASE).family).toContain('"Inter Variable", "Inter"');
+    expect(terminalFont(t, { ...editor, fallbackFont: "Inter" }, BASE).family).toContain('"Inter", "Inter Variable"');
   });
 
   it("prefers the terminal's fallback over the editor's", () => {
     const font = terminalFont(
       { ...t, fallbackFontFamily: "Sarasa Mono SC" },
-      { ...editor, fallbackFont: "PingFang SC" },
+      { ...editor, fallbackFont: "Source Code Pro" },
       BASE,
     );
     expect(font.family).toContain('"Sarasa Mono SC"');
-    expect(font.family).not.toContain("PingFang SC");
+    // The CJK faces are always named (see the test below), so the editor's pick must not be one.
+    expect(font.family).not.toContain("Source Code Pro");
   });
 
   it("follows the editor's Typography Settings weights with Use editor font", () => {
@@ -380,16 +457,51 @@ describe("terminalFont", () => {
     expect(terminalFont({ ...t, lineHeight: 1.2 }, editor, BASE).lineHeight).toBe(1.2);
   });
 
+  it("prefers full-width Nerd Font fallbacks ahead of shrunk Mono variants", () => {
+    const { family } = terminalFont(t, editor, BASE);
+    expect(family.indexOf('"Symbols Nerd Font"')).toBeLessThan(family.indexOf('"Symbols Nerd Font Mono"'));
+    expect(family.indexOf('"JetBrainsMono Nerd Font"')).toBeLessThan(family.indexOf('"JetBrainsMono Nerd Font Mono"'));
+  });
+
   it("turns the column width into letter spacing", () => {
     expect(terminalFont({ ...t, useEditorFont: false }, editor, BASE).letterSpacing).toBe(0);
     expect(terminalFont({ ...t, useEditorFont: false, columnWidth: 1.5 }, editor, BASE).letterSpacing).toBe(3);
   });
+  it("names CJK faces after the icon fonts so a wide character keeps two cells", () => {
+    const { family } = terminalFont(t, editor, BASE);
+    // After the icon fonts: they must win their own glyphs, and only CJK falls through to these.
+    expect(family.indexOf('"Microsoft YaHei"')).toBeGreaterThan(family.indexOf('"Symbols Nerd Font"'));
+    expect(family).toContain('"PingFang SC", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC"');
+    expect(family.endsWith(', "Source Han Sans SC", monospace')).toBe(true);
+  });
+  it("names Latin monospace faces before the CJK ones, whose Latin glyphs are proportional", () => {
+    // A Linux box without the chosen font: Latin must stop at a monospace face, not Noto Sans CJK.
+    for (const font of [
+      terminalFont(t, editor, BASE),
+      terminalFont({ ...t, useEditorFont: false, fontFamily: "Missing Mono" }, editor, BASE),
+    ]) {
+      const at = (face: string) => font.family.indexOf(`"${face}"`);
+      expect(at("DejaVu Sans Mono")).toBeGreaterThan(at("Symbols Nerd Font"));
+      expect(at("Consolas")).toBeLessThan(at("Microsoft YaHei"));
+      expect(at("DejaVu Sans Mono")).toBeLessThan(at("Noto Sans CJK SC"));
+    }
+  });
 });
 
 describe("terminal tab titles", () => {
-  const tab: TerminalTab = { id: "t1", name: "Local", customName: null, session: "s1", group: "g1" };
+  const tab: TerminalTab = { id: "t1", name: "Local", customName: null, shell: null, session: "s1", group: "g1" };
   const snap = (appTitle: string | null, commandRunning = true): Record<string, SessionSnapshot> => ({
-    s1: { status: "running", exitCode: null, title: "zsh", appTitle, commandRunning, cwd: "/p", follow: true },
+    s1: {
+      status: "running",
+      exitCode: null,
+      title: "zsh",
+      appTitle,
+      commandRunning,
+      progress: null,
+      working: commandRunning,
+      cwd: "/p",
+      unseenDone: false,
+    },
   });
 
   it("shows the default name at the prompt, whatever title the shell sets", () => {
@@ -404,6 +516,19 @@ describe("terminal tab titles", () => {
     expect(tabTitle(tab, snap(long))).toHaveLength(30);
     expect(tabTitle(tab, snap(long))).toBe(trimMiddle(long, 30));
     expect(tabFullTitle(tab, snap(long))).toBe(long);
+  });
+
+  it("uses the program's title always or never, per Settings › Terminal", () => {
+    const set = (appTitleAsTabName: string) =>
+      useProject.setState({ settings: { terminal: { appTitleAsTabName } } as unknown as Settings });
+    try {
+      set("always");
+      expect(tabTitle(tab, snap("claude", false))).toBe("claude");
+      set("off");
+      expect(tabTitle(tab, snap("vim notes.md"))).toBe("Local");
+    } finally {
+      useProject.setState({ settings: null });
+    }
   });
 
   it("keeps a name the user gave the tab", () => {
@@ -421,24 +546,93 @@ describe("terminal tab titles", () => {
 describe("fit scheduling", () => {
   afterEach(() => vi.useRealTimers());
 
-  it("refits at most once per interval while resizing, and once after it stops", () => {
+  it("fits an idle terminal on the next frame, and a resizing one once it settles", () => {
+    vi.useFakeTimers();
+    const fit = vi.fn();
+    const f = fitScheduler(fit);
+    f.schedule();
+    f.schedule();
+    vi.advanceTimersToNextFrame();
+    expect(fit).toHaveBeenCalledTimes(1);
+    for (let i = 0; i < 30; i++) {
+      f.schedule();
+      vi.advanceTimersByTime(16);
+    }
+    expect(fit).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(FIT_SETTLE_MS);
+    expect(fit).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(FIT_SETTLE_MS);
+    f.schedule();
+    f.cancel();
+    vi.advanceTimersByTime(FIT_SETTLE_MS * 2);
+    expect(fit).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a new terminal on the frame schedule until it can measure its grid", () => {
+    vi.useFakeTimers();
+    const fit = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+    const scheduler = fitScheduler(fit);
+    scheduler.schedule();
+    vi.advanceTimersToNextFrame();
+    scheduler.schedule();
+    scheduler.schedule();
+    vi.advanceTimersToNextFrame();
+    expect(fit).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("fits a lone second request after it settles without needing another request", () => {
     vi.useFakeTimers();
     const fit = vi.fn();
     const f = fitScheduler(fit);
     f.schedule();
     vi.advanceTimersToNextFrame();
-    expect(fit).toHaveBeenCalledTimes(1);
-    for (let i = 0; i < 6; i++) {
-      f.schedule();
-      vi.advanceTimersByTime(16);
-    }
-    expect(fit).toHaveBeenCalledTimes(1);
-    vi.advanceTimersByTime(FIT_INTERVAL_MS);
-    expect(fit).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(40);
     f.schedule();
-    f.cancel();
-    vi.advanceTimersByTime(FIT_INTERVAL_MS * 2);
+    vi.advanceTimersByTime(FIT_SETTLE_MS - 1);
+    expect(fit).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1);
     expect(fit).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("fits without animation frames in a background window", () => {
+    vi.useFakeTimers();
+    const frame = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(0);
+    const fit = vi.fn();
+    try {
+      fitScheduler(fit).schedule();
+      vi.advanceTimersByTime(100);
+      expect(fit).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      frame.mockRestore();
+    }
+  });
+
+  it.each([false, true])("cancels all pending work after repeated requests: %s", (repeated) => {
+    vi.useFakeTimers();
+    const fit = vi.fn();
+    const f = fitScheduler(fit);
+    f.schedule();
+    if (repeated) f.schedule();
+    f.cancel();
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(FIT_SETTLE_MS * 2);
+    expect(fit).not.toHaveBeenCalled();
+  });
+
+  it("flushes a deferred fit immediately and leaves no delayed duplicate", () => {
+    vi.useFakeTimers();
+    const fit = vi.fn();
+    const f = fitScheduler(fit);
+    f.schedule();
+    f.schedule();
+    f.flush();
+    expect(fit).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(FIT_SETTLE_MS * 2);
+    expect(fit).toHaveBeenCalledOnce();
   });
 
   it("reports only the size the terminal settles on", () => {

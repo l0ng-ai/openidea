@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { findOutputLinks, joinPath, type OutputLink } from "./links";
 
@@ -66,6 +67,41 @@ describe("findOutputLinks", () => {
       col: 2,
     });
     expect(files("src/App.tsx(14,3): error TS2322")[0]).toMatchObject({ path: "src/App.tsx", line: 14, col: 3 });
+    // Go module cache paths with @version and stack frames
+    expect(files("        /Users/user/go/pkg/mod/github.com/spf13/cobra@v1.10.2/command.go:1071")[0]).toMatchObject({
+      path: "/Users/user/go/pkg/mod/github.com/spf13/cobra@v1.10.2/command.go",
+      line: 1071,
+    });
+    // Go stack frames with trailing colon
+    expect(files("        /Users/user/projects/demo/pkg/api/server.go:42:")[0]).toMatchObject({
+      path: "/Users/user/projects/demo/pkg/api/server.go",
+      line: 42,
+    });
+    // Relative paths in loggers (e.g. zap/zerolog/slog)
+    expect(files("2026-01-01T12:00:00.000+0000\tDEBUG\tpkg/store/db.go:15\tfailed to connect")[0]).toMatchObject({
+      path: "pkg/store/db.go",
+      line: 15,
+    });
+  });
+
+  it("maven diagnostics [ERROR] path:[line,col]", () => {
+    expect(files("[ERROR] /p/src/main/java/a/A.java:[12,5] cannot find symbol")[0]).toEqual({
+      path: "/p/src/main/java/a/A.java",
+      line: 12,
+      col: 5,
+      resolve: "path",
+      text: "/p/src/main/java/a/A.java:[12,5]",
+    });
+    expect(files("[WARNING] src/main/java/B.java:[3,8] [deprecation] old() has been deprecated")[0]).toMatchObject({
+      path: "src/main/java/B.java",
+      line: 3,
+      col: 8,
+    });
+    expect(files("[ERROR] C:\\proj\\A.java:[7,1] error: x")[0]).toMatchObject({
+      path: "C:\\proj\\A.java",
+      line: 7,
+      col: 1,
+    });
   });
 
   it("URLs, trimming trailing punctuation", () => {
@@ -85,6 +121,39 @@ describe("findOutputLinks", () => {
   it("returns links sorted and non-overlapping", () => {
     const links = findOutputLinks("a.rs:1 then b.ts:2:3");
     expect(links.map((l) => l.start)).toEqual([0, 12]);
+  });
+
+  it("detects links at start, middle and end of a line just under the 4,000-character limit", () => {
+    const pad = (n: number) => "x".repeat(n);
+    const midJvm = "at com.acme.Service.run(Service.kt:99)";
+    const midPy = 'File "app/worker.py", line 17';
+    const midUrl = "https://example.dev/docs(v2)";
+    const tail = "end/file.go:88";
+
+    let line = "target.txt:1:1 ";
+    line += pad(1900 - line.length) + " " + midJvm + " " + midPy + " " + midUrl + " ";
+    line += pad(3999 - tail.length - 1 - line.length) + " " + tail;
+
+    expect(line.length).toBe(3_999);
+    const links = findOutputLinks(line);
+    expect(
+      links.map((l) => (l.kind === "url" ? l.url : `${l.target.path}:${l.target.line}:${l.target.col ?? ""}`)),
+    ).toEqual([
+      "target.txt:1:1",
+      "com/acme/Service.kt:99:",
+      "app/worker.py:17:",
+      "https://example.dev/docs(v2)",
+      "end/file.go:88:",
+    ]);
+  });
+
+  it("scans long lines without links in linear time", () => {
+    const t0 = performance.now();
+    for (const s of ["x".repeat(3_999), "a.b.".repeat(999), "a/b/".repeat(999), "x:".repeat(1_999)]) {
+      expect(findOutputLinks(s)).toEqual([]);
+    }
+    // The backtracking patterns took over 150 ms for the first four lines alone; a linear scan takes well under 1 ms.
+    expect(performance.now() - t0).toBeLessThan(50);
   });
 });
 

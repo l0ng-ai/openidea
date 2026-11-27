@@ -1,8 +1,9 @@
 /** Which status bar widgets are shown: per-widget defaults, overridden in `appearance.statusBarWidgets`. */
+import { create } from "zustand";
 import type { MenuItem } from "@/ui";
 import { call, commands } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import type { StatusItemContribution } from "./contributions";
+import { useContributions, type StatusItemContribution } from "./contributions";
 
 export type WidgetOverrides = Partial<Record<string, boolean>>;
 
@@ -14,25 +15,64 @@ export function isStatusItemVisible(
   return overrides?.[item.id] ?? item.defaultVisible !== false;
 }
 
+/**
+ * Widgets that don't apply to the open project (a language's widget in a project without
+ * that language): neither shown nor listed in the menus until they apply again.
+ */
+const useUnavailable = create<{ ids: ReadonlySet<string> }>(() => ({ ids: new Set() }));
+
+export function setStatusWidgetAvailable(id: string, available: boolean): void {
+  useUnavailable.setState((s) => {
+    if (s.ids.has(id) !== available) return s;
+    const ids = new Set(s.ids);
+    if (available) ids.delete(id);
+    else ids.add(id);
+    return { ids };
+  });
+}
+
+export const isStatusWidgetAvailable = (id: string) => !useUnavailable.getState().ids.has(id);
+
+export function useUnavailableStatusWidgets(): ReadonlySet<string> {
+  return useUnavailable((s) => s.ids);
+}
+
+export interface StatusWidgetRow {
+  id: string;
+  title: string;
+  /** Plugin widgets are named by their plugin, not translated. */
+  verbatim: boolean;
+  visible: boolean;
+}
+
+/** Every titled widget of `items` that applies (in bar order) with its visibility: the rows users can switch. */
+export function statusWidgetRows(
+  items: StatusItemContribution[],
+  overrides: WidgetOverrides | undefined,
+): StatusWidgetRow[] {
+  return items
+    .filter((i) => i.title && isStatusWidgetAvailable(i.id))
+    .map((i) => ({
+      id: i.id,
+      title: i.title!,
+      verbatim: i.id.startsWith("plugin."),
+      visible: isStatusItemVisible(i, overrides),
+    }));
+}
+
 /** The status bar context menu: every titled widget with a checkmark, in bar order. */
 export function statusBarMenu(
   items: StatusItemContribution[],
   overrides: WidgetOverrides | undefined,
   set: (id: string, visible: boolean) => void = (id, v) => void setStatusWidgetVisible(id, v),
 ): MenuItem[] {
-  return items
-    .filter((i) => i.title)
-    .map((i) => {
-      const visible = isStatusItemVisible(i, overrides);
-      // Plugin widgets are named by their plugin, not translated.
-      return {
-        id: i.id,
-        label: i.title!,
-        verbatim: i.id.startsWith("plugin."),
-        checked: visible,
-        run: () => set(i.id, !visible),
-      };
-    });
+  return statusWidgetRows(items, overrides).map((row) => ({
+    id: row.id,
+    label: row.title,
+    verbatim: row.verbatim,
+    checked: row.visible,
+    run: () => set(row.id, !row.visible),
+  }));
 }
 
 /** Persists the choice in the global settings (the whole map, since widget ids contain dots). */
@@ -41,6 +81,14 @@ export async function setStatusWidgetVisible(id: string, visible: boolean): Prom
   const next = { ...current, [id]: visible };
   const settings = await call(commands.settingsSet("global", "appearance.statusBarWidgets", JSON.stringify(next)));
   useProject.setState({ settings });
+}
+
+/** Flips one widget by id (View › Appearance › Status Bar Widgets); untitled or unknown widgets stay as they are. */
+export async function toggleStatusWidget(id: string): Promise<void> {
+  const item = useContributions.getState().statusItems.get(id);
+  if (!item?.title) return;
+  const visible = isStatusItemVisible(item, useProject.getState().settings?.appearance?.statusBarWidgets);
+  await setStatusWidgetVisible(id, !visible);
 }
 
 export function useStatusWidgetOverrides(): WidgetOverrides | undefined {

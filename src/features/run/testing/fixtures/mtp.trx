@@ -1,0 +1,85 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TestRun id="7ba330b2-4d2b-4252-bff2-c830b4419419" name="tester@testerS 2026-11-09 08:20:26.5318025" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Times creation="2026-11-09T08:20:26.4131456Z" queuing="2026-11-09T08:20:26.4131456Z" start="2026-11-09T08:20:26.4131456Z" finish="2026-11-09T08:20:26.532145Z" />
+  <TestSettings name="default" id="b2c5ea89-0c8e-4215-bf21-255314713779">
+    <Deployment runDeploymentRoot="tester_testerS_2026-11-09_08_20_26.5318025" />
+  </TestSettings>
+  <Results>
+    <UnitTestResult executionId="ba20361c-0fd9-4459-91ba-dd3fce5113ee" testId="1a494a91-d607-8a83-ba91-8f7c369bcf4b" testName="Passes" computerName="testerS" duration="00:00:00.0039472" startTime="2026-11-09T08:20:26.4953435+00:00" endTime="2026-11-09T08:20:26.5104697+00:00" testType="13CDC9D9-DDB5-4fa4-A97D-D965CCFC6D4B" outcome="Passed" testListId="8C84FA94-04C1-424b-9868-57A2D4851A1D" relativeResultsDirectory="ba20361c-0fd9-4459-91ba-dd3fce5113ee" />
+    <UnitTestResult executionId="5a3992a8-81b9-4792-bba3-d11b23a7f817" testId="1b2eb6ed-b075-83ed-89ca-7b681a892bfe" testName="Fails" computerName="testerS" duration="00:00:00.0084826" startTime="2026-11-09T08:20:26.5132704+00:00" endTime="2026-11-09T08:20:26.5220913+00:00" testType="13CDC9D9-DDB5-4fa4-A97D-D965CCFC6D4B" outcome="Failed" testListId="8C84FA94-04C1-424b-9868-57A2D4851A1D" relativeResultsDirectory="5a3992a8-81b9-4792-bba3-d11b23a7f817">
+      <Output>
+        <ErrorInfo>
+          <Message>Assert.AreEqual failed. Expected:&lt;3&gt;. Actual:&lt;2&gt;. 'expected' expression: '3', 'actual' expression: '1 + 1'.</Message>
+          <StackTrace>   at Microsoft.VisualStudio.TestTools.UnitTesting.Assert.ThrowAssertAreEqualFailed(Object expected, Object actual, String userMessage) in /_/src/TestFramework/TestFramework/Assertions/Assert.AreEqual.cs:line 665
+   at Microsoft.VisualStudio.TestTools.UnitTesting.Assert.AreEqual[T](T expected, T actual, IEqualityComparer`1 comparer, String message, String expectedExpression, String actualExpression) in /_/src/TestFramework/TestFramework/Assertions/Assert.AreEqual.cs:line 492
+   at Microsoft.VisualStudio.TestTools.UnitTesting.Assert.AreEqual[T](T expected, T actual, String message, String expectedExpression, String actualExpression) in /_/src/TestFramework/TestFramework/Assertions/Assert.AreEqual.cs:line 405
+   at Sample.CalculatorTests.Fails() in C:\Fixture\Native\Test1.cs:line 5
+   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="75ac56ba-d7ad-462c-b299-71d9d0f33569" testId="1cb231b0-d0fa-81b3-ab3e-bc60f4639b8c" testName="Skipped" computerName="testerS" duration="00:00:00.0000000" startTime="2026-11-09T08:20:26.5222673+00:00" endTime="2026-11-09T08:20:26.5224786+00:00" testType="13CDC9D9-DDB5-4fa4-A97D-D965CCFC6D4B" outcome="NotExecuted" testListId="8C84FA94-04C1-424b-9868-57A2D4851A1D" relativeResultsDirectory="75ac56ba-d7ad-462c-b299-71d9d0f33569">
+      <Output>
+        <ErrorInfo>
+          <Message>demonstration</Message>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="1e66e9bf-4efd-4aad-9432-a2275cd88bfe" testId="139db31e-318e-8f04-91bc-5a0a5b61f929" testName="Parameterized (1)" computerName="testerS" duration="00:00:00.0000465" startTime="2026-11-09T08:20:26.5227177+00:00" endTime="2026-11-09T08:20:26.5240179+00:00" testType="13CDC9D9-DDB5-4fa4-A97D-D965CCFC6D4B" outcome="Passed" testListId="8C84FA94-04C1-424b-9868-57A2D4851A1D" relativeResultsDirectory="1e66e9bf-4efd-4aad-9432-a2275cd88bfe" />
+    <UnitTestResult executionId="edda94ba-80df-4d23-b753-c01400520c31" testId="1ab155a7-5304-8dd0-a469-414f028392a5" testName="Parameterized (2)" computerName="testerS" duration="00:00:00.0003644" startTime="2026-11-09T08:20:26.5240566+00:00" endTime="2026-11-09T08:20:26.5252897+00:00" testType="13CDC9D9-DDB5-4fa4-A97D-D965CCFC6D4B" outcome="Failed" testListId="8C84FA94-04C1-424b-9868-57A2D4851A1D" relativeResultsDirectory="edda94ba-80df-4d23-b753-c01400520c31">
+      <Output>
+        <ErrorInfo>
+          <Message>Assert.AreEqual failed. Expected:&lt;1&gt;. Actual:&lt;2&gt;. 'expected' expression: '1', 'actual' expression: 'value'.</Message>
+          <StackTrace>   at Microsoft.VisualStudio.TestTools.UnitTesting.Assert.ThrowAssertAreEqualFailed(Object expected, Object actual, String userMessage) in /_/src/TestFramework/TestFramework/Assertions/Assert.AreEqual.cs:line 665
+   at Microsoft.VisualStudio.TestTools.UnitTesting.Assert.AreEqual[T](T expected, T actual, IEqualityComparer`1 comparer, String message, String expectedExpression, String actualExpression) in /_/src/TestFramework/TestFramework/Assertions/Assert.AreEqual.cs:line 492
+   at Microsoft.VisualStudio.TestTools.UnitTesting.Assert.AreEqual[T](T expected, T actual, String message, String expectedExpression, String actualExpression) in /_/src/TestFramework/TestFramework/Assertions/Assert.AreEqual.cs:line 405
+   at Sample.CalculatorTests.Parameterized(Int32 value) in C:\Fixture\Native\Test1.cs:line 7
+   at InvokeStub_CalculatorTests.Parameterized(Object, Span`1)
+   at System.Reflection.MethodBaseInvoker.InvokeWithOneArg(Object obj, BindingFlags invokeAttr, Binder binder, Object[] parameters, CultureInfo culture)</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+  </Results>
+  <TestDefinitions>
+    <UnitTest name="Passes" storage="C:\Fixture\native\bin\debug\net10.0\native.dll" id="1a494a91-d607-8a83-ba91-8f7c369bcf4b">
+      <Execution id="ba20361c-0fd9-4459-91ba-dd3fce5113ee" />
+      <TestMethod codeBase="C:\Fixture\Native\bin\Debug\net10.0\Native.dll" adapterTypeName="executor://MSTestExtension/4.0.0" className="Sample.CalculatorTests" name="Passes" />
+    </UnitTest>
+    <UnitTest name="Fails" storage="C:\Fixture\native\bin\debug\net10.0\native.dll" id="1b2eb6ed-b075-83ed-89ca-7b681a892bfe">
+      <Execution id="5a3992a8-81b9-4792-bba3-d11b23a7f817" />
+      <TestMethod codeBase="C:\Fixture\Native\bin\Debug\net10.0\Native.dll" adapterTypeName="executor://MSTestExtension/4.0.0" className="Sample.CalculatorTests" name="Fails" />
+    </UnitTest>
+    <UnitTest name="Skipped" storage="C:\Fixture\native\bin\debug\net10.0\native.dll" id="1cb231b0-d0fa-81b3-ab3e-bc60f4639b8c">
+      <Execution id="75ac56ba-d7ad-462c-b299-71d9d0f33569" />
+      <TestMethod codeBase="C:\Fixture\Native\bin\Debug\net10.0\Native.dll" adapterTypeName="executor://MSTestExtension/4.0.0" className="Sample.CalculatorTests" name="Skipped" />
+    </UnitTest>
+    <UnitTest name="Parameterized (1)" storage="C:\Fixture\native\bin\debug\net10.0\native.dll" id="139db31e-318e-8f04-91bc-5a0a5b61f929">
+      <Execution id="1e66e9bf-4efd-4aad-9432-a2275cd88bfe" />
+      <TestMethod codeBase="C:\Fixture\Native\bin\Debug\net10.0\Native.dll" adapterTypeName="executor://MSTestExtension/4.0.0" className="Sample.CalculatorTests" name="Parameterized (1)" />
+    </UnitTest>
+    <UnitTest name="Parameterized (2)" storage="C:\Fixture\native\bin\debug\net10.0\native.dll" id="1ab155a7-5304-8dd0-a469-414f028392a5">
+      <Execution id="edda94ba-80df-4d23-b753-c01400520c31" />
+      <TestMethod codeBase="C:\Fixture\Native\bin\Debug\net10.0\Native.dll" adapterTypeName="executor://MSTestExtension/4.0.0" className="Sample.CalculatorTests" name="Parameterized (2)" />
+    </UnitTest>
+  </TestDefinitions>
+  <TestEntries>
+    <TestEntry testId="1a494a91-d607-8a83-ba91-8f7c369bcf4b" executionId="ba20361c-0fd9-4459-91ba-dd3fce5113ee" testListId="8C84FA94-04C1-424b-9868-57A2D4851A1D" />
+    <TestEntry testId="1b2eb6ed-b075-83ed-89ca-7b681a892bfe" executionId="5a3992a8-81b9-4792-bba3-d11b23a7f817" testListId="8C84FA94-04C1-424b-9868-57A2D4851A1D" />
+    <TestEntry testId="1cb231b0-d0fa-81b3-ab3e-bc60f4639b8c" executionId="75ac56ba-d7ad-462c-b299-71d9d0f33569" testListId="8C84FA94-04C1-424b-9868-57A2D4851A1D" />
+    <TestEntry testId="139db31e-318e-8f04-91bc-5a0a5b61f929" executionId="1e66e9bf-4efd-4aad-9432-a2275cd88bfe" testListId="8C84FA94-04C1-424b-9868-57A2D4851A1D" />
+    <TestEntry testId="1ab155a7-5304-8dd0-a469-414f028392a5" executionId="edda94ba-80df-4d23-b753-c01400520c31" testListId="8C84FA94-04C1-424b-9868-57A2D4851A1D" />
+  </TestEntries>
+  <TestLists>
+    <TestList name="Results Not in a List" id="8C84FA94-04C1-424b-9868-57A2D4851A1D" />
+    <TestList name="All Loaded Results" id="19431567-8539-422a-85d7-44ee4e166bda" />
+  </TestLists>
+  <ResultSummary outcome="Failed">
+    <Counters total="5" executed="4" passed="2" failed="2" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="1" disconnected="0" warning="0" completed="0" inProgress="0" pending="0" />
+    <RunInfos>
+      <RunInfo computerName="testerS" outcome="Error" timestamp="2026-11-09T08:20:26.5377983">
+        <Text>Exit code indicates failure: '2'. Please refer to https://aka.ms/testingplatform/exitcodes for more information.</Text>
+      </RunInfo>
+    </RunInfos>
+  </ResultSummary>
+</TestRun>

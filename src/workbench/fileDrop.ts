@@ -6,6 +6,7 @@
  */
 import { executeAction } from "@/platform/actions";
 import { call, commands, isTauri } from "@/platform/ipc";
+import { isDraggingOut } from "@/platform/dragOut";
 import { useProject } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
 import { nativeDropPoint } from "@/platform/nativeDrop";
@@ -39,8 +40,10 @@ export async function openDropped(paths: readonly string[], deps: FileDropDeps):
   const kinds = await Promise.all(paths.map((p) => deps.isDir(p).catch(() => false)));
   const files = paths.filter((_, i) => !kinds[i]);
   const dir = paths.find((_, i) => kinds[i]);
-  for (const [i, path] of files.entries())
+  for (const [i, path] of files.entries()) {
+    // oxlint-disable-next-line no-await-in-loop -- tabs open in drop order so the last dropped file is focused
     await deps.openFile(path, i === files.length - 1).catch((e) => console.warn(`could not open ${path}`, e));
+  }
   if (dir) await deps.openProject(dir);
 }
 
@@ -57,6 +60,8 @@ export function handleFileDrop(
   y: number,
   deps: FileDropDeps = defaultDeps,
 ): Promise<void> | null {
+  // Files dragged out of this window and dropped back on it: nothing to open.
+  if (isDraggingOut()) return Promise.resolve();
   for (const handler of fileDropHandlers) if (paths.length && handler(paths, x, y)) return Promise.resolve();
   const { project, lightEdit } = useProject.getState();
   if (!paths.length || !(project || lightEdit) || isRemoteWindow() || dropOwnedAt(x, y)) return null;

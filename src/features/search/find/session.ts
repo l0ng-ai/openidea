@@ -7,7 +7,8 @@
  *
  * A new `search()` supersedes whatever is running: the previous backend
  * request is cancelled and its late events are dropped. Results stream in
- * per file and are published at most once per microtask.
+ * per file and are published at most once per `PUBLISH_INTERVAL_MS`, so a burst of
+ * files costs one view update instead of one per file.
  */
 import type { FileMatches, RequestId, SearchQuery, SearchSummary } from "@/platform/ipc";
 import { preserveCase } from "@/platform/search";
@@ -32,6 +33,9 @@ export interface FindDeps {
   cancel(request: RequestId): void;
   nextRequestId(): RequestId;
 }
+
+/** Streamed results reach the view at most this often (a few frames), keeping a long stream linear. */
+const PUBLISH_INTERVAL_MS = 50;
 
 export const countFileMatches = (file: FileMatches): number =>
   file.matches.reduce((count, line) => count + line.ranges.length, 0);
@@ -60,6 +64,8 @@ export class FindSession {
   private request: RequestId | null = null;
   private state: FindState = IDLE;
   private queued = false;
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  private lastPublish = 0;
   private disposed = false;
 
   constructor(
@@ -78,12 +84,12 @@ export class FindSession {
     this.update({ ...this.state, stale: true, matchCount: 0, summary: null, error: null }, true);
   }
 
-  /** Starts (or restarts) a search; an empty pattern resets to idle. */
-  async search(query: SearchQuery): Promise<void> {
+  /** Starts (or restarts) a search; missing query or pattern resets to idle. */
+  async search(query: SearchQuery | null): Promise<void> {
     const seq = ++this.seq;
     this.disposed = false;
     this.cancelRunning();
-    if (!query.pattern) {
+    if (!query?.pattern) {
       this.update({ ...IDLE }, true);
       return;
     }
@@ -102,6 +108,7 @@ export class FindSession {
 
     const request = this.deps.nextRequestId();
     this.request = request;
+    this.lastPublish = 0;
     const files: FileMatches[] = [];
     let matchCount = 0;
     this.update({ ...this.state, status: "searching" }, true);
@@ -151,17 +158,28 @@ export class FindSession {
     this.state = next;
     if (this.disposed) return;
     if (immediate) {
-      this.queued = false;
-      this.onChange(next);
+      this.publish(false);
       return;
     }
-    if (this.queued) return;
-    this.queued = true;
-    queueMicrotask(() => {
-      if (!this.queued || this.disposed) return;
-      this.queued = false;
-      this.onChange(this.state);
-    });
+    if (this.timer !== undefined || this.queued) return;
+    // A streamed file publishes at once when the last publish is old enough (the first file shows
+    // without delay); otherwise it waits so the batch behind it is one update, not one per file.
+    const wait = this.lastPublish + PUBLISH_INTERVAL_MS - Date.now();
+    if (wait <= 0) {
+      this.queued = true;
+      queueMicrotask(() => {
+        if (this.queued) this.publish(true);
+      });
+    } else this.timer = setTimeout(() => this.publish(true), wait);
+  }
+
+  private publish(streamed: boolean) {
+    this.queued = false;
+    clearTimeout(this.timer);
+    this.timer = undefined;
+    if (this.disposed) return;
+    if (streamed) this.lastPublish = Date.now();
+    this.onChange(this.state);
   }
 }
 
@@ -197,7 +215,8 @@ export function matchRows(files: readonly FileMatches[]): MatchRow[] {
         .filter(([s, e]) => e > s);
       const first = m.ranges[0] ?? [0, 0];
       rows.push({
-        key: `${f.path}:${m.line}`,
+        // A long line comes in several windows: the column tells them apart.
+        key: `${f.path}:${m.line}:${first[0] + m.textOffset}`,
         path: f.path,
         relPath: f.relPath,
         line: m.line,

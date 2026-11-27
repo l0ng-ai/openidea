@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
-import { detectRunTargets, jsNamePattern, targetConfig } from "./targets";
+import { detectRunTargets, goFuzzConfig, jsNamePattern, targetConfig, type RunTarget } from "./targets";
 
 const cfg = (over: Partial<RunConfig> & { id: string; kind: string }): RunConfig => ({
   name: over.id,
@@ -170,7 +170,6 @@ describe("targetConfig", () => {
     expect(first("describe('m', () => {\n  it('adds', () => {});\n});", "src/a.test.ts").args).toEqual([
       "run",
       "test",
-      "--",
       "src/a.test.ts",
       "-t",
       "^m adds$",
@@ -240,19 +239,124 @@ describe("Go test targets", () => {
       "-test.short",
     ]);
   });
+  describe("Run with Fuzzing", () => {
+    const text = [
+      "package parse",
+      "func TestParse(t *testing.T) {}",
+      "func BenchmarkParse(b *testing.B) {}",
+      "func FuzzParse(f *testing.F) {",
+      ' f.Add("x")',
+      " f.Fuzz(func(t *testing.T, s string) {})",
+      "}",
+      "func ExampleParse() {}",
+    ].join("\n");
+    const base = cfg({ id: "go:test", kind: "go", args: ["test", "-tags", "demo", "./...", "-args", "-test.short"] });
+    const fuzzOf = (rel: string, name: string, configs = [base]) => {
+      const target = detectRunTargets(text, rel).find((t) => t.name === name)!;
+      const config = targetConfig(target, rel, configs, text)!;
+      return goFuzzConfig(config, target);
+    };
+
+    it("adds -fuzz with the -run pattern of a Fuzz function", () => {
+      const config = fuzzOf("parse/parse_test.go", "FuzzParse")!;
+      expect(config.args).toEqual([
+        "test",
+        "-tags",
+        "demo",
+        "./parse",
+        "-run",
+        "^FuzzParse$",
+        "-fuzz",
+        "^FuzzParse$",
+        "-args",
+        "-test.short",
+      ]);
+      // A temporary configuration of its own, beside the plain run of the fuzz target.
+      expect(config.id).not.toBe(
+        targetConfig(detectRunTargets(text, "parse/parse_test.go")[2]!, "parse/parse_test.go", [base], text)!.id,
+      );
+      expect(config.name).toBe("FuzzParse (fuzzing)");
+    });
+
+    it("runs a fuzz target at the module root and in nested package directories", () => {
+      expect(fuzzOf("parse_test.go", "FuzzParse")!.args.slice(3, 4)).toEqual(["."]);
+      expect(fuzzOf("internal/text/parse/parse_test.go", "FuzzParse")!.args.slice(3, 4)).toEqual([
+        "./internal/text/parse",
+      ]);
+    });
+
+    it("is offered for Fuzz functions only", () => {
+      for (const name of ["TestParse", "BenchmarkParse", "ExampleParse"])
+        expect(fuzzOf("parse/parse_test.go", name)).toBeNull();
+      const npm = cfg({ id: "npm:test", kind: "npm", command: "npm", args: ["run", "test"] });
+      const js: RunTarget = { line: 0, kind: "test", name: "Fuzz it", path: ["Fuzz it"] };
+      expect(goFuzzConfig(targetConfig(js, "src/a.test.ts", [npm])!, js)).toBeNull();
+    });
+
+    it("escapes the name and replaces a saved selection", () => {
+      const saved = cfg({
+        id: "go:saved",
+        kind: "go",
+        args: ["test", "-fuzz=Old", "-run", "Old", "-bench", ".", "./parse", "-fuzztime", "30s"],
+      });
+      const target: RunTarget = { line: 0, kind: "test", name: "Fuzz.Δ+", path: ["Fuzz.Δ+"] };
+      expect(goFuzzConfig(saved, target)!.args).toEqual([
+        "test",
+        "-fuzztime",
+        "30s",
+        "./parse",
+        "-run",
+        "^Fuzz\\.Δ\\+$",
+        "-fuzz",
+        "^Fuzz\\.Δ\\+$",
+      ]);
+    });
+
+    it("needs exactly one package: -fuzz cannot match across packages", () => {
+      const target: RunTarget = { line: 0, kind: "test", name: "FuzzParse", path: ["FuzzParse"] };
+      const go = (args: string[]) => cfg({ id: "go:x", kind: "go", args });
+      expect(goFuzzConfig(go(["test", "./..."]), target)).toBeNull();
+      expect(goFuzzConfig(go(["test", "./a", "./b"]), target)).toBeNull();
+      expect(goFuzzConfig(go(["run", "."]), target)).toBeNull();
+      expect(goFuzzConfig(go(["test", "./a"]), target)).not.toBeNull();
+    });
+
+    it("keeps a Go Test configuration's form in step", () => {
+      const typed = cfg({
+        id: "go:typed",
+        kind: "go",
+        args: ["test", "-tags", "demo", "."],
+        params: { goKind: "test", scope: "package", target: ".", toolArgs: "-tags demo" },
+      });
+      const config = fuzzOf("parse/parse_test.go", "FuzzParse", [typed])!;
+      expect(config.params).toMatchObject({ pattern: "^FuzzParse$", toolArgs: "-tags demo -fuzz '^FuzzParse$'" });
+    });
+  });
   it("uses the module and overrides a saved filter before binary arguments", () => {
     const base = cfg({
       id: "go:typed",
       kind: "go",
       cwd: "runtime",
-      args: ["test", "-tags", "demo", "-run", "Old", ".", "-args", "-test.short"],
+      args: [
+        "test",
+        "-tags",
+        "demo",
+        "-run",
+        "Old",
+        ".",
+        "-args",
+        "-test.run=Old",
+        "-test.bench",
+        "OldBench",
+        "-test.short",
+      ],
       params: {
         goKind: "test",
         module: "app",
         scope: "package",
         target: ".",
         pattern: "Old",
-        programArgs: "-test.short",
+        programArgs: "-test.run=Old -test.bench OldBench -test.short",
       },
     });
     const text = 'package calc\nfunc TestNew(t *testing.T) {\n t.Run("child case", func(t *testing.T) {})\n}';
@@ -273,6 +377,7 @@ describe("Go test targets", () => {
       scope: "directory",
       target: ".",
       pattern: "^TestNew$/^child_case$",
+      programArgs: "-test.short",
     });
   });
 });
@@ -315,5 +420,165 @@ describe("php (PHPUnit)", () => {
     const run = targetConfig(target, "tests/CalcTest.php", [phpunit], src);
     expect(run?.args).toEqual(["--filter", "/(CalcTest::testAdd( with data set .*)?)$/", "tests/CalcTest.php"]);
     expect(run?.command).toBe("vendor/bin/phpunit");
+  });
+});
+
+describe("php (Pest)", () => {
+  const src = [
+    "<?php", // 0
+    "",
+    "test('adds numbers', function () {", // 2
+    "    expect(1 + 1)->toBe(2);",
+    "});",
+    "",
+    'it("handles \\"quoted\\" names", fn () => true);', // 6
+    "",
+    "describe('division', function () {", // 8
+    "    it('divides', function () {", // 9
+    "        expect(4 / 2)->toBe(2);",
+    "    });",
+    "",
+    "    describe('by zero', function () {", // 13
+    "        test('throws', fn () => true);", // 14
+    "    });",
+    "});",
+    "",
+    "it('doubles', function (int $n) {", // 18
+    "    expect($n * 2)->toBe($n + $n);",
+    "})->with([1, 2, 3]);",
+    "// it('is commented out')",
+  ].join("\n");
+  const pest = cfg({ id: "phpunit", kind: "phpunit", command: "vendor/bin/pest" });
+  const run = (line: number) => {
+    const target = detectRunTargets(src, "tests/Unit/MathTest.php").find((t) => t.line === line)!;
+    return targetConfig(target, "tests/Unit/MathTest.php", [pest], src);
+  };
+
+  it("finds tests and describe blocks with the names Pest gives them", () => {
+    expect(pick(detectRunTargets(src, "tests/Unit/MathTest.php"))).toEqual([
+      [2, "test", "adds numbers"],
+      [6, "test", 'it handles "quoted" names'],
+      [8, "suite", "division"],
+      [9, "test", "division/it divides"],
+      [13, "suite", "division/by zero"],
+      [14, "test", "division/by zero/throws"],
+      [18, "test", "it doubles"],
+    ]);
+    expect(detectRunTargets(src, "tests/Unit/MathTest.php")[3]).toMatchObject({
+      name: "division → it divides",
+      pest: true,
+    });
+  });
+
+  it("ignores files that are not tests", () => {
+    expect(detectRunTargets(src, "src/Math.php")).toEqual([]);
+  });
+
+  it("runs one test by the name Pest matches, data sets included", () => {
+    expect(run(2)?.args).toEqual(["--filter", "/::adds numbers( with data set .*)?$/", "tests/Unit/MathTest.php"]);
+    expect(run(14)?.args).toEqual([
+      "--filter",
+      "/::`division` → `by zero` → throws( with data set .*)?$/",
+      "tests/Unit/MathTest.php",
+    ]);
+    expect(run(18)?.args[1]).toBe("/::it doubles( with data set .*)?$/");
+    expect(run(18)?.command).toBe("vendor/bin/pest");
+  });
+
+  it("runs every test of a describe block", () => {
+    expect(run(8)?.args[1]).toBe("/::`division` → /");
+    expect(run(13)?.args[1]).toBe("/::`division` → `by zero` → /");
+  });
+
+  it("keeps PHPUnit classes in the same file", () => {
+    const mixed = [
+      "<?php",
+      "final class CalcTest extends TestCase",
+      "{",
+      "    public function testAdd() {}",
+      "}",
+      "test('x', fn () => 1);",
+    ];
+    expect(pick(detectRunTargets(mixed.join("\n"), "tests/CalcTest.php"))).toEqual([
+      [1, "suite", "CalcTest"],
+      [3, "test", "CalcTest/testAdd"],
+      [5, "test", "x"],
+    ]);
+  });
+});
+
+describe("Go declaration and callback scopes", () => {
+  it("finds aliased, dot-imported and multiline testing declarations", () => {
+    const text = [
+      "package p",
+      'import check "testing"',
+      "func TestAlias(",
+      "  subject *check.T,",
+      ") {",
+      '  subject.Run("outer", func(child *check.T) {',
+      "    child.Run(`nested/leaf case`, func(last *check.T) {})",
+      "  })",
+      '  subject.Run("sibling", func(child *check.T) {})',
+      "}",
+      "func BenchmarkAlias(b *check.B) {}",
+      "func FuzzAlias(f *check.F) {}",
+      "func Example() {}",
+      "func TestMain(m *check.M) {}",
+      "func Testlower(t *check.T) {}",
+      "func (s Suite) TestMethod(t *check.T) {}",
+    ].join("\n");
+    expect(detectRunTargets(text, "alias_test.go").map((target) => target.path)).toEqual([
+      ["TestAlias"],
+      ["TestAlias", "outer"],
+      ["TestAlias", "outer", "nested", "leaf_case"],
+      ["TestAlias", "sibling"],
+      ["BenchmarkAlias"],
+      ["FuzzAlias"],
+      ["Example"],
+    ]);
+    expect(
+      detectRunTargets('package p\nimport . "testing"\nfunc TestDot(t *T) {}', "dot_test.go").map(
+        (target) => target.path,
+      ),
+    ).toEqual([["TestDot"]]);
+  });
+
+  it("ignores comments, strings, methods and unrelated Run receivers", () => {
+    const text = [
+      "package p",
+      "/* func TestComment(t *testing.T) {} */",
+      "var fake = `",
+      "func TestString(t *testing.T) {}",
+      "//go:generate fake",
+      "`",
+      "func TestReal(t *testing.T) {",
+      '  // t.Run("comment", nil)',
+      '  _ = `t.Run("string", nil) }`',
+      '  other.Run("unrelated", nil)',
+      '  t.Run("a\\x20b", func(sub *testing.T) {',
+      '    sub.Run("quote\\\"brace}", nil)',
+      "  })",
+      "}",
+      "//go:generate real",
+    ].join("\n");
+    expect(detectRunTargets(text, "real_test.go").map((target) => [target.line, target.path])).toEqual([
+      [6, ["TestReal"]],
+      [10, ["TestReal", "a_b"]],
+      [11, ["TestReal", "a_b", 'quote"brace}']],
+      [14, ["14"]],
+    ]);
+  });
+
+  it("keeps nested benchmark paths and tolerates incomplete source", () => {
+    const text =
+      'package p\nfunc BenchmarkWork(b *testing.B) { b.Run("group", func(inner *testing.B) { inner.Run("leaf", nil) }) }';
+    expect(detectRunTargets(text, "bench_test.go").map((target) => target.path)).toEqual([
+      ["BenchmarkWork"],
+      ["BenchmarkWork", "group"],
+      ["BenchmarkWork", "group", "leaf"],
+    ]);
+    expect(() =>
+      detectRunTargets('func TestBroken(t *testing.T) { t.Run("\\UFFFFFFFF", nil) }', "broken_test.go"),
+    ).not.toThrow();
   });
 });

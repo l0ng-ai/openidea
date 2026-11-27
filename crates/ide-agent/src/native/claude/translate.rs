@@ -5,7 +5,7 @@
 //! Agent tool use that launched them: their messages carry it as `parent_tool_use_id`.
 
 use super::tools;
-use crate::{LIMITS_UPDATE, RETRY_UPDATE};
+use crate::{BACKGROUND_TASKS_UPDATE, LIMITS_UPDATE, RETRY_UPDATE};
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -58,6 +58,10 @@ pub(super) struct Translator {
     pub used: Option<u64>,
     pub model: Option<String>,
     windows: HashMap<String, u64>,
+    /// The window Claude Code itself counts against (`get_context_usage` `maxTokens`) and the
+    /// model it was read for. It can be smaller than the model's `contextWindow` in a `result`
+    /// (its compaction threshold follows this one), so it wins while the model is the same.
+    context_max: Option<(Option<String>, u64)>,
     /// The session's cost so far in USD, as the last `result` reported it.
     cost_usd: Option<f64>,
 }
@@ -77,6 +81,7 @@ impl Translator {
             used: None,
             model: None,
             windows: HashMap::new(),
+            context_max: None,
             cost_usd: None,
         }
     }
@@ -458,6 +463,22 @@ impl Translator {
                 let last = self.children.get(&tool_use).map(|c| c.last_text.clone()).filter(|t| !t.is_empty());
                 self.finish_child(&tool_use, stop, last.or(summary))
             }
+            // Compaction replaced the conversation with its summary: the context now holds
+            // `post_tokens`. Without it the stale count must not come back with the result;
+            // the driver asks Claude Code instead (`Session::refresh_usage`).
+            Some("compact_boundary") => {
+                self.used = msg.pointer("/compact_metadata/post_tokens").and_then(Value::as_u64);
+                self.usage_update().into_iter().collect()
+            }
+            // A turn's background tasks (`run_in_background`) outlive it: the task keeps
+            // the list and stays up while it isn't empty (see `Task::release_when_idle`).
+            Some("background_tasks_changed") => {
+                let Some(tasks) = msg.get("tasks").and_then(Value::as_array).cloned() else { return Vec::new() };
+                vec![Update {
+                    session: self.root.clone(),
+                    update: json!({ "sessionUpdate": BACKGROUND_TASKS_UPDATE, "tasks": tasks }),
+                }]
+            }
             _ => Vec::new(),
         }
     }
@@ -552,15 +573,27 @@ impl Translator {
         self.usage_update().into_iter().collect()
     }
 
+    /// The context usage Claude Code reports (`get_context_usage`), as a usage update.
+    pub fn on_context_usage(&mut self, used: u64, size: u64) -> Update {
+        self.used = Some(used);
+        self.context_max = Some((self.model.clone(), size));
+        let mut update = json!({ "sessionUpdate": "usage_update", "used": used, "size": size });
+        if let Some(amount) = self.cost_usd {
+            update["cost"] = json!({ "amount": amount, "currency": "USD" });
+        }
+        Update { session: self.root.clone(), update }
+    }
+
     fn usage_update(&self) -> Option<Update> {
         let used = self.used?;
-        let size = self
-            .model
-            .as_ref()
-            .and_then(|m| {
-                self.windows
-                    .get(m)
-                    .or_else(|| self.windows.iter().find(|(k, _)| k.starts_with(m.as_str())).map(|(_, v)| v))
+        let own = self.context_max.as_ref().filter(|(model, _)| *model == self.model).map(|(_, size)| size);
+        let size = own
+            .or_else(|| {
+                self.model.as_ref().and_then(|m| {
+                    self.windows
+                        .get(m)
+                        .or_else(|| self.windows.iter().find(|(k, _)| k.starts_with(m.as_str())).map(|(_, v)| v))
+                })
             })
             .or_else(|| (self.windows.len() == 1).then(|| self.windows.values().next()).flatten())?;
         let mut update = json!({ "sessionUpdate": "usage_update", "used": used, "size": size });

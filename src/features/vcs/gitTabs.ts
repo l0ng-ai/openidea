@@ -41,6 +41,7 @@ export function stashTabs({ combine, shelfCount, stashCount, tab }: StashTabsInp
 
 /** Title of a log tab of its own. */
 export function logTabLabel(t: LogTab): string {
+  if (t.kind === "update") return tx`Update Info: ${t.target}`;
   return t.kind === "history" ? tx`History: ${baseName(t.target)}` : tx`Log: ${t.target}`;
 }
 

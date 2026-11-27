@@ -16,30 +16,15 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
 use std::time::Duration;
 
 /// API calls normally answer within a few seconds.
 const QUICK: Duration = Duration::from_secs(60);
 
-/// Locates the gh executable once per process (GUI apps on macOS have a minimal `PATH`).
+/// Locates the gh executable (GUI apps on macOS have a minimal `PATH`, and the IDE can
+/// install or remove a managed copy in its tools directory at runtime).
 pub fn gh_executable() -> Option<PathBuf> {
-    static GH: OnceLock<Option<PathBuf>> = OnceLock::new();
-    GH.get_or_init(|| {
-        if let Some(explicit) = std::env::var_os("OPENIDEA_GH").map(PathBuf::from).filter(|p| p.is_file()) {
-            return Some(explicit);
-        }
-        if let Ok(found) = which::which("gh") {
-            return Some(found);
-        }
-        let candidates: &[&str] = if cfg!(windows) {
-            &[r"C:\Program Files\GitHub CLI\gh.exe"]
-        } else {
-            &["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh", "/snap/bin/gh"]
-        };
-        candidates.iter().map(PathBuf::from).find(|p| p.is_file())
-    })
-    .clone()
+    ide_core::tool_path::find_gh_executable()
 }
 
 fn command(root: &Path, args: &[&str]) -> IdeResult<Command> {
@@ -100,6 +85,14 @@ fn run_streaming(
 
 fn parse<T>(r: serde_json::Result<T>) -> IdeResult<T> {
     r.map_err(|e| IdeError::new(ide_core::error::ErrorKind::Protocol, format!("unexpected gh output: {e}")))
+}
+
+/// The repository of `root`, free to execute: the host runs the `gh_*` commands only in a
+/// trusted project.
+fn trusted_repo(root: &Path) -> IdeResult<Repo> {
+    let repo = Repo::discover(root)?.ok_or_else(|| IdeError::invalid("not a git repository"))?;
+    repo.set_execution_allowed(true);
+    Ok(repo)
 }
 
 /// Whether gh is installed and signed in, and which GitHub repository `root` maps to.
@@ -233,7 +226,7 @@ pub fn create(
         return Err(IdeError::invalid("choose a base branch"));
     }
     if req.push {
-        let repo = Repo::discover(root)?.ok_or_else(|| IdeError::invalid("not a git repository"))?;
+        let repo = trusted_repo(root)?;
         repo.push(false, true, cancel, on_output)?;
     }
     let mut args = vec!["pr", "create", "--title", req.title.trim(), "--body", &req.body, "--base", req.base.trim()];
@@ -354,7 +347,7 @@ pub fn prepare_diff(
     cancel: &CancellationToken,
     on_output: &dyn Fn(String),
 ) -> IdeResult<PrDiffRevisions> {
-    let repo = Repo::discover(root)?.ok_or_else(|| IdeError::invalid("not a git repository"))?;
+    let repo = trusted_repo(root)?;
     if !repo.has_commit(head_oid) || !repo.has_commit(base_oid) {
         let remotes = repo.remotes()?;
         let remote = remote_for(&remotes, name_with_owner)
@@ -377,4 +370,38 @@ pub fn prepare_diff(
     };
     let files = repo.diff_files(&base, head_oid)?;
     Ok(PrDiffRevisions { base, head: head_oid.to_owned(), files, root: ide_core::IpcPath(repo.root().to_path_buf()) })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn gh_executable_picks_up_newly_installed_binary_without_restart() {
+        let dir = std::env::temp_dir().join(format!("openidea-gh-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let search = std::env::join_paths([&dir]).unwrap();
+        assert_eq!(ide_core::tool_path::find_gh_in(None, &search, &[]), None);
+
+        let gh = dir.join(if cfg!(windows) { "gh.exe" } else { "gh" });
+        std::fs::write(&gh, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert_eq!(ide_core::tool_path::find_gh_in(None, &search, &[]), Some(gh.clone()));
+
+        let explicit = dir.join(if cfg!(windows) { "custom-gh.exe" } else { "custom-gh" });
+        std::fs::write(&explicit, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&explicit, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert_eq!(ide_core::tool_path::find_gh_in(Some(&explicit), &search, &[]), Some(explicit));
+
+        std::fs::remove_file(&gh).unwrap();
+        assert_eq!(ide_core::tool_path::find_gh_in(None, &search, &[]), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

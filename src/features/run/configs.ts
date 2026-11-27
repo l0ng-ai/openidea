@@ -18,10 +18,12 @@ const KIND_LABELS: Record<string, string> = {
   make: "Make",
   cmake: "CMake",
   just: "Just",
+  sbt: "sbt Task",
   shell: "Shell Script",
   program: "Program",
   compound: "Compound",
   application: "Application",
+  "jar-application": "JAR Application",
   "spring-boot": "Spring Boot",
   node: "Node.js",
   "java-file": "Java Single File",
@@ -29,6 +31,7 @@ const KIND_LABELS: Record<string, string> = {
   kotlinc: "Kotlin Single File",
   cc: "C/C++ Single File",
   native: "Native Executable",
+  "cmake-application": "CMake Application",
   ruby: "Ruby",
   php: "PHP",
   perl: "Perl",
@@ -42,11 +45,63 @@ const KIND_LABELS: Record<string, string> = {
 };
 
 export const KIND_OPTIONS = Object.entries(KIND_LABELS).map(([value, label]) => ({ value, label }));
+/**
+ * The menu category of a run configuration kind, for the Services "Add Service"
+ * menu (IDEA's template groups): a registered type's group (Docker, Servers),
+ * else its language/tool category, else "Others".
+ */
+export const KIND_CATEGORIES: Record<string, string> = {
+  "spring-boot": "Java",
+  application: "Java",
+  "jar-application": "Java",
+  native: "Java",
+  "java-file": "Java",
+  kotlin: "Java",
+  kotlinc: "Java",
+  "scala-cli": "Java",
+  maven: "Build Tools",
+  gradle: "Build Tools",
+  cmake: "Build Tools",
+  make: "Build Tools",
+  just: "Build Tools",
+  sbt: "Build Tools",
+  npm: "JavaScript",
+  node: "JavaScript",
+  bun: "JavaScript",
+  deno: "JavaScript",
+  cypress: "JavaScript",
+  python: "Python",
+  pytest: "Python",
+  cargo: "Rust",
+  rustc: "Rust",
+  go: "Go",
+  cc: "C/C++",
+  "cmake-application": "C/C++",
+  shell: "Shell",
+  program: "Shell",
+};
+
+/** Category order of the Add Service menu; unlisted categories (plugins) sort after, then "Others". */
+export const CATEGORY_ORDER: readonly string[] = [
+  "Java",
+  "Build Tools",
+  "JavaScript",
+  "Python",
+  "Rust",
+  "Go",
+  "C/C++",
+  "Shell",
+  "Servers",
+  "Docker",
+];
+
+export function categoryOf(kind: string): string {
+  return useRunConfigTypes.getState().types.get(kind)?.group ?? KIND_CATEGORIES[kind] ?? "Others";
+}
 
 export function kindLabel(kind: string): string {
   const type = useRunConfigTypes.getState().types.get(kind);
-  // A grouped type ("Tomcat Server › Local") is named by its group outside the Add menu.
-  return type?.group ?? type?.label ?? KIND_LABELS[kind] ?? (kind ? kind[0]!.toUpperCase() + kind.slice(1) : "Other");
+  return type?.label ?? KIND_LABELS[kind] ?? (kind ? kind[0]!.toUpperCase() + kind.slice(1) : "Other");
 }
 
 export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
@@ -55,12 +110,16 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
     case "compound":
       return "gutter-run-all";
     case "program":
+    case "jar-application":
       return "file-binary";
     case "spring-boot":
       return "spring-boot";
+    case "tomcat":
+      return "tomcat";
     case "npm":
-    case "bun":
       return "file-npm";
+    case "bun":
+      return "file-bun";
     case "deno":
       return "file-ts";
     case "cargo":
@@ -74,6 +133,11 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
       return "file-csharp";
     case "go":
       return "file-go";
+    case "rebar3":
+    case "escript":
+      return "file-erlang";
+    case "mix":
+      return "file-elixir";
     case "node":
       return "file-js";
     case "application":
@@ -83,6 +147,7 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
     case "rustc":
       return "file-rust";
     case "cc":
+    case "cmake-application":
       return "file-cpp";
     case "shell":
       return "file-shell";
@@ -103,11 +168,15 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
     case "elixir":
       return "file-elixir";
     case "scala-cli":
+    case "sbt":
       return "file-scala";
     case "kotlinc":
       return "file-kotlin";
     case "kotlin":
       return "file-kotlin-script";
+    case "zig":
+    case "zig-application":
+      return "file-zig";
     case "native":
       return "file-binary";
     case "python":
@@ -116,6 +185,8 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
     case "phpunit":
     case "composer":
       return "file-php";
+    case "dart-command":
+      return "file-dart";
     default:
       return useRunConfigTypes.getState().types.get(config.kind)?.icon ?? "terminal";
   }
@@ -155,6 +226,22 @@ export function upsertConfig(configs: readonly RunConfig[], edited: RunConfig): 
   const out = [...configs];
   out[i] = next;
   return out;
+}
+
+/**
+ * The saved configurations after "Create Run Configuration" for `config`, or `null` when one with
+ * its id is already saved: that one opens as the user left it. Gutter and tool-window actions
+ * build their configuration with a fixed id, so saving it again would reset the user's edits
+ * (a Dockerfile configuration's bound ports, #6047).
+ */
+export function createdConfigs(
+  configs: readonly RunConfig[],
+  temporary: readonly string[],
+  config: RunConfig,
+): RunConfig[] | null {
+  const saved = configs.filter((c) => !c.detected && !temporary.includes(c.id));
+  if (saved.some((c) => c.id === config.id)) return null;
+  return [...saved, { ...config, detected: false }];
 }
 
 export function removeConfig(configs: readonly RunConfig[], id: string): RunConfig[] {
@@ -212,6 +299,12 @@ export function duplicateConfig(config: RunConfig, configs: readonly RunConfig[]
 /** Field errors: `name`, `command`, `env`, `cwd`, `compound`, `beforeLaunch` or a type param key. */
 export type ConfigErrors = Partial<Record<string, string>>;
 
+export function moduleTaskError(config: RunConfig, target: string): string | null {
+  if (config.module == null) return "Select a module for the Build Module task";
+  if (config.module !== target) return "The Build Module task uses a different module; remove it and add it again";
+  return null;
+}
+
 export function validateConfig(config: RunConfig, all: readonly RunConfig[] = []): ConfigErrors {
   const errors: ConfigErrors = {};
   if (!config.name.trim()) errors.name = "Name is required";
@@ -226,9 +319,21 @@ export function validateConfig(config: RunConfig, all: readonly RunConfig[] = []
   } else if (!config.command.trim() && !useRunConfigTypes.getState().types.get(config.kind)?.debugOnly)
     errors.command = "Command is required";
   for (const t of config.beforeLaunch ?? []) {
-    if (t.kind === "run" && (t.target === config.id || !all.some((c) => c.id === t.target)))
+    if (
+      (t.kind === "run" || (t.kind === "build" && t.target)) &&
+      (t.target === config.id || !all.some((c) => c.id === t.target))
+    )
       errors.beforeLaunch = "A before launch task runs a missing configuration or this one";
-    else if (t.kind !== "build" && t.kind !== "dotnetBuild" && t.kind !== "run" && !(t.target ?? "").trim())
+    else if (t.kind === "buildModule") {
+      const error = moduleTaskError(config, t.target ?? "");
+      if (error) errors.beforeLaunch = error;
+    } else if (
+      t.kind !== "build" &&
+      t.kind !== "buildArtifacts" &&
+      t.kind !== "dotnetBuild" &&
+      t.kind !== "run" &&
+      !(t.target ?? "").trim()
+    )
       errors.beforeLaunch = "A before launch task is incomplete";
   }
   for (const key of Object.keys(config.env)) {

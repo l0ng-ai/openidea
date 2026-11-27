@@ -1,5 +1,7 @@
+import { showBackgroundTasks } from "./StatusBar";
 import { executeAction, getAction, registerActions } from "@/platform/actions";
-import { isTauri } from "@/platform/ipc";
+import { isCancelled, isTauri } from "@/platform/ipc";
+import { confirmProjectTrust } from "@/platform/projectTrust";
 import { closeProject, confirmLeaveProject, openProject, useProject } from "@/platform/project";
 import { runSearchFieldCommand, showContextMenu } from "@/ui";
 import { showCustomizeToolbar } from "./MainToolbarDialog";
@@ -10,6 +12,7 @@ import { activateToolWindow } from "./toolwindows/store";
 import { toggleTheme } from "./theme";
 import { cancelTask, canCancel, useTasks } from "./tasks";
 import { maybeEditorService, showStatusInfo } from "./contributions";
+import { toggleStatusWidget } from "./statusBarWidgets";
 
 export async function openProjectDialog() {
   if (!isTauri()) {
@@ -20,7 +23,7 @@ export async function openProjectDialog() {
     });
     return;
   }
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const defaultPath = useProject.getState().settings?.general?.defaultProjectDirectory?.trim() || undefined;
   const picked = await open({ directory: true, multiple: false, title: "Open Folder", defaultPath });
   const path = Array.isArray(picked) ? picked[0] : picked;
@@ -30,10 +33,12 @@ export async function openProjectDialog() {
     await executeAction("file.openProjectPath", path);
     return;
   }
-  if (!(await confirmLeaveProject())) return;
   try {
+    await confirmProjectTrust(path, "local");
+    if (!(await confirmLeaveProject())) return;
     await openProject(path);
   } catch (e) {
+    if (isCancelled(e)) return;
     notify({ level: "error", title: "Could not open project", body: e instanceof Error ? e.message : String(e) });
   }
 }
@@ -67,7 +72,7 @@ export function registerShellActions(): () => void {
       category: "File",
       when: "projectOpen",
       run: async () => {
-        if (!useProject.getState().project || !(await confirmLeaveProject())) return;
+        if (!useProject.getState().project || !(await confirmLeaveProject(false))) return;
         try {
           await closeProject();
         } catch (e) {
@@ -96,7 +101,7 @@ export function registerShellActions(): () => void {
       title: "Quick Switch Scheme…",
       category: "View",
       keywords: ["theme", "color scheme", "keymap", "view mode"],
-      run: () => showQuickSwitch({ x: window.innerWidth / 2 - 120, y: 96 }),
+      run: showQuickSwitch,
     },
     {
       id: "toolbar.customize",
@@ -104,6 +109,21 @@ export function registerShellActions(): () => void {
       category: "View",
       keywords: ["toolbar", "widgets", "title bar"],
       run: showCustomizeToolbar,
+    },
+    {
+      // View › Appearance › Status Bar Widgets: the argument is the widget id.
+      id: "view.toggleStatusBarWidget",
+      title: "Status Bar Widget",
+      category: "View",
+      hidden: true,
+      run: ({ arg }) => (typeof arg === "string" ? toggleStatusWidget(arg) : undefined),
+    },
+    {
+      id: "view.backgroundTasks",
+      title: "Background Tasks",
+      category: "View",
+      keywords: ["progress", "running", "processes"],
+      run: showBackgroundTasks,
     },
     {
       id: "view.notifications",

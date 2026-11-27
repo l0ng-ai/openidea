@@ -1,19 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import type { BranchInfo } from "@/bindings";
-import { messageProblems, wrapAtMargin } from "../CommitView";
+import { addBlankLineAfterSubject, messageProblems, wrapAtMargin } from "../CommitView";
 import { linkifyIssues } from "../issueLinks";
-import {
-  defaultPushChecked,
-  isProtectedBranch,
-  isPushRejected,
-  pushCandidates,
-  pushRepoCommits,
-  type RepoPush,
-} from "../remoteUi";
+import { isProtectedBranch } from "../branches";
+import { isLeaseRejected, isPushRejected, pushCandidates, pushRepoCommits, type RepoPush } from "../remoteUi";
 import { attentionRepo } from "../store";
 import { statusDecorations } from "../model";
 
 const vcsLog = vi.fn();
+const vcsBranches = vi.fn();
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -22,6 +17,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     commands: {
       ...real.commands,
       vcsLog: (repo: unknown, query: unknown) => vcsLog(repo, query),
+      vcsBranches: (repo: unknown) => vcsBranches(repo),
     },
   };
 });
@@ -37,6 +33,14 @@ describe("commit message inspections", () => {
     ]);
     expect(messageProblems("ok\n\nthis body line is long", cfg)).toEqual(["Body line 3 is longer than 8 characters"]);
     expect(messageProblems("x".repeat(20), { ...cfg, limitSubject: false })).toEqual([]);
+  });
+
+  it("adds the missing blank line after the subject", () => {
+    const fixed = addBlankLineAfterSubject("111\n111");
+    expect(fixed).toBe("111\n\n111");
+    expect(messageProblems(fixed, cfg)).toEqual([]);
+    expect(addBlankLineAfterSubject("subject\nline 2\nline 3")).toBe("subject\n\nline 2\nline 3");
+    expect(addBlankLineAfterSubject("subject")).toBe("subject");
   });
 
   it("wraps body lines at the last space before the margin", () => {
@@ -73,6 +77,16 @@ describe("git settings helpers", () => {
   it("recognises rejected pushes", () => {
     expect(isPushRejected(" ! [rejected]        main -> main (fetch first)")).toBe(true);
     expect(isPushRejected("Permission denied (publickey)")).toBe(false);
+    expect(isPushRejected(" ! [rejected]        main -> main (non-fast-forward)")).toBe(true);
+    // A tag that exists on the remote, a hook or the server refusing: updating doesn't help.
+    expect(
+      isPushRejected(
+        " ! [rejected]        v1 -> v1 (already exists)\nhint: Updates were rejected because the tag already exists in the remote.",
+      ),
+    ).toBe(false);
+    expect(isPushRejected(" ! [remote rejected] main -> main (pre-receive hook declined)")).toBe(false);
+    expect(isPushRejected(" ! [rejected]        main -> main (stale info)")).toBe(false);
+    expect(isLeaseRejected(" ! [rejected]        main -> main (stale info)")).toBe(true);
   });
 
   it("propagates folder colours only when enabled", () => {
@@ -92,7 +106,7 @@ describe("several repositories", () => {
     expect(attentionRepo("/p", {}, {})).toBeNull();
   });
 
-  it("lists repositories with something to push", () => {
+  it("lists repositories with a branch or a detached commit, including up-to-date ones", () => {
     const branch = (head: string | null, upstream: string | null) => ({
       head,
       headCommit: "c1",
@@ -107,11 +121,9 @@ describe("several repositories", () => {
       { root: "/p/a", branch: branch("main", "origin/main"), commits: [] },
       { root: "/p/b", branch: branch("feature", null), commits: [commit] },
       { root: "/p/c", branch: branch(null, null), commits: [] },
+      { root: "/p/d", branch: { ...branch(null, null), headCommit: null }, commits: [] },
     ];
-    const candidates = pushCandidates(repos);
-    expect(candidates.map((r) => r.root)).toEqual(["/p", "/p/b"]);
-    expect([...defaultPushChecked(candidates, "/p")]).toEqual(["/p"]);
-    expect([...defaultPushChecked(candidates, "/p/b")]).toEqual(["/p", "/p/b"]);
+    expect(pushCandidates(repos).map((r) => r.root)).toEqual(["/p", "/p/a", "/p/b", "/p/c"]);
   });
 });
 
@@ -125,17 +137,81 @@ describe("pushRepoCommits", () => {
     operation: null,
   });
 
-  it("falls back to recent history when the upstream no longer resolves", async () => {
-    vcsLog.mockImplementation((_repo: unknown, q: { range: string | null }) =>
-      q.range === "@{u}..HEAD"
-        ? Promise.resolve({
-            status: "error",
-            error: "fatal: ambiguous argument '@{u}..HEAD': unknown revision or path not in the working tree.",
-          })
-        : Promise.resolve({ status: "ok", data: [{ id: "c1" }] }),
+  const upstreamGone = (_repo: unknown, q: { range: string | null }) =>
+    q.range === "@{u}..HEAD"
+      ? Promise.resolve({
+          status: "error",
+          error: "fatal: ambiguous argument '@{u}..HEAD': unknown revision or path not in the working tree.",
+        })
+      : Promise.resolve({ status: "ok", data: [{ id: "c1" }] });
+
+  it("loads the push destination's commits before the live preview resolves", async () => {
+    vcsLog.mockReset().mockResolvedValue({ status: "ok", data: [{ id: "c1" }] });
+    await expect(
+      pushRepoCommits("/p", {
+        ...branch("feature", "origin/feature"),
+        outgoing: { remote: "fork", branch: "review", reference: "refs/remotes/published/review", count: 1 },
+      }),
+    ).resolves.toEqual([{ id: "c1" }]);
+    expect(vcsLog).toHaveBeenCalledWith(
+      "/p",
+      expect.objectContaining({
+        range: "refs/remotes/published/review..refs/heads/feature",
+      }),
     );
+  });
+
+  it("lists the commits no remote branch has when the upstream no longer resolves", async () => {
+    vcsLog.mockReset().mockImplementation(upstreamGone);
+    vcsBranches.mockReset().mockResolvedValue({
+      status: "ok",
+      data: [
+        { name: "feature", remote: false },
+        { name: "origin/main", remote: true },
+        { name: "upstream/dev", remote: true },
+      ],
+    });
+    await expect(pushRepoCommits("/p", branch("feature", "origin/feature"))).resolves.toEqual([{ id: "c1" }]);
+    expect(vcsBranches).toHaveBeenCalledWith("/p");
+    expect(vcsLog).toHaveBeenLastCalledWith(
+      "/p",
+      expect.objectContaining({
+        branch: "HEAD",
+        range: "HEAD ^refs/remotes/origin/main ^refs/remotes/upstream/dev",
+        limit: 1000,
+      }),
+    );
+  });
+
+  it("falls back to recent history when the repository has no remote branches", async () => {
+    vcsLog.mockReset().mockImplementation(upstreamGone);
+    vcsBranches.mockReset().mockResolvedValue({ status: "ok", data: [{ name: "feature", remote: false }] });
     await expect(pushRepoCommits("/p", branch("feature", "origin/feature"))).resolves.toEqual([{ id: "c1" }]);
     expect(vcsLog).toHaveBeenLastCalledWith("/p", expect.objectContaining({ branch: "HEAD", range: null, limit: 50 }));
+  });
+
+  it("falls back to recent history when the remote branches cannot be read", async () => {
+    vcsLog.mockReset().mockImplementation(upstreamGone);
+    vcsBranches.mockReset().mockResolvedValue({ status: "error", error: "boom" });
+    await expect(pushRepoCommits("/p", branch("feature", "origin/feature"))).resolves.toEqual([{ id: "c1" }]);
+    expect(vcsLog).toHaveBeenLastCalledWith("/p", expect.objectContaining({ branch: "HEAD", range: null, limit: 50 }));
+  });
+
+  it("lists the commits no remote branch has for a branch without upstream", async () => {
+    vcsLog.mockReset().mockResolvedValue({ status: "ok", data: [{ id: "c1" }] });
+    vcsBranches.mockReset().mockResolvedValue({
+      status: "ok",
+      data: [
+        { name: "feature", remote: false },
+        { name: "origin/main", remote: true },
+      ],
+    });
+    await expect(pushRepoCommits("/p", branch("feature", null))).resolves.toEqual([{ id: "c1" }]);
+    expect(vcsLog).toHaveBeenCalledTimes(1);
+    expect(vcsLog).toHaveBeenCalledWith(
+      "/p",
+      expect.objectContaining({ branch: "HEAD", range: "HEAD ^refs/remotes/origin/main", limit: 1000 }),
+    );
   });
 
   it("passes the upstream range through when it resolves", async () => {
@@ -144,9 +220,13 @@ describe("pushRepoCommits", () => {
     expect(vcsLog).toHaveBeenCalledWith("/p", expect.objectContaining({ range: "@{u}..HEAD", limit: 1000 }));
   });
 
-  it("lists no commits for a detached HEAD", async () => {
-    vcsLog.mockClear();
-    await expect(pushRepoCommits("/p", branch(null, null))).resolves.toEqual([]);
-    expect(vcsLog).not.toHaveBeenCalled();
+  it("lists unpublished commits relative to the captured detached HEAD", async () => {
+    vcsLog.mockReset().mockResolvedValue({ status: "ok", data: [{ id: "c1" }] });
+    vcsBranches.mockReset().mockResolvedValue({ status: "ok", data: [{ name: "origin/main", remote: true }] });
+    await expect(pushRepoCommits("/p", branch(null, null))).resolves.toEqual([{ id: "c1" }]);
+    expect(vcsLog).toHaveBeenCalledWith(
+      "/p",
+      expect.objectContaining({ branch: "c1", range: "c1 ^refs/remotes/origin/main", limit: 1000 }),
+    );
   });
 });

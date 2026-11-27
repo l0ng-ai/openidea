@@ -1,30 +1,45 @@
 //! Tree-sitter driven structure: outline, folding, symbol tags, selection ranges, highlighting.
 
+mod bundler_aliases;
 mod cache;
 mod configuration;
 mod external;
 mod folding;
 mod grammars;
 mod highlight;
+mod inheritance;
 pub(crate) mod lines;
 mod literals;
 mod outline;
+mod php_align;
+mod python_facts;
+mod python_imports;
+mod rearrange;
+mod rst;
 mod selection;
+mod sfc;
+mod vue;
 mod web;
 
-use crate::{FoldRange, LanguageConfig, LanguageRegistry, SymbolTag};
+use crate::{FoldRange, LanguageConfig, LanguageRegistry, ScriptRegion, SymbolTag};
+pub use bundler_aliases::bundler_aliases;
 pub use cache::{MAX_CACHED_TREES, SyntaxCache, SyntaxCacheStats};
 pub use configuration::ConfigurationKey;
 pub use external::{ExternalFold, ExternalSymbol, ExternalSyntax, ExternalToken, set_external_syntax};
 use grammars::{SPECS, Spec};
 pub use highlight::{SyntaxHighlightKind, SyntaxHighlights};
 use ide_core::{LanguageId, OutlineItem, Pos, Range};
+pub use inheritance::ClassBases;
+pub use lines::{shift_pos, shift_range};
 pub use literals::{Literal, LiteralKind, SpellingKind, SpellingRegion};
-pub use outline::merge_visibility;
+pub use outline::{merge_kinds, merge_visibility};
+pub use php_align::PhpAlignment;
+pub use python_facts::{MethodBody, PythonClassFacts, PythonFacts, PythonMethodFacts, PythonSuppression};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use tree_sitter::{Language, Parser, Tree};
+pub use vue::{VueComponentImport, VueRefAccess, VueRefElement};
 pub use web::{CSS_CLASS, CSS_ID, CSS_VARIABLE, FileReference, WebReference, WebReferenceKind};
 
 /// Texts larger than this are not parsed (minified bundles, generated dumps).
@@ -127,29 +142,11 @@ impl Syntax {
         SPECS.iter().map(|s| s.name)
     }
 
-    /// Changes whenever extraction output may change (grammar set, queries,
-    /// crate version); persistent caches of [`Syntax::tags`] key on it.
+    /// Changes whenever extraction output may change (this crate's sources,
+    /// queries, language definitions, tree-sitter crate versions; see
+    /// `build.rs`); persistent caches of [`Syntax::tags`] key on it.
     pub fn fingerprint(&self) -> String {
-        static FP: OnceLock<String> = OnceLock::new();
-        FP.get_or_init(|| {
-            let mut h = blake3::Hasher::new();
-            h.update(env!("CARGO_PKG_VERSION").as_bytes());
-            // Bump when web definitions (`.class`, `#id`, `--var` tags) change.
-            h.update(b"web-definitions-1");
-            for s in SPECS {
-                h.update(s.name.as_bytes());
-                h.update(&Language::new(s.language).abi_version().to_le_bytes());
-                h.update(s.outline.as_bytes());
-                for list in [s.fold_nodes, s.fold_bodies, s.imports, s.constructors] {
-                    for k in list {
-                        h.update(k.as_bytes());
-                        h.update(b"\0");
-                    }
-                }
-            }
-            h.finalize().to_hex()[..16].to_owned()
-        })
-        .clone()
+        env!("SYNTAX_SOURCE_HASH").to_owned()
     }
 
     /// Whether a tree-sitter grammar is bundled for this language.
@@ -165,17 +162,70 @@ impl Syntax {
     }
 
     pub fn outline(&self, lang: &LanguageId, text: &str) -> Vec<OutlineItem> {
+        // HTML containers (Vue SFC / Svelte / JSP have no grammar of their own;
+        // HTML itself parses alike): HTML outline with each inline `<script>`'s
+        // TS/JS declarations nested under its entry, in document coordinates.
+        if let Some(items) = self.web_outline(lang, text) {
+            return items;
+        }
         self.analyze(lang, text, |g, tree, text| {
             let query = g.outline_query()?;
             Some(outline::outline(g, query, tree, text))
         })
+        .or_else(|| self.builtin_outline(lang, text))
         .unwrap_or_default()
     }
 
+    /// Outline for languages without a grammar that have a built-in parser.
+    fn builtin_outline(&self, lang: &LanguageId, text: &str) -> Option<Vec<OutlineItem>> {
+        (lang.as_str() == "restructuredtext" && text.len() <= MAX_PARSE_BYTES).then(|| rst::outline(text))
+    }
+
+    /// Outline of an HTML container document (html, vue, svelte, jsp): `None`
+    /// for every other language, CSS containers included.
+    pub(crate) fn web_outline(&self, lang: &LanguageId, text: &str) -> Option<Vec<OutlineItem>> {
+        let g = self.web_grammar(lang)?;
+        if g.spec.name != "html" || text.len() > MAX_PARSE_BYTES {
+            return None;
+        }
+        let tree = parse(&g.language, text, None)?;
+        let query = g.outline_query()?;
+        Some(outline::outline_nested(g, query, &tree, text, &|region_lang, region_text| {
+            self.outline(region_lang, region_text)
+        }))
+    }
+
     pub fn folding(&self, lang: &LanguageId, text: &str) -> Vec<FoldRange> {
-        let tokens = self.comment_tokens(lang);
-        self.analyze(lang, text, |g, tree, text| Some(folding::folding(g.spec, g.kinds(), tree, text, tokens)))
+        self.web_folding(lang, text)
+            .or_else(|| self.analyze(lang, text, |g, tree, text| Some(self.folding_with_scripts(g, tree, text, lang))))
             .unwrap_or_else(|| self.custom_folding(lang, text))
+    }
+
+    pub(crate) fn web_folding(&self, lang: &LanguageId, text: &str) -> Option<Vec<FoldRange>> {
+        let g = self.web_grammar(lang)?;
+        if g.spec.name != "html" || text.len() > MAX_PARSE_BYTES {
+            return None;
+        }
+        let tree = parse(&g.language, text, None)?;
+        Some(self.folding_with_scripts(g, &tree, text, lang))
+    }
+
+    fn folding_with_scripts(&self, g: &Grammar, tree: &Tree, text: &str, lang: &LanguageId) -> Vec<FoldRange> {
+        let mut folds = folding::folding(g.spec, g.kinds(), tree, text, self.comment_tokens(lang));
+        if g.spec.name == "html" {
+            let lines = lines::LineIndex::new(text);
+            for region in sfc::script_regions(tree, text) {
+                let base_line = lines.line_of(region.base) as u32;
+                folds.extend(self.folding(&region.language, &region.text).into_iter().map(|mut fold| {
+                    fold.start_line += base_line;
+                    fold.end_line += base_line;
+                    fold
+                }));
+            }
+            folds.sort_by(|a, b| a.start_line.cmp(&b.start_line).then(b.end_line.cmp(&a.end_line)));
+            folds.dedup_by_key(|f| f.start_line);
+        }
+        folds
     }
 
     fn comment_tokens(&self, lang: &LanguageId) -> &folding::CommentTokens {
@@ -248,6 +298,19 @@ impl Syntax {
         self.with_web_tree(lang, text, |_, _, tree| web::anchors(tree, text, name)).unwrap_or_default()
     }
 
+    /// Inline TS/JS `<script>` regions of a Vue SFC / HTML document, in
+    /// document order. Empty for other languages or non-JavaScript blocks.
+    pub fn script_regions(&self, lang: &LanguageId, text: &str) -> Vec<ScriptRegion> {
+        self.with_web_tree(lang, text, |_g, _css, tree| sfc::script_regions(tree, text)).unwrap_or_default()
+    }
+
+    /// [`Self::script_regions`] of an already parsed document (`ParsedTree`
+    /// lends the tree and text) — the cache-aware way for other crates, which
+    /// reuses a cached incremental HTML tree instead of parsing again.
+    pub fn script_regions_of(tree: &Tree, text: &str) -> Vec<ScriptRegion> {
+        sfc::script_regions(tree, text)
+    }
+
     /// Highlighting from the grammar's own query; `None` without one.
     pub fn highlights(&self, lang: &LanguageId, text: &str) -> Option<SyntaxHighlights> {
         self.analyze(lang, text, |g, tree, text| {
@@ -264,7 +327,7 @@ impl Syntax {
     /// Comments, string literals and declared names (byte ranges, document
     /// order) for the Typo inspection; `None` like [`Self::literals`].
     pub fn spelling_regions(&self, lang: &LanguageId, text: &str) -> Option<Vec<SpellingRegion>> {
-        self.analyze(lang, text, |_, tree, _| Some(literals::spelling_regions(tree)))
+        self.analyze(lang, text, |_, tree, text| Some(literals::spelling_regions(tree, text)))
     }
 
     /// Syntax-aware selection ranges for IDEA "Extend Selection" (⌥↑), innermost first.
@@ -278,6 +341,13 @@ impl Syntax {
     /// Name of the bundled grammar used for `lang`, if any.
     pub fn grammar_name(&self, lang: &LanguageId) -> Option<&'static str> {
         self.grammar(lang).map(|g| g.spec.name)
+    }
+
+    /// Name of the grammar web features parse `lang` with (html for Vue SFC /
+    /// Svelte / JSP, css for SCSS / Less); `None` when `lang` has its own
+    /// grammar or no web features. Lets other crates recognize containers.
+    pub fn web_grammar_name(&self, lang: &LanguageId) -> Option<&'static str> {
+        self.web_grammar(lang).map(|g| g.spec.name)
     }
 
     /// Grammar name and tree-sitter language for `lang`, for engines that parse

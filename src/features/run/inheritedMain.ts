@@ -90,6 +90,7 @@ export async function resolveInheritedMain(
     for (const t of level) {
       let supers: HierarchyItem[];
       try {
+        // oxlint-disable-next-line no-await-in-loop -- hierarchy requests are consumed in BFS order; a failure at depth 0 must abort with undefined
         supers = await deps.supertypes(t.path, t.pos);
       } catch {
         if (d === 0) return undefined;
@@ -100,6 +101,7 @@ export async function resolveInheritedMain(
         const key = `${s.uri ?? s.path}:${s.selectionRange.start.line}`;
         if (seen.has(key)) continue;
         seen.add(key);
+        // oxlint-disable-next-line no-await-in-loop -- stops at the first superclass declaring main and shares the `declares` cache; parallel reads would fetch more superclass documents and change what is cached
         if (await declaresMain(s, deps)) return true;
         next.push({ path: s.path, pos: s.selectionRange.start });
       }
@@ -117,6 +119,7 @@ export async function resolveCandidates(
 ): Promise<boolean> {
   let found = false;
   for (const c of candidates) {
+    // oxlint-disable-next-line no-await-in-loop -- candidate resolution is deliberately serial to avoid overlapping LSP requests; an unavailable server leaves the candidate pending for a later retry
     const has = await resolveInheritedMain(path, { line: c.line, col: c.col }, deps);
     if (has === undefined) continue;
     if (!resolved.has(path)) resolved.set(path, new Map());

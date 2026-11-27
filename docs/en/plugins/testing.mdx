@@ -1,0 +1,92 @@
+---
+title: "Testing and debugging"
+description: "Unit-test plugin logic against the SDK's mock host, validate packages with openidea-plugin check, read plugin logs and fix common problems."
+---
+
+## Unit tests against the mock host
+
+On `wasm32-wasip2` the Rust SDK calls the IDE. On your machine it calls the SDK's **mock host**, so `cargo test` tests your plugin's logic without the IDE:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openidea_plugin::mock::MockHost;
+
+    #[test]
+    fn counts_and_shouts() {
+        let host = MockHost::install();
+        host.open_editor("/project/a.md", "markdown", "one two three", &[(0, 4, 0, 7)]);
+        WordTools.run_command("count", &host.invocation(), None).unwrap();
+        assert_eq!(host.notifications()[0].body, "3 words");
+        WordTools.run_command("shout", &host.invocation(), None).unwrap();
+        assert_eq!(host.editor_text(), "one TWO three");
+    }
+}
+```
+
+`MockHost::install()` sets up a mock for the current test. It:
+
+- enforces capabilities like the IDE when you restrict them: `MockHost::install().with_capabilities(&["editor.read"])` makes every other gated call return `Error::Denied`;
+- keeps a versioned editor document: `type_in_editor` makes the plugin's next edit stale, so you can test `Error::Stale` handling;
+- holds project files (`set_project_root`, `add_file`, `add_dir`), settings (`set_setting`), the UI language (`set_locale`), VCS state, symbols and more;
+- records what the plugin did: `notifications()`, `status_items()`, `storage()`, `subscriptions()`, `tasks()`, `fetches()`, `logs()`, `diagnostics()`, opened locations, terminals, run targets;
+- lets you script answers: `answer_next_prompt` for pickers and input boxes, `on_fetch` for HTTP responses, `on_process` for program output.
+
+The full list is in `cargo doc` for the SDK ([`src/mock.rs`](https://github.com/l0ng-ai/openidea/blob/main/sdk/rust/openidea-plugin/src/mock.rs)). The [official plugins](/en/plugins/examples) all have native tests to copy from.
+
+## Validate the package
+
+```sh
+openidea-plugin check                    # the current folder
+openidea-plugin check path/to/plugin
+openidea-plugin check acme.tools-1.0.0.oiplugin
+```
+
+`check` validates a folder or an `.oiplugin` exactly as **Install Plugin from Disk…** would: the manifest, every contribution, SVG sanitising, translation catalogs, and the component. For the component it checks that it imports nothing but the plugin API and WASI, that every function it imports exists in this IDE with the same signature, and that it exports the plugin world. It then prints the plugin's code size and API version, categories, activation events, contributions and every capability with its risk, and ends with `ok`.
+
+`openidea-plugin build` runs `check` after every build. Run it on any package you build with other toolchains (`componentize-py`, `jco componentize`, TinyGo).
+
+## Try it in the IDE
+
+Link the folder with `openidea-plugin link`, then after each `openidea-plugin build` click **Reload from disk** in the plugin's details in **Settings › Plugins** (or run **Reload Plugins**). See the [Quickstart](/en/plugins/quickstart#the-edit-loop).
+
+**Settings › Plugins** shows for each plugin its status, why it failed if it did, and its call statistics: recent call latency (p95), crashes, editor results that came too late, and how often it was reclaimed while idle.
+
+## Logging
+
+- `host::log(level, message)` writes to the IDE log, tagged with the plugin id.
+- `eprintln!` output is logged too, and a panic's message is shown with the crash.
+- Debug and trace lines are written only when the IDE is started with `RUST_LOG=info,ide_plugin=trace`.
+- Open the log folder with **Help › Show Log in Finder** (macOS), **Show Log in Explorer** (Windows) or **Show Log in Files** (Linux).
+
+For output the user should see, use an Output channel (`host::output_append`, API 1.4) or a notification instead.
+
+## Troubleshooting
+
+| Symptom                                                                                  | Cause and fix                                                                                                                                                                                               |
+| ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engines.openidea "…" does not match this IDE's plugin API`                              | The manifest requires an API the IDE doesn't have. Lower the requirement or update the IDE.                                                                                                                 |
+| `… is new in plugin API 1.x: set engines.openidea to "^1.x"`                             | The manifest uses a feature that older IDEs reject while still admitting them. Raise `engines.openidea`.                                                                                                    |
+| `the component was built for plugin API 1.x, newer than this IDE's 1.y: update OpenIDEA` | It was built with a newer SDK than the IDE implements, for example from `main`. Build against the SDK tag of the oldest release you support, or update the IDE. See [API versions](/en/plugins/versioning). |
+| A call returns `Error::Denied("…")`                                                      | The capability is not declared, or the user refused or revoked it. Declare it in `[capabilities]` and handle the denial.                                                                                    |
+| A call returns `Error::Stale`                                                            | The document changed since you read it. Read it again and retry; `TextEditor::transform_selections` retries once for you.                                                                                   |
+| A command fails after 5 seconds                                                          | Commands have a 5 s budget. Do long work inside `host::begin_task`, and keep reporting progress.                                                                                                            |
+| Editor results don't show                                                                | Providers have 50 ms before a result is dropped and are interrupted at 500 ms. Make them faster or cache work.                                                                                              |
+| The plugin shows **Failed**                                                              | It crashed three times in a row. The reason is in its details; fix it, rebuild, then **Restart** or **Reload from disk**.                                                                                   |
+| A linked plugin doesn't appear                                                           | Open or refresh **Settings › Plugins** (the gear menu has **Rescan Plugins**). Check `openidea-plugin links`, and that `OPENIDEA_PLUGINS_DIR` points at the plugins directory of the IDE you run.           |
+| It shows **Needs permission**                                                            | Click **Review Permissions…** and allow it. Project plugins also need a trusted project.                                                                                                                    |
+| `process:` program is refused                                                            | The program changed since it was approved, or it isn't on the `PATH` of the project machine. Approve it again or choose the executable in **Settings › Plugins**.                                           |
+
+## Testing the host (contributors)
+
+When you change the SDK, the WIT files or a plugin inside this repository, rebuild the checked-in components and run the host's integration tests:
+
+```sh
+plugins/build.sh                         # every plugin and test fixture
+plugins/build.sh official/solidity       # one
+plugins/build.sh --check                 # what CI runs: nothing stale, everything builds
+cargo test -p ide-host --test plugins
+```
+
+`crates/ide-host/tests/plugins.rs` loads the checked-in components of the official plugins and of the fixtures in `crates/ide-plugin/tests/fixtures/`. See [Plugin host](/en/contribute/architecture/plugin-host) for more.

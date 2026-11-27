@@ -8,6 +8,8 @@
 //! pinned versions and runs one language per job:
 //! `cargo test -p ide-host --test language_smoke -- --ignored --exact <language>`.
 
+mod common;
+
 use ide_core::{ChangeSet, DocId, IdeEvent, Pos, Range, RequestId, TextChange};
 use ide_host::{Host, HostConfig, ops};
 use ide_lsp::types::{FormatOptions, GotoKind};
@@ -59,16 +61,15 @@ struct Checks {
     hover: (At, &'static str),
     /// Completion at the end of the typed line offers this item.
     completion: (Typed, &'static str),
-    /// The typed line is reported with this diagnostic; the quick fix with this title makes the
-    /// file contain the last text.
+    /// The typed line is reported with a diagnostic, and its quick fix applies.
     quick_fix: QuickFix,
     /// With the word selected, this intention is offered with an edit or command.
-    intention: (At, &'static str),
+    intention: Option<(At, &'static str)>,
     /// Formatting turns the typed line into the expected one.
     format: (Typed, &'static str),
     indent: Indent,
     /// Renaming the symbol to the new name edits these files.
-    rename: (At, &'static str, &'static [&'static str]),
+    rename: Option<(At, &'static str, &'static [&'static str])>,
     /// Parameter info in a call being typed: a signature naming this parameter.
     signature: (Typed, &'static str),
     /// The Structure view of a file: these symbols, at any depth.
@@ -104,8 +105,8 @@ enum Imports {
 struct QuickFix {
     typed: Typed,
     diagnostic: &'static str,
-    title: &'static str,
-    result: &'static str,
+    /// The quick fix with this title makes the file contain this text.
+    fix: Option<(&'static str, &'static str)>,
 }
 
 /// The editor's indentation, sent with a format request.
@@ -127,7 +128,9 @@ struct Smoke {
 }
 
 fn fixture_dir(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures").join(name)
+    let manifest_dir =
+        std::env::var_os("CARGO_MANIFEST_DIR").map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from);
+    manifest_dir.join("../../fixtures").join(name)
 }
 
 fn copy_dir(from: &Path, to: &Path) {
@@ -135,7 +138,7 @@ fn copy_dir(from: &Path, to: &Path) {
     for entry in std::fs::read_dir(from).unwrap() {
         let entry = entry.unwrap();
         let name = entry.file_name();
-        if matches!(name.to_str(), Some("node_modules" | "target" | "build" | ".gradle" | ".venv")) {
+        if matches!(name.to_str(), Some("node_modules" | "target" | "build" | ".gradle" | ".venv" | "vendor")) {
             continue;
         }
         let target = to.join(&name);
@@ -183,11 +186,6 @@ impl Smoke {
         let events: Events = Arc::default();
         let app = tmp.path().join("app");
         let host = Arc::new(Host::new(HostConfig {
-            config_dir: app.join("config"),
-            data_dir: app.join("data"),
-            local_data_dir: app.join("data"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
             sink_for: Box::new({
                 let events = events.clone();
                 move |_| {
@@ -195,9 +193,7 @@ impl Smoke {
                     Arc::new(move |e: IdeEvent| events.lock().unwrap().push(e))
                 }
             }),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
+            ..common::host_config(&app)
         }));
         host.trust.decide(&root, true, false).unwrap();
         host.open_project(WINDOW, &root).unwrap();
@@ -232,8 +228,8 @@ impl Smoke {
     }
 
     async fn doc(&self, file: &str) -> (DocId, String) {
-        let info = ops::doc::open(&self.host, WINDOW, self.root.join(file)).await.unwrap();
-        let info = ops::doc::snapshot(&self.host, WINDOW, info.id).await.unwrap();
+        let info = ops::doc::doc_open(&self.host, WINDOW, self.root.join(file)).await.unwrap();
+        let info = ops::doc::doc_snapshot(&self.host, WINDOW, info.id).await.unwrap();
         (info.id, info.text)
     }
 
@@ -261,13 +257,13 @@ impl Smoke {
     }
 
     async fn replace(&self, doc: DocId, from: u32, to: u32, insert: &str) {
-        let version = ops::doc::snapshot(&self.host, WINDOW, doc).await.unwrap().version;
+        let version = ops::doc::doc_snapshot(&self.host, WINDOW, doc).await.unwrap().version;
         let changes = ChangeSet { changes: vec![TextChange { from, to, insert: insert.into() }] };
-        ops::doc::edit(&self.host, WINDOW, doc, version, changes).unwrap();
+        ops::doc::doc_edit(&self.host, WINDOW, doc, version, changes).await.unwrap();
     }
 
     async fn restore(&self, doc: DocId, text: &str) {
-        let current = ops::doc::snapshot(&self.host, WINDOW, doc).await.unwrap().text;
+        let current = ops::doc::doc_snapshot(&self.host, WINDOW, doc).await.unwrap().text;
         self.replace(doc, 0, utf16_len(&current), text).await;
     }
 
@@ -303,7 +299,18 @@ impl Smoke {
         let (doc, pos) = self.locate(of).await;
         let want: BTreeSet<String> = files.iter().map(|f| f.to_string()).collect();
         self.retry("find usages", self.warm_up, || async {
-            let found = ops::lsp::lsp_references(&self.host, WINDOW, RequestId(1), doc, pos, true, true).await;
+            let found = ops::lsp::lsp_references(
+                &self.host,
+                WINDOW,
+                RequestId(1),
+                doc,
+                pos,
+                true,
+                true,
+                false,
+                ops::Channel::new(|_| {}),
+            )
+            .await;
             match &found {
                 Ok(r) if want.is_subset(&self.files(r.locations.iter().map(|l| l.path.clone()))) => Ok(()),
                 _ => Err(found.map(|r| self.files(r.locations.into_iter().map(|l| l.path)))),
@@ -381,19 +388,21 @@ impl Smoke {
             .unwrap_or_else(|e| self.fail(check, format_args!("resolving {title:?}: {e}")))
     }
 
-    async fn quick_fix(&self, fix: QuickFix) {
-        let (doc, _, before) = self.type_line(fix.typed).await;
-        assert!(!before.contains(fix.result), "{fix:?}: the file already contains the result");
-        let range = self.diagnostic(fix.typed.file, fix.diagnostic).await;
-        let action = self.action("quick fix", doc, range, fix.title).await;
-        ops::lsp::lsp_execute_code_action(&self.host, WINDOW, RequestId(4), doc, action, vec![])
-            .await
-            .unwrap_or_else(|e| self.fail("quick fix", format_args!("applying {:?}: {e}", fix.title)));
-        self.retry("quick fix", Duration::from_secs(10), || async {
-            let text = self.doc(fix.typed.file).await.1;
-            if text.contains(fix.result) { Ok(()) } else { Err(text) }
-        })
-        .await;
+    async fn quick_fix(&self, q: QuickFix) {
+        let (doc, _, before) = self.type_line(q.typed).await;
+        let range = self.diagnostic(q.typed.file, q.diagnostic).await;
+        if let Some((title, result)) = q.fix {
+            assert!(!before.contains(result), "{q:?}: the file already contains the result");
+            let action = self.action("quick fix", doc, range, title).await;
+            ops::lsp::lsp_execute_code_action(&self.host, WINDOW, RequestId(4), doc, action, vec![])
+                .await
+                .unwrap_or_else(|e| self.fail("quick fix", format_args!("applying {title:?}: {e}")));
+            self.retry("quick fix", Duration::from_secs(10), || async {
+                let text = self.doc(q.typed.file).await.1;
+                if text.contains(result) { Ok(()) } else { Err(text) }
+            })
+            .await;
+        }
         self.restore(doc, &before).await;
     }
 
@@ -608,7 +617,9 @@ impl Smoke {
         self.hover(c.hover.0, c.hover.1).await;
         self.completion(c.completion.0, c.completion.1).await;
         self.quick_fix(c.quick_fix).await;
-        self.intention(c.intention.0, c.intention.1).await;
+        if let Some((on, title)) = c.intention {
+            self.intention(on, title).await;
+        }
         self.format(c.format.0, c.indent, c.format.1).await;
         self.signature(c.signature.0, c.signature.1).await;
         self.outline(c.outline.0, c.outline.1).await;
@@ -616,7 +627,9 @@ impl Smoke {
         if let Some((import, expect)) = c.organize_imports {
             self.organize_imports(import, expect).await;
         }
-        self.rename(c.rename.0, c.rename.1, c.rename.2).await;
+        if let Some((symbol, to, files)) = c.rename {
+            self.rename(symbol, to, files).await;
+        }
         // Last: it moves a file the other checks use.
         if let Some((from, to, referencing, result)) = c.file_move {
             self.file_move(from, to, referencing, result).await;
@@ -645,21 +658,20 @@ const TYPESCRIPT: Checks = Checks {
     quick_fix: QuickFix {
         typed: typed("src/index.ts", "const total = cart.total();", "  console.log(addMoney(total, total));"),
         diagnostic: "Cannot find name 'addMoney'",
-        title: "import from \"./money.ts\"",
-        result: "import { addMoney, cents, formatMoney } from \"./money.ts\";",
+        fix: Some(("import from \"./money.ts\"", "import { addMoney, cents, formatMoney } from \"./money.ts\";")),
     },
-    intention: (at("src/index.ts", "const total = cart.total();", "cart.total()"), "Extract to constant"),
+    intention: Some((at("src/index.ts", "const total = cart.total();", "cart.total()"), "Extract to constant")),
     format: (
         typed("src/index.ts", "const total = cart.total();", "  const  shown={total,count:cart.count}"),
         "  const shown = { total, count: cart.count }",
     ),
     indent: Indent::Spaces(2),
-    rename: (
+    rename: Some((
         // From a usage in another file: the declaration is renamed too, not aliased in the import.
         at("src/index.ts", "Total: ${formatMoney(total)}", "formatMoney"),
         "formatPrice",
         &["src/index.ts", "src/money.ts"],
-    ),
+    )),
     signature: (typed("src/index.ts", "const total = cart.total();", "  cart.add("), "product"),
     outline: ("src/cart.ts", &["Cart", "add", "total"]),
     auto_import: AutoImport {
@@ -684,6 +696,132 @@ async fn typescript() {
     smoke("typescript", TYPESCRIPT).await;
 }
 
+/// The latest `tsc` diagnostics of `path` (Problems › TypeScript Project Errors), `None` before any.
+#[cfg(unix)]
+fn tsc_errors(events: &Events, path: &Path) -> Option<Vec<String>> {
+    events.lock().unwrap().iter().rev().find_map(|e| match e {
+        IdeEvent::Diagnostics { path: p, source, items } if source == "tsc" && **p == *path => {
+            Some(items.iter().map(|d| d.message.clone()).collect())
+        }
+        _ => None,
+    })
+}
+
+/// Problems › TypeScript Project Errors (#6073): the project's own `tsc --watch` reports the error
+/// an edit of one file causes in another that is not open, holds it back while that file is open,
+/// clears it once fixed, checks a solution with project references as well, and writes nothing
+/// into the project. TypeScript comes from `OPENIDEA_SMOKE_TYPESCRIPT` (a `typescript` package
+/// folder), else the global npm install.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "language smoke: needs typescript"]
+async fn typescript_project_errors() {
+    let typescript = std::env::var_os("OPENIDEA_SMOKE_TYPESCRIPT").map_or_else(
+        || {
+            let out = std::process::Command::new("npm").args(["root", "-g"]).output().expect("npm root -g");
+            PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()).join("typescript")
+        },
+        PathBuf::from,
+    );
+    assert!(typescript.join("bin/tsc").is_file(), "no TypeScript in {}", typescript.display());
+    let checks = Checks {
+        files: &[
+            // Fails from the start: its error marks the end of the first compilation.
+            ("src/probe.ts", "export const probe: number = \"x\";\n"),
+            ("packages/tsconfig.json", r#"{"files": [], "references": [{"path": "./core"}, {"path": "./app"}]}"#),
+            (
+                "packages/core/tsconfig.json",
+                r#"{"compilerOptions": {"composite": true, "strict": true, "outDir": "out"}}"#,
+            ),
+            ("packages/core/index.ts", "export const version: number = 1;\n"),
+            (
+                "packages/app/tsconfig.json",
+                r#"{"compilerOptions": {"composite": true, "strict": true, "outDir": "out"}, "references": [{"path": "../core"}]}"#,
+            ),
+            (
+                "packages/app/index.ts",
+                "import { version } from \"../core/index\";\nexport const label: string = version;\n",
+            ),
+        ],
+        ..TYPESCRIPT
+    };
+    let smoke = Smoke::start("typescript", &checks).await;
+    let root = smoke.root.clone();
+    std::fs::create_dir_all(root.join("node_modules/.bin")).unwrap();
+    std::os::unix::fs::symlink(&typescript, root.join("node_modules/typescript")).unwrap();
+    std::os::unix::fs::symlink("../typescript/bin/tsc", root.join("node_modules/.bin/tsc")).unwrap();
+    async fn wait(what: &str, ok: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !ok() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+    let errors = |file: &str| tsc_errors(&smoke.events, &root.join(file));
+    let has = |file: &'static str, text: &'static str| {
+        move || errors(file).is_some_and(|e| e.iter().any(|m| m.contains(text)))
+    };
+    let clear = |file: &'static str| move || errors(file).is_some_and(|e| e.is_empty());
+    let set = |on: bool| {
+        let scope = ide_workspace::settings::SettingsScope::Project;
+        ops::project::settings_set(
+            &smoke.host,
+            WINDOW,
+            scope,
+            "languages.typescript.watchProblems".into(),
+            on.to_string(),
+        )
+        .unwrap();
+    };
+
+    set(true);
+    wait("the first compilation", has("src/probe.ts", "not assignable")).await;
+    wait("the solution's error", has("packages/app/index.ts", "not assignable to type 'string'")).await;
+
+    // Renaming an export in money.ts breaks index.ts, which is not open.
+    let money = root.join("src/money.ts");
+    let original = std::fs::read_to_string(&money).unwrap();
+    std::fs::write(&money, original.replace("export function formatMoney", "export function formatPrice")).unwrap();
+    wait("index.ts to break", has("src/index.ts", "formatMoney")).await;
+    assert_eq!(errors("src/money.ts"), None, "the edited file itself is fine");
+
+    // Open, it shows the language server's errors only; closed again, the watcher's.
+    let doc = ops::doc::doc_open(&smoke.host, WINDOW, root.join("src/index.ts")).await.unwrap();
+    wait("index.ts held back while open", clear("src/index.ts")).await;
+    ops::doc::doc_close(&smoke.host, WINDOW, doc.id).await.unwrap();
+    wait("index.ts back once closed", has("src/index.ts", "formatMoney")).await;
+
+    std::fs::write(&money, &original).unwrap();
+    // The fixture's own error (an unused function) stays.
+    let fixed =
+        move || errors("src/index.ts").is_some_and(|e| !e.is_empty() && !e.iter().any(|m| m.contains("formatMoney")));
+    wait("index.ts fixed", fixed).await;
+
+    set(false);
+    wait("every error cleared", || {
+        ["src/probe.ts", "src/index.ts", "packages/app/index.ts"].into_iter().all(|f| clear(f)())
+    })
+    .await;
+
+    // A background check writes nothing into the project: no `.js`, `.d.ts` or `.tsbuildinfo`.
+    fn outputs(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if entry.file_name() == "node_modules" {
+                continue;
+            }
+            if path.is_dir() {
+                outputs(&path, out);
+            } else if [".js", ".d.ts", ".tsbuildinfo"].iter().any(|ext| path.to_string_lossy().ends_with(ext)) {
+                out.push(path);
+            }
+        }
+    }
+    let mut written = Vec::new();
+    outputs(&root, &mut written);
+    assert_eq!(written, Vec::<PathBuf>::new());
+}
+
 const PYTHON: Checks = Checks {
     fixture: "python-app",
     // Ruff (lint, quick fixes, formatting) starts in projects configured for it.
@@ -702,21 +840,20 @@ const PYTHON: Checks = Checks {
     quick_fix: QuickFix {
         typed: typed("src/tasks/cli.py", "tasks = build_demo()", "    print(Task)"),
         diagnostic: "\"Task\" is not defined",
-        title: "from .models import Task",
-        result: "from .models import Priority, Task, TaskList",
+        fix: Some(("from .models import Task", "from .models import Priority, Task, TaskList")),
     },
     // basedpyright has no refactorings; Ruff's fixes are the Python intentions.
-    intention: (at("src/tasks/models.py", "import os", "os"), "Remove unused import"),
+    intention: Some((at("src/tasks/models.py", "import os", "os"), "Remove unused import")),
     format: (
         typed("src/tasks/cli.py", "tasks = build_demo()", "    shown2 = {'a':1,'b':  2}"),
         "    shown2 = {\"a\": 1, \"b\": 2}",
     ),
     indent: Indent::Spaces(4),
-    rename: (
+    rename: Some((
         at("src/tasks/models.py", "class TaskList:", "TaskList"),
         "TaskBoard",
         &["src/tasks/cli.py", "src/tasks/models.py"],
-    ),
+    )),
     signature: (typed("src/tasks/cli.py", "tasks = build_demo()", "    tasks.add("), "title"),
     outline: ("src/tasks/models.py", &["Priority", "Task", "TaskList", "pending"]),
     auto_import: AutoImport {
@@ -728,8 +865,8 @@ const PYTHON: Checks = Checks {
         typed("src/tasks/models.py", "from enum import IntEnum", "import abc"),
         Imports::Before("import os"),
     )),
-    // basedpyright has no `workspace/willRenameFiles`.
-    file_move: None,
+    // basedpyright has no `workspace/willRenameFiles`: the IDE rewrites the imports.
+    file_move: Some(("src/tasks/models.py", "src/tasks/domain.py", "src/tasks/cli.py", "from .domain import")),
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -757,16 +894,22 @@ const RUST: Checks = Checks {
             "    let _blank = parser::ParseError { line: 1 };",
         ),
         diagnostic: "missing structure fields",
-        title: "Fill struct fields",
-        result: "ParseError { line: 1, message",
+        fix: Some(("Fill struct fields", "ParseError { line: 1, message")),
     },
-    intention: (at("src/main.rs", "match parser::parse(SAMPLE)", "parser::parse(SAMPLE)"), "Extract into variable"),
+    intention: Some((
+        at("src/main.rs", "match parser::parse(SAMPLE)", "parser::parse(SAMPLE)"),
+        "Extract into variable",
+    )),
     format: (
         typed("src/main.rs", "let mut inventory = Inventory::new();", "    let  _spaced=( 1,2 );"),
         "    let _spaced = (1, 2);",
     ),
     indent: Indent::Spaces(4),
-    rename: (at("src/parser.rs", "pub fn parse(text: &str)", "parse"), "parse_all", &["src/main.rs", "src/parser.rs"]),
+    rename: Some((
+        at("src/parser.rs", "pub fn parse(text: &str)", "parse"),
+        "parse_all",
+        &["src/main.rs", "src/parser.rs"],
+    )),
     signature: (typed("src/main.rs", "let mut inventory = Inventory::new();", "    inventory.take("), "sku"),
     outline: ("src/lib.rs", &["Inventory", "Item", "take"]),
     auto_import: AutoImport {
@@ -805,17 +948,16 @@ const GO: Checks = Checks {
     quick_fix: QuickFix {
         typed: typed("cmd/server/main.go", "s := store.New()", "\tfmt.Println(s)"),
         diagnostic: "undefined: fmt",
-        title: "\"fmt\"",
-        result: "\t\"fmt\"",
+        fix: Some(("\"fmt\"", "\t\"fmt\"")),
     },
-    intention: (at("cmd/server/main.go", "s := store.New()", "store.New()"), "Extract"),
+    intention: Some((at("cmd/server/main.go", "s := store.New()", "store.New()"), "Extract")),
     format: (typed("cmd/server/main.go", "s := store.New()", "\t_ =  []int{1,2}"), "\t_ = []int{1, 2}"),
     indent: Indent::Tabs,
-    rename: (
+    rename: Some((
         at("internal/store/store.go", "func New() *Store", "New"),
         "Open",
         &["cmd/server/main.go", "internal/store/store.go"],
-    ),
+    )),
     signature: (typed("cmd/server/main.go", "s := store.New()", "\ts.Create("), "title"),
     outline: ("internal/store/store.go", &["Store", "New", "(*Store).Create"]),
     auto_import: AutoImport {
@@ -861,13 +1003,12 @@ const JAVA: Checks = Checks {
             "        List<Order> all = book.byCustomer(\"alice\");",
         ),
         diagnostic: "List cannot be resolved to a type",
-        title: "Import 'List' (java.util)",
-        result: "import java.util.List;",
+        fix: Some(("Import 'List' (java.util)", "import java.util.List;")),
     },
-    intention: (
+    intention: Some((
         at("src/main/java/com/example/orders/App.java", "long revenue = book.revenueCents();", "book.revenueCents()"),
         "Extract to local variable",
-    ),
+    )),
     format: (
         typed(
             "src/main/java/com/example/orders/App.java",
@@ -877,11 +1018,11 @@ const JAVA: Checks = Checks {
         "        long doubled = revenue * 2;",
     ),
     indent: Indent::Spaces(4),
-    rename: (
+    rename: Some((
         at("src/main/java/com/example/orders/OrderBook.java", "public Order place(", "place"),
         "submit",
         &["src/main/java/com/example/orders/App.java", "src/main/java/com/example/orders/OrderBook.java"],
-    ),
+    )),
     signature: (
         typed(
             "src/main/java/com/example/orders/App.java",
@@ -948,23 +1089,22 @@ const KOTLIN: Checks = Checks {
             "    val stamp = LocalDateTime.now()",
         ),
         diagnostic: "Unresolved reference",
-        title: "Import",
-        result: "import java.time.LocalDateTime",
+        fix: Some(("Import", "import java.time.LocalDateTime")),
     },
-    intention: (
+    intention: Some((
         at("src/main/kotlin/com/example/library/Library.kt", "fun giveBack(isbn: String): Boolean", "giveBack"),
         "block body",
-    ),
+    )),
     format: (
         typed("src/main/kotlin/com/example/library/App.kt", "val library = Library()", "    val  pair=listOf(1,2)"),
         "    val pair = listOf(1, 2)",
     ),
     indent: Indent::Spaces(4),
-    rename: (
+    rename: Some((
         at("src/main/kotlin/com/example/library/Library.kt", "fun search(query: String)", "search"),
         "find",
         &["src/main/kotlin/com/example/library/App.kt", "src/main/kotlin/com/example/library/Library.kt"],
-    ),
+    )),
     signature: (
         typed("src/main/kotlin/com/example/library/App.kt", "val library = Library()", "    library.lend("),
         "isbn",
@@ -991,4 +1131,52 @@ const KOTLIN: Checks = Checks {
 #[ignore = "language smoke: needs kotlin-lsp, a JDK and Gradle"]
 async fn kotlin() {
     smoke("kotlin", KOTLIN).await;
+}
+
+const PHP: Checks = Checks {
+    fixture: "php-app",
+    files: &[],
+    warm_up: Duration::from_secs(60),
+    definition: (
+        at("bin/quote.php", "$customs = new ThresholdCustoms", "ThresholdCustoms"),
+        at("src/Shipping/ThresholdCustoms.php", "final class ThresholdCustoms", "ThresholdCustoms"),
+    ),
+    references: (
+        at("src/Shipping/Parcel.php", "public function billableGrams", "billableGrams"),
+        &["bin/quote.php", "src/Shipping/Parcel.php", "src/Shipping/Shipment.php", "src/Shipping/Tariff.php"],
+    ),
+    hover: (
+        at("bin/quote.php", "$parcel->billableGrams($shipment->route)", "billableGrams"),
+        "public function billableGrams(Route $route): int",
+    ),
+    completion: (typed("bin/quote.php", "$freightCents += $cents;", "        $parcel->"), "billableGrams"),
+    // Intelephense declares no code actions and no rename without a licence key.
+    quick_fix: QuickFix {
+        typed: typed("bin/quote.php", "$freightCents += $cents;", "        $tariff->weigh($parcel);"),
+        diagnostic: "Undefined method 'weigh'",
+        fix: None,
+    },
+    intention: None,
+    format: (
+        typed("bin/quote.php", "$freightCents += $cents;", "        $pair=[1,2 ,3];"),
+        "        $pair = [1, 2, 3];",
+    ),
+    indent: Indent::Spaces(4),
+    rename: None,
+    signature: (typed("bin/quote.php", "$freightCents += $cents;", "        $tariff->freightCents("), "parcel"),
+    outline: ("src/Shipping/Shipment.php", &["Shipment", "add", "heaviest", "byStore"]),
+    auto_import: AutoImport {
+        typed: typed("bin/quote.php", "$freightCents += $cents;", "        $status = ParcelSta"),
+        label: "ParcelStatus",
+        result: "use App\\Shipping\\ParcelStatus;",
+    },
+    organize_imports: None,
+    // Intelephense has no `workspace/willRenameFiles`.
+    file_move: None,
+};
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "language smoke: needs intelephense"]
+async fn php() {
+    smoke("php", PHP).await;
 }

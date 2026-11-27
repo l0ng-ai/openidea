@@ -42,11 +42,14 @@ pub enum SyntaxHighlightKind {
     Tag,
     Operator,
     Punctuation,
+    Parameter,
+    /// A shell command name (`pgrep`, a script's own function).
+    Command,
 }
 
 impl SyntaxHighlightKind {
     /// Every kind, in `as u32` order: the legend for [`SyntaxHighlights::data`].
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 26] = [
         Self::Keyword,
         Self::String,
         Self::StringSpecial,
@@ -71,6 +74,8 @@ impl SyntaxHighlightKind {
         Self::Tag,
         Self::Operator,
         Self::Punctuation,
+        Self::Parameter,
+        Self::Command,
     ];
 
     /// The kebab-case name plugins use (`doc-comment`, `function-call`, …).
@@ -151,6 +156,7 @@ const CAPTURES: &[(&str, Paint)] = {
         ("function.builtin", Kind(K::Builtin)),
         ("function.macro", Kind(K::Macro)),
         ("function.definition", Kind(K::Function)),
+        ("function.command", Kind(K::Command)),
         ("function", Kind(K::FunctionCall)),
         ("method", Kind(K::FunctionCall)),
         ("constructor", Kind(K::Type)),
@@ -162,6 +168,7 @@ const CAPTURES: &[(&str, Paint)] = {
         ("variable.member", Kind(K::Property)),
         ("variable.field", Kind(K::Property)),
         ("variable", Kind(K::Variable)),
+        ("parameter.kotlin", Kind(K::Parameter)),
         ("parameter", Kind(K::Variable)),
         ("property", Kind(K::Property)),
         ("field", Kind(K::Property)),
@@ -361,6 +368,9 @@ mod tests {
         assert_eq!(paint_for("string.special.path"), Some(Paint::Kind(K::StringSpecial)));
         assert_eq!(paint_for("comment.doc.__attribute__"), Some(Paint::Kind(K::DocComment)));
         assert_eq!(paint_for("punctuation.bracket"), Some(Paint::Kind(K::Punctuation)));
+        assert_eq!(paint_for("parameter.kotlin"), Some(Paint::Kind(K::Parameter)));
+        assert_eq!(paint_for("parameter"), Some(Paint::Kind(K::Variable)));
+        assert_eq!(paint_for("variable.parameter"), Some(Paint::Kind(K::Variable)));
         assert_eq!(paint_for("embedded"), Some(Paint::Clear));
         assert_eq!(paint_for("__name__"), None);
         assert_eq!(paint_for("spell"), None);
@@ -374,6 +384,83 @@ mod tests {
             .chunks(3)
             .map(|t| (String::from_utf16(&units[t[0] as usize..t[1] as usize]).unwrap(), h.kinds[t[2] as usize]))
             .collect()
+    }
+
+    #[test]
+    fn kotlin_supplements_stream_highlighting_with_declaration_roles() {
+        use SyntaxHighlightKind as K;
+        let src = "package palette\n/** Docs */\n@Deprecated(\"old\")\nclass Greeter(val name: String) {\n var count: Int = 0\n fun greet(prefix: String): String { val message = \"hello\\n\"; println(message); return prefix }\n}\ntypealias Handler = (String) -> Unit\nvalue class UserId(val value: String)\n";
+        let got = spans("kotlin", src);
+        for (text, expected) in [
+            ("Deprecated", K::Attribute),
+            ("Greeter", K::Type),
+            ("name", K::Property),
+            ("count", K::Property),
+            ("greet", K::Function),
+            ("prefix", K::Parameter),
+            ("message", K::Variable),
+            ("println", K::FunctionCall),
+            ("Handler", K::Type),
+            ("value", K::Keyword),
+            ("/** Docs */", K::DocComment),
+            ("\\n", K::Escape),
+        ] {
+            assert!(
+                got.iter().any(|(word, kind)| word == text && *kind == expected),
+                "missing {text}: {expected:?} in {got:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn shell_scripts_highlight_declarations_commands_and_function_names() {
+        use SyntaxHighlightKind as K;
+        let src = "this::check_process() {\n  local process\n  process=\"${1:?}\"\n  if [ -x \"$(command -v pgrep)\" ]; then\n    if pgrep -f -q \"${process}\"; then\n      functions::exit 1 \"'${process}' is running\"\n    fi\n  fi\n}\n# done\n";
+        let got = spans("shellscript", src);
+        for (text, expected) in [
+            ("this::check_process", K::Function),
+            ("local", K::Keyword),
+            ("if", K::Keyword),
+            ("command", K::Command),
+            ("pgrep", K::Command),
+            ("functions::exit", K::Command),
+            ("process", K::Variable),
+            ("# done", K::Comment),
+        ] {
+            assert!(
+                got.iter().any(|(word, kind)| word == text && *kind == expected),
+                "missing {text}: {expected:?} in {got:?}"
+            );
+        }
+        // An expansion inside a string is not string-coloured.
+        assert!(!got.iter().any(|(word, kind)| word.contains("${process}") && *kind == K::String), "{got:?}");
+    }
+
+    #[test]
+    fn non_kotlin_parameters_keep_variable_highlighting() {
+        for (lang, src) in [
+            ("graphql", "query Hero { hero(id: 1) { name } }"),
+            ("gdscript", "func greet(id: int):\n\tpass\n"),
+            ("zig", "fn greet(id: u32) void {}"),
+            ("nix", "{ id }: id"),
+        ] {
+            let got = spans(lang, src);
+            assert!(
+                got.iter().any(|(text, kind)| text == "id" && *kind == SyntaxHighlightKind::Variable),
+                "{lang}: {got:?}"
+            );
+            assert!(!got.iter().any(|(_, kind)| *kind == SyntaxHighlightKind::Parameter), "{lang}: {got:?}");
+        }
+    }
+
+    #[test]
+    fn kotlin_constructor_defaults_are_not_declarations() {
+        let got = spans("kotlin", "class Example(val name: String = fallback, count: Int = defaultCount)");
+        assert!(got.iter().any(|(text, kind)| text == "name" && *kind == SyntaxHighlightKind::Property));
+        assert!(got.iter().any(|(text, kind)| text == "count" && *kind == SyntaxHighlightKind::Parameter));
+        for reference in ["fallback", "defaultCount"] {
+            assert!(!got.iter().any(|(text, _)| text == reference), "{got:?}");
+        }
     }
 
     #[test]
@@ -440,6 +527,28 @@ mod tests {
                     ("name", K::Property),
                     ("Friends", K::FunctionCall),
                     ("NEWHOPE", K::Constant),
+                ],
+            ),
+            (
+                "prisma",
+                "// hi\n/// Doc\nmodel User {\n  id    Int     @id @default(autoincrement())\n  email String? @db.VarChar(255)\n  role  Role\n  @@index([email])\n}\nenum Role { ADMIN }\ndatasource db {\n  provider = \"postgresql\"\n}\n",
+                &[
+                    ("// hi", K::Comment),
+                    ("/// Doc", K::DocComment),
+                    ("model", K::Keyword),
+                    ("User", K::Type),
+                    ("id", K::Property),
+                    ("Int", K::Type),
+                    ("@id", K::Attribute),
+                    ("@default", K::Attribute),
+                    ("autoincrement", K::FunctionCall),
+                    ("VarChar", K::Attribute),
+                    ("255", K::Number),
+                    ("Role", K::Type),
+                    ("@@index", K::Attribute),
+                    ("ADMIN", K::Constant),
+                    ("provider", K::Property),
+                    ("\"postgresql\"", K::String),
                 ],
             ),
             (

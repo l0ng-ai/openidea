@@ -9,10 +9,17 @@ import { useDebug } from "../state";
 const ipc = vi.hoisted(() => ({
   javaResolveLaunch: vi.fn(),
   cancelRequest: vi.fn(async () => undefined),
+  javaDebugAdapter: vi.fn(async () => ({ status: "ok", data: "java-debug" })),
   javaDebugServer: vi.fn(async () => ({ status: "ok", data: 5005 })),
   debugStart: vi.fn(async () => ({ status: "ok", data: 42 })),
   debugStop: vi.fn(async () => ({ status: "ok", data: null })),
   fsReadDir: vi.fn(async () => ({ status: "ok", data: [] })),
+}));
+vi.mock("@tauri-apps/api/core", async (original) => ({
+  ...(await original<typeof import("@tauri-apps/api/core")>()),
+  Channel: class {
+    onmessage = null;
+  },
 }));
 vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
@@ -63,7 +70,7 @@ async function startAndStop() {
   ).toContain("Building and resolving the classpath of Main…");
   expect(useDebugRunSessions.getState().sessions[0]?.configId).toBe(config.id);
   await executeAction("debug.stop");
-  expect(ipc.cancelRequest).toHaveBeenCalledWith(ipc.javaResolveLaunch.mock.calls[0]![3]);
+  expect(ipc.cancelRequest).toHaveBeenCalledWith(ipc.javaResolveLaunch.mock.calls[0]![4]);
   expect(useDebug.getState().sessions[session.id]?.status).toBe("terminated");
   expect(useDebugRunSessions.getState().sessions).toEqual([]);
   return { starting };

@@ -1,0 +1,19 @@
+# Debugging the entry points with GDB, picked in the configuration's Debug adapter
+# control (explicit choice: the C/C++ default stays lldb-dap). GDB 14+ has the
+# DAP interpreter; `make all` builds `bin/` first.
+
+[[configurations]]
+id = "user:app-c"
+name = "app-c (GDB)"
+kind = "shell"
+command = "bin/app-c"
+debug-adapter = "gdb"
+env = { OPENIDEA_GDB_FIXTURE = "present" }
+
+[[configurations]]
+id = "user:app-cpp"
+name = "app-cpp (GDB)"
+kind = "shell"
+command = "bin/app-cpp"
+debug-adapter = "gdb"
+env = { OPENIDEA_GDB_FIXTURE = "present" }

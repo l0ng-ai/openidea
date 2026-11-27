@@ -3,9 +3,10 @@ import { changedChainNeighbour } from "../diffNavigation";
 import { withChain, type DiffData } from "../diffInput";
 
 const probe = vi.hoisted(() => vi.fn());
+const diffEntries = vi.hoisted(() => vi.fn());
 vi.mock("@/platform/ipc", async (original) => ({
   ...(await original<typeof import("@/platform/ipc")>()),
-  commands: { fsProbe: probe },
+  commands: { fsProbe: probe, vcsDiffEntries: diffEntries },
 }));
 
 const diff = (name: string, text = "after\n"): DiffData => ({
@@ -16,7 +17,19 @@ const diff = (name: string, text = "after\n"): DiffData => ({
 
 beforeEach(() => {
   probe.mockReset();
+  diffEntries.mockReset();
   probe.mockResolvedValue({ status: "ok", data: { binary: false, tooLarge: false } });
+});
+
+it("visits a changed submodule using its commit ids without probing the directory as a file", async () => {
+  const entry: DiffData = { path: "/repo/vendor", left: { type: "rev", rev: "HEAD" }, right: { type: "worktree" } };
+  diffEntries.mockResolvedValue({
+    status: "ok",
+    data: ["a", "b"].map((value) => ({ mode: "160000", gitlink: value.repeat(40) })),
+  });
+  const data = withChain([diff("a"), entry, diff("z")], 0);
+  expect(await changedChainNeighbour(data, 1, "none")).toMatchObject({ path: entry.path });
+  expect(probe).not.toHaveBeenCalled();
 });
 
 it.each([1, -1] as const)("skips unchanged and binary revisions in direction %s", async (dir) => {
@@ -55,4 +68,16 @@ it("normalizes line endings like the viewer when skipping unchanged files", asyn
   const crlf = diff("crlf", "before\r\n");
   const data = withChain([diff("a"), crlf, diff("z")], 0);
   expect(await changedChainNeighbour(data, 1, "none")).toMatchObject({ path: "/repo/z" });
+});
+
+it("stops at a changed Git image before trying to decode its bytes as text", async () => {
+  const image: DiffData = {
+    path: "/repo/badge.PNG",
+    left: { type: "rev", rev: "HEAD" },
+    right: { type: "worktree" },
+  };
+  probe.mockResolvedValue({ status: "ok", data: { binary: true, tooLarge: false } });
+  const chain = withChain([diff("a"), image, diff("z")], 0);
+  expect(await changedChainNeighbour(chain, 1, "none")).toMatchObject({ path: image.path });
+  expect(probe).not.toHaveBeenCalled();
 });

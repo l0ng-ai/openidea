@@ -7,18 +7,48 @@
  */
 import RUN_SCRIPT from "./gradleRun.gradle?raw";
 import TESTS_SCRIPT from "./gradleTests.gradle?raw";
+import BOOT_SCRIPT from "./gradleBoot.gradle?raw";
 import { useBuildModel } from "@/platform/buildModel";
 import { call, commands, isTauri, type GradleModel, type RunConfig } from "@/platform/ipc";
-import { findJavaModule, isJvmApplication, parseJavaArgs } from "@/platform/javaLaunch";
+import { isJvmApplication, parseJavaArgs, prepareJavaModule } from "@/platform/javaLaunch";
 import { useProject } from "@/platform/project";
+import { maybeEditorService } from "@/workbench/contributions";
+import { applyBuildPolicyToCommand } from "./buildCommand";
 
 /** System property that marks a delegated run (read by `jdwpLaunch` to add the debug flag). */
 export const DELEGATED_MAIN = "-Dopenidea.run.main=";
 export const DELEGATED_DEBUG = "-Dopenidea.run.debug=true";
+/** Lets the init script start the debugged JVM's attach listener (the memory view needs it; not on Windows). */
+export const DELEGATED_ATTACH_LISTENER = "-Dopenidea.run.attachListener=true";
+/**
+ * Names the application JVM for the thread dump, which finds it by this argument. A Gradle run forks
+ * it under the daemon, outside the run's process tree; the init scripts pass it on.
+ */
+export const DELEGATED_TOKEN = "-Dopenidea.run.token=";
 const TASK = "openideaRun";
+
+/**
+ * Stable per configuration of the project at `root`: a per-launch value would change the Gradle
+ * command line and miss its configuration cache on every launch. The project's share keeps two
+ * worktrees, or two projects with the same main class, apart.
+ */
+export function runJvmToken(config: Pick<RunConfig, "id">, root: string): string {
+  return `${config.id.replace(/[^A-Za-z0-9._-]/g, "_")}-${shortHash(root)}`;
+}
+
+/** FNV-1a (32 bits) in base 36. */
+function shortHash(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193);
+  return (hash >>> 0).toString(36);
+}
 
 const isAbsolute = (p: string) => p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
 const absolute = (root: string, p: string) => (isAbsolute(p) ? p : p ? `${root}/${p}` : root);
+
+export function gradleContainsModule(gradle: GradleModel, root: string, module: string): boolean {
+  return gradle.projects.some((p) => absolute(root, p.dir) === absolute(root, module));
+}
 
 export interface DelegationContext {
   /** Project root. */
@@ -65,6 +95,7 @@ export function delegatedGradleConfig(config: RunConfig, module: string, ctx: De
     `-Dopenidea.run.args=${JSON.stringify(parsed.programArgs)}`,
     `-Dopenidea.run.jvmArgs=${JSON.stringify(parsed.vmArgs)}`,
     `-Dopenidea.run.workingDir=${config.cwd ? absolute(ctx.root, config.cwd) : dir}`,
+    `${DELEGATED_TOKEN}${runJvmToken(config, ctx.root)}`,
     ...(ctx.offline ? ["--offline"] : []),
     // Problems only warn: a build with incompatible plugins still runs, uncached.
     ...(ctx.configurationCache ? ["--configuration-cache", "--configuration-cache-problems=warn"] : []),
@@ -73,7 +104,7 @@ export function delegatedGradleConfig(config: RunConfig, module: string, ctx: De
   // A Gradle run from here on: not an Application again (it would be delegated twice), and
   // without the Application's params (Gradle's own VM-options init script would repeat them).
   const { params: _params, ...rest } = config;
-  return {
+  return applyBuildPolicyToCommand({
     ...rest,
     kind: "gradle",
     command: ctx.gradle.command,
@@ -82,7 +113,7 @@ export function delegatedGradleConfig(config: RunConfig, module: string, ctx: De
     // The Gradle JVM's JAVA_HOME first; the configuration's own environment wins.
     env: { ...ctx.gradle.env, ...config.env },
     module: module,
-  };
+  });
 }
 
 /**
@@ -125,19 +156,38 @@ export async function gradleTestLaunch<T extends RunConfig>(config: T): Promise<
   }
 }
 
+/** Gives a direct Gradle BootRun a dynamic JDWP port for the forked application JVM. */
+export async function gradleBootLaunch<T extends RunConfig>(config: T): Promise<T> {
+  if (!isTauri() || !isGradleCommand(config) || !config.args.some((a) => /(^|:)bootRun$/.test(a))) return config;
+  try {
+    const marked = withTestEvents(config, await writeScript("openidea-gradle-boot", BOOT_SCRIPT));
+    // The forked bootRun JVM is outside the run's process tree; the init script hands the token on.
+    return marked.args.some((a) => a.startsWith(DELEGATED_TOKEN))
+      ? marked
+      : {
+          ...marked,
+          args: [...marked.args, `${DELEGATED_TOKEN}${runJvmToken(config, useProject.getState().project?.root ?? "")}`],
+        };
+  } catch (e) {
+    console.warn("Gradle BootRun init script not written", e);
+    return config;
+  }
+}
+
 /**
  * The launch of an Application / Spring Boot `config` through Gradle, when the project
  * runs with Gradle (Settings › Build Tools › Gradle) and the main class is in one of its
  * modules; null to launch it on the language server's classpath.
  */
 export async function gradleDelegation(config: RunConfig): Promise<RunConfig | null> {
-  if (!isTauri() || !isJvmApplication(config)) return null;
+  if (!isTauri() || !isJvmApplication(config) || config.isTest) return null;
   const { project, settings } = useProject.getState();
   if (!project?.root || settings?.languages?.java?.gradle?.runUsing === "ide") return null;
   const { model, gradleOffline } = useBuildModel.getState();
   if (!model?.gradle?.length) return null;
-  const module = config.module ?? (await findJavaModule(config));
-  if (module === null) return null;
+  const module = await prepareJavaModule(config, async () => {
+    await maybeEditorService()?.saveAll();
+  });
   const dir = absolute(project.root, module);
   // A composite can report a sibling's module; prefer a linked root that contains it.
   const ownerDepth = (g: GradleModel) => {
@@ -146,7 +196,7 @@ export async function gradleDelegation(config: RunConfig): Promise<RunConfig | n
     return path === root || path.startsWith(`${root}/`) ? root.split("/").length : 0;
   };
   const gradle = model.gradle
-    .filter((g) => g.projects.some((p) => absolute(project.root, p.dir) === dir))
+    .filter((g) => gradleContainsModule(g, project.root, module))
     .sort((a, b) => ownerDepth(b) - ownerDepth(a))[0];
   if (!gradle) return null;
   const ctx = {

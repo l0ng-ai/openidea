@@ -21,6 +21,32 @@
 
 use std::collections::BTreeMap;
 
+/// Removes ANSI escape sequences (colour, cursor movement).
+pub fn strip_ansi(s: &str) -> String {
+    if !s.contains('\u{1b}') {
+        return s.to_owned();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        if chars.peek() == Some(&'[') {
+            chars.next();
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() || c == '~' {
+                    break;
+                }
+            }
+        } else {
+            chars.next();
+        }
+    }
+    out
+}
+
 /// Decodes complete lines or collected output from IDE-managed tools, preferring UTF-8.
 /// Windows launcher/native diagnostics fall back to the system ANSI code page.
 /// Callers must buffer incomplete lines so multibyte characters are never split.
@@ -50,7 +76,8 @@ fn decode_tool_output_with_code_page(bytes: &[u8], code_page: u32) -> String {
     text
 }
 
-fn encoding_for_code_page(cp: u32) -> Option<&'static encoding_rs::Encoding> {
+/// The `encoding_rs` encoding of a Windows code page, when it has one.
+pub fn encoding_for_code_page(cp: u32) -> Option<&'static encoding_rs::Encoding> {
     Some(match cp {
         65001 => encoding_rs::UTF_8,
         936 => encoding_rs::GBK,
@@ -75,6 +102,56 @@ fn encoding_for_code_page(cp: u32) -> Option<&'static encoding_rs::Encoding> {
     })
 }
 
+/// The code page Windows console programs write to a pipe in: the OEM code page (GBK on a
+/// Chinese system, Shift_JIS on a Japanese one, EUC-KR on a Korean one, 437 / 850 / 866…
+/// elsewhere). `None` when it is UTF-8 (Windows' "Use Unicode UTF-8" option) or off Windows.
+pub fn console_code_page() -> Option<u32> {
+    #[cfg(windows)]
+    {
+        // SAFETY: GetOEMCP is an argument-less query with no preconditions.
+        let cp = unsafe { windows_sys::Win32::Globalization::GetOEMCP() };
+        (cp != 65001).then_some(cp)
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// Whether every character of code page `cp` is one byte, so text in it can be decoded
+/// piece by piece.
+#[cfg(windows)]
+pub fn is_single_byte_code_page(cp: u32) -> bool {
+    use windows_sys::Win32::Globalization::{CPINFO, GetCPInfo};
+    // SAFETY: CPINFO is plain data, which GetCPInfo fills in.
+    unsafe {
+        let mut info: CPINFO = std::mem::zeroed();
+        GetCPInfo(cp, &mut info) != 0 && info.MaxCharSize == 1
+    }
+}
+
+/// `bytes` in code page `cp`, decoded by Windows (for the code pages `encoding_rs` lacks,
+/// like the OEM pages 437, 850 or 852).
+#[cfg(windows)]
+pub fn decode_code_page(bytes: &[u8], cp: u32) -> String {
+    use windows_sys::Win32::Globalization::MultiByteToWideChar;
+    let Ok(len) = i32::try_from(bytes.len()) else {
+        return String::from_utf8_lossy(bytes).into_owned();
+    };
+    if len == 0 {
+        return String::new();
+    }
+    // SAFETY: `bytes` holds `len` bytes; no output buffer asks for the length needed.
+    let needed = unsafe { MultiByteToWideChar(cp, 0, bytes.as_ptr(), len, std::ptr::null_mut(), 0) };
+    if needed <= 0 {
+        return String::from_utf8_lossy(bytes).into_owned();
+    }
+    let mut wide = vec![0u16; needed as usize];
+    // SAFETY: `wide` holds `needed` units.
+    let written = unsafe { MultiByteToWideChar(cp, 0, bytes.as_ptr(), len, wide.as_mut_ptr(), needed) };
+    String::from_utf16_lossy(&wide[..written.max(0) as usize])
+}
+
 const STD_PROPERTIES: &[&str] = &["stdout.encoding", "stderr.encoding", "sun.stdout.encoding", "sun.stderr.encoding"];
 const FILE_ENCODING: &str = "file.encoding";
 const TOOL_OPTIONS: &str = "JAVA_TOOL_OPTIONS";
@@ -90,10 +167,11 @@ const GRADLE: &[&str] = &["gradle", "gradlew"];
 /// Gradle's own JVM and the compiler's source encoding are untouched.
 pub const GRADLE_FILE_ENCODING_SCRIPT: &str = "\
 // Written by OpenIDEA: a UTF-8 default charset for applications run by Gradle, as the Run console decodes UTF-8.
+import org.gradle.util.GradleVersion
+// `configureEach` (lazy) is Gradle 4.9+; older ones configure each task as it is added.
+def each = { tasks, Closure action -> GradleVersion.current() >= GradleVersion.version('4.9') ? tasks.configureEach(action) : tasks.all(action) }
 allprojects {
-    tasks.withType(JavaExec).configureEach {
-        defaultCharacterEncoding = 'UTF-8'
-    }
+    each(tasks.withType(JavaExec)) { t -> t.defaultCharacterEncoding = 'UTF-8' }
 }
 ";
 
@@ -544,10 +622,12 @@ mod tests {
     #[test]
     fn gradle_script_respects_the_builds_own_file_encoding() {
         let s = GRADLE_FILE_ENCODING_SCRIPT;
-        assert!(s.contains("tasks.withType(JavaExec).configureEach"), "{s}");
-        assert!(s.contains("defaultCharacterEncoding = 'UTF-8'"), "{s}");
+        assert!(s.contains("each(tasks.withType(JavaExec))"), "{s}");
+        assert!(s.contains("t.defaultCharacterEncoding = 'UTF-8'"), "{s}");
         assert!(!s.contains("doFirst"), "the build must be able to override the default: {s}");
         assert!(!s.contains("withType(Test)") && !s.contains("JavaCompile"), "{s}");
+        // Gradle before 4.9 has no `configureEach` (#3864).
+        assert!(s.contains("? tasks.configureEach(action) : tasks.all(action)"), "{s}");
     }
 
     #[test]

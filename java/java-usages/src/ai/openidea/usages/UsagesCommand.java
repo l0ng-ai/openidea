@@ -1,28 +1,48 @@
 package ai.openidea.usages;
 
+import ai.openidea.Documents;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.eclipse.core.resources.ResourcesPlugin;
+import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.jdt.core.*;
+import org.eclipse.jdt.core.search.IJavaSearchConstants;
+import org.eclipse.jdt.core.search.IJavaSearchScope;
+import org.eclipse.jdt.core.search.SearchEngine;
+import org.eclipse.jdt.core.search.SearchMatch;
+import org.eclipse.jdt.core.search.SearchParticipant;
+import org.eclipse.jdt.core.search.SearchPattern;
+import org.eclipse.jdt.core.search.SearchRequestor;
 import org.eclipse.jdt.internal.corext.codemanipulation.GetterSetterUtil;
 import org.eclipse.jdt.ls.core.internal.IDelegateCommandHandler;
 import org.eclipse.jdt.ls.core.internal.JDTUtils;
 import org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin;
+import org.eclipse.jdt.ls.core.internal.SearchUtils;
+import org.eclipse.jdt.ls.core.internal.handlers.JsonRpcHelpers;
 import org.eclipse.jdt.ls.core.internal.handlers.ReferencesHandler;
+import org.eclipse.jdt.ls.core.internal.preferences.Preferences.SearchScope;
 import org.eclipse.lsp4j.*;
 
 /** Classifies search results using JDT method identities, never reference text. */
 public final class UsagesCommand implements IDelegateCommandHandler {
     @Override
     public Object executeCommand(String command, List<Object> arguments, IProgressMonitor monitor) throws Exception {
+        Documents.awaitChanges(monitor);
         String uri = (String) arguments.get(0);
         int line = ((Number) arguments.get(1)).intValue();
         int column = ((Number) arguments.get(2)).intValue();
         boolean declarations = Boolean.TRUE.equals(arguments.get(3));
+        // "sources": the workspace's source folders only, without dependency jars or the JDK. A
+        // library method's usages there are found long before the full search ends.
+        boolean sources = arguments.size() > 4 && "sources".equals(arguments.get(4));
         var preferences = JavaLanguageServerPlugin.getPreferencesManager();
         var handler = new ReferencesHandler(preferences);
+        // The verified server's search is replicated (see `search`); others keep their own.
+        boolean replicated = sources || NATIVE_PLAN_SUPPORTED;
+        Search search = replicated ? (element, locations, m, d) -> search(element, locations, m, d, sources) : handler::search;
         var params = new ReferenceParams(new TextDocumentIdentifier(uri), new Position(line, column), new ReferenceContext(declarations));
         Map<Location, String> results = new LinkedHashMap<>();
         ITypeRoot root = JDTUtils.resolveTypeRoot(uri);
@@ -31,38 +51,114 @@ public final class UsagesCommand implements IDelegateCommandHandler {
         if (monitor.isCanceled()) throw new org.eclipse.core.runtime.OperationCanceledException();
         boolean accessors = preferences.getPreferences().isIncludeAccessors();
         SearchPlan plan = new SearchPlan();
-        // Only replace native target discovery for the exact implementation verified by
-        // integration tests. New server implementations retain their full native behavior.
-        if (selected instanceof IField field && root instanceof ICompilationUnit &&
-                root.getResource() != null && NATIVE_PLAN_SUPPORTED) {
-            plan.add(field, "field", declarations);
-            if (accessors) {
-                plan.add(GetterSetterUtil.getGetter(field), "getter", false);
-                plan.add(GetterSetterUtil.getSetter(field), "setter", false);
-                addNativeBuilderTargets(handler, field, plan);
-                addConfiguredAccessors(field, plan);
-            }
-        } else {
-            // Includes non-fields, library/decompiled roots, and unverified JDT LS builds.
-            for (var location : handler.findReferences(params, monitor)) results.put(location, "unknown");
-            if (selected instanceof IField field) {
+        ITypeRoot targetRoot = null;
+        try {
+            // Only replace native target discovery for the exact implementation verified by
+            // integration tests. New server implementations retain their full native behavior.
+            if (selected instanceof IField field && root instanceof ICompilationUnit &&
+                    root.getResource() != null && NATIVE_PLAN_SUPPORTED) {
                 plan.add(field, "field", declarations);
                 if (accessors) {
                     plan.add(GetterSetterUtil.getGetter(field), "getter", false);
                     plan.add(GetterSetterUtil.getSetter(field), "setter", false);
+                    addNativeBuilderTargets(handler, field, plan);
                     addConfiguredAccessors(field, plan);
                 }
+            } else if (replicated) {
+                // Non-fields and library/decompiled roots: the target ReferencesHandler.findReferences
+                // resolves (a class file without source through its decompiled working copy), widened
+                // as it widens a field.
+                boolean decompiled = preferences.isClientSupportsClassFileContent() && preferences.getPreferences().isIncludeDecompiledSources();
+                targetRoot = JDTUtils.resolveTypeRoot(uri, decompiled, monitor);
+                IJavaElement target = targetRoot == null ? null :
+                        JDTUtils.findElementAtSelection(targetRoot, line, column, preferences, monitor);
+                if (target == null && targetRoot != null) {
+                    target = targetRoot.getElementAt(JsonRpcHelpers.toOffset(targetRoot.getBuffer(), line, column));
+                }
+                plan.add(target, target instanceof IField ? "field" : "unknown", declarations);
+                if (accessors && target instanceof IField field) {
+                    plan.add(GetterSetterUtil.getGetter(field), "getter", false);
+                    plan.add(GetterSetterUtil.getSetter(field), "setter", false);
+                    if (NATIVE_PLAN_SUPPORTED) addNativeBuilderTargets(handler, field, plan);
+                    addConfiguredAccessors(field, plan);
+                }
+            } else {
+                // Unverified JDT LS builds.
+                for (var location : handler.findReferences(params, monitor)) results.put(location, "unknown");
+                if (selected instanceof IField field) {
+                    plan.add(field, "field", declarations);
+                    if (accessors) {
+                        plan.add(GetterSetterUtil.getGetter(field), "getter", false);
+                        plan.add(GetterSetterUtil.getSetter(field), "setter", false);
+                        addConfiguredAccessors(field, plan);
+                    }
+                }
             }
+            UsageCache.Search run = () -> respond(search, plan, results, monitor);
+            // Unverified builds answer partly through the native handler, before the plan.
+            return replicated && !plan.targets.isEmpty()
+                    ? UsageCache.get(cacheKey(plan, sources, preferences), monitor, run) : run.run();
+        } finally {
+            if (targetRoot != null) JDTUtils.discardClassFileWorkingCopy(targetRoot);
         }
+    }
+
+    /** What a search depends on besides the Java model: its targets, scope and search settings. */
+    private static String cacheKey(SearchPlan plan, boolean sources,
+            org.eclipse.jdt.ls.core.internal.preferences.PreferenceManager preferences) {
+        var settings = preferences.getPreferences();
+        StringBuilder key = new StringBuilder().append(sources).append('|').append(settings.getSearchScope())
+                .append('|').append(preferences.isClientSupportsClassFileContent() && settings.isIncludeDecompiledSources());
+        for (var target : plan.targets.values()) {
+            key.append('|').append(target.element.getHandleIdentifier()).append('#').append(target.kind())
+                    .append('#').append(target.declarations);
+        }
+        return key.toString();
+    }
+
+    private static List<Map<String, Object>> respond(Search search, SearchPlan plan, Map<Location, String> results,
+            IProgressMonitor monitor) throws Exception {
         for (var target : plan.targets.values()) {
             if (monitor.isCanceled()) throw new org.eclipse.core.runtime.OperationCanceledException();
-            add(handler, target.element, target.kind(), target.declarations, results, monitor);
+            add(search, target.element, target.kind(), target.declarations, results, monitor);
         }
         if (monitor.isCanceled()) throw new org.eclipse.core.runtime.OperationCanceledException();
         List<Map<String, Object>> response = new ArrayList<>();
         UsageAccess access = new UsageAccess(monitor, results);
-        results.forEach((location, kind) -> response.add(Map.of("location", location, "kind", kind, "access", access.classify(location, kind))));
+        Map<String, String[]> libraryLines = new java.util.HashMap<>();
+        for (var entry : results.entrySet()) {
+            if (monitor.isCanceled()) throw new org.eclipse.core.runtime.OperationCanceledException();
+            Location location = entry.getKey();
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("location", location);
+            row.put("kind", entry.getValue());
+            row.put("access", access.classify(location, entry.getValue()));
+            String text = libraryLine(location, libraryLines, monitor);
+            if (text != null) row.put("text", text);
+            response.add(row);
+        }
         return response;
+    }
+
+    /**
+     * The line of a usage in a library class (`jdt:` URI), from the contents the client would
+     * request for it: so the client need not fetch thousands of class files to show the lines.
+     */
+    private static String libraryLine(Location location, Map<String, String[]> cache, IProgressMonitor monitor) {
+        String uri = location.getUri();
+        if (uri == null || !uri.startsWith("jdt:")) return null;
+        if (!cache.containsKey(uri)) {
+            String contents = null;
+            try {
+                contents = JavaLanguageServerPlugin.getContentProviderManager().getContent(JDTUtils.toURI(uri), monitor);
+            } catch (RuntimeException e) {
+                if (e instanceof org.eclipse.core.runtime.OperationCanceledException) throw e;
+            }
+            cache.put(uri, contents == null ? null : contents.split("\\r\\n?|\\n", -1));
+        }
+        String[] lines = cache.get(uri);
+        int line = location.getRange().getStart().getLine();
+        return lines != null && line >= 0 && line < lines.length ? lines[line] : null;
     }
 
     /** Resolve explicit Lombok @Accessors naming, then search exact JDT method identities.
@@ -191,11 +287,84 @@ public final class UsagesCommand implements IDelegateCommandHandler {
             (resolved[0][0].isEmpty() ? resolved[0][1] : resolved[0][0] + "." + resolved[0][1]).equals(owner.getFullyQualifiedName());
     }
 
-    private static void add(ReferencesHandler handler, IJavaElement element, String kind, boolean declarations,
+    private interface Search {
+        void run(IJavaElement element, List<Location> locations, IProgressMonitor monitor, boolean declarations) throws Exception;
+    }
+
+    /**
+     * ReferencesHandler.search of the verified server, except that a class file whose decompiled
+     * source fails to parse loses only its own matches: there the server throws and fails the
+     * whole search, after searching most of the dependencies. `sources`: the workspace's source
+     * folders only, without dependency jars and the JDK.
+     */
+    private static void search(IJavaElement element, List<Location> locations, IProgressMonitor monitor,
+            boolean declarations, boolean sources) throws CoreException {
+        SearchPattern pattern = SearchPattern.createPattern(element, IJavaSearchConstants.REFERENCES);
+        if (pattern == null) return;
+        if (declarations) {
+            SearchPattern declaration = SearchPattern.createPattern(element, IJavaSearchConstants.DECLARATIONS);
+            if (declaration != null) pattern = SearchPattern.createOrPattern(pattern, declaration);
+        }
+        var preferences = JavaLanguageServerPlugin.getPreferencesManager();
+        SearchScope setting = preferences.getPreferences().getSearchScope();
+        int mask = IJavaSearchScope.SOURCES | IJavaSearchScope.REFERENCED_PROJECTS;
+        if (!sources && setting != SearchScope.projectOnly) {
+            mask |= IJavaSearchScope.APPLICATION_LIBRARIES;
+            if (insideJre(element)) mask |= IJavaSearchScope.SYSTEM_LIBRARIES;
+        }
+        IJavaProject[] projects = JavaCore.create(ResourcesPlugin.getWorkspace().getRoot()).getJavaProjects();
+        IJavaSearchScope scope = SearchEngine.createJavaSearchScope(setting == SearchScope.main, projects, mask);
+        boolean classFiles = preferences.isClientSupportsClassFileContent();
+        boolean decompiled = preferences.getPreferences().isIncludeDecompiledSources();
+        new SearchEngine().search(pattern, new SearchParticipant[] { SearchEngine.getDefaultSearchParticipant() }, scope,
+                new SearchRequestor() {
+                    @Override
+                    public void acceptSearchMatch(SearchMatch match) throws CoreException {
+                        if (match.getAccuracy() == SearchMatch.A_INACCURATE || !(match.getElement() instanceof IJavaElement found)) return;
+                        if (found.getAncestor(IJavaElement.COMPILATION_UNIT) instanceof ICompilationUnit unit) {
+                            locations.add(JDTUtils.toLocation(unit, match.getOffset(), match.getLength()));
+                            return;
+                        }
+                        if (!classFiles || !(found.getAncestor(IJavaElement.CLASS_FILE) instanceof IClassFile classFile)) return;
+                        if (classFile.getSourceRange() != null) {
+                            locations.add(JDTUtils.toLocation(classFile, match.getOffset(), match.getLength()));
+                            return;
+                        }
+                        if (!decompiled) return;
+                        try {
+                            if (found instanceof IMember member) {
+                                Location location = SearchUtils.searchOtherSources(member);
+                                if (location != null) locations.add(location);
+                            }
+                            locations.addAll(JDTUtils.searchDecompiledSources(found, classFile, false, false, monitor));
+                        } catch (org.eclipse.core.runtime.OperationCanceledException e) {
+                            throw e;
+                        } catch (RuntimeException | CoreException e) {
+                            JavaLanguageServerPlugin.logInfo("Usages in decompiled " + classFile.getElementName() + " skipped: " + e);
+                        }
+                    }
+                }, monitor);
+    }
+
+    /** ReferencesHandler.isInsideJRE: a JDK element is searched in the JDK too. */
+    private static boolean insideJre(IJavaElement element) {
+        if (!(element.getAncestor(IJavaElement.PACKAGE_FRAGMENT_ROOT) instanceof IPackageFragmentRoot root)) return true;
+        try {
+            IClasspathEntry entry = root.getRawClasspathEntry();
+            if (entry.getEntryKind() != IClasspathEntry.CPE_CONTAINER) return false;
+            IClasspathContainer container = JavaCore.getClasspathContainer(entry.getPath(), root.getJavaProject());
+            return container != null && container.getKind() == IClasspathContainer.K_DEFAULT_SYSTEM;
+        } catch (JavaModelException e) {
+            JavaLanguageServerPlugin.logException(e);
+            return true;
+        }
+    }
+
+    private static void add(Search search, IJavaElement element, String kind, boolean declarations,
             Map<Location, String> results, IProgressMonitor monitor) throws Exception {
         if (element == null) return;
         List<Location> locations = new ArrayList<>();
-        handler.search(element, locations, monitor, declarations);
+        search.run(element, locations, monitor, declarations);
         for (var location : locations) {
             if (kind.equals("unknown")) { results.putIfAbsent(location, kind); continue; }
             String previous = results.get(location);

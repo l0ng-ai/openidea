@@ -151,6 +151,16 @@ fn cases(dir: &Path) -> Vec<Case> {
             field: None,
             config: launch("lldb-dap", &c.join("main"), &c, serde_json::json!({"env": ["OPENIDEA_FIXTURE=1"]})),
         },
+        // GDB's own DAP interpreter needs GDB 14+; older ones are skipped by `installed`.
+        Case {
+            adapter: "gdb",
+            source: c.join("main.c"),
+            loop_line: 13,
+            after_loop: 15,
+            function: "parse",
+            field: None,
+            config: launch("gdb", &c.join("main"), &c, serde_json::json!({})),
+        },
     ]);
     out
 }
@@ -230,6 +240,16 @@ fn installed(adapter: &str) -> bool {
         "js-debug" => "js-debug-adapter",
         "delve" => "dlv",
         "java-debug" => return true,
+        // Only a GDB with the DAP interpreter (14+) counts as installed.
+        "gdb" => {
+            return std::process::Command::new("gdb").arg("--version").output().is_ok_and(|out| {
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .next()
+                    .and_then(adapter::parse_gdb_version)
+                    .is_some_and(|(major, _)| major >= 14)
+            });
+        }
         other => other,
     };
     adapter::resolve_binary(cmd, Path::new("/")).is_some()
@@ -241,7 +261,7 @@ async fn scenario(case: &Case) -> Result<Vec<String>, String> {
     let m = &run.manager;
     let line_bp =
         Breakpoint { line: case.loop_line, condition: None, hit_condition: None, log_message: None, enabled: true };
-    m.set_breakpoints(case.source.clone(), vec![line_bp]).await.map_err(|e| e.message)?;
+    m.set_breakpoints("test", case.source.clone(), vec![line_bp]).await.map_err(|e| e.message)?;
 
     let seen = run.seen();
     let id = m.start(case.config.clone(), run.owner.clone()).await.map_err(|e| format!("start: {}", e.message))?;
@@ -336,9 +356,9 @@ async fn scenario(case: &Case) -> Result<Vec<String>, String> {
     // Method breakpoint: continue → stops in `parse`.
     if caps.function_breakpoints {
         let fb = FunctionBreakpoint { name: case.function.into(), condition: None, hit_condition: None, enabled: true };
-        let states = m.set_function_breakpoints(vec![fb]).await.map_err(|e| e.message)?;
+        let states = m.set_function_breakpoints("test", vec![fb]).await.map_err(|e| e.message)?;
         report.push(format!("method breakpoint `{}`: verified={}", case.function, states[0].verified));
-        m.set_breakpoints(case.source.clone(), vec![]).await.map_err(|e| e.message)?;
+        m.set_breakpoints("test", case.source.clone(), vec![]).await.map_err(|e| e.message)?;
         let seen = run.seen();
         m.resume(s, thread).await.map_err(|e| e.message)?;
         match run.stopped_after(seen).await {
@@ -348,8 +368,10 @@ async fn scenario(case: &Case) -> Result<Vec<String>, String> {
             }
             None => report.push("method breakpoint: NOT HIT".into()),
         }
-        m.set_function_breakpoints(vec![]).await.map_err(|e| e.message)?;
-        m.set_breakpoints(case.source.clone(), vec![line_bp_at(case.loop_line)]).await.map_err(|e| e.message)?;
+        m.set_function_breakpoints("test", vec![]).await.map_err(|e| e.message)?;
+        m.set_breakpoints("test", case.source.clone(), vec![line_bp_at(case.loop_line)])
+            .await
+            .map_err(|e| e.message)?;
         let seen = run.seen();
         m.step(s, thread, StepKind::Out).await.map_err(|e| e.message)?;
         run.stopped_after(seen).await.ok_or("no stop after step out of parse")?;
@@ -358,7 +380,7 @@ async fn scenario(case: &Case) -> Result<Vec<String>, String> {
     }
 
     // Force Step Over ignores the breakpoint inside parse.
-    m.set_breakpoints(case.source.clone(), vec![line_bp_at(case.loop_line)]).await.map_err(|e| e.message)?;
+    m.set_breakpoints("test", case.source.clone(), vec![line_bp_at(case.loop_line)]).await.map_err(|e| e.message)?;
     let seen = run.seen();
     m.force_step_over(s, thread).await.map_err(|e| e.message)?;
     let (_, t, reason) = run.stopped_after(seen).await.ok_or("no stop after force step over")?;
@@ -389,8 +411,8 @@ async fn scenario(case: &Case) -> Result<Vec<String>, String> {
                     hit_condition: None,
                     enabled: true,
                 };
-                let states = m.set_data_breakpoints(vec![wp]).await.map_err(|e| e.message)?;
-                m.set_breakpoints(case.source.clone(), vec![]).await.map_err(|e| e.message)?;
+                let states = m.set_data_breakpoints("test", vec![wp]).await.map_err(|e| e.message)?;
+                m.set_breakpoints("test", case.source.clone(), vec![]).await.map_err(|e| e.message)?;
                 let seen = run.seen();
                 m.resume(s, thread).await.map_err(|e| e.message)?;
                 match run.stopped_after(seen).await {
@@ -405,8 +427,8 @@ async fn scenario(case: &Case) -> Result<Vec<String>, String> {
                     }
                     None => report.push(format!("watchpoint `{data_id}`: NOT HIT")),
                 }
-                m.set_data_breakpoints(vec![]).await.map_err(|e| e.message)?;
-                m.set_breakpoints(case.source.clone(), vec![line_bp_at(case.loop_line)])
+                m.set_data_breakpoints("test", vec![]).await.map_err(|e| e.message)?;
+                m.set_breakpoints("test", case.source.clone(), vec![line_bp_at(case.loop_line)])
                     .await
                     .map_err(|e| e.message)?;
             }
@@ -537,6 +559,17 @@ async fn attach_to_processes() {
             extra: |pid, _| serde_json::json!({"pid": pid}),
         },
     ];
+    // A .NET app built into `dotnet/bin` (`<OutDir>bin</OutDir>`), attached by its apphost.
+    let dotnet_app = dir.join("dotnet/bin").join(if cfg!(windows) { "Server.exe" } else { "Server" });
+    if dotnet_app.is_file() {
+        cases.push(AttachCase {
+            kind: attach::AttachKind::Dotnet,
+            command: vec![s(&dotnet_app)],
+            source: dir.join("dotnet/Program.cs"),
+            line: 1,
+            extra: |pid, _| serde_json::json!({"processId": pid, "justMyCode": true}),
+        });
+    }
     if java_server.is_some() {
         cases.insert(
             0,
@@ -592,7 +625,7 @@ async fn attach_to_processes() {
             };
             let run = Run::new();
             run.manager
-                .set_breakpoints(case.source.clone(), vec![line_bp_at(case.line)])
+                .set_breakpoints("test", case.source.clone(), vec![line_bp_at(case.line)])
                 .await
                 .map_err(|e| e.message)?;
             let id =

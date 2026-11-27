@@ -1,0 +1,19 @@
+{
+    "preset": "laravel",
+    "rules": {
+        "cast_spaces": {
+            "space": "single"
+        },
+        "phpdoc_line_span": {
+            "case": "single",
+            "class": "single",
+            "const": "single",
+            "function": "single",
+            "method": "single",
+            "other": "single",
+            "property": "single",
+            "trait_import": "single"
+        },
+        "not_operator_with_successor_space": false
+    }
+}

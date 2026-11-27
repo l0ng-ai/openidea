@@ -7,26 +7,50 @@ license.workspace = true
 
 [dependencies]
 ide-core.workspace = true
+ide-sdk.workspace = true
+tempfile.workspace = true
+zip.workspace = true
+dunce.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 specta.workspace = true
 toml.workspace = true
-tokio.workspace = true
+toml_edit.workspace = true
+blake3.workspace = true
+tokio = { workspace = true, features = ["net"] }
 tracing.workspace = true
 parking_lot.workspace = true
+notify.workspace = true
 futures.workspace = true
 sqlx.workspace = true
 tiberius.workspace = true
+oracledb.workspace = true
 bb8.workspace = true
 tokio-util = { workspace = true, features = ["compat"] }
-dirs.workspace = true
 ide-ssh.workspace = true
 ide-http.workspace = true
 reqwest = { workspace = true, features = ["query"] }
 rustls.workspace = true
 uuid.workspace = true
+base64.workspace = true
+flate2 = "1"
+rsa = { version = "0.10.0-rc.18", features = ["sha2", "pkcs5"] }
+zeroize = "1"
+open = "5"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
+    "Win32_System_JobObjects",
+] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
-tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
 ide-ssh = { workspace = true, features = ["testing"] }

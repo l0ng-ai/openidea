@@ -11,6 +11,10 @@
 //! They run on the editing path: answer within ~50 ms (later results are
 //! dropped; at 500 ms the call is interrupted). Inline completion may take
 //! longer (it may use the network) but is cancelled when the user types on.
+//!
+//! Completion that depends on what has been typed (API 1.16) overrides
+//! [`Providers::completion_list`] and registers it too:
+//! `register_plugin!(T, providers, completion_list)`.
 
 use crate::types::{Location, Position, Range, TextEdit};
 
@@ -106,6 +110,22 @@ pub struct CompletionItem {
     pub additional_edits: Vec<TextEdit>,
 }
 
+/// Completion items, and whether typing on should ask again (API 1.16).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CompletionList {
+    pub items: Vec<CompletionItem>,
+    /// While the user types on in the same word, the host asks this plugin
+    /// again with the new text instead of filtering `items`; the language
+    /// server and the other plugins are not asked again.
+    pub incomplete: bool,
+}
+
+impl From<Vec<CompletionItem>> for CompletionList {
+    fn from(items: Vec<CompletionItem>) -> Self {
+        Self { items, incomplete: false }
+    }
+}
+
 impl CompletionItem {
     pub fn new(label: &str, kind: CompletionKind) -> Self {
         Self {
@@ -161,6 +181,14 @@ pub trait Providers {
         Vec::new()
     }
 
+    /// [`Providers::completion`] with an `incomplete` flag (API 1.16). Called
+    /// instead of `completion` once registered with
+    /// `register_plugin!(T, providers, completion_list)`; by default it returns
+    /// `completion`'s items, complete.
+    fn completion_list(&mut self, doc: &Document, at: Position, trigger: Option<&str>) -> CompletionList {
+        self.completion(doc, at, trigger).into()
+    }
+
     fn inline_completion(&mut self, _doc: &Document, _at: Position) -> Option<InlineSuggestion> {
         None
     }
@@ -171,6 +199,10 @@ pub trait Providers {
 
     /// The edits of an action [`Providers::code_actions`] returned with
     /// `data`, when the user picks it (the command budget applies, not 50 ms).
+    /// `host::pick`, `pick_many`, `input` and `confirm` ask in the editor's
+    /// window, excluding the wait from that budget. Dismissal returns `None`
+    /// (or `false` for `confirm`); return `Error::Cancelled` or no edits to stop.
+    /// Other command/event-only APIs remain unavailable.
     fn resolve_code_action(&mut self, _doc: &Document, action: CodeAction) -> Result<CodeAction, crate::Error> {
         Ok(action)
     }

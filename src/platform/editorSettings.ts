@@ -13,6 +13,8 @@ export interface TextAttributesOverride {
   italic?: boolean;
   effect?: "underline" | "wave" | "strikeout" | "none";
   effectColor?: string;
+  /** IDEA's ERROR_STRIPE_COLOR: the diff overview-lane marker of a change type. */
+  errorStripeColor?: string;
 }
 
 export interface CustomColorScheme {
@@ -22,6 +24,10 @@ export interface CustomColorScheme {
 }
 
 export type CustomColorSchemes = Record<string, CustomColorScheme>;
+
+/** Python docstring markup formats (PyCharm's Python Integrated Tools › Docstring format). */
+export const DOCSTRING_FORMATS = ["plain", "rest", "epytext", "google", "numpy"] as const;
+export type DocstringFormat = (typeof DOCSTRING_FORMATS)[number];
 
 export interface LanguageCodeStyle {
   /** Java formatter; relative XML paths start at the project root. */
@@ -34,6 +40,42 @@ export interface LanguageCodeStyle {
   /** Code Generation › Comment Code (unset: the language's default, see `lineCommentDefaults`). */
   lineCommentAtFirstColumn?: boolean;
   lineCommentAddSpace?: boolean;
+  /** PHP: align `=>` in multi-line arrays after formatting (PhpStorm's option; off by default). */
+  alignKeyValuePairs?: boolean;
+  /** PHP: align `=` of consecutive assignment statements after formatting. */
+  alignConsecutiveAssignments?: boolean;
+  /** SQL › Case: Reformat Code's case for keywords and unquoted identifiers. */
+  keywordCase?: SqlWordCase;
+  identifierCase?: SqlWordCase;
+  /** Java: organize imports switches to a wildcard import once this many classes of one package are used (jdtls passthrough). */
+  classCountToUseImportWithStar?: number;
+  /** Java: organize imports switches to a wildcard static import once this many names are used (jdtls passthrough). */
+  namesCountToUseStaticImportWithStar?: number;
+  /** JavaScript / TypeScript › Punctuation (unset: tsserver's default, `ignore` / `auto`). */
+  semicolons?: "ignore" | "insert" | "remove";
+  quotes?: "auto" | "single" | "double";
+  /** JavaScript / TypeScript › Spaces, by tsserver format option (`insertSpaceAfterCommaDelimiter`). */
+  spaces?: Record<string, boolean>;
+}
+
+/** IDEA's SQL word case: To upper / To lower / Do not change. */
+export type SqlWordCase = "upper" | "lower" | "keep";
+
+export interface SqlCaseStyle {
+  keywords: SqlWordCase;
+  identifiers: SqlWordCase;
+}
+
+/** SQL › Case of Code Style; unset, keywords become upper case and identifiers stay as written (IDEA's defaults). */
+export function sqlCaseStyle(prefs: EditorExtras): SqlCaseStyle {
+  return sqlCaseOf(prefs.codeStyle.languages.sql);
+}
+
+/** The SQL › Case of the SQL code style `own`, defaults filled in. */
+export function sqlCaseOf(own: LanguageCodeStyle | undefined): SqlCaseStyle {
+  const pick = (v: unknown, def: SqlWordCase): SqlWordCase =>
+    v === "upper" || v === "lower" || v === "keep" ? v : def;
+  return { keywords: pick(own?.keywordCase, "upper"), identifiers: pick(own?.identifierCase, "keep") };
 }
 
 /**
@@ -70,15 +112,24 @@ export const EDITOR_EXTRA_DEFAULTS = {
   colorOverrides: {} as Record<string, Record<string, TextAttributesOverride>>,
   /** Color Scheme › Language Defaults › Semantic highlighting (rainbow locals / parameters). */
   semanticHighlighting: false,
+  /** Docstring markup format the Python editor highlights (`plain` disables tag parsing). */
+  docstringFormat: "rest" as DocstringFormat,
   /** Color Scheme › Language Defaults › Rainbow brackets. */
   rainbowBrackets: false,
+  /** The bracket kinds rainbow brackets colour; angle: generics and markup tags. */
+  rainbowBracketKinds: { round: true, square: true, curly: true, angle: false },
+  /** Colours the rainbow bracket depth cycles through (2–5). */
+  rainbowBracketColors: 3,
   ligatures: false,
+  /** Editor › Font / Tools › Terminal › Font: the font pickers list only monospaced fonts. */
+  onlyMonospacedFonts: true,
   fallbackFont: "",
   /** Typography Settings › Main / Bold font weight (CSS weights, IDEA's Regular / Bold). */
   fontWeight: 400,
   boldFontWeight: 700,
   general: {
     wheelZoom: false,
+    wheelZoomScope: "active" as "active" | "all",
     markdownImageFolder: "assets",
     markdownImageNamePattern: "image-{timestamp}",
     dragAndDrop: true,
@@ -99,13 +150,16 @@ export const EDITOR_EXTRA_DEFAULTS = {
     smoothCaretMovement: false,
     caretMovementStyle: "snappy",
     lineNumbers: true,
+    lineNumberMode: "absolute",
     methodSeparators: false,
     whitespaceLeading: true,
     whitespaceInner: true,
     whitespaceTrailing: true,
     indentGuides: true,
+    rainbowIndentGuides: false,
     hardWrapGuides: true,
     intentionBulb: true,
+    renderDocComments: false,
     distractionFreeWidth: 80,
   },
   breadcrumbs: { show: true, placement: "bottom", disabledLanguages: [] as string[] },
@@ -122,8 +176,15 @@ export const EDITOR_EXTRA_DEFAULTS = {
     parameterInfo: true,
     parameterInfoDelay: 1000,
   },
-  autoImport: { addUnambiguous: false, optimizeOnTheFly: false },
-  folding: { showOutline: true, fileHeader: true, imports: true, docComments: false },
+  autoImport: { addUnambiguous: false, optimizeOnTheFly: false, importsOnPaste: "ask" as "ask" | "always" | "never" },
+  folding: {
+    showOutline: true,
+    outlineVisibility: "hover" as "hover" | "always",
+    fileHeader: true,
+    imports: true,
+    docComments: false,
+    goShortBlocks: true,
+  },
   tabs: {
     placement: "top",
     multipleRows: false,
@@ -150,8 +211,12 @@ export const EDITOR_EXTRA_DEFAULTS = {
     pairQuotes: true,
     surroundSelection: true,
     tabOutOfPair: true,
+    semicolonAtStatementEnd: true,
+    simultaneousTagEditing: true,
     reformatOnPaste: "indentEachLine",
+    escapeOnPaste: true,
     smartIndent: true,
+    insertDocStub: true,
     backspaceUnindent: "autoindent",
   },
   codeEditing: {
@@ -162,14 +227,20 @@ export const EDITOR_EXTRA_DEFAULTS = {
     quickDocDelay: 500,
     nextErrorErrorsOnly: true,
     stickyLinesMax: 5,
+    stickyLinesDisabledLanguages: [] as string[],
   },
   inlay: {
     types: true,
     parameters: true,
     other: true,
+    closingLabels: true,
     disabledLanguages: [] as string[],
+    codeVision: true,
     codeVisionUsages: true,
     codeVisionAuthor: true,
+    codeVisionNoUsages: true,
+    codeVisionUsagesPosition: "top" as "top" | "right",
+    codeVisionAuthorPosition: "top" as "top" | "right",
   },
   inlineCompletion: { enabled: true, onlyOnPause: false, pauseMs: 500, disabledLanguages: [] as string[] },
   gutterIconsDisabled: [] as string[],
@@ -249,6 +320,13 @@ export function fontWeightVars(main: unknown, bold: unknown): Record<"--fw-code"
 
 export function validateEditorExtras(raw: unknown): EditorExtras {
   const out = coerceLike(raw, EDITOR_EXTRA_DEFAULTS);
+  if (!["active", "all"].includes(out.general.wheelZoomScope)) out.general.wheelZoomScope = "active";
+  if (!["ask", "always", "never"].includes(out.autoImport.importsOnPaste)) out.autoImport.importsOnPaste = "ask";
+  if (!["hover", "always"].includes(out.folding.outlineVisibility)) out.folding.outlineVisibility = "hover";
+  if (!DOCSTRING_FORMATS.includes(out.docstringFormat)) out.docstringFormat = "rest";
+  for (const k of ["codeVisionUsagesPosition", "codeVisionAuthorPosition"] as const)
+    if (!["top", "right"].includes(out.inlay[k])) out.inlay[k] = "top";
+  out.rainbowBracketColors = Math.min(5, Math.max(2, Math.round(out.rainbowBracketColors)));
   out.fontWeight = fontWeightOf(out.fontWeight, EDITOR_EXTRA_DEFAULTS.fontWeight);
   out.boldFontWeight = fontWeightOf(out.boldFontWeight, EDITOR_EXTRA_DEFAULTS.boldFontWeight);
   return out;
@@ -301,5 +379,6 @@ export const ENCODING_CHOICES: ReadonlyArray<readonly [string, string]> = [
   ["euc-kr", "EUC-KR"],
   ["windows-1252", "windows-1252"],
   ["iso-8859-1", "ISO-8859-1"],
+  ["iso-8859-15", "ISO-8859-15"],
   ["koi8-r", "KOI8-R"],
 ];

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 const ipc = vi.hoisted(() => ({
   runSaveConfigs: vi.fn(),
@@ -17,9 +17,18 @@ vi.mock("@/platform/ipc", async (importOriginal) => ({
 
 import type { RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { MessagesHost } from "@/workbench/messages";
 import { EditConfigsOverlay } from "./EditConfigsDialog";
 import { ConfigChooserOverlay } from "./ConfigChooser";
-import { adoptTemporary, canDeleteConfig, deleteConfig, loadConfigs, resetRuns, useRun } from "./store";
+import {
+  adoptTemporary,
+  canDeleteConfig,
+  deleteConfig,
+  dropStaleContextConfigs,
+  loadConfigs,
+  resetRuns,
+  useRun,
+} from "./store";
 import { registerBuiltinTypes } from "./types";
 
 const config = (kind = "npm"): RunConfig => ({
@@ -112,12 +121,58 @@ it("temporary deletion does not persist suppression", async () => {
   expect(useRun.getState().configs).toEqual([]);
 });
 
-it("chooser popup Delete removes the selected detection", async () => {
+it("a moved file drops its stale temporary context configuration", async () => {
+  const old: RunConfig = { ...config("cc"), id: "context:file:src/main.cxx", name: "main.cxx", detected: false };
+  adoptTemporary(old);
+  expect(useRun.getState().configs.map((c) => c.id)).toContain("context:file:src/main.cxx");
+  dropStaleContextConfigs(["/test-removal/src/main.cxx"]);
+  expect(useRun.getState().configs.map((c) => c.id)).not.toContain("context:file:src/main.cxx");
+  expect(useRun.getState().temporary).toEqual([]);
+  expect(ipc.runSaveConfigs).not.toHaveBeenCalled();
+});
+
+it("keeps other temporary and non-temporary configurations on removal", async () => {
+  const moved: RunConfig = { ...config("cc"), id: "context:file:src/main.cxx", name: "main.cxx", detected: false };
+  const other: RunConfig = { ...config("go"), id: "context:file:app/main.go", name: "main.go", detected: false };
+  adoptTemporary(moved);
+  adoptTemporary(other);
+  dropStaleContextConfigs(["/test-removal/src/main.cxx"]);
+  expect(useRun.getState().temporary).toEqual([other.id]);
+  // The saved/detected npm config and an unrelated file stay.
+  expect(useRun.getState().configs.map((c) => c.id)).toEqual(expect.arrayContaining(["npm:app", other.id]));
+});
+
+it("chooser popup Delete removes the selected detection once confirmed", async () => {
   useRun.setState({ chooserOpen: true, editorOpen: false });
-  render(<ConfigChooserOverlay />);
+  render(
+    <>
+      <ConfigChooserOverlay />
+      <MessagesHost />
+    </>,
+  );
   fireEvent.keyDown(document.querySelector("input[data-autofocus]")!, { key: "Delete" });
+  const ask = await screen.findByRole("dialog", { name: "Confirmation" });
+  expect(ipc.runSaveConfigs).not.toHaveBeenCalled();
+  fireEvent.click(within(ask).getByRole("button", { name: "Delete" }));
   await waitFor(() => expect(ipc.runSaveConfigs).toHaveBeenCalledWith([], ["npm:app"]));
   await waitFor(() => expect(useRun.getState().configs).toEqual([]));
+});
+
+it("chooser popup Delete edits the search text when the caret is not at its end", async () => {
+  useRun.setState({ chooserOpen: true, editorOpen: false });
+  render(
+    <>
+      <ConfigChooserOverlay />
+      <MessagesHost />
+    </>,
+  );
+  const input = document.querySelector<HTMLInputElement>("input[data-autofocus]")!;
+  fireEvent.change(input, { target: { value: "app" } });
+  input.setSelectionRange(1, 1);
+  fireEvent.keyDown(input, { key: "Delete" });
+  await act(async () => {});
+  expect(screen.queryByRole("dialog", { name: "Confirmation" })).toBeNull();
+  expect(ipc.runSaveConfigs).not.toHaveBeenCalled();
 });
 
 it("Cancel discards a pending detected removal", () => {

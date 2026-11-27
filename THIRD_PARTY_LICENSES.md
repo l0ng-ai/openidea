@@ -1,9 +1,40 @@
 # Third-party licenses
 
+## Project type icons
+
+`src/ui/brands/*.svg` use the unmodified logo paths from
+[Simple Icons](https://github.com/simple-icons/simple-icons), retrieved through
+Iconify (`simple-icons:angular`, `simple-icons:astro`, `simple-icons:cplusplus`, `simple-icons:dart`, `simple-icons:deepseek`, `simple-icons:django`, `simple-icons:dotnet`, `simple-icons:elixir`, `simple-icons:express`, `simple-icons:fastapi`, `simple-icons:flask`, `simple-icons:flutter`, `simple-icons:go`, `simple-icons:haskell`, `simple-icons:html5`, `simple-icons:kotlin`, `simple-icons:ktor`, `simple-icons:laravel`, `simple-icons:nestjs`, `simple-icons:nextdotjs`, `simple-icons:nodedotjs`, `simple-icons:nuxt`, `simple-icons:openjdk`, `simple-icons:phoenixframework`, `simple-icons:php`, `simple-icons:python`, `simple-icons:quarkus`, `simple-icons:ruby`, `simple-icons:rubyonrails`, `simple-icons:rust`, `simple-icons:scala`, `simple-icons:springboot`, `simple-icons:svelte`, `simple-icons:swift`, `simple-icons:symfony`, `simple-icons:vite`, `simple-icons:zig`) and filled with the brand colors (the standard icon grey for black logos). Licensed under [CC0 1.0 Universal](https://github.com/simple-icons/simple-icons/blob/develop/LICENSE.md).
+
+## DuckDB symbol
+
+DuckDB is a trademark of the DuckDB Foundation. The data source icon uses the
+light and dark symbols from the [DuckDB Design Manual](https://duckdb.org/design/manual/#logo-usage).
+The SVG paths and colors are preserved. See the [DuckDB trademark guidelines](https://duckdb.org/trademark_guidelines.html).
+
+## Agent logos
+
+The `src/ui/openidea/agents/` logos of agents listed in the
+[ACP agent registry](https://github.com/agentclientprotocol/registry) (`agoragentic-acp`, `amp-acp`,
+`antigravity-acp`, `autohand`, `bob`, `cline`, `codebuddy-code`, `cortex-code`, `corust-agent`,
+`crow-cli`, `deepagents`, `devin`, `dimcode`, `dirac`, `factory-droid`, `fast-agent`, `glm-acp-agent`,
+`grok-build`, `harn`, `junie`, `kilo`, `kimchi`, `minimax-code`, `minion-code`, `muse-code`, `nova`,
+`pi-acp`, `poolside`, `sigit`, `stakpak`, `vtcode`) are the registry's icons, with a root `fill`
+moved onto a group. The registry is licensed under Apache-2.0; the logos remain trademarks of
+their owners.
+
+## Microsoft ConPTY
+
+`crates/ide-core/resources/conpty/` contains the unmodified Microsoft Windows Console
+ConPTY runtime 1.25.260930003, embedded in Windows builds. Copyright (c) Microsoft
+Corporation. Licensed under MIT; see its [license](crates/ide-core/resources/conpty/LICENSE)
+and [package provenance](crates/ide-core/resources/conpty/README.md).
+
 ## Project Lombok
 
-`java/lombok/lombok-1.18.48-openidea.2.jar` contains Project Lombok v1.18.48 with the Equinox
-classloader fix from [projectlombok/lombok#4059](https://github.com/projectlombok/lombok/pull/4059)
+`java/lombok/lombok-1.18.48-openidea.3.jar` contains Project Lombok v1.18.48 with the Equinox
+classloader fix from [projectlombok/lombok#4059](https://github.com/projectlombok/lombok/pull/4059),
+the [compact record constructor builder fix](java/lombok/patches/builder-compact-constructor.patch)
 and the ECJ constructor-call fix from [projectlombok/lombok#4089](https://github.com/projectlombok/lombok/pull/4089).
 Copyright (C) 2009-2021 The Project Lombok Authors. MIT license and bundled component
 notices are retained in [java/lombok/LICENSE](java/lombok/LICENSE) and inside the jar.
@@ -28,12 +59,14 @@ icon set, copied unmodified (some renamed) from JetBrains' open-source repositor
   → `maven/`); `plugins/gradle` (`icons/expui/gradle` → `toolwindows/gradle`,
   `icons/expui/gradleLoadChanges` → `build/gradleLoadChanges`,
   `icons/expui/gradle`, `icons/gradleSubproject` → `gradle/`);
-  `platform/external-system-impl` (`icons/newui/task` → `externalSystem/task`).
+  `platform/external-system-impl` (`icons/newui/task` → `externalSystem/task`);
+  `platform/dvcs-impl` (`icons/new/cherryPick` → `vcs/cherryPick`).
   Copyright 2000-2026 JetBrains s.r.o. and contributors. Apache License 2.0 (below).
 - [intellij-plugins](https://github.com/JetBrains/intellij-plugins) (each plugin
   carries its own licence): `protobuf/protoeditor-core` (`newui/protoFile` →
   `fileTypes/protoFile`, Apache-2.0); `terraform` (`newui/hashiCorp` →
-  `fileTypes/hashiCorp`, Apache-2.0); `makefile` (`expui/makefile` →
+  `fileTypes/hashiCorp`, Apache-2.0); `Astro` (`icons/astro` → `fileTypes/astro`,
+  Apache-2.0); `makefile` (`expui/makefile` →
   `fileTypes/makefile`, MIT, Copyright (c) 2016 Victor Kropp — full text below).
 
 The read/write usage filter assets (`actions/showReadAccess{,_dark}.svg` and
@@ -51,6 +84,44 @@ Their original copyright headers and Apache-2.0 licensing are retained.
   Copyright (c) 2016 JetBrains. MIT licence, full text below.
 
 At render time `src/ui/icons.tsx` may recolour monochrome icons to `currentColor`.
+
+## Flutter plugin icons
+
+These icons of [flutter-intellij](https://github.com/flutter/flutter-intellij) (commit `d02813ad5890`) are used
+under the BSD 3-Clause License:
+
+- `src/ui/expui/flutter/*.svg`: the Flutter tool window icons, copied unmodified from
+  `resources/icons/expui/`.
+- `src/ui/expui/flutter/widget@2x.png` and `widget_private@2x.png`: the Flutter outline's widget
+  icons, `resources/icons/custom/class@2x.png` and `method@2x.png`, renamed, content unmodified.
+
+```text
+Copyright 2016 The Chromium Authors. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above
+      copyright notice, this list of conditions and the following
+      disclaimer in the documentation and/or other materials provided
+      with the distribution.
+    * Neither the name of Google Inc. nor the names of its
+      contributors may be used to endorse or promote products derived
+      from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
 
 ## JetBrains IntelliJ Platform VCS log graph algorithms
 
@@ -84,6 +155,7 @@ languages whose JetBrains icons are not open source (Go, Ruby, Dart, Lua, Zig,
 Svelte, …). Those using the page-with-corner-badge layout (`goMod`, `goWork`,
 `dotenv`, `readme`, `lock`, `license`) reuse the page outline of the Apache-2.0
 expui `fileTypes/h.svg`; that outline is modified from the original by JetBrains.
+`goTest` adds a scaled copy of the Apache-2.0 expui `nodes/test.svg` as its badge.
 `src/ui/openidea/runConfigurations/springBoot*.svg` (the Spring Boot run configuration
 leaf) is OpenIDEA's own drawing.
 
@@ -186,6 +258,36 @@ declarations, key and animation binding names (`(keydown.enter)`, `[@fade]`,
 `(@fade.done)`), runs of text that entities split (`a && b`) parsed as one, and one
 token for `{` and `}`.
 
+## Julia CodeMirror language support
+
+[`@plutojl/lang-julia`](https://github.com/JuliaPluto/lang-julia) 1.2.0 and its
+[`@plutojl/lezer-julia`](https://github.com/JuliaPluto/lezer-julia) parser dependency
+provide the Julia CodeMirror 6 language mode. Both packages are MIT licensed;
+the full license text is below. The mode wraps a Lezer grammar and exposes its
+syntax tags through `julia()`.
+
+### MIT License (@plutojl/lang-julia and @plutojl/lezer-julia)
+
+Copyright (c) 2021 Andrey Popp
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ## nvim-treesitter queries
 
 `crates/ide-syntax/queries/<grammar>/locals.scm` are derived from the `locals.scm`
@@ -260,7 +362,7 @@ END OF TERMS AND CONDITIONS
 
 The Solarized palettes in `src/styles/tokens.css` are adapted from
 [Ethan Schoonover’s Solarized](https://github.com/altercation/solarized/tree/62f656a02f93c5190a8753159e34b385588d5ff3).
-See [theme sources and mapping](docs/themes.md). MIT license:
+MIT license:
 
 ```text
 Copyright (c) 2011 Ethan Schoonover
@@ -288,7 +390,11 @@ THE SOFTWARE.
 
 The One palettes and semantic syntax mapping in `src/styles/tokens.css` are
 adapted from GitHub’s Atom One syntax and UI themes.
-Source revisions are listed in [theme sources and mapping](docs/themes.md).
+Source revisions:
+[one-light-syntax d845790](https://github.com/atom/one-light-syntax/tree/d84579027410c576086dfca14d934c4bd74b0438),
+[one-dark-syntax 9c96f44](https://github.com/atom/one-dark-syntax/tree/9c96f4454362267ac45322063e193ccf9d2debb1),
+[one-light-ui a27bce3](https://github.com/atom/one-light-ui/tree/a27bce35088ecd323e44f5c2510bcf2d4e9efcf8),
+[one-dark-ui 18c2143](https://github.com/atom/one-dark-ui/tree/18c2143d41e17b337fff6dc7024562c4d999be17).
 Both syntax themes use the following MIT notice:
 
 ```text

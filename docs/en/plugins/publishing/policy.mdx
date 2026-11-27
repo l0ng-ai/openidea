@@ -1,0 +1,79 @@
+---
+title: "Policy and security"
+description: "The plugin trust model: sandbox and consent, publisher signatures, revocation, key rotation, the official key, and what review plugins get."
+---
+
+OpenIDEA's plugin security rests on three layers. Each is described here together with its limits.
+
+1. **The sandbox and capabilities.** Plugin code runs in a WebAssembly sandbox and can only reach files, the network, processes and secrets through capabilities the user approved. This is the main protection, and it applies to every plugin wherever it came from.
+2. **Signatures.** A publisher signs its packages. The marketplace index says which key belongs to which publisher, so the IDE can tell who published a package and whether it changed.
+3. **Review.** Official plugins are reviewed as part of the OpenIDEA repository. New community publishers and plugins are reviewed by a registry maintainer before they are listed.
+
+<Warning>
+  A high-risk capability (`process:`, `fs.read:`, `fs.write:`, `ipc:`, `ide.commands`) is equivalent to running
+  arbitrary code on your machine. The permission dialog says so. Grant one only to a plugin whose publisher you trust.
+</Warning>
+
+## Sandbox and consent
+
+- Code has no file system, environment, network or process access of its own. See [Architecture and sandbox](/en/plugins/architecture#the-sandbox).
+- Each capability has a risk level, and the user approves capabilities when installing. A new version that asks for more stays off until the user allows it. Optional capabilities can be revoked later. See [Permissions and capabilities](/en/plugins/capabilities).
+- An approved program is pinned by path and content hash and checked before every start.
+- Project plugins (`.openidea/plugins`) run only in trusted projects and only after approval. In Restricted Mode, plugin code that runs can't be changed.
+
+## Signatures and publishers
+
+- A publisher owns a plugin id prefix: publisher `acme` publishes `acme.*`. The index lists each publisher's Ed25519 public keys.
+- `SIGNATURE.json` in a package signs the plugin id, version and a digest of all package files.
+- Installing from a marketplace refuses a package whose signature doesn't hold: changed after signing, a key that isn't the publisher's, another publisher's id prefix, or a revoked key. It also refuses a download that doesn't match the digest in the index.
+- Unsigned packages can still be installed from disk, with a warning in the permission dialog. The dialog also shows whether a package is signed by a publisher the marketplace trusts.
+
+## Updates and signer changes
+
+An installed plugin updates silently only to a package signed with the key it was installed with, or with a key that key endorsed (directly or through a chain of endorsed keys). Endorsements by revoked keys don't count. Another signer (an unendorsed key, or an unsigned package replacing a signed one) is shown in the permission dialog with a warning and needs the user's confirmation.
+
+## Key rotation
+
+A publisher moves to a new key by having the old key endorse it:
+
+- In an index you write: `openidea-plugin index <dir> --key new.key --previous-key old.key …`.
+- In an index someone else writes, such as the community registry: `openidea-plugin endorse "<new public key>" --key old.key --publisher acme` prints the endorsement to add.
+
+Older keys stay valid until they are revoked, so packages signed before the rotation keep installing. A lost or stolen key can't vouch for anything: have it revoked; users then confirm the new key at their next update.
+
+## Revocation
+
+The index can revoke plugin versions (or all versions of a plugin) and publisher keys. The IDE reads the index daily. Revoked plugins, and plugins signed with a revoked key, are disabled with the reason and the user is notified. This also happens after a restart, before their code could run.
+
+## The official key
+
+Release builds of OpenIDEA carry the official publisher's public key, built in from the release's signing key. Plugins named `openidea.*` must be signed with it, or with a key it endorsed, whatever keys an index lists for `openidea`. Development builds from source have no built-in key and trust what the index says.
+
+## What review exists
+
+### Official plugins
+
+The `openidea.*` plugins live in [`plugins/official/`](https://github.com/l0ng-ai/openidea/tree/main/plugins/official). Changes go through the repository's normal pull request review and CI. CI rebuilds every plugin and fails when a checked-in component is stale (`plugins/build.sh --check`). The release workflow builds and signs them with the official key.
+
+### Community registry
+
+Community plugins are listed through [l0ng-ai/openidea-plugins](https://github.com/l0ng-ai/openidea-plugins). Its rules:
+
+- **New publishers and new plugins** are reviewed by a maintainer: the source, the capabilities it asks for and why, and that it doesn't duplicate an existing plugin.
+- **Version updates** by an owner need passing checks and a maintainer's merge. Owners are checked against the publisher file as it was before the pull request.
+- A plugin must have a public source repository under an open-source licence, and the package must be built from it. Its README must say what it does and why it needs each network, process or other high-risk capability. It must contain no obfuscated or minified code that isn't built from that source.
+- On every change, CI checks each package's SHA-256, runs `openidea-plugin check` against the latest release, and verifies the signature against the publisher's keys. A scheduled run repeats this daily.
+- A plugin that fails the checks against a new OpenIDEA release is reported in an issue and delisted if no fixed version is listed within 30 days.
+- Maintainers revoke versions or keys for malware, a security problem the owner doesn't fix, or a lost key. Owners ask for a revocation in an issue.
+
+### Limits of the review
+
+- Review is a human reading of the source and the requested capabilities. It is not a security audit.
+- CI does not rebuild community packages from source. The rule that a package is built from its public source is checked in review, not by a reproducible build.
+- The registry's rules require a maintainer review of the source for new publishers and new plugins. For a version update they require passing checks and a maintainer's merge; they don't promise a fresh source review.
+- Plugins installed from disk, linked folders, project plugins and self-hosted marketplaces get no review from OpenIDEA. The sandbox, the permission dialog and signatures still apply.
+
+## Reporting a problem
+
+- A malicious or vulnerable community plugin: open an issue in [l0ng-ai/openidea-plugins](https://github.com/l0ng-ai/openidea-plugins/issues) asking for revocation.
+- A vulnerability in the plugin host or sandbox itself: see [Security](/en/contribute/security).

@@ -112,6 +112,26 @@ describe("inspection profiles", () => {
     expect(isTypoStyled(applyProfile({ "lsp:ruff": { severity: "typo" } }, "ruff", [diag("x")])[0]!)).toBe(true);
   });
 
+  it("shows PHPStan results as warnings, each identifier turned off or re-graded on its own", () => {
+    const phpstan = (code: string | null): Diagnostic => ({ ...diag(code, "warning", "phpstan"), source: "PHPStan" });
+    const items = [phpstan("constant.notFound"), phpstan("return.type"), phpstan(null)];
+    expect(producerInspectionId("phpstan")).toBe("builtin:phpstan");
+    expect(applyProfile({}, "phpstan", items).map((d) => d.severity)).toEqual(["warning", "warning", "warning"]);
+    const out = applyProfile(
+      {
+        "builtin:phpstan:constant.notFound": { enabled: false },
+        "builtin:phpstan:return.type": { severity: "error" },
+      },
+      "phpstan",
+      items,
+    );
+    expect(out.map((d) => [d.code, d.severity])).toEqual([
+      ["return.type", "error"],
+      [null, "warning"],
+    ]);
+    expect(applyProfile({ "builtin:phpstan": { enabled: false } }, "phpstan", items)).toEqual([]);
+  });
+
   it("lists, labels and resolves copied profiles", () => {
     const s = validateInspections({
       profile: "ide:strict",

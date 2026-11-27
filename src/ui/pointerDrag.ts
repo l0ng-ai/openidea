@@ -13,11 +13,13 @@ export interface DragData {
   payload: string;
 }
 
-/** Project files dragged from the Project view: `payload` is the paths joined by `\n`. */
+/** Project files dragged from the Project view: `payload` is the paths joined by `\n`, folders ending with `/`. */
 export const FILES_DRAG = "application/x-openidea-files";
+/** Files and folders dragged from Remote Host: `payload` is JSON `{ server, paths }` (remote paths). */
+export const REMOTE_FILES_DRAG = "application/x-openidea-remote-files";
 
 export interface DropTarget {
-  accepts(type: string): boolean;
+  accepts(type: string, data: DragData): boolean;
   /** The pointer moved over the target. */
   over(data: DragData, x: number, y: number): void;
   /** The pointer left the target, or the drag ended elsewhere / was cancelled. */
@@ -34,11 +36,11 @@ export function registerDropTarget(el: Element, target: DropTarget): () => void 
   };
 }
 
-/** The innermost registered target under (x, y) accepting `type`. */
-function targetAt(type: string, x: number, y: number): DropTarget | null {
+/** The innermost registered target under (x, y) accepting `data`. */
+function targetAt(data: DragData, x: number, y: number): DropTarget | null {
   for (let el = document.elementFromPoint(x, y); el; el = el.parentElement) {
     const t = targets.get(el);
-    if (t?.accepts(type)) return t;
+    if (t?.accepts(data.type, data)) return t;
   }
   return null;
 }
@@ -96,12 +98,12 @@ export function dragSession(data: DragData): DragSession {
   };
   return {
     move(x, y) {
-      enter(targetAt(data.type, x, y));
+      enter(targetAt(data, x, y));
       current?.over(data, x, y);
       return !!current;
     },
     drop(x, y) {
-      const t = targetAt(data.type, x, y);
+      const t = targetAt(data, x, y);
       enter(null);
       t?.drop(data, x, y);
       return !!t;
@@ -112,6 +114,19 @@ export function dragSession(data: DragData): DragSession {
 
 /** Movement before a press becomes a drag, px. */
 const DRAG_THRESHOLD = 4;
+
+/**
+ * Marks a pointer drag as running until the returned function is called: no text
+ * selection, and editable text out of hit testing. WebKit starts a selection in
+ * editable text the pointer passes over even when the press selected nothing
+ * (#3334), so every pointer-driven drag, built on `startPointerDrag` or not, uses this.
+ */
+export function beginDrag(): () => void {
+  window.getSelection()?.removeAllRanges();
+  const html = document.documentElement;
+  html.classList.add(styles.dragging!);
+  return () => html.classList.remove(styles.dragging!);
+}
 
 /** Settings › Appearance › "Drag-and-drop with Alt pressed only" for tabs and stripe buttons. */
 let requiresAlt = () => false;
@@ -138,11 +153,23 @@ export function startPointerDrag(
   e: { button: number; clientX: number; clientY: number; altKey: boolean },
   source: HTMLElement,
   data: DragData,
-  opts: { onStart?: () => void; onEnd?: (dragged: boolean, drop?: PointerDrop) => void } = {},
+  opts: {
+    onStart?: () => void;
+    onEnd?: (dragged: boolean, drop?: PointerDrop) => void;
+    /** Not subject to "Drag-and-drop with Alt pressed only" (tabs and stripe buttons). */
+    always?: boolean;
+    /**
+     * Classes of the container `source` is styled by (a tab strip's): the ghost is wrapped in a
+     * `display: contents` element carrying them, so the container's descendant rules still match it.
+     */
+    ghostContext?: string;
+  } = {},
 ) {
-  if (e.button !== 0 || (requiresAlt() && !e.altKey)) return;
+  if (e.button !== 0 || (!opts.always && requiresAlt() && !e.altKey)) return;
   const start = { x: e.clientX, y: e.clientY };
   let ghost: HTMLElement | null = null;
+  let context: HTMLElement | null = null;
+  let endDrag: (() => void) | null = null;
   const session = dragSession(data);
   const onMove = (ev: PointerEvent) => {
     if (!ghost) {
@@ -164,8 +191,14 @@ export function startPointerDrag(
         width: `${r.width}px`,
         height: `${r.height}px`,
       });
-      document.body.appendChild(ghost);
-      document.documentElement.classList.add(styles.dragging!);
+      if (opts.ghostContext) {
+        context = document.createElement("div");
+        context.className = opts.ghostContext;
+        context.style.display = "contents";
+        context.appendChild(ghost);
+      }
+      document.body.appendChild(context ?? ghost);
+      endDrag = beginDrag();
       opts.onStart?.();
     }
     // Late moves after release may still precede the pointerup; ignore, don't cancel the drop.
@@ -196,8 +229,8 @@ export function startPointerDrag(
     window.removeEventListener("pointerup", onUp);
     window.removeEventListener("pointercancel", onCancel);
     window.removeEventListener("keydown", onKey, true);
-    ghost?.remove();
-    document.documentElement.classList.remove(styles.dragging!);
+    (context ?? ghost)?.remove();
+    endDrag?.();
   };
   const onCancel = () => {
     session.cancel();

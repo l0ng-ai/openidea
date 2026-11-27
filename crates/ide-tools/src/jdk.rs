@@ -4,7 +4,7 @@
 //! without network.
 
 use crate::platform::{Arch, Os, Platform};
-use crate::process::{Emit, Http};
+use crate::process::Emit;
 use crate::sources::Download;
 use crate::{InstallEvent, InstallGuard, Tools, archive, clear_quarantine, fetch_verified};
 use ide_core::error::ErrorKind;
@@ -240,10 +240,6 @@ fn unpacked_root(pkg: &Path, home: &Path) -> PathBuf {
 }
 
 impl Tools {
-    fn http(&self) -> IdeResult<Http> {
-        Http::new(&self.system_path)
-    }
-
     /// Java versions `vendor` publishes.
     pub fn jdk_releases(&self, vendor: &str, cancel: &CancellationToken) -> IdeResult<JdkReleases> {
         vendor_or_err(vendor)?;
@@ -317,7 +313,7 @@ impl Tools {
         let _ = std::fs::remove_dir_all(&staging);
         std::fs::create_dir_all(&staging)?;
         let result = (|| {
-            let archive = fetch_verified(&http, &dl, &staging, cancel, emit)?;
+            let archive = fetch_verified(&self.downloads, &http, &dl, &staging, cancel, emit)?;
             emit(InstallEvent::Line { text: "Extracting…".into() });
             let pkg = staging.join("pkg");
             archive::extract(&archive, archive::ArchiveKind::from_name(&dl.name), &pkg, "java", cancel)?;

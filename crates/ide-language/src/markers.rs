@@ -2,13 +2,29 @@
 //! framework's project there (`Cargo.toml`, `angular.json`). Language server
 //! roots (`root-markers`) and framework modes (`framework-ui-modes`) share them.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
+/// `path` as the project's roots spell it, `inside` telling whether a path is
+/// under one. Roots are canonical, while a file can arrive under another
+/// spelling (other letter case on macOS, a symlinked folder) and would look
+/// outside the project, missing its frameworks' markers.
+pub fn project_spelling<'a>(path: &'a Path, inside: impl Fn(&Path) -> bool) -> Cow<'a, Path> {
+    if inside(path) {
+        return path.into();
+    }
+    match dunce::canonicalize(path) {
+        Ok(canonical) if inside(&canonical) => canonical.into(),
+        _ => path.into(),
+    }
+}
+
 /// The outermost ancestor of `file` containing a root marker, within
-/// `project_root` (any ancestor without one: loose files).
+/// `project_root` (any ancestor without one: loose files). A directory counts
+/// as its own ancestor: a module folder is served like the files in it.
 pub fn marked_root(project_root: Option<&Path>, file: &Path, markers: &[String]) -> Option<PathBuf> {
     let mut best = None;
-    for dir in file.ancestors().skip(1) {
+    for dir in file.ancestors().skip(usize::from(!file.is_dir())) {
         if project_root.is_some_and(|root| !dir.starts_with(root)) {
             break;
         }
@@ -19,12 +35,38 @@ pub fn marked_root(project_root: Option<&Path>, file: &Path, markers: &[String])
     best
 }
 
+/// `dir` contains at least one `.ino` regular file.
+pub fn is_arduino_sketch_dir(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|entries| {
+        entries.flatten().any(|entry| {
+            entry.path().extension().is_some_and(|ext| ext.eq_ignore_ascii_case("ino"))
+                && entry.file_type().is_ok_and(|kind| kind.is_file())
+        })
+    })
+}
+
+/// Nearest enclosing directory of `path` (including `path` when it is already a
+/// directory) within `project` that contains a `.ino` file.
+pub fn arduino_sketch_root(project: &Path, path: &Path) -> Option<PathBuf> {
+    let start = usize::from(!path.is_dir());
+    path.ancestors()
+        .skip(start)
+        .take_while(|dir| dir.starts_with(project))
+        .find(|dir| is_arduino_sketch_dir(dir))
+        .map(Path::to_path_buf)
+}
+
 /// `dir` contains `marker`: a relative path, a file name pattern with one
-/// `*` (`*.csproj`), or a TOML file name (no pattern) and a dotted table it
-/// must contain (`pyproject.toml#tool.ruff`).
+/// `*` (`*.csproj`), or a TOML or JSON file name (no pattern) and a dotted table
+/// or JSON key it must contain (`pyproject.toml#tool.ruff`, `package.json#eslintConfig`,
+/// `package.json#devDependencies.tailwindcss`).
 fn has_marker(dir: &Path, marker: &str) -> bool {
     if let Some((file, table)) = marker.split_once('#') {
-        return has_toml_table(&dir.join(file), table);
+        return if file.ends_with(".json") {
+            has_json_key(&dir.join(file), table)
+        } else {
+            has_toml_table(&dir.join(file), table)
+        };
     }
     let Some((prefix, suffix)) = marker.split_once('*') else {
         return dir.join(marker).exists();
@@ -45,6 +87,14 @@ fn has_toml_table(file: &Path, table: &str) -> bool {
         }
     };
     table.split('.').try_fold(&value, |v, key| v.get(key)).is_some_and(toml::Value::is_table)
+}
+
+/// `file` parses as JSON and has the dotted `key` with a value other than `null`:
+/// an object (`eslintConfig`) or a dependency's version (`dependencies.tailwindcss`).
+fn has_json_key(file: &Path, key: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(file) else { return false };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else { return false };
+    key.split('.').try_fold(&value, |v, key| v.get(key)).is_some_and(|v| !v.is_null())
 }
 
 /// `path` is (or, after its creation or removal, was) a root marker of the
@@ -81,6 +131,20 @@ mod tests {
     }
 
     #[test]
+    fn a_marked_directory_is_its_own_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let module = root.join("first");
+        std::fs::create_dir_all(module.join("src")).unwrap();
+        std::fs::write(module.join("pom.xml"), "").unwrap();
+        let markers = vec!["pom.xml".to_string()];
+        assert_eq!(marked_root(Some(root), &module.join("src/Main.java"), &markers), Some(module.clone()));
+        assert_eq!(marked_root(Some(root), &module, &markers), Some(module.clone()));
+        assert_eq!(marked_root(Some(root), &module.join("src"), &markers), Some(module));
+        assert_eq!(marked_root(Some(root), &root.join("second"), &markers), None);
+    }
+
+    #[test]
     fn markers_above_the_project_root_only_count_without_one() {
         let tmp = tempfile::tempdir().unwrap();
         let (home, project) = (tmp.path(), tmp.path().join("work/site"));
@@ -113,6 +177,20 @@ mod tests {
         assert_eq!(marked_root(Some(root), &file, &markers), Some(root.join("svc")));
         assert!(is_marker_path(&root.join("svc/pyproject.toml"), "pyproject.toml#tool.ruff"));
         assert!(!is_marker_path(&root.join("svc/setup.cfg"), "pyproject.toml#tool.ruff"));
+    }
+
+    #[test]
+    fn json_markers_need_their_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let marker = "package.json#devDependencies.tailwindcss";
+        std::fs::write(dir.join("package.json"), r#"{"devDependencies": {"vite": "^7.0.0"}}"#).unwrap();
+        assert!(!has_marker(dir, marker));
+        std::fs::write(dir.join("package.json"), r#"{"devDependencies": {"tailwindcss": "^4.1.0"}}"#).unwrap();
+        assert!(has_marker(dir, marker) && !has_marker(dir, "package.json#dependencies.tailwindcss"));
+        std::fs::write(dir.join("package.json"), r#"{"eslintConfig": null}"#).unwrap();
+        assert!(!has_marker(dir, "package.json#eslintConfig"));
+        assert!(is_marker_path(&dir.join("package.json"), marker));
     }
 
     #[test]

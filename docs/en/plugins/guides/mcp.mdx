@@ -1,0 +1,123 @@
+---
+title: "MCP tools"
+description: "Add tools to the IDE's built-in MCP server, implemented by plugin code under the plugin's own permissions."
+---
+
+OpenIDEA has a built-in MCP server that AI agents use to work with the open project (see
+[MCP server](/en/guide/mcp)). A plugin can add its own tools to it: declare each tool with a
+JSON Schema for its input, and implement the calls in code. This is the `mcp-provider`
+export and the `mcp` host interface (`mcp.wit`, API 1.4).
+
+## Declare a tool
+
+```toml
+engines.openidea = "^1.4"
+wasm = "dist/plugin.wasm"
+
+[capabilities]
+required = ["project.read"]
+
+[[contributes.mcpTools]]
+name = "find_notes"
+description = "Find notes in this project"
+inputSchema = "find-notes.schema.json"
+readOnly = true
+destructive = false
+```
+
+`find-notes.schema.json`:
+
+```json
+{
+  "type": "object",
+  "properties": { "text": { "type": "string" } },
+  "required": ["text"],
+  "additionalProperties": false
+}
+```
+
+| Field         | Notes                                                                                                                                                                                          |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`        | `[a-z0-9_]{1,40}`. The registered name is the plugin id with every character outside `[a-z0-9_]` replaced by `_`, then `__`, then the name: `acme_notes__find_notes`. It must fit in 64 bytes. |
+| `description` | 1–4096 bytes. The server listing identifies the plugin the tool comes from.                                                                                                                    |
+| `inputSchema` | A package path to a self-contained JSON Schema describing an object, at most 256 KiB. Local `$ref` fragments work; network and file references are refused.                                    |
+| `readOnly`    | Required. `false` tools are hidden and can't be called in Restricted Mode.                                                                                                                     |
+| `destructive` | Required. `true` makes every call ask the project's window for confirmation, with the same UI as the built-in run tools.                                                                       |
+
+The schema is validated at install and by `openidea-plugin check`. A plugin with tools needs
+code (`wasm`).
+
+## Implement the calls
+
+Implement `openidea_plugin::McpProvider` and register the `mcp` export:
+
+```rust
+use openidea_plugin::{Error, Invocation, McpProvider, Plugin, TextQuery, register_plugin};
+
+#[derive(Default)]
+struct Notes;
+
+impl Plugin for Notes {
+    fn run_command(&mut self, id: &str, _ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
+        Err(Error::NotFound(id.into()))
+    }
+}
+
+impl McpProvider for Notes {
+    fn call(&mut self, tool: &str, arguments: &str, ctx: &Invocation) -> Result<String, Error> {
+        match tool {
+            "find_notes" => {
+                let args: serde_json::Value = serde_json::from_str(arguments).map_err(|e| Error::Invalid(e.to_string()))?;
+                let text = args["text"].as_str().unwrap_or_default();
+                let project = ctx.project().ok_or("project required")?;
+                let found = project.search_text(&TextQuery { pattern: text.into(), ..Default::default() }, 100)?;
+                let lines: Vec<_> = found.matches.iter().map(|m| format!("{}:{}: {}", m.location.path, m.location.range.start.line + 1, m.line)).collect();
+                Ok(lines.join("\n"))
+            }
+            _ => Err(Error::NotFound(tool.into())),
+        }
+    }
+}
+
+register_plugin!(Notes, mcp);
+```
+
+This example uses `serde_json`, so add it to `Cargo.toml`.
+
+- `tool` is the local name (`find_notes`), `arguments` the JSON text of the input,
+  already checked against the schema (at most 1 MiB). `ctx` is the project's invocation
+  context.
+- Return text. For structured results, return JSON encoded as text. Results are at most
+  4 MiB.
+- The WIT export is `mcp-provider.call(tool, arguments, ctx)`; the world `plugin-mcp`
+  includes the base plugin world, and the export-only `mcp-tools` world composes with it.
+
+## How calls run
+
+- Enabled tools are listed on every request, so disabling or uninstalling the plugin
+  withdraws them immediately.
+- A call runs in the plugin's own instance with its own grants, CPU fuel and the 5-second
+  command budget. The MCP client grants no extra permissions: a call to a host function the
+  plugin lacks a capability for returns `Error::Denied`.
+- A tool has the project's invocation context but is not a user command or event: APIs
+  reserved to commands and events (dialogs, `start_run`, opening tabs, …) return `invalid`.
+- A `destructive` call that the user rejects or cancels, or that has no window to ask in,
+  fails.
+- If two enabled plugins normalise to the same tool name, both tools are withheld.
+- The built-in server currently serves local projects; tool calls for remote projects get
+  its "not supported for remote projects yet" response.
+
+## Pointing an agent at the server
+
+`host::mcp_stdio_command()` (WIT `mcp.stdio-command`, no capability) returns the argv of the
+stdio bridge for the invoking project, for example
+`["/path/openidea", "--mcp-stdio", "--project", "/project"]`. A plugin that launches or
+configures an agent can pass it on. It returns `None` while the server is off, without a
+project window, or on a remote host without its own running server. It never exposes the
+server's HTTP URL or token.
+
+## Testing
+
+Call `McpProvider::call` directly against the SDK's mock host in `cargo test`. The
+[`data-tools` fixture](https://github.com/l0ng-ai/openidea/tree/main/crates/ide-plugin/tests/fixtures/data-tools)
+declares read-only, writing and destructive tools and is used by the host's tests.

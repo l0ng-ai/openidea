@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { snippet } from "@codemirror/autocomplete";
 import { languages } from "@codemirror/language-data";
-import { ensureSyntaxTree } from "@codemirror/language";
+import { completedSyntaxState } from "@/test/syntax";
 import {
   applicableTemplates,
   bodyVariables,
@@ -26,8 +26,7 @@ function apply(doc: string, tpl: string, from: number, to = from) {
 async function stateFor(lang: string, doc: string) {
   const desc = languages.find((l) => l.name === lang)!;
   const support = await desc.load();
-  const state = EditorState.create({ doc, extensions: [support] });
-  ensureSyntaxTree(state, state.doc.length, 5000);
+  const state = completedSyntaxState(EditorState.create({ doc, extensions: [support] }));
   return state;
 }
 
@@ -151,11 +150,50 @@ describe("expansion", () => {
       expect(has("typescriptreact", a)).toBe(true);
     for (const a of ["main", "def", "class", "ifmain", "with", "try"]) expect(has("python", a)).toBe(true);
     for (const a of ["iferr", "fori", "func", "test"]) expect(has("go", a)).toBe(true);
+    for (const a of ["pfn", "test", "st", "iferr", "defer", "for"]) expect(has("zig", a)).toBe(true);
     for (const a of ["psvm", "sout", "fori", "iter", "main"]) expect(has("java", a)).toBe(true);
     for (const a of ["main", "fun", "val", "sout"]) expect(has("kotlin", a)).toBe(true);
     for (const a of ["todo", "fixme"]) expect(has("go", a)).toBe(true);
     for (const a of ["fore", "forek", "pubf", "prisf", "thr", "eco", "rqro"]) expect(has("php", a)).toBe(true);
     expect(has("java", "fore")).toBe(false);
+  });
+
+  it("offers React component templates only in JSX / TSX, named after the file", () => {
+    const abbrevs = ["rfc", "rfce", "rafce", "rcc"];
+    const pick = (lang: string) =>
+      applicableTemplates(BUILTIN_TEMPLATES, lang).filter((t) => abbrevs.includes(t.abbrev));
+    for (const lang of ["javascript", "typescript"]) expect(pick(lang)).toEqual([]);
+    for (const lang of ["javascriptreact", "typescriptreact"]) expect(pick(lang).map((t) => t.abbrev)).toEqual(abbrevs);
+    // Listed in Settings with the useState / useEffect templates.
+    expect(new Set(pick("typescriptreact").map((t) => t.group))).toEqual(new Set(["JavaScript / TypeScript"]));
+
+    const fns = { fileNameWithoutExtension: () => "user-card" };
+    const expand = (lang: string, abbrev: string) => {
+      const t = pick(lang).find((x) => x.abbrev === abbrev)!;
+      const r = apply("", expandTemplate(t, { fns }).snippet, 0);
+      const [[from, to]] = r.sel as [[number, number]];
+      return `${r.text.slice(0, from)}|${r.text.slice(to)}`;
+    };
+    expect(expand("javascriptreact", "rfc")).toBe(
+      "export default function UserCard() {\n  return (\n    <div>\n      |\n    </div>\n  );\n}",
+    );
+    expect(expand("typescriptreact", "rafce")).toBe(
+      "type Props = {};\n\nconst UserCard = ({}: Props) => {\n  return (\n    <div>\n      |\n    </div>\n  );\n};\n\nexport default UserCard;",
+    );
+    expect(expand("typescriptreact", "rfce")).toContain("function UserCard({}: Props) {");
+    expect(expand("javascriptreact", "rcc")).toBe(
+      'import React from "react";\n\nexport default class UserCard extends React.Component {\n  render() {\n    return (\n      <div>\n        |\n      </div>\n    );\n  }\n}',
+    );
+    expect(expand("typescriptreact", "rcc")).toContain("class UserCard extends React.Component<Props> {");
+
+    const nameFrom = (file: string) =>
+      evaluateExpression("componentName(fileNameWithoutExtension())", { fileNameWithoutExtension: () => file });
+    expect(nameFrom("APIClient")).toBe("APIClient");
+    expect(nameFrom("UIButton")).toBe("UIButton");
+    expect(nameFrom("user_card")).toBe("UserCard");
+    expect(nameFrom("404")).toBe("Component404");
+    expect(nameFrom("2fa-form")).toBe("Component2faForm");
+    expect(nameFrom("")).toBe("");
   });
 
   it("writes PHP variables with their $", () => {

@@ -1,6 +1,7 @@
 /** IPC helpers shared by the code-insight views. */
+import { openCodeLocation } from "@/editor/api";
 import type { EditorView } from "@codemirror/view";
-import { activeEditor, editorsFor } from "@/editor/api";
+import { activeEditor, editorsFor, whenSynced } from "@/editor/api";
 import { isVirtualUri, virtualDocument } from "@/platform/virtualDocs";
 import { executeAction } from "@/platform/actions";
 import { IpcError, call, commands, isCancelled, isTauri, unavailableText } from "@/platform/ipc";
@@ -21,9 +22,9 @@ export async function lspRequest<T>(run: () => Promise<Result<T>>): Promise<T> {
 
 export const isUnavailable = (e: unknown) => e instanceof IpcError && e.kind === "unavailable";
 
-/** Small hint at the caret (via editor/lsp), or a notification without an editor. */
-export function hint(text: string, tone: "info" | "warning" | "error" = "info") {
-  if (activeEditor()) void executeAction("editor.showHint", { text, tone });
+/** Small hint at the caret (via editor/lsp), or a notification without an editor; `data`: its `data-*` attributes. */
+export function hint(text: string, tone: "info" | "warning" | "error" = "info", data?: Record<string, string>) {
+  if (activeEditor()) void executeAction("editor.showHint", { text, tone, data });
   else
     notifications().notify({
       group: "lsp",
@@ -71,6 +72,11 @@ export function caretContext(): CaretContext | null {
   };
 }
 
+/** Language servers answer from the backend's copy: the caret's position is only valid there once the editor's edits reached it. */
+export function caretSynced(c: CaretContext): Promise<void> {
+  return c.view ? whenSynced(c.view) : Promise.resolve();
+}
+
 function wordAt(view: EditorView, offset: number): string | null {
   const w = view.state.wordAt(offset);
   return w ? view.state.sliceDoc(w.from, w.to) : null;
@@ -116,6 +122,7 @@ export async function readManyFileLines(
   const out = new Map<string, string[] | null>();
   const queue = [...new Set(paths)];
   const worker = async () => {
+    // oxlint-disable-next-line no-await-in-loop -- bounded worker pool: queue.shift() limits fan-out to `concurrency`
     for (let p = queue.shift(); p !== undefined; p = queue.shift()) out.set(p, await readFileLines(p));
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
@@ -129,7 +136,8 @@ export async function readManyFileLines(
 export async function withDocument<T>(path: string, fn: (doc: number) => Promise<T>): Promise<T> {
   const open = editorsFor(path)[0];
   if (open) return fn(open.ctx.doc);
-  const info = await lspRequest(() => commands.docOpen(path));
+  // Library types (`jdt://…`) are documents the language server provides, not files on disk.
+  const info = await lspRequest(() => (isVirtualUri(path) ? commands.docOpenVirtual(path) : commands.docOpen(path)));
   try {
     return await fn(info.id);
   } finally {
@@ -138,5 +146,5 @@ export async function withDocument<T>(path: string, fn: (doc: number) => Promise
 }
 
 export function openLocation(path: string, line: number, col: number): Promise<void> {
-  return maybeEditorService()?.openFile(path, { selection: { line, col }, focus: true }) ?? Promise.resolve();
+  return openCodeLocation(path, { line, col });
 }

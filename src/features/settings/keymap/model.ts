@@ -3,43 +3,46 @@
  * (plugins' default shortcuts count as the preset's), add / remove / reset,
  * conflict detection with `when` overlap, and shortcut search.
  */
-import type { Action } from "@/platform/actions";
+import { allActions, type Action } from "@/platform/actions";
 import { evaluateWhen, type ContextKeys } from "@/platform/context";
-import { defaultPreset, normalizeBinding, PRESET_TITLES, PRESETS, useKeymap, type Keymap } from "@/platform/keymap";
+import {
+  customKeymapId,
+  defaultPreset,
+  normalizeBinding,
+  presetBindings,
+  PRESET_TITLES,
+  PRESETS,
+  useKeymap,
+  withBindings,
+  type Keymap,
+  type KeymapDraft,
+} from "@/platform/keymap";
 
-export interface KeymapDraft {
-  preset: string;
-  overrides: Keymap;
-}
+export { presetBindings, withBindings, type KeymapDraft };
 
-/**
- * The defaults of `id`: the preset's, or for an action the preset leaves out,
- * the shortcut its plugin declares (`keymaps`). Removing or changing one is an
- * override like any other.
- */
-export function presetBindings(preset: string, id: string): string[] {
-  const own = PRESETS[preset];
-  const keys = own && id in own ? own[id] : useKeymap.getState().extensions?.[id];
-  return (keys ?? []).map(normalizeBinding);
+export function keymapSearchLabels(): string[] {
+  const draft = useKeymap.getState();
+  return allActions()
+    .filter((a) => isKeymapAction(a, draft))
+    .map((a) => a.title);
 }
 
 export function resolveBindings(draft: KeymapDraft, id: string): string[] {
   return draft.overrides[id]?.map(normalizeBinding) ?? presetBindings(draft.preset, id);
 }
 
-export function isModified(draft: KeymapDraft, id: string): boolean {
-  return id in draft.overrides;
+/** Hidden actions with shortcuts stay configurable even after their bindings are removed. */
+export function isKeymapAction(action: Action, draft: KeymapDraft): boolean {
+  return (
+    !action.hidden ||
+    !!action.keymap ||
+    action.id in draft.overrides ||
+    presetBindings(draft.preset, action.id).length > 0
+  );
 }
 
-const sameList = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
-
-/** Sets the full binding list of `id`; drops the override when it equals the preset. */
-export function withBindings(draft: KeymapDraft, id: string, bindings: readonly string[]): Keymap {
-  const list = [...new Set(bindings.map(normalizeBinding))];
-  const overrides = { ...draft.overrides };
-  if (sameList(list, presetBindings(draft.preset, id))) delete overrides[id];
-  else overrides[id] = list;
-  return overrides;
+export function isModified(draft: KeymapDraft, id: string): boolean {
+  return id in draft.overrides;
 }
 
 export function addBinding(draft: KeymapDraft, id: string, binding: string): Keymap {
@@ -150,21 +153,30 @@ export interface Conflict {
   kind: "same" | "prefix";
 }
 
-/** Other actions whose bindings clash with `binding` in an overlapping `when` context. */
+/** Combines an action's `when` and shortcut-only `keyWhen` into the context where its binding can fire. */
+function effectiveKeyWhen(action: Pick<Action, "when" | "keyWhen"> | undefined): string | undefined {
+  const when = action?.when?.trim();
+  const keyWhen = action?.keyWhen?.trim();
+  if (when && keyWhen) return `(${when}) && (${keyWhen})`;
+  return when || keyWhen || undefined;
+}
+
+/** Other actions whose bindings clash with `binding` in an overlapping `when` / `keyWhen` context. */
 export function findConflicts(
   draft: KeymapDraft,
   binding: string,
   actionId: string,
-  actions: readonly Pick<Action, "id" | "title" | "category" | "when">[],
+  actions: readonly Pick<Action, "id" | "title" | "category" | "when" | "keyWhen">[],
 ): Conflict[] {
   const b = normalizeBinding(binding);
   const self = actions.find((x) => x.id === actionId);
+  const selfWhen = effectiveKeyWhen(self);
   const out: Conflict[] = [];
   for (const other of actions) {
     if (other.id === actionId) continue;
     for (const ob of resolveBindings(draft, other.id)) {
       const kind = ob === b ? "same" : ob.startsWith(b + " ") || b.startsWith(ob + " ") ? "prefix" : null;
-      if (!kind || !whensOverlap(self?.when, other.when)) continue;
+      if (!kind || !whensOverlap(selfWhen, effectiveKeyWhen(other))) continue;
       out.push({ actionId: other.id, title: other.title, category: other.category, binding: ob, kind });
     }
   }
@@ -183,6 +195,113 @@ export function bindingMatches(bindings: readonly string[], strokes: string): bo
   if (!strokes) return true;
   const q = normalizeBinding(strokes);
   return bindings.some((b) => b === q || b.startsWith(q + " "));
+}
+
+const MODIFIER_ALIASES: Record<string, string> = {
+  ctrl: "Ctrl",
+  control: "Ctrl",
+  ctl: "Ctrl",
+  "⌃": "Ctrl",
+  alt: "Alt",
+  option: "Alt",
+  opt: "Alt",
+  "⌥": "Alt",
+  shift: "Shift",
+  "⇧": "Shift",
+  meta: "Meta",
+  cmd: "Meta",
+  command: "Meta",
+  super: "Meta",
+  win: "Meta",
+  "⌘": "Meta",
+};
+
+const KEY_ALIASES: Record<string, string> = {
+  esc: "escape",
+  return: "enter",
+  "↵": "enter",
+  del: "delete",
+  ins: "insert",
+  pgup: "pageup",
+  pgdn: "pagedown",
+  "↑": "up",
+  "↓": "down",
+  "←": "left",
+  "→": "right",
+};
+
+export interface QueryStroke {
+  mods: Set<string>;
+  key: string | null;
+}
+
+const MOD_SYMBOLS_RE = /[⌃⌥⇧⌘]/g;
+
+/**
+ * A search-field query read as typed shortcut text (`ctrl+shift+n`, `Ctrl+K, Ctrl+I`, `⇧⌘O`,
+ * `ctrl shift`), or null when it does not look like one. Needs a modifier, or a lone F-key.
+ */
+export function parseShortcutQuery(query: string): QueryStroke[] | null {
+  const text = query
+    .trim()
+    .replace(MOD_SYMBOLS_RE, (s) => ` ${s}+`)
+    .replace(/\s*\+\s*/g, "+")
+    .replace(/^\++|\++$/g, "");
+  if (!text) return null;
+  const strokes: QueryStroke[] = [];
+  let pending: QueryStroke | null = null;
+  for (const raw of text.split(/[\s,]+/).filter(Boolean)) {
+    const stroke: QueryStroke = pending ?? { mods: new Set(), key: null };
+    for (const token of raw.split("+").filter(Boolean)) {
+      const lower = token.toLowerCase();
+      const mod = MODIFIER_ALIASES[lower];
+      if (mod) stroke.mods.add(mod);
+      else if (stroke.key !== null) return null;
+      else stroke.key = KEY_ALIASES[lower] ?? lower;
+    }
+    // `ctrl shift n` spells one stroke: modifiers alone carry over to the next word.
+    if (stroke.key === null) pending = stroke;
+    else {
+      strokes.push(stroke);
+      pending = null;
+    }
+  }
+  if (pending) strokes.push(pending);
+  const hasModifier = strokes.some((s) => s.mods.size > 0);
+  const fKey = strokes.length === 1 && /^f\d{1,2}$/.test(strokes[0]!.key ?? "");
+  return hasModifier || fKey ? strokes : null;
+}
+
+const MODIFIER_NAMES: readonly string[] = ["Ctrl", "Alt", "Shift", "Meta"];
+
+function bindingStroke(stroke: string): QueryStroke {
+  const parts = stroke.split("+");
+  const last = parts.pop()!;
+  const mods = new Set(parts);
+  // Double-modifier gestures (`Shift Shift`, `Alt Alt+Up`) have strokes made of a bare modifier.
+  if (MODIFIER_NAMES.includes(last)) {
+    mods.add(last);
+    return { mods, key: null };
+  }
+  return { mods, key: last.toLowerCase() };
+}
+
+/**
+ * Text-search match on shortcuts: earlier query strokes must equal the binding's; the last one
+ * matches on its key with the same modifiers, or — while only modifiers are typed — on any
+ * stroke holding them all (`ctrl+shift` lists every Ctrl+Shift shortcut).
+ */
+export function shortcutQueryMatches(bindings: readonly string[], query: readonly QueryStroke[]): boolean {
+  return bindings.some((binding) => {
+    const strokes = normalizeBinding(binding).split(" ").map(bindingStroke);
+    if (query.length > strokes.length) return false;
+    return query.every((q, i) => {
+      const b = strokes[i]!;
+      const last = i === query.length - 1;
+      if (q.key === null && last) return [...q.mods].every((m) => b.mods.has(m));
+      return q.key === b.key && q.mods.size === b.mods.size && [...q.mods].every((m) => b.mods.has(m));
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -225,24 +344,13 @@ export function validateKeymapName(name: string, customs: CustomKeymaps, ownId?:
   return clash ? `Keymap '${n}' already exists` : null;
 }
 
-function newKeymapId(name: string, customs: CustomKeymaps): string {
-  const slug =
-    name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "") || "keymap";
-  let id = `custom.${slug}`;
-  for (let i = 2; customs[id] || PRESETS[id]; i++) id = `custom.${slug}-${i}`;
-  return id;
-}
-
 /** Copies the selected keymap (its effective overrides) under `name`; returns the new id. */
 export function duplicateKeymap(
   draft: KeymapDraft,
   customs: CustomKeymaps,
   name: string,
 ): { id: string; customs: CustomKeymaps } {
-  const id = newKeymapId(name, customs);
+  const id = customKeymapId(name, customs);
   return {
     id,
     customs: { ...customs, [id]: { name: name.trim(), parent: draft.preset, overrides: { ...draft.overrides } } },

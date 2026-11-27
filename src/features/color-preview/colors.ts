@@ -1,3 +1,6 @@
+import { hex2, toHex6, type Rgba } from "@/ui/colorPickerValues";
+export { fromHex, toHex6, toHex8, type Rgba } from "@/ui/colorPickerValues";
+
 /**
  * Color literals of a line for the gutter's color preview: `#rgb` / `#rrggbb` (with alpha),
  * `rgb()` / `rgba()` / `hsl()` / `hsla()`, and CSS named colors in style sheets. Pure; the
@@ -12,15 +15,25 @@ export interface ColorMatch {
   to: number;
   text: string;
   format: ColorFormat;
+  /** A hex literal with its alpha first (`#AARRGGBB`, `#ARGB`), as XAML writes it. */
+  argb?: boolean;
 }
-
-/** Red, green, blue 0–255 and alpha 0–1. */
-export type Rgba = [number, number, number, number];
 
 /** Style sheet languages: named colors and unquoted hex values are colors there. */
 const STYLE_SHEETS = new Set(["css", "scss", "sass", "less", "stylus", "postcss"]);
 /** Markup that embeds style sheets (`<style>`, `style="…"`): unquoted hex values too. */
 const MARKUP = new Set(["html", "vue", "svelte", "astro", "xml", "xhtml"]);
+export const isMarkupLanguage = (language: string): boolean => MARKUP.has(language);
+/** Languages whose hex colors put the alpha first: `#AARRGGBB` / `#ARGB` (XAML). */
+const ALPHA_FIRST = new Set(["axaml"]);
+
+/** The literal as CSS reads it: an alpha-first hex with its alpha moved to the end. */
+export function cssColor(color: ColorMatch): string {
+  if (!color.argb) return color.text;
+  const digits = color.text.slice(1);
+  const alpha = digits.length === 8 ? 2 : 1;
+  return `#${digits.slice(alpha)}${digits.slice(0, alpha)}`;
+}
 /** Prose: `#123` is an issue, `#fab` a heading or a tag. */
 const PROSE = new Set(["markdown", "plaintext", "text", "restructuredtext", "asciidoc", "git-commit"]);
 
@@ -65,28 +78,16 @@ export function findColors(line: string, language: string, isColorName: (word: s
         continue;
       if (!isColorName(text)) continue;
     } else if (format === "hex" && !looseHex && !/["'`]$/.test(line.slice(0, from))) continue;
-    out.push({ from, to: from + text.length, text, format });
+    const argb = format === "hex" && ALPHA_FIRST.has(language) && (text.length === 5 || text.length === 9);
+    out.push(
+      argb ? { from, to: from + text.length, text, format, argb } : { from, to: from + text.length, text, format },
+    );
   }
   return out;
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
-const hex2 = (v: number) =>
-  Math.round(clamp(v, 0, 255))
-    .toString(16)
-    .padStart(2, "0");
 const round = (v: number, digits = 2) => String(Number(v.toFixed(digits)));
-
-/** `#rrggbb` of `rgba`, as `<input type=color>` takes it. */
-export function toHex6([r, g, b]: Rgba): string {
-  return `#${hex2(r)}${hex2(g)}${hex2(b)}`;
-}
-
-/** `#rrggbb` → its components with `alpha`. */
-export function fromHex6(hex: string, alpha: number): Rgba | null {
-  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
-  return m ? [Number.parseInt(m[1]!, 16), Number.parseInt(m[2]!, 16), Number.parseInt(m[3]!, 16), alpha] : null;
-}
 
 /** Components of the browser's computed color (`rgb(1, 2, 3)` / `rgba(1, 2, 3, 0.5)`), null for other spaces. */
 export function parseComputed(color: string): Rgba | null {
@@ -118,7 +119,8 @@ export function formatColor(rgba: Rgba, original: ColorMatch): string {
   if (original.format === "hex" || original.format === "name") {
     const short = original.text.length === 4 || original.text.length === 5;
     const hadAlpha = original.format === "hex" && (original.text.length === 5 || original.text.length === 9);
-    let hex = toHex6(rgba) + (hadAlpha || hasAlpha ? hex2(alpha * 255) : "");
+    const a = hadAlpha || hasAlpha ? hex2(alpha * 255) : "";
+    let hex = original.argb ? `#${a}${toHex6(rgba).slice(1)}` : toHex6(rgba) + a;
     // `#abc` stays short when the new color has a short form.
     if (short && /^#(?:([0-9a-f])\1)+$/.test(hex)) hex = `#${hex.slice(1).replace(/(.)\1/g, "$1")}`;
     return /[A-F]/.test(original.text) ? hex.toUpperCase() : hex;

@@ -1,0 +1,7 @@
+services:
+  web:
+    image: {{ printf "nginx:%s" .Tag }}
+    {{- if .Replicas }}
+    deploy:
+      replicas: {{ .Replicas }}
+    {{- end }}

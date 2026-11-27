@@ -4,19 +4,22 @@ import { executeAction, useActions } from "@/platform/actions";
 import { call, commands, isTauri, type OpenProject, type RecentProject } from "@/platform/ipc";
 import { HighlightedText, Icon, Popup, showContextMenu, type IconName, T } from "@/ui";
 import type { ProjectPopupProps } from "@/workbench/contributions";
-import { askRemoveRecent, ProjectBadge, recentMenu } from "./RecentList";
-import { filterRecent, loadRecent, openRecent, useRecent, type RecentMatch } from "./recent";
+import { askRemoveRecent, ProjectBadge, projectAppearanceMenu, recentMenu, unavailableTitle } from "./RecentList";
+import { filterRecent, loadRecent, openRecent, recentRows, useRecent, type RecentMatch } from "./recent";
 import styles from "./ProjectPopup.module.css";
 import { tx } from "@/platform/i18n";
+import { parseRemoteLocation, remoteLocation } from "@/platform/remote";
+import { projectWindowOverride, type ProjectWindowOverride } from "@/workbench/projectWindow";
 
 type Entry =
   | { kind: "action"; id: string; label: string; icon: IconName }
-  | { kind: "project"; open: boolean; m: RecentMatch };
+  | { kind: "project"; open: boolean; m: RecentMatch; group?: string | null };
 
 const ACTIONS: { id: string; label: string; icon: IconName }[] = [
+  { id: "file.newProject", label: "New Project…", icon: "plus" },
   { id: "file.openProject", label: "Open…", icon: "folder" },
   { id: "vcs.clone", label: "Clone Repository…", icon: "branch" },
-  { id: "remote.connect", label: "Remote Development…", icon: "terminal" },
+  { id: "remote.connect", label: "Remote Development…", icon: "remote" },
 ];
 
 function useOpenProjects(): OpenProject[] {
@@ -34,10 +37,14 @@ function useOpenProjects(): OpenProject[] {
   return open;
 }
 
-/** The title bar project widget's popup, after IDEA's ProjectWidget: actions, open projects, recent projects; type to filter. */
+/**
+ * The title bar project widget's popup, after IDEA's ProjectWidget: actions, open projects, recent
+ * projects (under the Welcome screen's project groups, then the ungrouped ones); type to filter.
+ */
 export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
   const actions = useActions((s) => s.actions);
   const recent = useRecent((s) => s.projects);
+  const groups = useRecent((s) => s.groups);
   const home = useRecent((s) => s.home);
   const openProjects = useOpenProjects();
   const [query, setQuery] = useState("");
@@ -46,34 +53,45 @@ export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
   useEffect(() => void loadRecent(), []);
 
   const entries = useMemo<Entry[]>(() => {
-    const openPaths = new Set(openProjects.map((p) => p.root));
-    const asRecent = (p: OpenProject): RecentProject =>
-      recent.find((r) => r.path === p.root) ?? { path: p.root, name: p.name, openedAtMs: null, branch: null };
+    // A remote window's project is keyed like its recent entry (`wsl://…`, `ssh://…`).
+    const location = (p: OpenProject) => (p.remote ? remoteLocation(p.remote, p.root) : p.root);
+    const openPaths = new Set(openProjects.map(location));
+    const asRecent = (p: OpenProject): RecentProject => {
+      const path = location(p);
+      return recent.find((r) => r.path === path) ?? { path, name: p.name, openedAtMs: null, branch: null };
+    };
     const open = filterRecent(openProjects.map(asRecent), query, home).map((m) => ({
       kind: "project" as const,
       open: true,
       m,
     }));
-    const rest = filterRecent(
+    // Every group lists its projects here, collapsed on the Welcome screen or not; a search is flat.
+    const expanded = groups.map((g) => ({ ...g, expanded: true }));
+    const rest = recentRows(
       recent.filter((r) => !openPaths.has(r.path)),
+      expanded,
       query,
       home,
-    ).map((m) => ({ kind: "project" as const, open: false, m }));
+    ).flatMap((r) => (r.kind === "project" ? [{ kind: "project" as const, open: false, m: r.m, group: r.group }] : []));
     const acts = query ? [] : ACTIONS.filter((a) => actions.has(a.id)).map((a) => ({ kind: "action" as const, ...a }));
     return [...acts, ...open, ...rest];
-  }, [actions, recent, home, openProjects, query]);
+  }, [actions, recent, groups, home, openProjects, query]);
   const current = Math.min(active, entries.length - 1);
 
   useEffect(() => {
     listRef.current?.querySelector(`[data-index="${current}"]`)?.scrollIntoView({ block: "nearest" });
   }, [current]);
 
-  const activate = (e: Entry | undefined) => {
+  /** `override`: the window a modifier key picked ({@link projectWindowOverride}). */
+  const activate = (e: Entry | undefined, override: ProjectWindowOverride | null = null) => {
     if (!e) return;
     onClose();
     if (e.kind === "action") void executeAction(e.id);
-    else if (e.open) void call(commands.windowOpenProject(e.m.project.path, false, [])).catch(() => undefined);
-    else void openRecent(e.m.project);
+    // An open project goes to its window.
+    else if (e.open && !parseRemoteLocation(e.m.project.path))
+      void call(commands.windowOpenProject(e.m.project.path, false, [])).catch(() => undefined);
+    // Opening a remote location focuses the window already connected to it.
+    else void openRecent(e.m.project, override);
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
@@ -86,7 +104,7 @@ export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
       setActive(e.key === "Home" ? 0 : n - 1);
     } else if (e.key === "Enter") {
       e.preventDefault();
-      activate(entries[current]);
+      activate(entries[current], projectWindowOverride(e));
     } else if (e.key === "Escape" && query) {
       e.preventDefault();
       e.stopPropagation();
@@ -100,7 +118,7 @@ export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
       const entry = entries[current];
       if (entry?.kind === "project" && !entry.open) {
         e.preventDefault();
-        void askRemoveRecent(entry.m.project);
+        void askRemoveRecent(entry.m.project, onClose);
       }
     } else if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && (query || e.key !== " ")) {
       e.preventDefault();
@@ -142,24 +160,30 @@ export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
                 <T>Recent Projects</T>
               </Header>
             )}
+            {e.kind === "project" && !e.open && <GroupBoundary entry={e} previous={entries[i - 1]} />}
             <div
               role="option"
               aria-selected={i === current}
               data-index={i}
               className={clsx(styles.row, e.kind === "project" && styles.projectRow, i === current && styles.active)}
               onMouseMove={() => i !== current && setActive(i)}
-              onClick={() => activate(e)}
+              onClick={(ev) => activate(e, projectWindowOverride(ev))}
               onContextMenu={(ev) => {
-                if (e.kind !== "project" || e.open) return;
+                if (e.kind !== "project") return;
+                // Not the title bar's own menu: the popup sits inside it.
                 ev.preventDefault();
                 setActive(i);
-                showContextMenu(ev, recentMenu(e.m.project, onClose));
+                // An open project is switched to, not opened or removed: only its colour and icon.
+                showContextMenu(
+                  ev,
+                  e.open ? projectAppearanceMenu(e.m.project) : recentMenu(e.m.project, onClose, onClose),
+                );
               }}
             >
               {e.kind === "action" ? (
                 <>
                   <Icon name={e.icon} size={16} className={styles.actionIcon} />
-                  <span className={styles.label}>{e.label}</span>
+                  <span className={styles.label}>{tx(e.label)}</span>
                 </>
               ) : (
                 <ProjectRow m={e.m} active={i === current} />
@@ -186,26 +210,61 @@ function Header({ first, children }: { first: boolean; children: ReactNode }) {
   );
 }
 
+/** A project group's name above its first project; a separator where the ungrouped projects start. */
+function GroupBoundary({
+  entry,
+  previous,
+}: {
+  entry: Extract<Entry, { kind: "project" }>;
+  previous: Entry | undefined;
+}) {
+  const before = previous?.kind === "project" && !previous.open ? (previous.group ?? null) : null;
+  const group = entry.group ?? null;
+  if (group === before) return null;
+  if (group === null) return <div className={styles.separator} role="separator" />;
+  return (
+    <div className={styles.groupHeader}>
+      <Icon name="folder" size={14} />
+      <span className={styles.label}>{group}</span>
+    </div>
+  );
+}
+
 function ProjectRow({ m, active }: { m: RecentMatch; active: boolean }) {
+  const { remote, pathMatch } = m;
+  const pathStart = remote ? remote.host.length + 1 : 0;
+  const hostMatch = remote && pathMatch ? pathMatch.filter((i) => i < remote.host.length) : null;
+  const locationMatch =
+    remote && pathMatch ? pathMatch.filter((i) => i >= pathStart).map((i) => i - pathStart) : pathMatch;
+
   return (
     <>
-      <ProjectBadge name={m.project.name} className={styles.badge} />
-      <span className={styles.text}>
-        <span className={styles.top}>
-          <HighlightedText
-            className={styles.name}
-            text={m.project.name}
-            indices={m.nameMatch}
-            tone={active ? "accent" : "strong"}
-          />
-          {m.project.branch && (
-            <span className={styles.branch}>
-              <Icon name="branch" size={11} />
-              {m.project.branch}
-            </span>
-          )}
-        </span>
-        <HighlightedText className={styles.path} text={m.displayPath} indices={m.pathMatch} />
+      <ProjectBadge
+        name={m.project.name}
+        path={m.project.path}
+        className={styles.badge}
+        missing={!!m.project.missing}
+      />
+      <span className={styles.text} title={unavailableTitle(m.project)}>
+        <HighlightedText
+          className={clsx(styles.name, m.project.missing && styles.unavailable)}
+          text={m.project.name}
+          indices={m.nameMatch}
+          tone={active ? "accent" : "strong"}
+        />
+        {remote && (
+          <span className={styles.metadata}>
+            <Icon name="terminal" size={12} />
+            <HighlightedText className={styles.ellipsis} text={remote.host} indices={hostMatch} />
+          </span>
+        )}
+        <HighlightedText className={styles.path} text={remote?.path ?? m.displayPath} indices={locationMatch} />
+        {m.project.branch && (
+          <span className={styles.metadata}>
+            <Icon name="branch" size={12} />
+            <span className={styles.ellipsis}>{m.project.branch}</span>
+          </span>
+        )}
       </span>
     </>
   );

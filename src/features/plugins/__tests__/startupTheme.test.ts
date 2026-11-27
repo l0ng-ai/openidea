@@ -150,4 +150,14 @@ describe("plugin theme at start-up", () => {
     expect(setFrame).toHaveBeenCalledTimes(2);
     stop();
   });
+
+  it("keeps the stylesheet when the same theme is applied again", () => {
+    applyPluginTheme(ONE_DARK);
+    const style = document.getElementById(PLUGIN_THEME_STYLE_ID);
+    applyPluginTheme(structuredClone(ONE_DARK));
+    expect(document.getElementById(PLUGIN_THEME_STYLE_ID)).toBe(style);
+    applyPluginTheme(SOLARIZED_LIGHT);
+    expect(document.getElementById(PLUGIN_THEME_STYLE_ID)).not.toBe(style);
+    expect(document.documentElement.dataset.pluginTheme).toBe("theme-solarized/solarized-light");
+  });
 });

@@ -22,7 +22,7 @@ pub use mask::FileMask;
 pub use pattern::ScopePattern;
 pub use replace::{
     ReplaceEvent, ReplaceHost, ReplacePreview, ReplaceSummary, ReplaceTarget, apply_edits, preserve_case, preview,
-    replace_files, replacement_edits,
+    replace_files, replace_files_in_context, replacement_edits,
 };
 pub use words::{WordFiles, WordQuery, files_with_word};
 
@@ -50,6 +50,16 @@ pub struct SearchQuery {
     #[serde(default)]
     #[specta(optional)]
     pub context: SearchContext,
+    /// Also search what `.gitignore` / `.ignore` / `info/exclude` leave out (the caller then
+    /// adds none of the project's exclusions either).
+    #[serde(default)]
+    #[specta(optional)]
+    pub include_excluded: bool,
+    /// Leave out files over [`MAX_CODE_INSIGHT_FILE_BYTES`], as IDEA's TODO and word indexes do:
+    /// a background scan never reads a log or a database dump.
+    #[serde(default)]
+    #[specta(optional)]
+    pub skip_large_files: bool,
 }
 
 /// IDEA's search context: matches anywhere, only in, or outside comments and
@@ -94,14 +104,36 @@ impl SearchContext {
         }
     }
 
+    /// Whether a match starting at byte `at` is kept, given the file's sorted comments and
+    /// string literals. Find and Replace both filter with it, so they keep the same matches.
+    pub fn keeps(self, literals: &[LiteralRange], at: usize) -> bool {
+        let i = literals.partition_point(|l| l.start <= at);
+        self.accepts(literals[..i].last().filter(|l| at < l.end).map(|l| l.kind))
+    }
+
     /// Only matches inside comments / string literals: files without any are skipped.
-    fn needs_literals(self) -> bool {
+    pub(crate) fn needs_literals(self) -> bool {
         matches!(self, Self::InComments | Self::InStringLiterals)
     }
 }
 
+/// The largest file, in bytes, that a [`SearchQuery::skip_large_files`] search reads: IDEA's
+/// code insight limit (`idea.max.intellisense.filesize`, 2500 KB).
+pub const MAX_CODE_INSIGHT_FILE_BYTES: u64 = 2500 * 1024;
+
+/// The most a search holds of one file's text read from disk: IDEA's content-load limit
+/// (`idea.max.content.load.filesize`, 20 MB). A longer line, or in a multi-line search a longer
+/// file, is not searched any further, so a file without line breaks is never read whole.
+pub const MAX_SEARCH_BUFFER_BYTES: usize = 20 * 1024 * 1024;
+
+/// The longest file text, in bytes, that is searched for comments and string literals: the
+/// parser's limit (`ide_language::MAX_PARSE_BYTES`), above which a [`Literals`] finds none.
+/// The search leaves a longer text unread by it.
+pub const MAX_LITERALS_TEXT_BYTES: usize = 16 * 1024 * 1024;
+
 /// Comments and string literals of a file's text (sorted, non-overlapping),
-/// or `None` when its language has no syntax tree.
+/// or `None` when its language has no syntax tree or the text is longer than
+/// [`MAX_LITERALS_TEXT_BYTES`].
 pub type Literals<'a> = &'a (dyn Fn(&Path, &str) -> Option<Vec<LiteralRange>> + Sync);
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -155,7 +187,8 @@ pub type PathFilter<'a> = &'a (dyn Fn(&str) -> bool + Sync);
 pub struct LineMatch {
     /// 0-based line.
     pub line: u32,
-    /// Line text, truncated around the match for very long lines.
+    /// Line text, truncated around the matches for very long lines: such a line comes as one
+    /// `LineMatch` per window, so the same `line` can repeat.
     pub text: String,
     /// UTF-16 column ranges within `text`.
     pub ranges: Vec<(u32, u32)>,
@@ -185,6 +218,26 @@ pub struct SearchSummary {
 /// Text of unsaved open documents takes precedence over disk content.
 pub type Overlay<'a> = &'a (dyn Fn(&Path) -> Option<String> + Sync);
 
+/// The encoding to read a file with when it is not UTF-8 and the encoding detected for it is not
+/// trusted to be right (GBK, UTF-16 …): its label, or `None` to go by what is detected.
+pub type FallbackEncoding<'a> = &'a (dyn Fn(&Path) -> Option<String> + Sync);
+
+/// Where a search reads file text from: the open document when `overlay` has
+/// it, else the file on disk, decoded as the editor opens it when it is not UTF-8
+/// (`fallback` picks the encoding that [`ide_vfs::decode_text`] takes).
+#[derive(Clone, Copy)]
+pub struct TextSource<'a> {
+    pub overlay: Overlay<'a>,
+    pub fallback: FallbackEncoding<'a>,
+}
+
+impl<'a> TextSource<'a> {
+    /// Non-UTF-8 files decode as detected, without a configured fallback encoding.
+    pub fn detected(overlay: Overlay<'a>) -> Self {
+        Self { overlay, fallback: &|_| None }
+    }
+}
+
 /// Searches `root` in parallel, calling `on_file` for each file with matches.
 ///
 /// `on_file` is called from worker threads as files complete. Cancellation
@@ -208,7 +261,7 @@ pub fn search_filtered(
     cancel: &CancellationToken,
     on_file: &(dyn Fn(FileMatches) + Sync),
 ) -> IdeResult<SearchSummary> {
-    search_in_context(root, query, filter, None, overlay, cancel, on_file)
+    search_in_context(root, query, filter, None, TextSource::detected(overlay), cancel, on_file)
 }
 
 /// [`search_filtered`] honouring [`SearchQuery::context`] with the comments and
@@ -218,7 +271,7 @@ pub fn search_in_context(
     query: &SearchQuery,
     filter: Option<PathFilter<'_>>,
     literals: Option<Literals<'_>>,
-    overlay: Overlay<'_>,
+    text: TextSource<'_>,
     cancel: &CancellationToken,
     on_file: &(dyn Fn(FileMatches) + Sync),
 ) -> IdeResult<SearchSummary> {
@@ -236,7 +289,9 @@ pub fn search_in_context(
         context: query.context,
         literals,
         max_matches: query.max_matches,
-        overlay,
+        ignore_rules: !query.include_excluded,
+        max_file_bytes: query.skip_large_files.then_some(MAX_CODE_INSIGHT_FILE_BYTES),
+        text,
         cancel,
         on_file,
     })
@@ -251,6 +306,20 @@ pub fn validate_query(query: &SearchQuery) -> IdeResult<()> {
         query::compile(query)?;
     }
     Ok(())
+}
+
+/// Byte ranges of the matches of `query` in `text`, matched as [`search`] does.
+/// Unlike [`LineMatch`]es, a match spanning lines comes back whole.
+pub fn match_ranges(text: &str, query: &SearchQuery) -> IdeResult<Vec<(usize, usize)>> {
+    if query.pattern.is_empty() {
+        return Ok(Vec::new());
+    }
+    let compiled = query::compile(query)?;
+    let mut out = Vec::new();
+    iter::for_each_match(&compiled.matcher, compiled.whole_word, text.as_bytes(), 0, |m| {
+        out.push((m.start(), m.end()))
+    });
+    Ok(out)
 }
 
 /// Computes the replacement text for every match of `query` in `text`
@@ -272,7 +341,7 @@ pub fn replace_in_text(text: &str, query: &SearchQuery, replacement: &str) -> Id
     let mut out = Vec::with_capacity(text.len());
     let mut count = 0u32;
     let mut last = 0;
-    iter::for_each_captures(matcher, haystack, &mut caps, |caps| {
+    iter::for_each_captures(matcher, compiled.whole_word, haystack, &mut caps, |caps| {
         let Some(m) = caps.get(0) else { return };
         out.extend_from_slice(&haystack[last..m.start()]);
         last = m.end();

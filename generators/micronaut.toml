@@ -1,0 +1,32 @@
+id = "micronaut"
+name = "Micronaut"
+group = "Java"
+icon = "file-java"
+order = 3
+description = "A Micronaut application from Micronaut Launch."
+
+[[fields]]
+id = "jdk"
+label = "JDK:"
+type = "sdk"
+sdk = "jdk"
+
+[[fields]]
+id = "group"
+label = "Group:"
+type = "text"
+pattern = '^[A-Za-z_][\w]*(\.[A-Za-z_][\w]*)*$'
+default = "com.example"
+
+[[fields]]
+id = "artifact"
+label = "Artifact:"
+type = "text"
+pattern = '^[a-z][a-z0-9-]*$'
+default = "{{name|kebab}}"
+
+[service]
+provider = "micronaut"
+
+[settings.java]
+jdk = "{{jdk}}"

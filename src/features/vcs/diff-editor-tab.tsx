@@ -1,4 +1,4 @@
-import type { EditorInput } from "@/workbench/contributions";
+import { editorService, type EditorInput } from "@/workbench/contributions";
 import { hideAllToolWindows, useToolWindowLayout } from "@/workbench/toolwindows/store";
 import { shortcutLabel } from "@/platform/keymap";
 import { IconButton } from "@/ui";
@@ -11,6 +11,7 @@ export function DiffEditorTab({ input }: { input: EditorInput }) {
   return (
     <DiffEditor
       input={input}
+      onClose={() => void editorService().closeInput?.(input.key)}
       toolbarActions={
         <IconButton
           icon={maximized ? "minimize" : "maximize"}

@@ -56,6 +56,27 @@ describe("phpunitParser", () => {
     expect(events[0]).toEqual({ type: "start", path: [SUITE, "testAdd", "testAdd with data set #0"] });
   });
 
+  it("reads Pest's names and location hints", () => {
+    const events = run([
+      "##teamcity[testSuiteStarted name='Unit' locationHint='pest_qn://tests/Unit/MathTest.php' flowId='1']",
+      "##teamcity[testSuiteStarted name='Tests\\Unit\\MathTest' locationHint='pest_qn://tests/Unit/MathTest.php' flowId='1']",
+      "##teamcity[testStarted name='`division` → it divides' locationHint='pest_qn://tests/Unit/MathTest.php::`division` → it divides' flowId='1']",
+      "##teamcity[testFailed name='`division` → it divides' message='Failed asserting that 1 is identical to 2.' details='' flowId='1']",
+      "##teamcity[testSuiteStarted name='it doubles' locationHint='pest_qn://tests/Unit/MathTest.php::it doubles' flowId='1']",
+      "##teamcity[testStarted name='it doubles with data set \"(1)\"' locationHint='pest_qn://tests/Unit/MathTest.php::it doubles with data set \"(1)\"' flowId='1']",
+    ]);
+    const divides = ["Unit", "Tests\\Unit\\MathTest", "`division` → it divides"];
+    expect(events).toContainEqual({
+      type: "location",
+      path: divides,
+      location: { path: "tests/Unit/MathTest.php", resolve: "path" },
+    });
+    expect(events).toContainEqual({
+      type: "start",
+      path: ["Unit", "Tests\\Unit\\MathTest", "it doubles", 'it doubles with data set "(1)"'],
+    });
+  });
+
   it("unescapes TeamCity values", () => {
     const events = run([
       "##teamcity[testSuiteStarted name='S']",
@@ -99,6 +120,26 @@ describe("TeamcityOutput", () => {
     expect(shown).toBe("PHPUnit 11.5 by Sebastian Bergmann\nOK (1 test\n");
     expect(results.counts()).toMatchObject({ passed: 1 });
   });
+
+  it("shows a test's own output and failures in the console when asked (JVM runs)", () => {
+    const lines = [
+      "##teamcity[testStarted name='prints' className='demo.GreeterTest']",
+      "##teamcity[testStdOut name='prints' className='demo.GreeterTest' out='输出结果：OpenIdea|n']",
+      "##teamcity[testStdErr name='prints' className='demo.GreeterTest' out='warn |[x|]|n']",
+      "##teamcity[testFinished name='prints' className='demo.GreeterTest' duration='3']",
+      "##teamcity[testStarted name='fails' className='demo.GreeterTest']",
+      "##teamcity[testFailed name='fails' className='demo.GreeterTest' message='java.lang.AssertionError: no' details='java.lang.AssertionError: no|n\tat demo.GreeterTest.fails(GreeterTest.java:15)|n']",
+      "##teamcity[testFinished name='fails' className='demo.GreeterTest' duration='1']",
+      "1 test completed",
+      "",
+    ].join("\n");
+    const fed: string[] = [];
+    expect(new TeamcityOutput((line) => fed.push(line), true).feed(lines)).toBe(
+      "输出结果：OpenIdea\nwarn [x]\njava.lang.AssertionError: no\n\tat demo.GreeterTest.fails(GreeterTest.java:15)\n1 test completed\n",
+    );
+    expect(fed).toHaveLength(8);
+    expect(new TeamcityOutput(() => {}).feed(lines)).toBe("1 test completed\n");
+  });
 });
 
 describe("command lines", () => {
@@ -118,6 +159,7 @@ describe("command lines", () => {
     expect(frameworkFor({ kind: "phpunit", command: "vendor/bin/phpunit", args: [] })).toBe("phpunit");
     expect(frameworkFor({ kind: "composer", command: "composer", args: ["run-script", "test"] })).toBe("auto");
     expect(frameworkFor({ kind: "shell", command: "php", args: ["vendor/bin/phpunit"] })).toBe("phpunit");
+    expect(frameworkFor({ kind: "shell", command: "vendor/bin/pest", args: ["--parallel"] })).toBe("phpunit");
     expect(createTestParser({ kind: "phpunit", command: "phpunit", args: [] })).toBeDefined();
     expect(withTestReporting({ kind: "phpunit", command: "phpunit", args: ["tests"] }).args).toEqual([
       "--teamcity",
@@ -153,5 +195,21 @@ describe("command lines", () => {
       "/(App\\\\Tests\\\\CalcTest::testAdd( with data set .*)?)$/",
     );
     expect(phpunitFilter([[SUITE]])).toBe("/(App\\\\Tests\\\\CalcTest::.*)$/");
+  });
+
+  it("filters Pest tests, data sets and their class by the names Pest prints", () => {
+    const cls = "Tests\\Unit\\MathTest";
+    expect(phpunitFilter([["Unit", cls, "it fails on purpose"]])).toBe(
+      "/(Tests\\\\Unit\\\\MathTest::it fails on purpose( with data set .*)?)$/",
+    );
+    expect(phpunitFilter([["Unit", cls, "`division` → `by zero` → Throws"]])).toBe(
+      "/(Tests\\\\Unit\\\\MathTest::`division` → `by zero` → Throws( with data set .*)?)$/",
+    );
+    expect(phpunitFilter([["Unit", cls, "Adds"]])).toBe("/(Tests\\\\Unit\\\\MathTest::Adds( with data set .*)?)$/");
+    expect(phpunitFilter([["Unit", cls, "it doubles", 'it doubles with data set "(2)"']])).toBe(
+      "/(Tests\\\\Unit\\\\MathTest::it doubles( with data set .*)?)$/",
+    );
+    expect(phpunitFilter([["Unit", cls]])).toBe("/(Tests\\\\Unit\\\\MathTest::.*)$/");
+    expect(phpunitFilter([["/app/phpunit.xml", "Unit"]])).toBe("/(Unit::.*)$/");
   });
 });

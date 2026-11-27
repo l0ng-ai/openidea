@@ -1,19 +1,24 @@
 /** Diff viewer editor tab (side-by-side / unified) built on @codemirror/merge. */
 import { focusedDiffNavigator, setFocusedDiffNavigator, type DiffNavigator } from "./diffNavigator";
+import { StagingDiff } from "./StagingDiff";
+import { ImageDiffHost } from "./ImageDiffHost";
+import { imageDiffKind } from "./imageDiffInput";
 import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
 } from "react";
 import clsx from "clsx";
 import { EditorView, keymap } from "@codemirror/view";
-import { Prec, Text, type Extension } from "@codemirror/state";
+import { Compartment, Prec, Text, type ChangeSet, type EditorSelection, type Extension } from "@codemirror/state";
 import { history, historyKeymap } from "@codemirror/commands";
 import {
   MergeView,
@@ -21,21 +26,52 @@ import {
   getOriginalDoc,
   goToNextChunk,
   goToPreviousChunk,
+  originalDocChangeEffect,
   unifiedMergeView,
   uncollapseUnchanged,
   Chunk,
 } from "@codemirror/merge";
-import { attachDocument, embeddedEditorExtensions, type DocumentAttachment } from "@/editor/api";
-import { setFindOpen } from "@/editor/core/cm/find";
+import { useStore } from "zustand";
+import { attachDocument, diffSideExtensions, embeddedEditorExtensions, type DocumentAttachment } from "@/editor/api";
+import { findChangedRanges, setFindOpen } from "@/editor/core/cm/find";
+import { softWrapActive } from "@/editor/core/cm/prefs";
 import { FindPanel, searchAgain, seedFind, type FindTarget } from "@/editor/core/view/FindBar";
+import { executeAction, getAction } from "@/platform/actions";
+import { auxiliaryWindow } from "@/platform/auxWindow";
 import { getContext, setContext } from "@/platform/context";
+import { editorPrefs } from "@/platform/editorSettings";
 import { call, commands } from "@/platform/ipc";
+import { reducedMotion } from "@/platform/motion";
 import { bindingsFor, normalizeBinding, shortcutLabel, strokeOf } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
-import { IconButton, Select, Spinner, T, showContextMenu } from "@/ui";
-import { editorService, type EditorInput } from "@/workbench/contributions";
-import { changedLineGutters, diffWords, languageFor, viewerBase } from "./cm";
-import { applyChunk, arrowControls, chunkAt, hoverRevert, revertUnifiedChunk } from "./diffControls";
+import { useProject } from "@/platform/project";
+import { isVirtualUri } from "@/platform/virtualDocs";
+import { isRemoteWindow } from "@/platform/remote";
+import { useWorkflowSettings } from "@/platform/workflowSettings";
+import { Button, IconButton, Select, Spinner, T, isPopupOpen, showContextMenu, type MenuItem } from "@/ui";
+import { registerSoftWrapSurface } from "@/workbench/softWrap";
+import { editorService, notifications, type EditorInput } from "@/workbench/contributions";
+import {
+  changedLineGutters,
+  diffOverview,
+  diffWords,
+  documentTooltips,
+  firstLineOf,
+  languageFor,
+  unifiedLeftDiff,
+  viewerBase,
+} from "./cm";
+import { collapsedDiffLines } from "./collapsedDiffLines";
+import {
+  applyChunk,
+  arrowControls,
+  chunkAt,
+  exposeHunkButtons,
+  hoverRevert,
+  hunkButtons,
+  onHunkButtonClick,
+  revertUnifiedChunk,
+} from "./diffControls";
 import {
   HIGHLIGHT_OPTIONS,
   IGNORE_OPTIONS,
@@ -43,6 +79,7 @@ import {
   loadDiffOptions,
   saveDiffOptions,
   getDiffInsights,
+  transferChunk,
   type DiffMode,
   type DiffViewOptions,
   type HighlightPolicy,
@@ -51,17 +88,27 @@ import {
 import {
   chainNeighbour,
   diffTitle,
+  detectLineEnding,
+  hasGitlink,
+  liveSideText,
+  lineEndingBadge,
   isIndex,
   isWorktree,
   loadSide,
+  loadSideMode,
+  oneSided,
   openDiff,
+  readDiffSide,
+  rememberDiffCaret,
   sideFile,
   sideKey,
   sideLabel,
   type DiffData,
   type DiffSide,
 } from "./diffInput";
+import { useGitDiffEntries } from "./gitDiffEntries";
 import { diffAnnotations } from "./diffAnnotations";
+import { setAllInOneDiff } from "./allInOneDiff";
 import { annotationsShown, blameSlot, toggleAnnotations } from "./blame";
 import { diffBlameTarget } from "./diffBlame";
 import { changedChainNeighbour } from "./diffNavigation";
@@ -73,31 +120,67 @@ import {
   type DiffViewerHost,
   type DiffViewerPane,
 } from "./diffViewerProviders";
-import { UnalignedPanes } from "./diffScroll";
+import { PaddedPanes, UnalignedPanes, type DiffPanes } from "./diffScroll";
 import { groupOf } from "./changes";
-import { inclusionGutter } from "./hunkInclusion";
+import { commitLineTarget, EXCLUDE_COMMIT_LINES, INCLUDE_COMMIT_LINES, inclusionGutter } from "./hunkInclusion";
+import { unifiedCommitLines, unifiedCommitSelection } from "./unifiedCommitLines";
+import { unifiedLineNumbers } from "./unifiedLineNumbers";
 import { hunksOverlapping } from "./hunks";
-import { effectiveKind, stripSlash } from "./model";
+import { requireDisplayedText, staleDiff, writeIndexChunk } from "./stagingDiffEdits";
+import {
+  emptyStagedStatus,
+  reloadStagedDocument,
+  useEmbeddedStagedSave,
+  useStagedDiffDocument,
+} from "./stagedDocument";
+import { baseName, effectiveKind, stripSlash } from "./model";
 import { errorMessage, logConsole, readWorkingText, runOp, saveAll } from "./ops";
-import { refreshNow, useVcs } from "./store";
+import { refreshNow, repoOf, useVcs } from "./store";
 import styles from "./DiffEditor.module.css";
 
 /** Commands of the focused diff viewer (diff.* actions, vcs.nextChange / prevChange). */
 export { focusedDiffNavigator, type DiffNavigator };
 
+interface PaneTitle {
+  label: string;
+  detail?: string;
+  revisionPath?: string;
+}
+
+function PaneTitleDetail({ detail, revisionPath }: PaneTitle) {
+  if (!revisionPath) return detail ? <span className={styles.labelFile}>{detail}</span> : null;
+  const filenameStart = revisionPath.lastIndexOf("/") + 1;
+  return (
+    <span className={clsx(styles.labelFile, styles.revisionPath)}>
+      {filenameStart > 0 && <span className={styles.revisionDirectory}>{revisionPath.slice(0, filenameStart)}</span>}
+      <span className={styles.revisionFilename}>{revisionPath.slice(filenameStart)}</span>
+    </span>
+  );
+}
+
 interface Views {
   /** The right / unified editor (chunks live here). */
   b: EditorView;
   a: EditorView | null;
+  key: string;
+  unifiedOnLeft: boolean;
   merge: MergeView | null;
-  /** Unpadded side-by-side panes with synchronized scrolling (IDEA). */
-  panes: UnalignedPanes | null;
+  /** The panes' scroll machinery: unpadded panes sync through the changes, padded ones copy their scroll. */
+  panes: DiffPanes | null;
+  applyIndexChange?(chunk: Chunk, source: Side): boolean;
   destroy(): void;
 }
 
 interface Attached {
+  key: string;
   a: DocumentAttachment | null;
   b: DocumentAttachment | null;
+}
+
+interface StaticSides {
+  key: string;
+  a: string | null;
+  b: string | null;
 }
 
 /** 0-based line ranges of a chunk on both sides. */
@@ -132,6 +215,14 @@ export function mapLine(chunks: readonly Chunk[], line: number, from: Text, to: 
 const swapped = (chunks: readonly Chunk[]) =>
   chunks.map((c) => ({ fromA: c.fromB, toA: c.toB, fromB: c.fromA, toB: c.toA }) as unknown as Chunk);
 
+const opposite = (side: Side): Side => (side === "a" ? "b" : "a");
+const mainSide = (views: Views): Side => (views.unifiedOnLeft ? "a" : "b");
+
+function displayedDoc(views: Views, side: Side): Text {
+  if (views.a) return (side === "a" ? views.a : views.b).state.doc;
+  return side === mainSide(views) ? views.b.state.doc : getOriginalDoc(views.b.state);
+}
+
 /** Selects `pos` and scrolls it to the middle, first expanding the collapsed unchanged lines holding it. */
 function revealPos(v: EditorView, pos: number) {
   const block = v.lineBlockAt(pos);
@@ -145,9 +236,28 @@ function revealPos(v: EditorView, pos: number) {
   });
 }
 
+function keepViewState(state: DiffViewState, side: Side): Extension {
+  return EditorView.updateListener.of((u) => {
+    const uncollapsed = u.transactions.flatMap((tr) =>
+      tr.effects.filter((e) => e.is(uncollapseUnchanged)).map((e) => e.value as number),
+    );
+    // A pane nobody touched keeps nothing, so its doc isn't held for the tab's lifetime.
+    if (!u.docChanged && !u.selectionSet && !uncollapsed.length) return;
+    const saved = state[side];
+    const expanded = saved?.doc === u.startState.doc ? saved.expanded.map((pos) => u.changes.mapPos(pos)) : [];
+    state[side] = { doc: u.state.doc, selection: u.state.selection, expanded: [...expanded, ...uncollapsed] };
+  });
+}
+
+/** Puts back a pane's selection and expanded lines, if its doc hasn't changed since. */
+function restoreViewState(state: DiffViewState, side: Side, view: EditorView) {
+  const saved = state[side];
+  if (!saved || !saved.doc.eq(view.state.doc)) return;
+  view.dispatch({ selection: saved.selection, effects: saved.expanded.map((pos) => uncollapseUnchanged.of(pos)) });
+}
+
 /** The panes as diff viewer contributions see them. */
 function viewerHost(views: Views, data: DiffData, mode: DiffMode, focused: () => "a" | "b"): DiffViewerHost {
-  const docA = () => views.a?.state.doc ?? getOriginalDoc(views.b.state);
   const chunks = () => getChunks(views.b.state)?.chunks ?? [];
   const panes = (): DiffViewerPane[] =>
     views.a
@@ -155,22 +265,23 @@ function viewerHost(views: Views, data: DiffData, mode: DiffMode, focused: () =>
           { side: "left", view: views.a },
           { side: "right", view: views.b },
         ]
-      : [{ side: "right", view: views.b }];
-  const mapSide = (from: DiffPaneSide, line: number) =>
-    from === "left"
-      ? mapLine(chunks(), line, docA(), views.b.state.doc)
-      : mapLine(swapped(chunks()), line, views.b.state.doc, docA());
+      : [{ side: originOf(mainSide(views), false), view: views.b }];
+  const mapSide = (from: DiffPaneSide, line: number) => {
+    const side = from === "left" ? "a" : "b";
+    const changes = side === mainSide(views) ? swapped(chunks()) : chunks();
+    return mapLine(changes, line, displayedDoc(views, side), displayedDoc(views, opposite(side)));
+  };
   const locate = (side: DiffPaneSide, line: number) => {
     const all = panes();
-    if (side === "left" && !views.a) return { pane: all[0]!, line: mapSide("left", line) };
-    const pane = all.find((p) => p.side === side)!;
+    const pane = all.find((p) => p.side === side);
+    if (!pane) return { pane: all[0]!, line: mapSide(side, line) };
     return line >= 0 && line < pane.view.state.doc.lines ? { pane, line } : null;
   };
   return {
     data,
     mode,
     panes,
-    doc: (side) => (side === "left" ? docA() : views.b.state.doc),
+    doc: (side) => displayedDoc(views, side === "left" ? "a" : "b"),
     mapLine: mapSide,
     locate,
     reveal(side, line) {
@@ -188,6 +299,8 @@ function viewerHost(views: Views, data: DiffData, mode: DiffMode, focused: () =>
 }
 
 const NO_CONTRIBUTIONS: DiffViewerContribution[] = [];
+/** A file without a language; one value, so finding none again doesn't rebuild the views. */
+const NO_LANGUAGE: Extension = [];
 
 /** Joins the open document of a file-backed side (working file, Compare Files); null for revisions / texts. */
 async function attachSide(side: DiffSide, path: string): Promise<DocumentAttachment | null> {
@@ -200,10 +313,39 @@ async function attachSide(side: DiffSide, path: string): Promise<DocumentAttachm
   }
 }
 
+function useAttachmentReadOnly(attachment: DocumentAttachment | null | undefined) {
+  return useSyncExternalStore(
+    useCallback((listener) => attachment?.subscribeReadOnly(listener) ?? (() => {}), [attachment]),
+    () => attachment?.readOnly ?? true,
+  );
+}
+
 const editableExtensions = (): Extension => [history(), keymap.of(historyKeymap)];
+
+/** The request's side a pane shows: `a` is the left one unless the sides are swapped. */
+const originOf = (s: Side, swapped: boolean): "left" | "right" => ((s === "a") !== swapped ? "left" : "right");
+
+/** A side the user types into in the diff itself (Open Blank Diff Window). */
+const isEditableText = (s: DiffSide) => s.type === "text" && !!s.editable;
+
+/** The changed ranges of a diff pane, for the find bar's Search In Changes. */
+const changedRanges = findChangedRanges.of((state) => {
+  const got = getChunks(state);
+  if (!got) return [];
+  const len = state.doc.length;
+  return got.chunks.map((c) =>
+    got.side === "a"
+      ? { from: c.fromA, to: Math.min(Math.max(c.endA, c.fromA), len) }
+      : { from: c.fromB, to: Math.min(Math.max(c.endB, c.fromB), len) },
+  );
+});
 
 type Side = "a" | "b";
 type ViewUpdateFn = (u: { docChanged: boolean; selectionSet: boolean }) => void;
+
+/** Esc alone, not while composing text. */
+const plainEscape = (e: KeyboardEvent) =>
+  e.key === "Escape" && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey && !e.nativeEvent.isComposing;
 
 /** Whether `e` is one of the strokes bound to `actionId`. */
 function isStrokeOf(e: KeyboardEvent, actionId: string): boolean {
@@ -211,30 +353,209 @@ function isStrokeOf(e: KeyboardEvent, actionId: string): boolean {
   return !!stroke && bindingsFor(actionId).some((b) => normalizeBinding(b) === stroke);
 }
 
-export function DiffEditor({ input, toolbarActions }: { input: EditorInput; toolbarActions?: ReactNode }) {
-  const data = input.data as DiffData;
+/**
+ * The typed text of editable text sides (by the request's side), per diff request: it outlives
+ * rebuilt views and the editor unmounting while its tab is hidden.
+ */
+const typedSides = new WeakMap<DiffData, { left?: Text; right?: Text }>();
+
+function typedSidesOf(data: DiffData): { left?: Text; right?: Text } {
+  let typed = typedSides.get(data);
+  if (!typed) typedSides.set(data, (typed = {}));
+  return typed;
+}
+
+/** A pane's selection and the unchanged lines expanded in it, for its doc. */
+interface PaneViewState {
+  doc: Text;
+  selection: EditorSelection;
+  expanded: number[];
+}
+
+/** What a diff's panes keep across rebuilds and remounts, filled in by the diff editor. */
+export type DiffViewState = Partial<Record<Side, PaneViewState>>;
+
+export interface DiffEditorProps {
+  input: EditorInput;
+  documentOwner?: string;
+  toolbarActions?: ReactNode;
+  /**
+   * Called to show another file of the chain instead of `openDiff` (which opens an
+   * editor tab): embedded hosts such as the Commit dialog's diff window swap their
+   * own content, as a modal dialog hides the editor area.
+   */
+  onNeighbour?: (data: DiffData) => void;
+  /** A lazy chain loads each neighbour only after navigation. */
+  skipUnchangedFiles?: boolean;
+  /** Called as Jump to Source opens the file in an editor: a modal host closes, or the editor stays hidden behind it. */
+  onJumpToSource?: () => void;
+  /** Closes the diff's editor tab (Esc, IDEA's Close Diff Editor); hosts that aren't tabs leave it out. */
+  onClose?: () => void;
+  /**
+   * A block of the all-in-one diff: as tall as its content (the host scrolls), without the
+   * toolbar, side-by-side panes always aligned, and not taking the editor tab's focus.
+   */
+  fit?: boolean;
+  /** Kept by a host that unmounts the diff (an all-in-one diff block scrolled away) to restore it. */
+  viewState?: DiffViewState;
+}
+
+export function DiffEditor(props: DiffEditorProps) {
+  const diff = useGitDiffEntries(props.input.data as DiffData);
+  return <ResolvedDiffEditor {...props} diff={diff} />;
+}
+
+export function ResolvedDiffEditor({
+  diff: { data, entries, loading, versions },
+  ...props
+}: DiffEditorProps & { diff: ReturnType<typeof useGitDiffEntries> }) {
+  const input = data === props.input.data ? props.input : { ...props.input, data };
+  const [source, setSource] = useState<{ key: string; visible: boolean }>();
+  const imageData = useMemo(() => (versions ? { ...data, ...versions } : data), [data, versions]);
+  const regularFiles = !entries?.some((entry) => entry && !entry.mode.startsWith("100"));
+  const kind = regularFiles && !hasGitlink(data) ? imageDiffKind(imageData) : null;
+  const openedSource = kind === "svg" && source?.key === input.key;
+  const showSource = openedSource && source.visible;
+  if (kind && loading && !openedSource) return <Spinner size={14} />;
+  const image = kind && !showSource && (
+    <ImageDiffHost
+      key={input.key}
+      {...props}
+      data={imageData}
+      onSource={kind === "svg" ? () => setSource({ key: input.key, visible: true }) : undefined}
+    />
+  );
+  if (image && !openedSource) return image;
+
+  const preview = openedSource && (
+    <Button size="small" onClick={() => setSource({ key: input.key, visible: false })}>
+      <T>Image preview</T>
+    </Button>
+  );
+  const toolbarActions = openedSource ? (
+    <>
+      {preview}
+      {props.toolbarActions}
+    </>
+  ) : (
+    props.toolbarActions
+  );
+  const text = data.middle ? (
+    <StagingDiff key={input.key} {...props} input={input} toolbarActions={toolbarActions} metadataLoading={loading} />
+  ) : (
+    <TwoPaneDiff
+      {...props}
+      input={input}
+      toolbarActions={toolbarActions}
+      metadataLoading={loading}
+      gitModes={entries ? [entries[0]?.mode ?? null, entries[2]?.mode ?? null] : undefined}
+    />
+  );
+  if (!openedSource) return text;
+  // Unmounting an editable staged diff can save its draft. Switching views must preserve it.
+  return (
+    <>
+      {image}
+      <div
+        hidden={!showSource}
+        inert={!showSource}
+        className={showSource ? clsx(styles.root, props.fit && styles.fit) : undefined}
+      >
+        {props.fit && !data.middle && preview}
+        {text}
+      </div>
+    </>
+  );
+}
+
+function TwoPaneDiff({
+  input,
+  documentOwner,
+  toolbarActions,
+  onNeighbour,
+  skipUnchangedFiles = true,
+  onJumpToSource,
+  onClose,
+  fit = false,
+  viewState,
+  gitModes,
+  metadataLoading,
+}: DiffEditorProps & { gitModes?: [string | null, string | null]; metadataLoading: boolean }) {
+  const input_ = input.data as DiffData;
+  // Read by the panes' listeners, which outlive a render.
+  const inputKey = useRef(input.key);
+  inputKey.current = input.key;
+  // Swap Sides shows the request's sides the other way round; another request starts unswapped.
+  const [swappedFor, setSwappedFor] = useState<DiffData | null>(null);
+  // The one-side viewer puts its only editable document into the unified editor. A deleted
+  // file's diff shows the original text as the document itself: the absent side stays on the
+  // left as the diff's original, as for a staged deletion.
+  const deletedOneSided =
+    !(input_.left.type === "text" && input_.left.absent) && input_.right.type === "text" && !!input_.right.absent;
+  const swapped = deletedOneSided || swappedFor === input_;
+  const data = useMemo(
+    () => (swapped ? { ...input_, left: input_.right, right: input_.left } : input_),
+    [input_, swapped],
+  );
   const { path, left, right } = data;
-  const [attached, setAttached] = useState<Attached | null>(null);
+  const gitlink = hasGitlink(data);
+  const modeLeft = gitModes?.[swapped ? 1 : 0];
+  const modeRight = gitModes?.[swapped ? 0 : 1];
+  const leftKey = sideKey(left);
+  const rightKey = sideKey(right);
+  const sidesKey = JSON.stringify([path, leftKey, rightKey]);
+  const indexSide = gitlink || metadataLoading ? null : isIndex(left) ? "a" : isIndex(right) ? "b" : null;
+  const indexRev = indexSide === "a" ? left : right;
+  const indexPath = isIndex(indexRev) ? (indexRev.path ?? path) : null;
+  const transient = !!data.embedded || auxiliaryWindow()?.kind === "diff";
+  const documentId = useId();
+  const indexDoc = useStagedDiffDocument(
+    indexPath,
+    transient ? `staging-diff:${documentId}` : (documentOwner ?? input.key),
+    transient,
+  );
+  const indexState = useStore(indexDoc?.status ?? emptyStagedStatus);
+  const indexReady = !!indexState.base;
+  const edited = typedSidesOf(input_);
+  const editedText = (s: Side) => edited[originOf(s, swapped)]?.toString();
+  const [attachedFor, setAttached] = useState<Attached | null>(null);
+  const attached = !metadataLoading && attachedFor?.key === sidesKey ? attachedFor : null;
+  const readOnlyA = useAttachmentReadOnly(attached?.a);
+  const readOnlyB = useAttachmentReadOnly(attached?.b);
   const [binary, setBinary] = useState<boolean | null>(null);
   /** Text of the sides that are not live documents. */
-  const [statics, setStatics] = useState<{ a: string | null; b: string | null } | null>(null);
+  const [staticsFor, setStatics] = useState<StaticSides | null>(null);
+  const statics = staticsFor?.key === sidesKey ? staticsFor : null;
+  const staticA = indexSide === "a" && indexReady ? "" : statics?.a;
+  const staticB = indexSide === "b" && indexReady ? "" : statics?.b;
+  /** Git modes of the two sides (`100644`…), for the mode-only-change notice. */
+  const [modes, setModes] = useState<{ a: string | null; b: string | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [opts, setOptsState] = useState<DiffViewOptions>(() => {
     const saved = loadDiffOptions();
     return data.mode ? { ...saved, mode: data.mode } : saved;
   });
+  // An added or deleted file shows its one side alone, full width (IDEA's one-side viewer):
+  // the unified layout of an empty side is exactly that. The saved mode stays as it is.
+  const single = oneSided(data);
+  const viewMode: DiffMode = single ? "unified" : opts.mode;
+  /** Side-by-side panes padded to line up; a fitted block always is (its host scrolls, not the panes). */
+  const aligned = fit || opts.alignChanges;
   const [lang, setLang] = useState<Extension | null>(null);
   const [chunkInfo, setChunkInfo] = useState({ count: 0, current: -1, moves: 0, whitespaceOnly: false });
   const [busy, setBusy] = useState(false);
+  const editingIndex = useRef(false);
+  const reloadTicket = useRef(0);
   const hostRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEmbeddedStagedSave(!!data.embedded, indexDoc, rootRef);
   const viewsRef = useRef<Views | null>(null);
-  const staticsRef = useRef(statics);
+  const staticsRef = useRef(staticsFor);
   const focusedSide = useRef<Side>("b");
   /** Bumped when the views are rebuilt, so the find bar re-applies its query. */
   const [viewsGen, setViewsGen] = useState(0);
   const version = useVcs((s) => s.version);
-  const leftKey = sideKey(left);
-  const rightKey = sideKey(right);
+  const heads = useVcs((s) => s.heads);
   const contextKey = JSON.stringify(data.context ?? null);
   const dataRef = useRef(data);
   dataRef.current = data;
@@ -251,6 +572,11 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
     };
   }, [path, leftKey, rightKey, contextKey]);
 
+  // A host that picks the layout (the all-in-one diff's toolbar) switches it in place.
+  const asked = input_.mode;
+  useEffect(() => {
+    if (asked) setOptsState((o) => (o.mode === asked ? o : { ...o, mode: asked }));
+  }, [asked]);
   const setOpts = (patch: Partial<DiffViewOptions>) =>
     setOptsState((o) => {
       const next = { ...o, ...patch };
@@ -260,10 +586,12 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
 
   // Live documents for file-backed sides (edits sync with editors, undo, save).
   useEffect(() => {
+    if (metadataLoading) return;
     let alive = true;
     let got: Attached | null = null;
-    void Promise.all([attachSide(left, path), attachSide(right, path)]).then(([a, b]) => {
-      got = { a, b };
+    const sides = gitlink ? ([null, null] as const) : ([attachSide(left, path), attachSide(right, path)] as const);
+    void Promise.all(sides).then(([a, b]) => {
+      got = { key: sidesKey, a, b };
       if (alive) setAttached(got);
       else {
         a?.release();
@@ -277,44 +605,68 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
       setAttached(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, leftKey, rightKey]);
+  }, [sidesKey, gitlink, metadataLoading]);
 
   const reload = useCallback(async () => {
     if (!attached) return;
+    const ticket = ++reloadTicket.current;
     try {
       const paths = [sideFile(left, path), sideFile(right, path)].filter((p): p is string => !!p);
-      const [a, b, probes] = await Promise.all([
+      const [a, b, modeA, modeB, probes] = await Promise.all([
         attached.a ? null : loadSide(path, left),
         attached.b ? null : loadSide(path, right),
+        modeLeft === undefined ? loadSideMode(path, left) : modeLeft,
+        modeRight === undefined ? loadSideMode(path, right) : modeRight,
         Promise.all(paths.map((p) => call(commands.fsProbe(p)).catch(() => null))),
       ]);
+      if (ticket !== reloadTicket.current) return;
       const prev = staticsRef.current;
-      if (!prev || prev.a !== a || prev.b !== b) {
-        staticsRef.current = { a, b };
-        setStatics({ a, b });
+      if (prev?.key !== sidesKey || prev.a !== a || prev.b !== b) {
+        const next = { key: sidesKey, a, b };
+        staticsRef.current = next;
+        setStatics(next);
       }
+      setModes({ a: modeA, b: modeB });
       setBinary(probes.some((p) => p?.binary));
       setError(null);
     } catch (e) {
-      setError(errorMessage(e));
+      if (ticket === reloadTicket.current) setError(errorMessage(e));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, leftKey, rightKey, attached]);
+  }, [sidesKey, attached, modeLeft, modeRight]);
+  useLayoutEffect(
+    () => () => {
+      reloadTicket.current++;
+    },
+    [reload],
+  );
 
   // Initial load and reload whenever repository state changes (staging, commits…).
   useEffect(() => {
     void Promise.resolve().then(reload);
   }, [reload, version]);
 
+  // The file's language as its editor resolves it, from the shown text's first line too
+  // (hashbang-only scripts): the right side's, or the left one's when the file is deleted.
+  const firstLine = useMemo(() => {
+    if (!attached || !statics) return undefined;
+    const text = attached.b?.text() ?? statics.b ?? attached.a?.text() ?? statics.a;
+    return text == null ? null : firstLineOf(text);
+  }, [attached, statics]);
   useEffect(() => {
+    if (firstLine === undefined) return;
+    if (gitlink) {
+      setLang(() => NO_LANGUAGE);
+      return;
+    }
     let alive = true;
-    void languageFor(path).then((l) => alive && setLang(() => l ?? []));
+    void languageFor(path, firstLine).then((l) => alive && setLang(() => l ?? NO_LANGUAGE));
     return () => {
       alive = false;
     };
-  }, [path]);
+  }, [path, firstLine, gitlink]);
 
-  const updateChunkInfo = useCallback(() => {
+  const updateChunkInfo = useCallback((docChanged = false) => {
     const v = viewsRef.current?.b;
     if (!v) return;
     const chunks = getChunks(v.state)?.chunks ?? [];
@@ -322,6 +674,7 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
     const current = chunks.findIndex((c) => c.fromB <= head && head <= Math.max(c.fromB, c.endB));
     const { moves, whitespaceOnly } = getDiffInsights(chunks);
     setChunkInfo((p) =>
+      !docChanged &&
       p.count === chunks.length &&
       p.current === current &&
       p.moves === moves.length &&
@@ -341,9 +694,32 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
     left.rev === "HEAD" &&
     !left.path &&
     isWorktree(right);
-  const editableA = !binary && !!attached?.a && !attached.a.readOnly;
-  const editableB = !binary && !!attached?.b && !attached.b.readOnly;
+  const editableA = !binary && (indexSide === "a" ? indexReady : attached?.a ? !readOnlyA : isEditableText(left));
+  const editableB = !binary && (indexSide === "b" ? indexReady : attached?.b ? !readOnlyB : isEditableText(right));
+  const unifiedOnLeft = viewMode === "unified" && indexSide === "a" && editableA && !editableB;
+  const canStageIndex = indexReady && !binary && indexSide === "a" && !!attached?.b;
+  const canUnstage = indexReady && !binary && indexSide === "b" && left.type === "rev" && left.rev === "HEAD";
+  const canReplaceA = !indexSide && editableA;
+  const canRevert = editableB && (indexSide ? canStageIndex : true);
   const ready = !!attached && !!statics && lang !== null && binary !== null;
+
+  // Soft wraps follow the editor's (Settings › Editor › General) unless toggled in the viewer settings.
+  const editorSoftWrap = useProject((s) => softWrapActive(s.settings?.editor?.softWrap, editorPrefs(s.settings), path));
+  const softWrap = opts.softWrap ?? editorSoftWrap;
+  const wrapSlot = useMemo(() => new Compartment(), []);
+  const softWrapRef = useRef(softWrap);
+  softWrapRef.current = softWrap;
+  const toggleSoftWrapRef = useRef(() => {});
+  toggleSoftWrapRef.current = () => setOpts({ softWrap: !softWrapRef.current });
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host || !ready || binary) return;
+    return registerSoftWrapSurface(host, {
+      enabled: () => softWrapRef.current,
+      toggle: () => toggleSoftWrapRef.current(),
+    });
+  }, [ready, binary]);
 
   // Read when the views are built; toggling it later goes through `setSync`.
   const syncScroll = useRef(opts.syncScroll);
@@ -352,59 +728,196 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
   // (Re)build the CodeMirror views.
   useEffect(() => {
     const host = hostRef.current;
-    if (!host || !attached || !statics || lang === null) return;
-    const textA = attached.a?.text() ?? statics.a ?? "";
-    const textB = attached.b?.text() ?? statics.b ?? "";
+    if (!host || !attached || staticA === undefined || staticB === undefined || lang === null) return;
+    const builtKey = inputKey.current;
+    const typed = (s: Side) => edited[originOf(s, swapped)]?.toString();
+    const stage = indexReady ? indexDoc : null;
+    const stagedText = stage?.status.getState().text;
+    const textA = typed("a") ?? attached.a?.text() ?? (indexSide === "a" ? stagedText : undefined) ?? staticA ?? "";
+    const textB = typed("b") ?? attached.b?.text() ?? (indexSide === "b" ? stagedText : undefined) ?? staticB ?? "";
     const prev = viewsRef.current;
-    const scrollTop = prev
-      ? prev.merge && !prev.panes
-        ? (prev.merge.dom as HTMLElement).scrollTop
-        : prev.b.scrollDOM.scrollTop
-      : null;
+    const carry =
+      prev?.key === builtKey && prev.unifiedOnLeft !== unifiedOnLeft
+        ? (() => {
+            const side = prev.a ? focusedSide.current : mainSide(prev);
+            const view = side === "a" && prev.a ? prev.a : prev.b;
+            const head = view.state.selection.main.head;
+            const line = view.state.doc.lineAt(head);
+            return {
+              side: originOf(side, false),
+              line: line.number - 1,
+              col: head - line.from,
+              focused: view.hasFocus,
+            };
+          })()
+        : null;
+    const scrollTop =
+      prev && !carry
+        ? prev.merge && !prev.panes
+          ? (prev.merge.dom as HTMLElement).scrollTop
+          : prev.b.scrollDOM.scrollTop
+        : null;
     prev?.destroy();
     host.textContent = "";
-    const listener = EditorView.updateListener.of((u) => {
-      if (u.selectionSet || u.docChanged) updateChunkInfo();
-    });
+    const listener = (side: Side, primary = true) =>
+      EditorView.updateListener.of((u) => {
+        if (primary && (u.selectionSet || u.docChanged)) updateChunkInfo(u.docChanged);
+        else if (side === indexSide && u.docChanged) queueMicrotask(() => updateChunkInfo());
+        if (u.selectionSet && u.view.hasFocus) {
+          const head = u.state.selection.main.head;
+          const line = u.state.doc.lineAt(head);
+          rememberDiffCaret(inputKey.current, line.number - 1, head - line.from, originOf(side, swapped));
+        }
+      });
     const findWatch = (s: Side) => EditorView.updateListener.of((u) => findWatchers.current[s].forEach((fn) => fn(u)));
+    /** Keeps what the user typed into an editable text side for the next rebuild (options, Swap Sides). */
+    const keepEdits = (s: Side) =>
+      isEditableText(s === "a" ? left : right)
+        ? EditorView.updateListener.of((u) => {
+            if (u.docChanged) edited[originOf(s, swapped)] = u.state.doc;
+          })
+        : [];
     const focusTracker = (side: "a" | "b") =>
       EditorView.domEventHandlers({
         focus: () => {
           focusedSide.current = side;
         },
+        mousedown: (event, view) => {
+          if (
+            view.hasFocus ||
+            event.button !== 0 ||
+            event.detail !== 1 ||
+            event.shiftKey ||
+            event.altKey ||
+            event.metaKey ||
+            event.ctrlKey ||
+            !view.contentDOM.contains(event.target as Node)
+          )
+            return false;
+          const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+          if (pos === null) return false;
+          // WebKit may scroll to the old DOM selection on focus. Place the caret first so
+          // the default mouse handler measures the same position before and after focusing.
+          view.dispatch({ selection: { anchor: pos }, userEvent: "select.pointer" });
+          view.focus();
+          return false;
+        },
       });
     const collapseUnchanged = opts.collapse ? { margin: 3, minSize: 6 } : undefined;
     const diffConfig = ideaDiffConfig(opts.ignore, opts.highlight);
-    const highlightChanges = opts.highlight === "words";
+    // One side alone has no words to compare: IDEA tints its lines, without fragments.
+    const highlightChanges = opts.highlight === "words" && !single;
     const inclusion = includable ? inclusionGutter(path, textA) : [];
-    const side = (att: DocumentAttachment | null, editable: boolean, notes?: "left" | "right"): Extension[] => [
-      viewerBase({ readOnly: !editable, findBar: true }),
+    const side = (
+      att: DocumentAttachment | null,
+      editable: boolean,
+      notes: "left" | "right",
+      key: Side,
+    ): Extension[] => [
+      viewState ? keepViewState(viewState, key) : [],
+      stage && key === indexSide ? stage.extension() : [],
+      stage && key === indexSide
+        ? EditorView.contentAttributes.of({ "aria-label": tx(sideLabel(key === "a" ? left : right)) })
+        : [],
+      // The left pane of a side-by-side diff has its line numbers next to the divider, as in IDEA.
+      viewerBase({
+        readOnly: !editable,
+        findBar: true,
+        lineNumbers: viewMode === "split" ? (notes === "left" ? "after" : true) : single,
+      }),
+      collapseUnchanged ? collapsedDiffLines() : [],
+      changedRanges,
+      wrapSlot.of(softWrapRef.current ? EditorView.lineWrapping : []),
       // Esc closes the find bar before it collapses the selection (a found match); open popups go first.
       Prec.high(keymap.of([{ key: "Escape", run: () => findEscape.current() }])),
       lang,
       blameSlot(),
       att?.extension ?? [],
-      editable ? [editableExtensions(), embeddedEditorExtensions(path)] : [],
-      notes
-        ? diffAnnotations(
-            (data.annotations ?? []).filter((n) => n.side === notes),
-            styles,
-          )
-        : [],
-      notes ? contribs.map((c) => c.extensions?.({ side: notes, unified: opts.mode !== "split" }) ?? []) : [],
+      // The file's open document: quick docs and ⌘/Ctrl-click navigation, as in its editor.
+      att ? [diffSideExtensions(att.context()), documentTooltips] : [],
+      editable ? [stage && key === indexSide ? [] : editableExtensions(), embeddedEditorExtensions(path)] : [],
+      diffAnnotations(
+        (data.annotations ?? []).filter((n) => n.side === notes),
+        styles,
+      ),
+      contribs.map((c) => c.extensions?.({ side: notes, unified: viewMode !== "split" }) ?? []),
     ];
     let views: Views;
-    if (opts.mode === "split") {
+    const applyIndexChange = (chunk: Chunk, from: Side): boolean => {
+      if (!stage || (!canStageIndex && !canUnstage) || (canUnstage && from === "b")) return false;
+      const revert = indexSide === "a" && from === "a";
+      if (revert && !canRevert) return false;
+      if (editingIndex.current || viewsRef.current !== views || inputKey.current !== builtKey) return false;
+      if (!getChunks(views.b.state)?.chunks.includes(chunk)) return false;
+      const a = displayedDoc(views, "a");
+      const b = displayedDoc(views, "b");
+      const index = stage.status.getState().base;
+      if (!index || stage.status.getState().closing) return false;
+      const displayed = indexSide === "a" ? a : b;
+      editingIndex.current = true;
+      setBusy(true);
+      const title = revert ? "Revert Change" : indexSide === "b" ? "Unstage Change" : "Stage Change (git add hunk)";
+      void runOp(
+        title,
+        async () => {
+          if (revert) {
+            const current = await call(commands.vcsStagedText(stage.path));
+            if (current?.version !== index.version || viewsRef.current !== views || views.b.state.doc !== b)
+              throw staleDiff();
+            requireDisplayedText(stage.status.getState().text, displayed);
+            requireDisplayedText(attached.b?.text() ?? null, b);
+            views.b.dispatch({ changes: transferChunk(chunk, "a", a, b), userEvent: "revert" });
+            return;
+          }
+          if (from === "a") requireDisplayedText(await readDiffSide(path, left), a);
+          else requireDisplayedText(attached.b?.text() ?? null, b);
+          const current = stage.status.getState();
+          if (current.base?.version !== index.version || current.closing || viewsRef.current !== views)
+            throw staleDiff();
+          requireDisplayedText(current.text, displayed);
+          const source = from === "a" ? a : b;
+          const chunkSource = unifiedOnLeft ? opposite(from) : from;
+          if (stage.dirty) stage.edit(transferChunk(chunk, chunkSource, source, displayed));
+          else await writeIndexChunk(stage.path, index, chunk, chunkSource, source);
+        },
+        { refresh: !revert },
+      ).finally(() => {
+        editingIndex.current = false;
+        setBusy(false);
+        void stage.reload();
+        if (viewsRef.current === views && inputKey.current === builtKey) void reload();
+      });
+      return true;
+    };
+    const indexButton = canStageIndex || canUnstage;
+    const indexSource = indexSide === "b" ? "a" : "b";
+    const indexControls = (pane: Side) =>
+      indexButton && (viewMode === "unified" ? pane === "b" : pane === indexSource)
+        ? hunkButtons(pane, (chunk) => ({
+            label: indexSide === "b" ? "Unstage Change" : "Stage Change (git add hunk)",
+            icon: indexSource === "a" ? "diff-arrow-right" : "diff-arrow-left",
+            run: () => void applyIndexChange(chunk, indexSource),
+          }))
+        : [];
+    if (viewMode === "split") {
       let merge: MergeView | null = null;
-      const panes = opts.alignChanges
+      const apply = (i: number, source: Side) => {
+        const chunk = merge?.chunks[i];
+        if (!merge || !chunk) return;
+        if (indexSide) applyIndexChange(chunk, source);
+        else applyChunk(merge, i, source);
+      };
+      // Every split diff but a fitted block scrolls its panes themselves: a content-tall
+      // pane would render its horizontal scrollbar at the content's end, out of reach
+      // until the diff is scrolled there. The padded panes copy their scroll instead.
+      const panes: DiffPanes | null = fit
         ? null
-        : new UnalignedPanes({
-            sync: syncScroll.current,
-            arrows:
-              editableA || editableB
-                ? { toA: editableA, toB: editableB, apply: (i, source) => merge && applyChunk(merge, i, source) }
-                : undefined,
-          });
+        : aligned
+          ? new PaddedPanes(syncScroll.current)
+          : new UnalignedPanes({
+              sync: syncScroll.current,
+              arrows: canReplaceA || canRevert ? { toA: canReplaceA, toB: canRevert, apply } : undefined,
+            });
       // IDEA's colouring: lines by chunk type, carried into the gutters, and typed word highlights.
       const colours = [
         changedLineGutters,
@@ -415,33 +928,41 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
         a: {
           doc: textA,
           extensions: [
-            side(attached.a, editableA, "left"),
+            side(attached.a, editableA, "left", "a"),
             colours,
+            // A fitted block keeps one stripe, on the right (as IDEA's shared scrollbar).
+            fit ? [] : diffOverview("split"),
             panes?.extension ?? [],
             focusTracker("a"),
             findWatch("a"),
-            editableA ? hoverRevert((_v, i) => merge && applyChunk(merge, i, "b")) : [],
+            listener("a", false),
+            keepEdits("a"),
+            indexControls("a"),
+            canReplaceA ? hoverRevert((_v, i) => merge && applyChunk(merge, i, "b")) : [],
           ],
         },
         b: {
           doc: textB,
           extensions: [
-            side(attached.b, editableB, "right"),
+            indexControls("b"),
+            side(attached.b, editableB, "right", "b"),
             colours,
+            diffOverview("split"),
             panes?.extension ?? [],
-            listener,
+            listener("b"),
             focusTracker("b"),
             findWatch("b"),
+            keepEdits("b"),
             inclusion,
-            editableB ? hoverRevert((_v, i) => merge && applyChunk(merge, i, "a")) : [],
+            canRevert ? hoverRevert((_v, i) => apply(i, "a")) : [],
           ],
         },
         parent: host,
         // Unaligned panes draw their arrows on their own divider.
-        revertControls: panes ? undefined : editableB ? "a-to-b" : editableA ? "b-to-a" : undefined,
+        revertControls: panes ? undefined : canRevert ? "a-to-b" : canReplaceA ? "b-to-a" : undefined,
         renderRevertControl:
-          !panes && (editableA || editableB)
-            ? arrowControls(() => merge, { toA: editableA, toB: editableB })
+          !panes && (canReplaceA || canRevert)
+            ? arrowControls(() => merge, { toA: canReplaceA, toB: canRevert }, apply)
             : undefined,
         // Words are highlighted by type (`diffWords`), and gutters tinted instead of a change bar.
         highlightChanges: false,
@@ -452,6 +973,8 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
       merge = mv;
       panes?.attach(mv);
       views = {
+        key: builtKey,
+        unifiedOnLeft: false,
         a: mv.a,
         b: mv.b,
         merge: mv,
@@ -463,39 +986,56 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
       };
       if (scrollTop != null)
         requestAnimationFrame(() => {
-          // The left pane of unpadded panes follows by itself.
+          // A fitted block scrolls on the merge view; the panes scroll themselves.
           if (!panes) (mv.dom as HTMLElement).scrollTop = scrollTop;
           else mv.b.scrollDOM.scrollTop = scrollTop;
         });
     } else {
+      const main = unifiedOnLeft ? "a" : "b";
       const view = new EditorView({
-        doc: textB,
+        doc: unifiedOnLeft ? textA : textB,
         parent: host,
         extensions: [
-          side(attached.b, editableB, "right"),
-          listener,
-          focusTracker("b"),
-          findWatch("b"),
+          indexControls("b"),
+          side(
+            unifiedOnLeft ? attached.a : attached.b,
+            unifiedOnLeft ? editableA : editableB,
+            originOf(main, false),
+            main,
+          ),
+          diffOverview("unified", unifiedOnLeft),
+          listener(main),
+          focusTracker(main),
+          findWatch(main),
+          keepEdits(main),
           inclusion,
+          includable ? unifiedCommitSelection : [],
           highlightChanges ? diffWords : [],
+          unifiedOnLeft ? unifiedLeftDiff(highlightChanges) : [],
+          single ? [] : unifiedLineNumbers(unifiedOnLeft),
           unifiedMergeView({
-            original: textA,
+            original: unifiedOnLeft ? textB : textA,
             highlightChanges,
-            gutter: true,
+            gutter: !unifiedOnLeft,
             syntaxHighlightDeletions: true,
-            mergeControls: editableB
+            mergeControls: canRevert
               ? (type) => {
                   const btn = document.createElement("button");
+                  btn.type = "button";
                   if (type === "accept") {
                     btn.hidden = true;
                     return btn;
                   }
                   btn.textContent = "Revert";
                   btn.title = "Revert this change";
-                  btn.onmousedown = (event) => {
-                    event.preventDefault();
-                    revertUnifiedChunk(view, view.posAtDOM(btn));
-                  };
+                  onHunkButtonClick(btn, () => {
+                    const pos = view.posAtDOM(btn);
+                    if (!indexSide) revertUnifiedChunk(view, pos);
+                    else {
+                      const chunk = getChunks(view.state)?.chunks.find((c) => c.fromB === pos);
+                      if (chunk) applyIndexChange(chunk, "a");
+                    }
+                  });
                   return btn;
                 }
               : false,
@@ -504,11 +1044,59 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
           }),
         ],
       });
-      views = { a: null, b: view, merge: null, panes: null, destroy: () => view.destroy() };
+      const updateOriginal = (changes: ChangeSet) => {
+        view.dispatch({ effects: originalDocChangeEffect(view.state, changes) });
+        updateChunkInfo(true);
+      };
+      const stop = unifiedOnLeft
+        ? attached.b?.subscribeExternalChanges(updateOriginal)
+        : indexSide === "a" && stage?.subscribeChanges(updateOriginal);
+      views = {
+        key: builtKey,
+        unifiedOnLeft,
+        a: null,
+        b: view,
+        merge: null,
+        panes: null,
+        destroy: () => {
+          if (stop) stop();
+          view.destroy();
+        },
+      };
       if (scrollTop != null) requestAnimationFrame(() => (view.scrollDOM.scrollTop = scrollTop));
     }
+    // The labels and the find bar above side-by-side panes start the right side where its pane
+    // does, wherever the divider (dragged, see UnalignedPanes) and the window put it.
+    const root = rootRef.current;
+    if (indexSide) views.applyIndexChange = applyIndexChange;
+    if (indexButton) {
+      if (views.a) exposeHunkButtons(views.a);
+      exposeHunkButtons(views.b);
+    }
+    if (views.a && root && typeof ResizeObserver !== "undefined") {
+      const paneB = views.b.dom;
+      const align = () =>
+        root.style.setProperty(
+          "--diff-b-start",
+          `${paneB.getBoundingClientRect().left - root.getBoundingClientRect().left}px`,
+        );
+      const observer = new ResizeObserver(align);
+      observer.observe(root);
+      observer.observe(paneB);
+      align();
+      const destroyPanes = views.destroy;
+      views.destroy = () => {
+        observer.disconnect();
+        root.style.removeProperty("--diff-b-start");
+        destroyPanes();
+      };
+    }
+    if (viewState && !carry) {
+      if (views.a) restoreViewState(viewState, "a", views.a);
+      restoreViewState(viewState, views.a ? "b" : mainSide(views), views.b);
+    }
     viewsRef.current = views;
-    const built = viewerHost(views, dataRef.current, opts.mode, () => focusedSide.current);
+    const built = viewerHost(views, dataRef.current, viewMode, () => focusedSide.current);
     const detach = contribs.map((c) => c.attach?.(built));
     const destroyViews = views.destroy;
     views.destroy = () => {
@@ -516,28 +1104,107 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
       destroyViews();
     };
     viewerRef.current = built;
+    if (carry) {
+      const at = built.locate(carry.side, carry.line);
+      if (at) {
+        const line = at.pane.view.state.doc.line(at.line + 1);
+        revealPos(at.pane.view, line.from + Math.min(line.length, carry.col));
+        if (carry.focused) at.pane.view.focus();
+      }
+    }
     setViewer(built);
     setViewsGen((g) => g + 1);
-    requestAnimationFrame(updateChunkInfo);
+    requestAnimationFrame(() => updateChunkInfo());
   }, [
     contribs,
     attached,
-    statics,
+    staticA,
+    staticB,
+    edited,
     lang,
-    opts.mode,
-    opts.alignChanges,
+    viewMode,
+    single,
+    fit,
+    aligned,
     opts.collapse,
     opts.ignore,
     opts.highlight,
+    wrapSlot,
     editableA,
     editableB,
+    canRevert,
+    canReplaceA,
+    canStageIndex,
+    canUnstage,
     updateChunkInfo,
     data.annotations,
     includable,
     path,
+    indexSide,
+    indexDoc,
+    indexReady,
+    unifiedOnLeft,
+    left,
+    right,
+    swapped,
+    reload,
+    viewState,
   ]);
 
+  useEffect(() => {
+    const views = viewsRef.current;
+    if (!views) return;
+    // Padded panes (an aligned split) re-insert MergeView's alignment spacers on their next measure,
+    // after the wrap reflow, so a scroll snapshot drifts: anchor each pane to its visible line and
+    // re-apply once the spacers land. Unaligned panes have no spacers; a fitted block has no scroller.
+    const panes = views.panes instanceof PaddedPanes ? views.panes : null;
+    const anchorFor = (view: EditorView) => {
+      const top = view.scrollDOM.getBoundingClientRect().top;
+      const block = view.lineBlockAtHeight(Math.max(0, top - view.documentTop));
+      return EditorView.scrollIntoView(block.from, { y: "start", yMargin: block.top + view.documentTop - top });
+    };
+    const anchors = panes ? { a: views.a ? anchorFor(views.a) : null, b: anchorFor(views.b) } : null;
+    // The re-anchored right pane leads the sync: the left pane's delayed reflow follows it rather than
+    // being read as a user scroll that pulls the right pane back to where it was.
+    if (anchors) panes?.leadScroll("b");
+    for (const view of [views.a, views.b]) {
+      if (!view) continue;
+      const anchor = anchors ? (view === views.a ? anchors.a : anchors.b) : view.scrollSnapshot();
+      view.dispatch({
+        effects: [wrapSlot.reconfigure(softWrap ? EditorView.lineWrapping : []), ...(anchor ? [anchor] : [])],
+      });
+    }
+    // MergeView inserts alignment spacers on its next measure, after the panes have reflowed.
+    if (anchors) {
+      let frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(() => {
+          if (viewsRef.current !== views) return;
+          panes?.leadScroll("b");
+          if (views.a && anchors.a) views.a.dispatch({ effects: anchors.a });
+          views.b.dispatch({ effects: anchors.b });
+        });
+      });
+      return () => cancelAnimationFrame(frame);
+    }
+  }, [softWrap, wrapSlot, fit]);
+
   useEffect(() => viewsRef.current?.panes?.setSync(opts.syncScroll), [opts.syncScroll]);
+
+  // The editor area focuses the tab's host (`[data-editor-focus]`), e.g. after F7 opened the next
+  // file: hand that focus on to the diff, so its keymap and Jump to Source apply right away.
+  useEffect(() => {
+    // The blocks of an all-in-one diff share one tab: none takes its focus.
+    const host = fit ? null : rootRef.current?.closest<HTMLElement>("[data-editor-focus]");
+    const views = viewsRef.current;
+    if (!host || !views) return;
+    const forward = () => (focusedSide.current === "a" && views.a ? views.a : views.b).focus();
+    const onFocus = (e: FocusEvent) => {
+      if (e.target === host) forward();
+    };
+    host.addEventListener("focus", onFocus);
+    if (document.activeElement === host) forward();
+    return () => host.removeEventListener("focus", onFocus);
+  }, [viewsGen, fit]);
 
   useEffect(
     () => () => {
@@ -549,7 +1216,8 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
 
   // Reveal the requested line (or the first / last difference) once per request.
   const revealed = useRef<string | null>(null);
-  const revealKey = data.line == null && !data.reveal ? null : `${data.line}:${data.lineSide}:${data.reveal}`;
+  const revealKey =
+    data.line == null && !data.reveal ? null : `${input.key}:${data.line}:${data.col}:${data.lineSide}:${data.reveal}`;
   useEffect(() => {
     let v = viewsRef.current?.b;
     if (!v || revealKey === null || revealed.current === revealKey || !ready) return;
@@ -557,11 +1225,10 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
     let at: number | undefined;
     if (data.line != null) {
       let line = data.line;
-      if (data.lineSide === "left") {
-        const found = viewerRef.current?.locate("left", line);
-        if (found) [v, line] = [found.pane.view, found.line];
-      }
-      at = v.state.doc.line(Math.min(v.state.doc.lines, Math.max(1, line + 1))).from;
+      const found = viewerRef.current?.locate(data.lineSide === "left" ? "left" : "right", line);
+      if (found) [v, line] = [found.pane.view, found.line];
+      const target = v.state.doc.line(Math.min(v.state.doc.lines, Math.max(1, line + 1)));
+      at = target.from + Math.min(data.col ?? 0, target.length);
     } else {
       const chunks = getChunks(v.state)?.chunks ?? [];
       at = (data.reveal === "last" ? chunks[chunks.length - 1] : chunks[0])?.fromB;
@@ -572,7 +1239,7 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
     // Keep keyboard navigation in the revealed pane after moving to another file.
     if (data.reveal || v === viewsRef.current?.a) v.focus();
     updateChunkInfo();
-  }, [ready, statics, revealKey, data.line, data.lineSide, data.reveal, updateChunkInfo]);
+  }, [ready, statics, revealKey, data.line, data.col, data.lineSide, data.reveal, updateChunkInfo]);
 
   // IDEA: past the last (first) difference F7 (Shift+F7) first hints, then moves along the chain.
   const [navHint, setNavHint] = useState<string | null>(null);
@@ -590,13 +1257,23 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
       const request = {};
       navigation.current = request;
       try {
-        const neighbour = await changedChainNeighbour(data, dir, opts.ignore);
-        if (navigation.current === request && neighbour) await openDiff(neighbour, { preview: true });
+        const neighbour = skipUnchangedFiles
+          ? await changedChainNeighbour(data, dir, opts.ignore)
+          : chainNeighbour(data, dir);
+        if (navigation.current !== request || !neighbour) return;
+        try {
+          await indexDoc?.save();
+        } catch {
+          return; // A failed save keeps the staged draft in this diff.
+        }
+        if (navigation.current !== request) return;
+        if (onNeighbour) onNeighbour(neighbour);
+        else await openDiff(neighbour, { preview: true });
       } finally {
         if (navigation.current === request) navigation.current = null;
       }
     },
-    [data, opts.ignore],
+    [data, opts.ignore, onNeighbour, indexDoc, skipUnchangedFiles],
   );
   useEffect(() => {
     if (!navHint) return;
@@ -630,7 +1307,38 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
       }
       pendingFile.current = 0;
       setNavHint(null);
-      (dir === 1 ? goToNextChunk : goToPreviousChunk)({ state: v.state, dispatch: (tr) => v.dispatch(tr) });
+      (dir === 1 ? goToNextChunk : goToPreviousChunk)({
+        state: v.state,
+        dispatch: (tr) => {
+          const selection = tr.selection ?? v.state.selection;
+          // No scrollIntoView effect: it would set scrollTop in the same measure and cut off the
+          // smooth scroll below, which centres the caret.
+          v.dispatch({ selection, userEvent: "select.byChunk" });
+          // CodeMirror draws the caret only in a focused editor, so a difference reached from
+          // the toolbar, a menu or F7 pressed after those would move an invisible caret.
+          v.focus();
+          const scroller = views.merge && !views.panes ? views.merge.dom : v.scrollDOM;
+          v.requestMeasure({
+            key: step,
+            read: () => {
+              const documentTop = v.documentTop - scroller.getBoundingClientRect().top + scroller.scrollTop;
+              const caret = v.coordsAtPos(v.state.selection.main.head);
+              const lineTop = caret
+                ? (caret.top + caret.bottom) / 2 - v.documentTop
+                : v.lineBlockAt(v.state.selection.main.head).top;
+              return documentTop + lineTop - scroller.clientHeight / 2;
+            },
+            write: (top) => {
+              const options: ScrollToOptions = {
+                top: Math.max(0, top),
+                behavior: reducedMotion() ? "instant" : "smooth",
+              };
+              if (views.panes) views.panes.scrollTo(onA ? "a" : "b", options);
+              else scroller.scrollTo(options);
+            },
+          });
+        },
+      });
       if (v !== views.b) {
         // Mirror the caret into the right pane so the counter follows.
         const chunks = getChunks(v.state)?.chunks ?? [];
@@ -648,7 +1356,8 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
   const fileSource = sideFile(left, path) ?? sideFile(right, path);
   const [onDisk, setOnDisk] = useState<string | null>(null);
   useEffect(() => {
-    if (fileSource) return;
+    // A virtual path (a plugin's text diff) names no file on disk.
+    if (metadataLoading || gitlink || fileSource || isVirtualUri(path)) return;
     let alive = true;
     void call(commands.fsProbe(path)).then(
       () => alive && setOnDisk(path),
@@ -657,61 +1366,79 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
     return () => {
       alive = false;
     };
-  }, [path, fileSource]);
+  }, [path, fileSource, gitlink, metadataLoading]);
   const worktreeSource = onDisk === path ? path : null;
-  const source = fileSource ?? worktreeSource;
+  const source = gitlink || metadataLoading ? null : (fileSource ?? worktreeSource);
 
   const jumpToSource = useCallback(() => {
+    if (gitlink || metadataLoading) return;
     const views = viewsRef.current;
     const fileA = sideFile(left, path);
     const fileB = sideFile(right, path);
-    const onA = focusedSide.current === "a" && !!views?.a;
-    const v = onA ? views!.a! : views?.b;
-    const own = onA ? fileA : fileB;
+    const side = views?.a ? focusedSide.current : views?.unifiedOnLeft ? "a" : "b";
+    const v = (side === "a" && views?.a) || views?.b;
+    const own = side === "a" ? fileA : fileB;
     const file = own ?? fileB ?? fileA ?? worktreeSource;
     if (!file) return;
-    const open = (line: number, col: number) =>
-      void editorService().openFile(file, { selection: { line, col }, focus: true });
+    const open = (line: number, col: number) => {
+      void Promise.resolve(indexDoc?.save())
+        .then(() => {
+          onJumpToSource?.();
+          return editorService().openFile(file, { selection: { line, col }, focus: true });
+        })
+        .catch(() => {}); // Keep the diff visible if its staged draft could not be saved.
+    };
     if (!v) return open(0, 0);
     const head = v.state.selection.main.head;
     const at = v.state.doc.lineAt(head);
     if (own) return open(at.number - 1, head - at.from);
     // The pane shows another version of the file: follow the diff to the line there.
     const from = v.state.doc;
-    const known = file === fileB ? views?.b.state.doc : file === fileA ? views?.a?.state.doc : undefined;
+    const known =
+      views && (file === fileB ? displayedDoc(views, "b") : file === fileA ? displayedDoc(views, "a") : undefined);
     void (known ? Promise.resolve(known.toString()) : readWorkingText(file)).then((text) => {
       if (text === null) return open(at.number - 1, head - at.from);
       const to = Text.of(text.split(/\r?\n/));
       const line = mapLine(Chunk.build(from, to), at.number - 1, from, to);
       open(line, to.line(line + 1).text === at.text ? head - at.from : 0);
     });
-  }, [left, right, path, worktreeSource]);
+  }, [left, right, path, worktreeSource, onJumpToSource, indexDoc, gitlink, metadataLoading]);
 
-  const currentChunk = (): { chunk: Chunk; index: number } | undefined => {
-    const v = viewsRef.current?.b;
+  const currentChunk = (useFocusedPane = false, fallback = true): { chunk: Chunk; index: number } | undefined => {
+    const views = viewsRef.current;
+    const side = useFocusedPane && views?.a && focusedSide.current === "a" ? "a" : "b";
+    const v = side === "a" ? views?.a : views?.b;
     if (!v) return undefined;
     const chunks = getChunks(v.state)?.chunks ?? [];
     const head = v.state.selection.main.head;
-    const index = Math.max(
-      0,
-      chunks.findIndex((c) => c.fromB <= head && head <= Math.max(c.fromB, c.endB)),
-    );
+    const at = useFocusedPane
+      ? chunkAt(chunks, side, head, v.state.doc.length)
+      : chunks.findIndex((c) => c.fromB <= head && head <= Math.max(c.fromB, c.endB));
+    const index = fallback ? Math.max(0, at) : at;
     const chunk = chunks[index];
     return chunk ? { chunk, index } : undefined;
   };
 
   const revertChunk = () => {
     const views = viewsRef.current;
-    const cur = currentChunk();
+    const cur = currentChunk(!!indexSide);
     if (!views || !cur) return;
+    if (views.applyIndexChange) {
+      views.applyIndexChange(cur.chunk, "a");
+      return;
+    }
     if (views.merge) applyChunk(views.merge, cur.index, "a");
     else revertUnifiedChunk(views.b, cur.chunk.fromB);
   };
 
   const stageChunk = async () => {
     const views = viewsRef.current;
-    const cur = currentChunk();
+    const cur = currentChunk(!!indexSide);
     if (!views || !cur) return;
+    if (views.applyIndexChange) {
+      views.applyIndexChange(cur.chunk, "b");
+      return;
+    }
     setBusy(true);
     try {
       const aDoc = views.a?.state.doc ?? Text.of((attached?.a?.text() ?? statics?.a ?? "").split("\n"));
@@ -744,19 +1471,28 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
   /** The side the bar searches (the last one, once closed: closing clears its highlights). */
   const findSide = useRef<Side>("b");
   const findOpen = useRef(false);
+  /** The find bar's Search In Changes, for this diff (as IDEA keeps it in the diff's context). */
+  const searchInChanges = useRef(false);
   const findId = useId();
   const viewOf = (s: Side) => (s === "a" && viewsRef.current?.a) || viewsRef.current?.b || null;
   const findTarget = useMemo<FindTarget>(() => {
-    const sideOf = (): Side => (findSide.current === "a" && viewsRef.current?.a ? "a" : "b");
+    const sideOf = (): Side => {
+      const views = viewsRef.current;
+      return views?.a ? findSide.current : views ? mainSide(views) : "b";
+    };
     return {
       id: `diff:${findId}`,
-      view: () => (sideOf() === "a" ? viewsRef.current?.a : viewsRef.current?.b) ?? null,
+      view: () => (sideOf() === "a" && viewsRef.current?.a) || viewsRef.current?.b || null,
       watch(fn) {
         const set = findWatchers.current[sideOf()];
         set.add(fn);
         return () => void set.delete(fn);
       },
       isOpen: () => findOpen.current,
+      inChanges: {
+        get: () => searchInChanges.current,
+        set: (on) => void (searchInChanges.current = on),
+      },
     };
   }, [findId]);
   const editableSide = (s: Side) => (s === "a" ? editableA : editableB);
@@ -764,7 +1500,7 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
   const openFind = (replace: boolean) => {
     const views = viewsRef.current;
     if (!views) return;
-    const s: Side = focusedSide.current === "a" && views.a ? "a" : "b";
+    const s = views.a ? focusedSide.current : mainSide(views);
     if (findOpen.current && findSide.current !== s)
       viewOf(findSide.current)?.dispatch({ effects: setFindOpen.of(false) });
     findSide.current = s;
@@ -783,6 +1519,56 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
     closeFind();
     return true;
   };
+  /** Select Opposite Diff Pane (⌃⇧⇥): the other side keeps its own caret, as in IDEA. */
+  const focusOpposite = () => {
+    const views = viewsRef.current;
+    if (!views?.a) return false;
+    (focusedSide.current === "a" ? views.b : views.a).focus();
+    return true;
+  };
+  const close = () => {
+    if (!onClose) return false;
+    onClose();
+    return true;
+  };
+  /** Show Diff in External Tool: the panes' text, or a saved file where a side is one. */
+  const externalDiff = useWorkflowSettings((s) => s.externalDiff);
+  const canExternal = externalDiff.enabled && !!externalDiff.path && !binary && !metadataLoading;
+  const showInExternalTool = () => {
+    const views = viewsRef.current;
+    if (!views || !canExternal) return false;
+    const remote = isRemoteWindow();
+    const sideOf = async (s: Side) => {
+      const side = s === "a" ? left : right;
+      const att = s === "a" ? attached?.a : attached?.b;
+      const file = sideFile(side, path);
+      const name = baseName((side.type === "rev" && side.path) || file || path) || "content";
+      if (file && att && !remote) {
+        await att.save();
+        return { path: file, text: null, name };
+      }
+      const doc = displayedDoc(views, s);
+      return { path: null, text: doc.toString(), name };
+    };
+    void Promise.all([sideOf("a"), sideOf("b")])
+      .then(([a, b]) => call(commands.diffExternalTool(a, b, diffTitle(data))))
+      .catch((e) =>
+        notifications().notify({
+          group: "vcs",
+          level: "error",
+          title: "Cannot show diff in external tool",
+          body: errorMessage(e),
+        }),
+      );
+    return true;
+  };
+  /** Swap Sides: for diffs whose two sides the user picked (Compare Files, Clipboard, blank diff). */
+  const canSwap = !!input_.swappable && !single;
+  const swapSides = () => {
+    if (!canSwap) return false;
+    setSwappedFor(swapped ? null : input_);
+    return true;
+  };
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.defaultPrevented) return;
     if (isStrokeOf(e, "find.inFile")) openFind(false);
@@ -791,7 +1577,8 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
       if (!findOpen.current) findSide.current = focusedSide.current;
       if (!searchAgain(findTarget, isStrokeOf(e, "find.next"))) openFind(false);
     } else if (e.key === "Escape" && findOpen.current) closeFind();
-    else return;
+    // Esc that nothing in the diff took (find bar, selection, completion) closes its tab, as in IDEA.
+    else if (!plainEscape(e) || isPopupOpen() || !close()) return;
     e.preventDefault();
     e.stopPropagation();
   };
@@ -799,6 +1586,10 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
   /** ⌃⌘→ / ⌃⌘←: the change at the caret applied toward the other, editable side. */
   const applyChange = (source: "a" | "b") => {
     const views = viewsRef.current;
+    if (views?.applyIndexChange) {
+      const cur = currentChunk(true, false);
+      return !!cur && views.applyIndexChange(cur.chunk, source);
+    }
     const merge = views?.merge;
     if (!merge || !views.a || !(source === "a" ? editableB : editableA)) return false;
     const side = focusedSide.current;
@@ -820,13 +1611,15 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
       {
         id: "split",
         label: "Side-by-side Viewer",
-        checked: opts.mode === "split",
+        checked: viewMode === "split",
+        disabled: single,
         run: () => setOpts({ mode: "split" }),
       },
       {
         id: "unified",
         label: "Unified Viewer",
-        checked: opts.mode === "unified",
+        checked: viewMode === "unified",
+        disabled: single,
         run: () => setOpts({ mode: "unified" }),
       },
       { kind: "separator" },
@@ -858,19 +1651,40 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
         run: () => setOpts({ collapse: !opts.collapse }),
       },
       {
+        id: "softWrap",
+        label: "Use Soft Wraps",
+        checked: softWrap,
+        run: () => setOpts({ softWrap: !softWrap }),
+      },
+      {
         id: "sync",
         label: "Synchronize Scrolling",
         checked: opts.syncScroll,
-        disabled: opts.mode !== "split",
+        disabled: viewMode !== "split",
         run: () => setOpts({ syncScroll: !opts.syncScroll }),
       },
       {
         id: "align",
         label: "Align Changes",
-        checked: opts.alignChanges,
-        disabled: opts.mode !== "split",
+        checked: aligned,
+        disabled: viewMode !== "split" || fit,
         run: () => setOpts({ alignChanges: !opts.alignChanges }),
       },
+      // A tab of one file of a change: show every file of it in one scrollable tab instead.
+      ...(input_.chain && input_.chain.length > 1 && !input_.embedded && onClose
+        ? [
+            { kind: "separator" } as const,
+            {
+              id: "allInOne",
+              label: "Show All Files in One Diff View",
+              checked: false,
+              run: () => {
+                setAllInOneDiff(true);
+                void openDiff(input_).then(() => onClose());
+              },
+            },
+          ]
+        : []),
       ...contribs.flatMap((c) => {
         const items = c.settingsItems?.() ?? [];
         return items.length ? [{ kind: "separator" } as const, ...items] : [];
@@ -902,8 +1716,32 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
     const line = hit
       ? hit.view.state.doc.lineAt(hit.view.posAtCoords({ x: e.clientX, y: e.clientY }, false)).number - 1
       : -1;
+    const local = viewsRef.current?.b;
+    const inclusion: MenuItem[] = [];
+    if (includable && local && hit && line >= 0) {
+      const target = e.target instanceof Element ? e.target : null;
+      const unified = viewMode === "unified" && target ? unifiedCommitLines(hit.view, target) : null;
+      const { doc, selection } = hit.view.state;
+      const selected = selection.ranges.map(({ from, to }) => ({
+        first: doc.lineAt(from).number - 1,
+        last: doc.lineAt(Math.max(from, to - 1)).number - 1,
+      }));
+      const ranges = selected.some(({ first, last }) => first <= line && line <= last)
+        ? selected
+        : [{ first: line, last: line }];
+      const lines =
+        unified ?? (target?.closest(".cm-deletedChunk") ? null : { [hit.side === "left" ? "old" : "current"]: ranges });
+      const arg = lines && commitLineTarget({ path, view: local, selection: lines });
+      if (arg) {
+        inclusion.push(
+          { kind: "action", action: INCLUDE_COMMIT_LINES, arg },
+          { kind: "action", action: EXCLUDE_COMMIT_LINES, arg },
+        );
+      }
+    }
     const groups = [
       ...(hit ? contribs.map((c) => c.contextMenuItems?.({ side: hit.side, line }) ?? []) : []),
+      inclusion,
       blameItems(pane),
     ].filter((g) => g.length);
     if (!groups.length) return;
@@ -921,18 +1759,29 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
     applyChange,
     file,
     showSettings,
+    focusOpposite,
+    close,
+    swapSides,
+    showInExternalTool,
     viewer: viewerOf,
   });
-  useEffect(() => {
-    nav.current = {
+  useLayoutEffect(() => {
+    // Keep the registered navigator's identity while refreshing its handlers. Before paint, so a
+    // shortcut pressed as the toolbar updates (Jump to Source once the working copy is found) runs
+    // the handlers that toolbar shows.
+    Object.assign(nav.current, {
       next: () => step(1),
       prev: () => step(-1),
       jumpToSource,
       applyChange,
       file,
       showSettings,
+      focusOpposite,
+      close,
+      swapSides,
+      showInExternalTool,
       viewer: viewerOf,
-    };
+    });
   });
 
   useEffect(
@@ -945,15 +1794,53 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
     [],
   );
 
-  const identical =
-    ready && chunkInfo.count === 0 && (attached?.a?.text() ?? statics?.a) === (attached?.b?.text() ?? statics?.b);
-  // Staging applies to local changes against HEAD / the index only.
-  const canStage = editableB && isWorktree(right) && left.type === "rev" && !!useVcs.getState().root;
+  const stagedA = indexReady && indexSide === "a";
+  const stagedB = indexReady && indexSide === "b";
+  const textA = editedText("a") ?? attached?.a?.text() ?? (stagedA ? indexState.text : statics?.a) ?? "";
+  const textB = editedText("b") ?? attached?.b?.text() ?? (stagedB ? indexState.text : statics?.b) ?? "";
+  const eolA = attached?.a?.lineEnding() ?? detectLineEnding(stagedA ? (statics?.a ?? "") : textA);
+  const eolB = attached?.b?.lineEnding() ?? detectLineEnding(stagedB ? (statics?.b ?? "") : textB);
+  const rawA = attached?.a || stagedA ? liveSideText(textA, eolA) : textA;
+  const rawB = attached?.b || stagedB ? liveSideText(textB, eolB) : textB;
+  const badgeA = lineEndingBadge(rawA);
+  const badgeB = lineEndingBadge(rawB);
+  const sameText = rawA.replace(/\r\n?/g, "\n") === rawB.replace(/\r\n?/g, "\n");
+  const eolOnly = ready && !binary && rawA !== rawB && sameText;
+  const eolDiffers = ready && !binary && (badgeA !== badgeB || eolOnly);
+  // Texts typed into a blank diff aren't files: no "identical" notice for them.
+  const identical = ready && chunkInfo.count === 0 && rawA === rawB && !isEditableText(left) && !isEditableText(right);
+  // Equal texts with different git modes: the change git records (chmod).
+  const modeChange =
+    identical && modes !== null && modes.a !== null && modes.b !== null && modes.a !== modes.b
+      ? { from: modes.a, to: modes.b }
+      : null;
+  const canStage = indexSide
+    ? canStageIndex
+    : editableB && isWorktree(right) && left.type === "rev" && !!useVcs.getState().root;
   const hasSource = !!source;
+
+  const paneTitle = (s: DiffSide): PaneTitle => {
+    if (s.type === "worktree" || s.type === "text") return { label: sideLabel(s), detail: s.labelDetail };
+    if (s.type !== "rev") return { label: sideLabel(s) };
+    const file = s.path ?? path;
+    const root = repoOf(file);
+    const commit = !s.label && s.rev === "HEAD" && root ? heads[root]?.headCommit : null;
+    return {
+      label: commit ? commit.slice(0, 8) : sideLabel(s),
+      revisionPath: root && file.startsWith(`${root}/`) ? file.slice(root.length + 1) : file,
+    };
+  };
+  const titleA = paneTitle(left);
+  const titleB = paneTitle(right);
+  const captionA = [titleA.label, titleA.revisionPath ?? titleA.detail].filter(Boolean).join(" ");
+  const captionB = [titleB.label, titleB.revisionPath ?? titleB.detail].filter(Boolean).join(" ");
+  const sourceLabels = "labelDetail" in left || "labelDetail" in right;
+  const labels = clsx(styles.labels, sourceLabels && styles.sourceLabels);
 
   return (
     <div
-      className={styles.root}
+      ref={rootRef}
+      className={clsx(styles.root, fit && styles.fit, deletedOneSided && styles.indexDeletion)}
       onKeyDown={onKeyDown}
       onFocusCapture={() => {
         setFocusedDiffNavigator(nav.current);
@@ -966,7 +1853,7 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
         }
       }}
     >
-      <div ref={toolbarRef} className={styles.toolbar} role="toolbar" aria-label={tx("Diff")}>
+      <div ref={toolbarRef} className={styles.toolbar} role="toolbar" aria-label={tx("Diff")} hidden={fit}>
         <IconButton
           icon="arrow-up"
           title="Previous Difference"
@@ -981,6 +1868,26 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
           size="small"
           onClick={() => step(1)}
         />
+        {data.chain && (
+          <>
+            <IconButton
+              icon="arrow-left"
+              title="Compare Previous File"
+              shortcut={shortcutLabel("diff.prevFile")}
+              size="small"
+              disabled={!chainNeighbour(data, -1)}
+              onClick={() => file(-1)}
+            />
+            <IconButton
+              icon="arrow-right"
+              title="Compare Next File"
+              shortcut={shortcutLabel("diff.nextFile")}
+              size="small"
+              disabled={!chainNeighbour(data, 1)}
+              onClick={() => file(1)}
+            />
+          </>
+        )}
         {hasSource && (
           <IconButton
             icon="edit"
@@ -991,18 +1898,23 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
           />
         )}
         <span className={styles.sep} />
+        {canSwap && <IconButton icon="swap-panels" title="Swap Sides" size="small" onClick={() => void swapSides()} />}
         <IconButton
-          icon="split"
+          icon="diff-side-by-side"
+          className={styles.inlineOption}
           title="Side-by-side Viewer"
           size="small"
-          pressed={opts.mode === "split"}
+          pressed={viewMode === "split"}
+          disabled={single}
           onClick={() => setOpts({ mode: "split" })}
         />
         <IconButton
-          icon="list"
+          icon="diff-unified"
+          className={styles.inlineOption}
           title="Unified Viewer"
           size="small"
-          pressed={opts.mode === "unified"}
+          pressed={viewMode === "unified"}
+          disabled={single}
           onClick={() => setOpts({ mode: "unified" })}
         />
         <span className={styles.sep} />
@@ -1022,30 +1934,34 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
         />
         <IconButton
           icon="collapse-all"
+          className={styles.inlineOption}
           title="Collapse Unchanged Fragments"
           size="small"
           pressed={opts.collapse}
           onClick={() => setOpts({ collapse: !opts.collapse })}
         />
-        {opts.mode === "split" && (
+        {viewMode === "split" && (
           <IconButton
             icon="lock"
+            className={styles.inlineOption}
             title="Synchronize Scrolling"
             size="small"
             pressed={opts.syncScroll}
             onClick={() => setOpts({ syncScroll: !opts.syncScroll })}
           />
         )}
-        {editableB && (
+        {(canRevert || canStage || canUnstage) && (
           <>
             <span className={styles.sep} />
-            <IconButton
-              icon="revert"
-              title="Revert Change"
-              size="small"
-              disabled={!chunkInfo.count}
-              onClick={revertChunk}
-            />
+            {canRevert && (
+              <IconButton
+                icon="revert"
+                title="Revert Change"
+                size="small"
+                disabled={!chunkInfo.count || (!!indexSide && busy)}
+                onClick={revertChunk}
+              />
+            )}
             {canStage && (
               <IconButton
                 icon="plus"
@@ -1055,72 +1971,172 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
                 onClick={() => void stageChunk()}
               />
             )}
+            {canUnstage && (
+              <IconButton
+                icon="minus"
+                title="Unstage Change"
+                size="small"
+                disabled={!chunkInfo.count || busy}
+                onClick={() => {
+                  const cur = currentChunk(true);
+                  if (cur) viewsRef.current?.applyIndexChange?.(cur.chunk, "a");
+                }}
+              />
+            )}
           </>
         )}
         <span className={styles.sep} />
-        <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void reload()} />
-        <span className={styles.count}>
-          {binary && tx("Binary content")}
-          {!ready || binary
-            ? ""
-            : chunkInfo.count === 0
-              ? identical
-                ? tx("Contents are identical")
-                : chunkInfo.whitespaceOnly
-                  ? tx("Whitespace-only changes")
-                  : tx("No differences")
-              : chunkInfo.current >= 0
-                ? tx`${chunkInfo.current + 1} of ${chunkInfo.count} differences`
-                : chunkInfo.count === 1
-                  ? tx`${chunkInfo.count} difference`
-                  : tx`${chunkInfo.count} differences`}
-          {ready && !binary && chunkInfo.count > 0 && chunkInfo.whitespaceOnly && tx(" · Whitespace-only changes")}
-          {ready &&
-            !binary &&
-            chunkInfo.moves > 0 &&
-            (chunkInfo.moves === 1 ? tx(" · 1 moved block") : tx` · ${chunkInfo.moves} moved blocks`)}
-        </span>
-        {contribs.map((c, i) => c.Toolbar && <c.Toolbar key={i} host={viewer} />)}
-        {toolbarActions}
         <IconButton
-          icon="settings"
-          title="Settings"
-          shortcut={shortcutLabel("diff.showSettings")}
+          icon="refresh"
+          title="Refresh"
           size="small"
-          aria-haspopup="menu"
-          onClick={(e) => showSettings(e.currentTarget)}
+          onClick={() => void (gitlink ? refreshNow() : reload())}
         />
+        <div className={styles.statusTools}>
+          <span className={styles.count}>
+            {gitlink && (
+              <>
+                {tx("Submodule")} {"· "}
+              </>
+            )}
+            {binary && tx("Binary content")}
+            {!ready || binary
+              ? ""
+              : chunkInfo.count === 0
+                ? identical
+                  ? modeChange
+                    ? tx`File mode changed: ${modeChange.from} → ${modeChange.to}`
+                    : tx("Contents are identical")
+                  : eolOnly
+                    ? tx("Contents differ only in line separators")
+                    : chunkInfo.whitespaceOnly
+                      ? tx("Whitespace-only changes")
+                      : tx("No differences")
+                : chunkInfo.current >= 0
+                  ? tx`${chunkInfo.current + 1} of ${chunkInfo.count} differences`
+                  : chunkInfo.count === 1
+                    ? tx`${chunkInfo.count} difference`
+                    : tx`${chunkInfo.count} differences`}
+            {ready && !binary && chunkInfo.count > 0 && chunkInfo.whitespaceOnly && tx(" · Whitespace-only changes")}
+            {ready &&
+              !binary &&
+              chunkInfo.moves > 0 &&
+              (chunkInfo.moves === 1 ? tx(" · 1 moved block") : tx` · ${chunkInfo.moves} moved blocks`)}
+          </span>
+          {contribs.map((c, i) => {
+            if (!c.Toolbar) return null;
+            return (
+              // oxlint-disable-next-line react/no-array-index-key -- contributions have no stable id; position is the identity
+              <c.Toolbar key={i} host={viewer} />
+            );
+          })}
+          {toolbarActions}
+          {canExternal && (
+            <IconButton
+              icon="external-tools"
+              title="Show Diff in External Tool"
+              size="small"
+              onClick={() => void showInExternalTool()}
+            />
+          )}
+          {getAction("vcs.showDiffInNewWindow") && auxiliaryWindow()?.kind !== "diff" && (
+            <IconButton
+              icon="external-link"
+              title="Show Diff in New Window"
+              size="small"
+              onClick={() => {
+                void Promise.resolve(indexDoc?.save())
+                  .then(() => executeAction("vcs.showDiffInNewWindow", deletedOneSided ? input_ : data))
+                  .catch(() => {});
+              }}
+            />
+          )}
+          {auxiliaryWindow()?.kind === "diff" && getAction("vcs.showDiffInEditorTab") && (
+            <IconButton
+              icon="editor-only"
+              title="Show Diff in Editor Tab"
+              size="small"
+              onClick={() => void executeAction("vcs.showDiffInEditorTab")}
+            />
+          )}
+          <IconButton
+            icon="settings"
+            title="Settings"
+            shortcut={shortcutLabel("diff.showSettings")}
+            size="small"
+            aria-haspopup="menu"
+            onClick={(e) => showSettings(e.currentTarget)}
+          />
+        </div>
       </div>
-      {opts.mode === "split" ? (
-        <div className={styles.labels}>
-          <span className={styles.label} title={sideLabel(left)}>
-            {sideLabel(left)}
+      {viewMode === "split" ? (
+        <div className={labels}>
+          <span className={styles.label} title={captionA}>
+            <span className={styles.labelText}>{titleA.label}</span>
+            <PaneTitleDetail {...titleA} />
+            {eolDiffers && eolA && <span className={styles.badge}>{badgeA}</span>}
             {editableA && (
               <span className={styles.badge}>
                 <T>editable</T>
               </span>
             )}
           </span>
-          <span className={styles.label} title={sideLabel(right)}>
-            {sideLabel(right)}
+          <span className={styles.label} title={captionB}>
+            <span className={styles.labelText}>{titleB.label}</span>
+            <PaneTitleDetail {...titleB} />
+            {eolDiffers && eolB && <span className={styles.badge}>{badgeB}</span>}
             {editableB && (
-              <span className={styles.badge}>{left.type === "rev" ? tx("working copy") : tx("editable")}</span>
+              <span className={styles.badge}>
+                {isWorktree(right) && left.type === "rev" ? tx("working copy") : tx("editable")}
+              </span>
             )}
           </span>
         </div>
-      ) : (
-        <div className={styles.labels}>
-          <span className={styles.label}>
-            {sideLabel(left)} → {sideLabel(right)}
+      ) : single && indexSide === "b" ? (
+        <div className={labels}>
+          <span className={styles.label} title={captionB}>
+            <span className={styles.labelText}>{titleB.label}</span>
+            {titleB.detail && <span className={styles.labelFile}>{titleB.detail}</span>}
+            {editableB && <span className={styles.badge}>{tx("editable")}</span>}
           </span>
+        </div>
+      ) : (
+        // A deleted file's swapped viewer still reads in the request's order: revision → (deleted).
+        <div className={labels}>
+          <span
+            className={styles.label}
+            title={
+              sourceLabels ? (deletedOneSided ? `${captionB} → ${captionA}` : `${captionA} → ${captionB}`) : undefined
+            }
+          >
+            <span className={styles.labelText}>{sideLabel(deletedOneSided ? right : left)}</span>
+            {sourceLabels && <PaneTitleDetail {...(deletedOneSided ? titleB : titleA)} />}
+            {unifiedOnLeft && <span className={styles.badge}>{tx("editable")}</span>}
+            {eolDiffers && (deletedOneSided ? eolB : eolA) && (
+              <span className={styles.badge}>{deletedOneSided ? badgeB : badgeA}</span>
+            )}{" "}
+            →<span className={styles.labelText}>{sideLabel(deletedOneSided ? left : right)}</span>
+            {sourceLabels && <PaneTitleDetail {...(deletedOneSided ? titleA : titleB)} />}
+            {eolDiffers && (deletedOneSided ? eolA : eolB) && (
+              <span className={styles.badge}>{deletedOneSided ? badgeA : badgeB}</span>
+            )}
+          </span>
+        </div>
+      )}
+      {indexDoc && indexReady && indexState.error && (
+        <div className={styles.stagedNotice} role="alert">
+          <span>{indexState.error}</span>
+          <Button size="small" onClick={() => void reloadStagedDocument(indexDoc)}>
+            Reload Staged Version
+          </Button>
         </div>
       )}
       {find && ready && (
         <div
           className={clsx(
             styles.findRow,
-            opts.mode === "split" && styles.findRowSplit,
-            opts.mode === "split" && find.side === "b" && styles.findRowRight,
+            viewMode === "split" && styles.findRowSplit,
+            viewMode === "split" && find.side === "b" && styles.findRowRight,
           )}
         >
           <FindPanel
@@ -1128,7 +2144,11 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
             version={`${viewsGen}:${find.side}`}
             replace={find.replace}
             seq={find.seq}
-            onReplaceShown={editableSide(find.side) ? (replace) => setFind((f) => f && { ...f, replace }) : undefined}
+            onReplaceShown={
+              editableSide(viewMode === "split" ? find.side : unifiedOnLeft ? "a" : "b")
+                ? (replace) => setFind((f) => f && { ...f, replace })
+                : undefined
+            }
             onClose={closeFind}
           />
         </div>
@@ -1149,7 +2169,7 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
         className={clsx(
           styles.host,
           opts.highlight === "none" && styles.noHighlight,
-          opts.mode === "split" && (opts.alignChanges ? !opts.syncScroll && styles.unsynced : styles.unaligned),
+          viewMode === "split" && !fit && styles.paneScroll,
         )}
         hidden={!!binary || !!error || !ready}
         aria-label={diffTitle(data)}

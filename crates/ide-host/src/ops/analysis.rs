@@ -6,9 +6,9 @@
 use crate::Host;
 use crate::Project;
 use crate::ops::Channel;
-use crate::rpc::Dispatcher;
+use ide_command::command;
 
-use super::doc::blocking;
+use super::blocking;
 use ide_analysis::{
     DuplicateOptions, DuplicatesReport, SourceFile, StructuralFile, StructuralQuery, StructuralSummary,
 };
@@ -122,6 +122,7 @@ pub struct StructuralLanguage {
 
 /// Inspect Code: diagnostics of every file in `scope` that a language server
 /// serves. Files stream through `on_event` as they finish; ends with `Done`.
+#[command(trust = trusted)]
 pub async fn inspect_code(
     host: &Host,
     window: &str,
@@ -134,21 +135,22 @@ pub async fn inspect_code(
     let cancel = host.begin_request(request);
     let listed = {
         let (project, cancel) = (project.clone(), cancel.clone());
-        blocking(move || files_in_scope(&project, &scope, &cancel)).await
+        blocking(move || {
+            let files = files_in_scope(&project, &scope, &cancel)?;
+            let total = files.len() as u32;
+            let rel: std::collections::HashMap<_, _> =
+                files.into_iter().filter(|f| project.lsp.serves_path(&f.path)).map(|f| (f.path, f.rel_path)).collect();
+            Ok((total, rel))
+        })
+        .await
     };
-    let files = match listed {
+    let (total_in_scope, rel) = match listed {
         Ok(files) => files,
         Err(e) => {
             host.end_request(request);
             return Err(e);
         }
     };
-    let total_in_scope = files.len() as u32;
-    let rel: std::collections::HashMap<_, _> = files
-        .iter()
-        .filter(|f| project.lsp.serves_path(&f.path))
-        .map(|f| (f.path.clone(), f.rel_path.clone()))
-        .collect();
     let mut summary = InspectSummary { skipped: total_in_scope - rel.len() as u32, ..Default::default() };
     let _ = on_event.send(InspectEvent::Started { total: rel.len() as u32 });
 
@@ -194,6 +196,7 @@ pub async fn inspect_code(
 }
 
 /// Locate Duplicates over the files of `scope`.
+#[command(trust = always)]
 pub async fn analysis_locate_duplicates(
     host: &Host,
     window: &str,
@@ -216,7 +219,8 @@ pub async fn analysis_locate_duplicates(
 }
 
 /// Languages Search Structurally supports (those with a bundled grammar).
-pub async fn structural_languages(host: &Host, _window: &str) -> IdeResult<Vec<StructuralLanguage>> {
+#[command(trust = always)]
+pub async fn structural_languages(host: &Host) -> IdeResult<Vec<StructuralLanguage>> {
     let syntax = host.syntax();
     let mut out: Vec<StructuralLanguage> = host
         .languages
@@ -230,7 +234,8 @@ pub async fn structural_languages(host: &Host, _window: &str) -> IdeResult<Vec<S
 }
 
 /// Checks a structural search template (and language) while the user types.
-pub async fn structural_validate(host: &Host, _window: &str, query: StructuralQuery) -> IdeResult<()> {
+#[command(trust = always)]
+pub async fn structural_validate(host: &Host, query: StructuralQuery) -> IdeResult<()> {
     let syntax = host.syntax();
     blocking(move || ide_analysis::validate_structural(&syntax, &query)).await
 }
@@ -238,6 +243,7 @@ pub async fn structural_validate(host: &Host, _window: &str, query: StructuralQu
 /// Search Structurally over `scope`; files with matches stream through
 /// `on_event`, ending with `Done`. With a replacement, matches carry their
 /// replacement text (applied by the UI as a workspace edit).
+#[command(trust = always)]
 pub async fn structural_search(
     host: &Host,
     window: &str,
@@ -264,18 +270,11 @@ pub async fn structural_search(
     Ok(())
 }
 
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("inspect_code", |c| async move {
-        inspect_code(&c.host, &c.window, c.arg("request")?, c.arg("scope")?, c.sender("onEvent")?).await
-    });
-    d.add("analysis_locate_duplicates", |c| async move {
-        analysis_locate_duplicates(&c.host, &c.window, c.arg("request")?, c.arg("scope")?, c.arg("options")?).await
-    });
-    d.add("structural_languages", |c| async move { structural_languages(&c.host, &c.window).await });
-    d.add("structural_validate", |c| async move { structural_validate(&c.host, &c.window, c.arg("query")?).await });
-    d.add("structural_search", |c| async move {
-        structural_search(&c.host, &c.window, c.arg("request")?, c.arg("scope")?, c.arg("query")?, c.sender("onEvent")?)
-            .await
-    });
-}
+ide_command::domain!(
+    analysis:
+    analysis_locate_duplicates,
+    inspect_code,
+    structural_languages,
+    structural_search,
+    structural_validate,
+);

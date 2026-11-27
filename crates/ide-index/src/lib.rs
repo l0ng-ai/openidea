@@ -8,7 +8,8 @@ use ide_language::{LanguageRegistry, Syntax};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -21,8 +22,15 @@ mod matching;
 mod store;
 mod worker;
 
+pub use filter::walk_skips;
 pub use worker::MAX_SYMBOL_FILE;
 use worker::{Job, MAX_RECENT, Shared};
+
+/// Stack of the indexing threads. Parsing and outlining a deeply nested file (generated
+/// code, a big JSON or minified script) recurse as deep as the file nests; the 2 MiB a Rust
+/// thread gets by default overflowed on Windows and took the whole IDE down (#5739). Only
+/// what a thread touches is committed, so the reservation costs address space, not memory.
+const INDEX_STACK: usize = 32 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -47,6 +55,17 @@ pub struct SymbolMatch {
     pub score: u32,
     /// Matched char indices within `name`.
     pub indices: MatchIndices,
+}
+
+/// A class declaration of the index and the base names written in its source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClassDecl {
+    pub path: PathBuf,
+    pub name: String,
+    /// Selection range: the class name's identifier.
+    pub range: Range,
+    /// Bare base names, as written (`class X(pkg.mod.Base)` keeps `Base`).
+    pub bases: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -80,15 +99,18 @@ pub struct ProjectIndex {
 }
 
 /// Folders indexed alongside the internal state root.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Default, PartialEq)]
 pub struct IndexRoots {
     pub include_root: bool,
     pub folders: Vec<PathBuf>,
+    /// Folders with exclude globs of their own (an attached project's), relative to the folder;
+    /// the other folders share the project's.
+    pub excludes: std::collections::BTreeMap<PathBuf, Vec<String>>,
 }
 
 impl From<Vec<PathBuf>> for IndexRoots {
     fn from(folders: Vec<PathBuf>) -> Self {
-        Self { include_root: true, folders }
+        Self { include_root: true, folders, ..Default::default() }
     }
 }
 
@@ -134,6 +156,7 @@ impl ProjectIndex {
             let shared = shared.clone();
             std::thread::Builder::new()
                 .name("openidea-index".into())
+                .stack_size(INDEX_STACK)
                 .spawn(move || shared.run(scan))
                 .map_err(|e| ide_core::IdeError::internal(format!("cannot start indexer: {e}")))?
         };
@@ -189,29 +212,193 @@ impl ProjectIndex {
         out
     }
 
+    /// Reuse indexed syntax tags only for the exact text snapshot. Unsaved or
+    /// not-yet-indexed contents fall back to the caller's parser.
+    pub fn symbols_for_text(&self, path: &Path, text: &str) -> Option<Vec<ide_language::SymbolTag>> {
+        let hash = blake3::hash(text.as_bytes());
+        let data = self.shared.data.read();
+        let file = data.get(path)?;
+        if &file.hash != hash.as_bytes() {
+            return None;
+        }
+        Some(
+            data.symbols_of(file)
+                .map(|s| ide_language::SymbolTag {
+                    name: s.name.to_string(),
+                    kind: s.kind,
+                    container: s.container.map(ToString::to_string),
+                    range: s.range,
+                    bases: s.bases.split('\0').filter(|b| !b.is_empty()).map(str::to_owned).collect(),
+                })
+                .collect(),
+        )
+    }
+
+    /// Every class declaration of the indexed project (content roots included) with the
+    /// base names written in its source, in path order. The UI builds an inheritance
+    /// graph from it, so it needs no language server's type hierarchy.
+    pub fn inheritance(&self) -> Vec<ClassDecl> {
+        let data = self.shared.data.read();
+        let mut out = Vec::new();
+        for entry in data.files.iter().flatten() {
+            for s in data.symbols_of(entry) {
+                if s.kind != SymbolKind::Class {
+                    continue;
+                }
+                out.push(ClassDecl {
+                    path: entry.path.clone(),
+                    name: s.name.to_owned(),
+                    range: s.range,
+                    bases: s.bases.split('\0').filter(|b| !b.is_empty()).map(str::to_owned).collect(),
+                });
+            }
+        }
+        out
+    }
+
+    /// Bounded file inventory for background plugin indexers; honors the same
+    /// project/exclude scope as search and never walks the filesystem.
+    pub fn files_with_extensions(&self, extensions: &[String], limit: usize) -> Vec<PathBuf> {
+        self.shared
+            .data
+            .read()
+            .files
+            .iter()
+            .flatten()
+            .filter(|f| f.path.extension().and_then(|e| e.to_str()).is_some_and(|e| extensions.iter().any(|x| x == e)))
+            .take(limit)
+            .map(|f| f.path.clone())
+            .collect()
+    }
+
     /// Fuzzy file search. IDEA-like ranking: file-name matches beat directory
     /// matches; `/` in the query matches path segments; recently opened files boost.
     pub fn find_files(&self, query: &str, limit: usize) -> Vec<FileMatch> {
         let recent = self.shared.recent.lock().clone();
         let d = self.shared.data.read();
-        matching::find_files(&d, &matching::Recents { paths: &recent }, query, limit)
+        matching::find_files(&d, &matching::Recents::new(&recent), query, Some(&self.root), limit)
+    }
+
+    /// All indexed files with this exact basename, for resolving printed source locations.
+    /// Unlike interactive fuzzy search, this must not truncate candidates before package matching.
+    pub fn files_named(&self, name: &str) -> Vec<PathBuf> {
+        let data = self.shared.data.read();
+        let mut files: Vec<_> = data.files.iter().flatten().filter(|file| file.name() == name).collect();
+        files.sort_by(|a, b| a.rel.len().cmp(&b.rel.len()).then_with(|| a.rel.cmp(&b.rel)));
+        files.into_iter().map(|file| file.path.clone()).collect()
+    }
+
+    /// Find exact basenames across the indexed workspace in a single pass.
+    pub fn files_with_names(&self, names: &HashSet<&OsStr>) -> Vec<PathBuf> {
+        if names.is_empty() {
+            return Vec::new();
+        }
+        self.shared
+            .data
+            .read()
+            .files
+            .iter()
+            .flatten()
+            .filter(|file| !file.ignored && file.path.file_name().is_some_and(|name| names.contains(name)))
+            .map(|file| file.path.clone())
+            .collect()
+    }
+
+    /// Exact folder names in the project scope, including empty folders absent from file search.
+    /// Run off the caller's request thread because discovering those folders walks the disk.
+    pub fn directories_with_names(&self, names: &HashSet<&OsStr>) -> Vec<PathBuf> {
+        if names.is_empty() { Vec::new() } else { self.shared.filter().directories_with_names(names) }
+    }
+
+    /// Up to `limit` indexed files below `dir` (VCS-ignored ones left out) whose path relative to
+    /// `dir` satisfies `matches`: a file list without walking the disk. `None` while nothing is
+    /// indexed yet (first scan without a cache).
+    pub fn files_matching(&self, dir: &Path, matches: impl Fn(&Path) -> bool, limit: usize) -> Option<Vec<PathBuf>> {
+        let d = self.shared.data.read();
+        if d.file_count == 0 {
+            return None;
+        }
+        let mut out = Vec::new();
+        for file in d.files.iter().flatten().filter(|f| !f.ignored) {
+            if out.len() >= limit {
+                break;
+            }
+            if let Ok(rel) = file.path.strip_prefix(dir)
+                && matches(rel)
+            {
+                out.push(file.path.clone());
+            }
+        }
+        Some(out)
     }
 
     /// Fuzzy search for folders that hold indexed files; `rel_path` ends in `/`.
     pub fn find_dirs(&self, query: &str, limit: usize) -> Vec<FileMatch> {
-        matching::find_dirs(&self.shared.data.read(), query, limit)
+        matching::find_dirs(&self.shared.data.read(), query, Some(&self.root), limit)
     }
 
     /// Fuzzy symbol search; CamelHump aware (`OCo` → `OrderController`).
     pub fn find_symbols(&self, query: &str, filter: SymbolFilter, limit: usize) -> Vec<SymbolMatch> {
         let recent = self.shared.recent.lock().clone();
         let d = self.shared.data.read();
-        matching::find_symbols(&d, &matching::Recents { paths: &recent }, query, filter, limit)
+        matching::find_symbols(&d, &matching::Recents::new(&recent), query, filter, limit)
+    }
+
+    /// Scoped symbol search with cooperative interruption, including lock waits.
+    /// `None` means interrupted; no partial results are returned.
+    pub fn find_symbols_until(
+        &self,
+        query: &str,
+        filter: SymbolFilter,
+        limit: usize,
+        include: &(impl Fn(&Path) -> bool + Sync),
+        stopped: &(impl Fn() -> bool + Sync),
+    ) -> Option<Vec<SymbolMatch>> {
+        let recent = loop {
+            if stopped() {
+                return None;
+            }
+            if let Some(recent) = self.shared.recent.try_lock_for(Duration::from_millis(1)) {
+                break recent.clone();
+            }
+        };
+        let data = loop {
+            if stopped() {
+                return None;
+            }
+            if let Some(data) = self.shared.data.try_read_for(Duration::from_millis(1)) {
+                break data;
+            }
+        };
+        matching::find_symbols_until(&data, &matching::Recents::new(&recent), query, filter, limit, include, stopped)
     }
 
     /// Symbols named exactly `name` (of `kind`, if given): `.card` selectors for `class="card"`.
     pub fn symbols_named(&self, name: &str, kind: Option<SymbolKind>, limit: usize) -> Vec<SymbolMatch> {
         matching::symbols_named(&self.shared.data.read(), name, kind, limit)
+    }
+
+    /// Symbols named exactly `name` (of `kind`, if given) whose file is inside one of `roots`
+    /// (the project root plus its configured dependency roots): answers bounded by the cap
+    /// never evict matches from a root because another root filled it first.
+    pub fn symbols_named_within(
+        &self,
+        name: &str,
+        kind: Option<SymbolKind>,
+        roots: &[PathBuf],
+        limit: usize,
+    ) -> Vec<SymbolMatch> {
+        matching::symbols_named_within(&self.shared.data.read(), name, kind, roots, limit)
+    }
+
+    /// Symbols of `kind` whose name starts with `prefix`, by path then position.
+    pub fn symbols_prefixed(&self, prefix: &str, kind: SymbolKind, limit: usize) -> Vec<SymbolMatch> {
+        matching::symbols_prefixed(&self.shared.data.read(), prefix, kind, limit)
+    }
+
+    /// Symbols named exactly one of `names` whose file is inside `root`, at most `limit` per name.
+    pub fn symbols_named_any(&self, names: &[String], root: &Path, limit: usize) -> Vec<SymbolMatch> {
+        matching::symbols_named_any(&self.shared.data.read(), names, root, limit)
     }
 
     /// Incrementally re-indexes changed paths (called from the vfs watcher).
@@ -227,17 +414,34 @@ impl ProjectIndex {
         }
     }
 
+    /// Refreshes ignore matchers and indexed entries in the affected subtrees.
+    pub fn ignore_rules_changed(&self, dirs: &[PathBuf]) {
+        let filter = self.shared.filter();
+        let mut affected = Vec::new();
+        for dir in dirs {
+            let path = if dir.is_absolute() { dir.clone() } else { self.root.join(dir) };
+            let path = dunce::canonicalize(&path).unwrap_or(path);
+            for root in filter.roots() {
+                if path.starts_with(root) {
+                    affected.push(path.clone());
+                    break;
+                }
+                if root.starts_with(&path) {
+                    affected.push(root.to_path_buf());
+                }
+            }
+        }
+        if !affected.is_empty() {
+            self.shared.enqueue(Job::IgnoreRules(affected));
+        }
+    }
+
     /// Boost for "recent files" ranking.
     /// Records a recently opened file; a virtual document's URI (library
-    /// class) is kept verbatim, like IDEA lists library classes in Recent Files.
+    /// class) is kept verbatim, and a file outside the project (a scratch file)
+    /// by its absolute path.
     pub fn mark_recent(&self, path: &Path) {
-        let path = match path.to_str() {
-            Some(s) if ide_core::text::is_virtual_uri(s) => path.to_owned(),
-            _ => match self.normalize(path) {
-                Some(p) => p,
-                None => return,
-            },
-        };
+        let Some(path) = self.recent_key(path) else { return };
         {
             let mut r = self.shared.recent.lock();
             r.retain(|p| p != &path);
@@ -249,13 +453,7 @@ impl ProjectIndex {
 
     /// Drops a file from Recent Files (Delete in the ⌘E popup).
     pub fn remove_recent(&self, path: &Path) {
-        let path = match path.to_str() {
-            Some(s) if ide_core::text::is_virtual_uri(s) => path.to_owned(),
-            _ => match self.normalize(path) {
-                Some(p) => p,
-                None => return,
-            },
-        };
+        let Some(path) = self.recent_key(path) else { return };
         {
             let mut r = self.shared.recent.lock();
             let before = r.len();
@@ -302,6 +500,20 @@ impl ProjectIndex {
         &self.root
     }
 
+    /// How Recent Files stores `path`: a virtual URI verbatim, a project file normalized,
+    /// and an existing file outside the root canonicalized. Excluded files under the root
+    /// are left out.
+    fn recent_key(&self, path: &Path) -> Option<PathBuf> {
+        if path.to_str().is_some_and(ide_core::text::is_virtual_uri) {
+            return Some(path.to_owned());
+        }
+        if let Some(p) = self.normalize(path) {
+            return Some(p);
+        }
+        let p = dunce::canonicalize(path).ok().filter(|p| p.is_file())?;
+        (!p.starts_with(&self.root)).then_some(p)
+    }
+
     /// Absolute path inside the root (or a content root), or `None` for paths outside the project.
     fn normalize(&self, path: &Path) -> Option<PathBuf> {
         let filter = self.shared.filter();
@@ -336,7 +548,7 @@ impl Drop for ProjectIndex {
 mod tests;
 
 /// Synthetic in-memory index for benchmarks (`benches/index.rs`); not a stable API.
-#[doc(hidden)]
+#[cfg(any(test, feature = "bench-support"))]
 pub mod bench_support {
     use super::*;
     use crate::data::{FileEntry, FileRecord, IndexData, StoredSymbol};
@@ -380,10 +592,12 @@ pub mod bench_support {
                         kind: if k % 3 == 0 { SymbolKind::Class } else { SymbolKind::Method },
                         container: (k % 3 != 0).then(|| format!("{w}{s}")),
                         range: Range::default(),
+                        bases: Vec::new(),
                     })
                     .collect();
                 let record = FileRecord { symbols, ..Default::default() };
-                data.insert(FileEntry::new(PathBuf::from("/bench").join(&rel), rel, record));
+                let (entry, symbols) = FileEntry::new(PathBuf::from("/bench").join(&rel), rel, record);
+                data.insert(entry, symbols);
             }
             let recent = data.paths().take(MAX_RECENT).cloned().collect();
             Self { data, recent }
@@ -398,15 +612,15 @@ pub mod bench_support {
         }
 
         pub fn find_files(&self, query: &str, limit: usize) -> Vec<FileMatch> {
-            matching::find_files(&self.data, &matching::Recents { paths: &self.recent }, query, limit)
+            matching::find_files(&self.data, &matching::Recents::new(&self.recent), query, None, limit)
         }
 
         pub fn find_dirs(&self, query: &str, limit: usize) -> Vec<FileMatch> {
-            matching::find_dirs(&self.data, query, limit)
+            matching::find_dirs(&self.data, query, None, limit)
         }
 
         pub fn find_symbols(&self, query: &str, filter: SymbolFilter, limit: usize) -> Vec<SymbolMatch> {
-            matching::find_symbols(&self.data, &matching::Recents { paths: &self.recent }, query, filter, limit)
+            matching::find_symbols(&self.data, &matching::Recents::new(&self.recent), query, filter, limit)
         }
     }
 }

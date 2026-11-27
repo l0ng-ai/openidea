@@ -7,6 +7,7 @@ import { setContext } from "@/platform/context";
 import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { usePlatform } from "@/platform/platformInfo";
 import { menuGroupItems } from "@/workbench/contributions";
+import { multiCaretMouse } from "@/editor/core/cm/multiCaret";
 import { navigationExtension } from "@/editor/lsp/navigation";
 import { activate } from "../index";
 import { adoptSession, publishContext, useDebug } from "../state";
@@ -45,7 +46,7 @@ function session(adapter = "debugpy", status: "paused" | "running" | "terminated
   publishContext();
 }
 function click() {
-  const e = new MouseEvent("mousedown", { button: 0, altKey: true, bubbles: true, cancelable: true });
+  const e = new MouseEvent("mousedown", { button: 0, altKey: true, detail: 1, bubbles: true, cancelable: true });
   view.contentDOM.dispatchEvent(e);
   return e;
 }
@@ -58,7 +59,15 @@ beforeEach(() => {
   dispose = activate();
   uninstall = installKeyboardDispatcher(window);
   view = new EditorView({
-    state: EditorState.create({ doc, extensions: [navigationExtension(), quickEvaluateMouse()] }),
+    state: EditorState.create({
+      doc,
+      extensions: [
+        EditorState.allowMultipleSelections.of(true),
+        navigationExtension(),
+        quickEvaluateMouse(),
+        multiCaretMouse,
+      ],
+    }),
     parent: document.body,
   });
   editor.current = { view, ctx: { path: "/p/app.py" } };
@@ -82,7 +91,7 @@ describe("paused editor evaluation", () => {
     view.dispatch({ selection: { anchor: 0, head: 5 } });
     expect(click().defaultPrevented).toBe(true);
     await vi.waitFor(() => expect(document.querySelector(".cm-lsp-hint")?.textContent).toContain("order.items = 42"));
-    expect(ipc.debugEvaluateIn).toHaveBeenCalledExactlyOnceWith(7, 10, "order.items", "hover");
+    expect(ipc.debugEvaluateIn).toHaveBeenCalledExactlyOnceWith(7, 10, "order.items", "watch");
     expect(view.state.selection.main.head).toBe(16);
   });
 
@@ -92,7 +101,7 @@ describe("paused editor evaluation", () => {
     session();
     view.dispatch({ selection: { anchor: 0, head: doc.length } });
     click();
-    await vi.waitFor(() => expect(ipc.debugEvaluateIn).toHaveBeenCalledWith(7, 10, doc, "hover"));
+    await vi.waitFor(() => expect(ipc.debugEvaluateIn).toHaveBeenCalledWith(7, 10, doc, "watch"));
     expect(view.state.selection.main.from).toBe(0);
     expect(view.state.selection.main.to).toBe(doc.length);
     await vi.waitFor(() =>
@@ -105,7 +114,24 @@ describe("paused editor evaluation", () => {
     const text = "(total +\n order.items)";
     view.dispatch({ changes: { from: 0, to: doc.length, insert: text }, selection: { anchor: 0, head: text.length } });
     click();
-    await vi.waitFor(() => expect(ipc.debugEvaluateIn).toHaveBeenCalledWith(7, 10, text, "hover"));
+    await vi.waitFor(() => expect(ipc.debugEvaluateIn).toHaveBeenCalledWith(7, 10, text, "watch"));
+  });
+
+  it("ignores an object response that arrives after the debugger resumes", async () => {
+    session();
+    view.dispatch({ selection: { anchor: 16 } });
+    type Response = Awaited<ReturnType<typeof ipc.debugEvaluateIn>>;
+    let reply!: (result: Response) => void;
+    ipc.debugEvaluateIn.mockImplementationOnce(() => new Promise((resolve) => (reply = resolve)));
+    const evaluating = executeAction("debug.quickEvaluate");
+    await vi.waitFor(() => expect(ipc.debugEvaluateIn).toHaveBeenCalledOnce());
+    useDebug.setState((s) => ({ sessions: { 7: { ...s.sessions[7]!, status: "running" } } }));
+    reply({
+      status: "ok",
+      data: { name: "order.items", value: "Array(2)", typeName: "Array", variablesReference: 5, evaluateName: null },
+    });
+    await evaluating;
+    expect(document.querySelector(".cm-lsp-hint")).toBeNull();
   });
 
   it("lets a higher priority custom mouse action win the shared gesture", () => {
@@ -131,6 +157,32 @@ describe("paused editor evaluation", () => {
     expect(e.defaultPrevented).toBe(false);
     expect(dispatch).not.toHaveBeenCalled();
     expect(ipc.debugEvaluateIn).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    "adds a caret without dispatching an action after removing the evaluation conflict (paused: %s)",
+    (paused) => {
+      if (paused) session();
+      const run = vi.fn();
+      const remove = registerAction({ id: "editor.addOrRemoveCaret", title: "Add or Remove Caret", run });
+      useKeymap.setState({ overrides: { "editor.addOrRemoveCaret": ["Alt+Button1"], "debug.quickEvaluate": [] } });
+      try {
+        click();
+        expect(view.state.selection.ranges.map((r) => r.head)).toEqual([0, 16]);
+        expect(run).not.toHaveBeenCalled();
+        expect(ipc.debugEvaluateIn).not.toHaveBeenCalled();
+      } finally {
+        remove();
+      }
+    },
+  );
+
+  it("does not also add a caret when an enabled evaluation handles a shared stroke", async () => {
+    session();
+    useKeymap.setState({ overrides: { "editor.addOrRemoveCaret": ["Alt+Button1"] } });
+    click();
+    await vi.waitFor(() => expect(ipc.debugEvaluateIn).toHaveBeenCalledOnce());
+    expect(view.state.selection.ranges.map((r) => r.head)).toEqual([16]);
   });
 
   it("honours removal of the mouse binding", () => {

@@ -1,0 +1,252 @@
+---
+title: "OpenIDEA"
+sidebarTitle: "首页"
+description: "熟悉的 IDE，用 Rust 重新打造。开源、原生，在 macOS、Windows 和 Linux 上都很快。"
+mode: "custom"
+---
+
+import { pluginCatalog } from "/snippets/plugin-catalog.jsx";
+import { FeaturedPlugins } from "/snippets/marketplace.jsx";
+
+export const Kbd = ({ children }) => <span className="oi-kbd">{children}</span>;
+
+<div className="oi-home">
+
+<section className="oi-hero">
+  <div className="oi-hero-glow" aria-hidden="true" />
+  <div className="oi-grid-bg" aria-hidden="true" />
+  <div className="oi-wrap oi-hero-inner">
+    <a className="oi-pill" href="https://github.com/l0ng-ai/openidea">
+      <span className="oi-pill-dot" />
+      开源 · Apache 2.0
+      <span className="oi-pill-arrow">→</span>
+    </a>
+    <h1 className="oi-title">
+      熟悉的 IDE，
+      <br />
+      <span className="oi-title-accent">用 Rust 重新打造。</span>
+    </h1>
+    <p className="oi-lead">
+      你熟悉的快捷键、工具窗口和随处搜索，装进一个原生桌面应用：不到一秒打开项目，内存只占一小部分。
+    </p>
+    <div className="oi-actions">
+      <a className="oi-btn oi-btn-primary" href="https://github.com/l0ng-ai/openidea/releases/latest">
+        下载
+      </a>
+      <a className="oi-btn oi-btn-ghost" href="/zh/introduction">
+        阅读文档
+      </a>
+    </div>
+    <p className="oi-platforms">macOS · Windows · Linux</p>
+  </div>
+
+  <div className="oi-wrap">
+    <img
+      className="oi-shot"
+      src="/images/ide-dark.webp"
+      alt="深色主题下的 OpenIDEA：一个 Java 项目，包含项目树和编辑器"
+      width="2880"
+      height="1800"
+      noZoom
+    />
+  </div>
+</section>
+
+<section className="oi-section">
+  <div className="oi-wrap">
+    <div className="oi-eyebrow">性能对比</div>
+    <h2 className="oi-h2">原生的速度，从外部实测。</h2>
+    <p className="oi-sub">
+      打开 freqtrade（Python，约 770 个文件），缓存已预热，取 5 次运行的中位数，对比默认设置的 IntelliJ IDEA 2026.2.3。
+    </p>
+    <div className="oi-stats">
+      <div className="oi-stat">
+        <div className="oi-stat-num">
+          0.9<small>s</small>
+        </div>
+        <div className="oi-stat-label">项目窗口出现</div>
+        <div className="oi-bar">
+          <span style={{ width: "29%" }} />
+        </div>
+        <div className="oi-stat-vs">IntelliJ IDEA：3.1 s</div>
+      </div>
+      <div className="oi-stat">
+        <div className="oi-stat-num">
+          1.1<small>s</small>
+        </div>
+        <div className="oi-stat-label">就绪（CPU 平稳）</div>
+        <div className="oi-bar">
+          <span style={{ width: "8%" }} />
+        </div>
+        <div className="oi-stat-vs">IntelliJ IDEA：13.2 s</div>
+      </div>
+      <div className="oi-stat">
+        <div className="oi-stat-num">
+          169<small>MB</small>
+        </div>
+        <div className="oi-stat-label">内存（全部进程）</div>
+        <div className="oi-bar">
+          <span style={{ width: "8%" }} />
+        </div>
+        <div className="oi-stat-vs">IntelliJ IDEA：2011 MB</div>
+      </div>
+      <div className="oi-stat">
+        <div className="oi-stat-num">
+          0.3<small>s</small>
+        </div>
+        <div className="oi-stat-label">退出</div>
+        <div className="oi-bar">
+          <span style={{ width: "5%" }} />
+        </div>
+        <div className="oi-stat-vs">IntelliJ IDEA：5.9 s</div>
+      </div>
+    </div>
+    <p className="oi-footnote">
+      Windows 11，32 核 AMD，62 GB 内存。IDEA 对 Python 的分析更深入，所以两边的“就绪”并不是同样的工作量。可以用{" "}
+      <a href="https://github.com/l0ng-ai/openidea/blob/main/perf/compare">perf/compare</a> 在自己的机器上复现。
+    </p>
+  </div>
+</section>
+
+<section className="oi-section">
+  <div className="oi-wrap">
+    <div className="oi-eyebrow">一个窗口，应有尽有</div>
+    <h2 className="oi-h2">完整的 IDE，而不是装满扩展的编辑器。</h2>
+    <div className="oi-features">
+      <a className="oi-feature" href="/zh/languages/index">
+        <Icon icon="code" size={18} />
+        <h3>60 多种语言</h3>
+        <p>每种语言都有编辑和代码洞察，项目需要的语言服务器一键安装。</p>
+      </a>
+      <a className="oi-feature" href="/zh/guide/search">
+        <Icon icon="magnifying-glass" size={18} />
+        <h3>随处搜索</h3>
+        <p>随处搜索、查找操作、转到类 / 文件 / 符号，以及在整个已索引项目中查找。</p>
+      </a>
+      <a className="oi-feature" href="/zh/guide/refactoring">
+        <Icon icon="wand-magic-sparkles" size={18} />
+        <h3>放心重构</h3>
+        <p>重命名、提取、内联、更改签名和安全删除，还有带快速修复的代码检查。</p>
+      </a>
+      <a className="oi-feature" href="/zh/guide/debugging">
+        <Icon icon="bug" size={18} />
+        <h3>运行、测试、调试</h3>
+        <p>调试器、测试运行器、覆盖率和性能分析器，各有自己的工具窗口。</p>
+      </a>
+      <a className="oi-feature" href="/zh/guide/vcs">
+        <Icon icon="code-branch" size={18} />
+        <h3>Git、终端、数据库</h3>
+        <p>提交、日志和分支，真正的终端，内置数据库客户端和 HTTP 客户端。</p>
+      </a>
+      <a className="oi-feature" href="/zh/guide/remote/ssh">
+        <Icon icon="server" size={18} />
+        <h3>远程开发</h3>
+        <p>
+          通过 SSH 连到远程机器，或在开发容器中工作，后端是 <code>openidea-server</code>。
+        </p>
+      </a>
+      <a className="oi-feature" href="/zh/guide/agents">
+        <Icon icon="sparkles" size={18} />
+        <h3>AI 智能体</h3>
+        <p>在工具窗口中运行编码智能体，并通过内置 MCP 服务器把 IDE 自身的工具交给它们。</p>
+      </a>
+      <a className="oi-feature" href="/zh/plugins/index">
+        <Icon icon="puzzle-piece" size={18} />
+        <h3>WebAssembly 插件</h3>
+        <p>沙箱化的插件可以添加操作、补全、工具窗口和编辑器。主题和语言无需写代码。</p>
+      </a>
+    </div>
+  </div>
+</section>
+
+<section className="oi-section">
+  <div className="oi-wrap">
+    <div className="oi-plug-head">
+      <div>
+        <div className="oi-eyebrow">插件市场</div>
+        <h2 className="oi-h2">{pluginCatalog.plugins.length} 个插件，还在增加。</h2>
+        <p className="oi-sub">
+          Spring、Laravel、Symfony、Kubernetes、AI 提交信息、主题等等，来自 {pluginCatalog.publishers}{" "}
+          位发布者。每个插件包都经过签名，运行在 WebAssembly 沙箱中。
+        </p>
+      </div>
+      <a className="oi-btn oi-btn-ghost" href="/plugins">
+        浏览插件市场 →
+      </a>
+    </div>
+    <FeaturedPlugins catalog={pluginCatalog} href="/zh/plugins" />
+  </div>
+</section>
+
+<section className="oi-section">
+  <div className="oi-wrap oi-split">
+    <div>
+      <div className="oi-eyebrow">肌肉记忆照样好用</div>
+      <h2 className="oi-h2">你的快捷键，直接就能用。</h2>
+      <p className="oi-sub">
+        默认快捷键方案与 IntelliJ IDEA 一致，也内置了 VS Code 和 Eclipse 方案。其余设置可以直接导入。
+      </p>
+      <a className="oi-link" href="/zh/guide/migrate">
+        从其他 IDE 迁移 →
+      </a>
+    </div>
+    <div className="oi-keys">
+      <div className="oi-key-row">
+        <span>
+          <Kbd>⇧</Kbd>
+          <Kbd>⇧</Kbd>
+        </span>
+        随处搜索
+      </div>
+      <div className="oi-key-row">
+        <span>
+          <Kbd>⌥</Kbd>
+          <Kbd>↵</Kbd>
+        </span>
+        显示上下文操作
+      </div>
+      <div className="oi-key-row">
+        <span>
+          <Kbd>⌘</Kbd>
+          <Kbd>⇧</Kbd>
+          <Kbd>A</Kbd>
+        </span>
+        查找操作
+      </div>
+      <div className="oi-key-row">
+        <span>
+          <Kbd>⇧</Kbd>
+          <Kbd>F6</Kbd>
+        </span>
+        重命名
+      </div>
+      <div className="oi-key-row">
+        <span>
+          <Kbd>⌃</Kbd>
+          <Kbd>⇧</Kbd>
+          <Kbd>D</Kbd>
+        </span>
+        调试
+      </div>
+    </div>
+  </div>
+</section>
+
+<section className="oi-cta">
+  <div className="oi-hero-glow oi-cta-glow" aria-hidden="true" />
+  <div className="oi-wrap oi-cta-inner">
+    <h2 className="oi-h2">不到一秒，打开项目。</h2>
+    <p className="oi-sub">免费开源，支持 macOS、Windows 和 Linux。</p>
+    <div className="oi-actions">
+      <a className="oi-btn oi-btn-primary" href="https://github.com/l0ng-ai/openidea/releases/latest">
+        下载
+      </a>
+      <a className="oi-btn oi-btn-ghost" href="/zh/guide/quickstart">
+        快速开始
+      </a>
+    </div>
+    <p className="oi-disclaimer">OpenIDEA 与 JetBrains 无关联。IntelliJ IDEA 是 JetBrains s.r.o. 的商标。</p>
+  </div>
+</section>
+
+</div>

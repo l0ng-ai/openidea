@@ -1,0 +1,92 @@
+---
+title: "测试与调试"
+description: "用 SDK 的模拟宿主对插件逻辑做单元测试，用 openidea-plugin check 校验插件包，查看插件日志并排查常见问题。"
+---
+
+## 基于模拟宿主的单元测试
+
+在 `wasm32-wasip2` 上，Rust SDK 调用的是 IDE；在本机上，它调用的是 SDK 自带的**模拟宿主**。因此 `cargo test` 不需要 IDE 就能测试插件逻辑：
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openidea_plugin::mock::MockHost;
+
+    #[test]
+    fn counts_and_shouts() {
+        let host = MockHost::install();
+        host.open_editor("/project/a.md", "markdown", "one two three", &[(0, 4, 0, 7)]);
+        WordTools.run_command("count", &host.invocation(), None).unwrap();
+        assert_eq!(host.notifications()[0].body, "3 words");
+        WordTools.run_command("shout", &host.invocation(), None).unwrap();
+        assert_eq!(host.editor_text(), "one TWO three");
+    }
+}
+```
+
+`MockHost::install()` 为当前测试安装一个模拟宿主，它：
+
+- 在你限制能力时像 IDE 一样执行检查：`MockHost::install().with_capabilities(&["editor.read"])` 会让其他所有受限调用返回 `Error::Denied`；
+- 维护带版本号的编辑器文档：`type_in_editor` 会让插件的下一次编辑过期，方便测试 `Error::Stale` 的处理；
+- 可以放入项目文件（`set_project_root`、`add_file`、`add_dir`）、设置（`set_setting`）、界面语言（`set_locale`）、VCS 状态、符号等；
+- 记录插件做过的事：`notifications()`、`status_items()`、`storage()`、`subscriptions()`、`tasks()`、`fetches()`、`logs()`、`diagnostics()`、打开的位置、终端、运行目标；
+- 可以预设应答：选择器和输入框用 `answer_next_prompt`，HTTP 响应用 `on_fetch`，程序输出用 `on_process`。
+
+完整列表见 SDK 的 `cargo doc`（[`src/mock.rs`](https://github.com/l0ng-ai/openidea/blob/main/sdk/rust/openidea-plugin/src/mock.rs)）。[官方插件](/zh/plugins/examples) 都有原生测试可以参考。
+
+## 校验插件包
+
+```sh
+openidea-plugin check                    # 当前文件夹
+openidea-plugin check path/to/plugin
+openidea-plugin check acme.tools-1.0.0.oiplugin
+```
+
+`check` 按 **从磁盘安装插件…** 完全相同的规则校验文件夹或 `.oiplugin`：清单、所有贡献、SVG 净化、翻译目录以及组件。对组件，它检查组件只导入插件 API 和 WASI、导入的每个函数在当前 IDE 中都存在且签名一致，并且导出了 plugin world。随后打印代码大小和 API 版本、分类、激活事件、贡献，以及每个能力和它的风险等级，最后输出 `ok`。
+
+`openidea-plugin build` 每次构建后都会运行 `check`。用其他工具链（`componentize-py`、`jco componentize`、TinyGo）构建的包也请用它校验。
+
+## 在 IDE 中试用
+
+用 `openidea-plugin link` 链接文件夹，之后每次 `openidea-plugin build` 后在 **设置 › 插件** 的插件详情中点击 **从磁盘重新加载**（或运行 **重新加载插件**）。见 [快速开始](/zh/plugins/quickstart)。
+
+**设置 › 插件** 会显示每个插件的状态、失败原因（如果失败了），以及调用统计：近期调用延迟（p95）、崩溃次数、超时的编辑器结果数，以及空闲回收次数。
+
+## 日志
+
+- `host::log(level, message)` 写入 IDE 日志，并标上插件 id。
+- `eprintln!` 的输出同样会写进日志，panic 的信息会随崩溃一起显示。
+- 只有以 `RUST_LOG=info,ide_plugin=trace` 启动 IDE 时才会写入 debug 和 trace 级别的日志。
+- 用 **帮助 › 在访达中显示日志**（macOS）、**在资源管理器中显示日志**（Windows）或 **在文件管理器中显示日志**（Linux）打开日志目录。
+
+需要给用户看的输出，请改用输出通道（`host::output_append`，API 1.4）或通知。
+
+## 常见问题
+
+| 现象                                                                                     | 原因与解决                                                                                                                                                    |
+| ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engines.openidea "…" does not match this IDE's plugin API`                              | 清单要求的 API 是 IDE 没有的。降低要求，或更新 IDE。                                                                                                          |
+| `… is new in plugin API 1.x: set engines.openidea to "^1.x"`                             | 清单用了旧 IDE 会拒绝的功能，却仍声明兼容这些旧 IDE。提高 `engines.openidea`。                                                                                |
+| `the component was built for plugin API 1.x, newer than this IDE's 1.y: update OpenIDEA` | 组件是用比 IDE 更新的 SDK 构建的（例如从 `main` 构建）。针对要支持的最旧版本的 SDK tag 构建，或更新 IDE。见 [API 版本与兼容](/zh/plugins/versioning)。        |
+| 调用返回 `Error::Denied("…")`                                                            | 没有声明该能力，或用户拒绝、撤销了它。在 `[capabilities]` 中声明，并处理被拒绝的情况。                                                                        |
+| 调用返回 `Error::Stale`                                                                  | 读取之后文档已经变化。重新读取再试；`TextEditor::transform_selections` 会自动重试一次。                                                                       |
+| 命令 5 秒后失败                                                                          | 命令只有 5 秒。把耗时工作放进 `host::begin_task`，并持续报告进度。                                                                                            |
+| 编辑器里看不到结果                                                                       | provider 的结果超过 50 ms 会被丢弃，500 ms 时被中断。让它更快，或缓存计算结果。                                                                               |
+| 插件显示 **失败**                                                                        | 它连续崩溃了三次，原因在详情里。修复并重新构建后，点 **重启** 或 **从磁盘重新加载**。                                                                         |
+| 链接的插件没有出现                                                                       | 打开或刷新 **设置 › 插件**（齿轮菜单中有 **重新扫描插件**）。用 `openidea-plugin links` 检查，并确认 `OPENIDEA_PLUGINS_DIR` 指向你正在运行的 IDE 的插件目录。 |
+| 显示 **需要授权**                                                                        | 点击 **查看权限…** 并允许。项目插件还要求项目受信任。                                                                                                         |
+| `process:` 程序被拒绝                                                                    | 程序在批准后被替换过，或者不在项目所在机器的 `PATH` 上。重新批准，或在 **设置 › 插件** 中选择可执行文件。                                                     |
+
+## 测试宿主（贡献者）
+
+在本仓库中修改 SDK、WIT 文件或某个插件后，需要重新构建已提交的组件，并运行宿主的集成测试：
+
+```sh
+plugins/build.sh                         # 所有插件和测试 fixture
+plugins/build.sh official/solidity       # 单个插件
+plugins/build.sh --check                 # CI 跑的检查：没有过期组件，全部能构建
+cargo test -p ide-host --test plugins
+```
+
+`crates/ide-host/tests/plugins.rs` 会加载官方插件和 `crates/ide-plugin/tests/fixtures/` 中 fixture 的已提交组件。更多内容见 [插件宿主](/zh/contribute/architecture/plugin-host)。

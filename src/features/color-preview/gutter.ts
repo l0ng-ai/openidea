@@ -1,12 +1,22 @@
 /**
  * Color preview gutter: a swatch on each line with a color literal (the first one), as IDEA's
- * color gutter icons. Clicking it in an editable file opens the system color picker; the picked
- * color replaces the literal in its own format (alpha kept, the picker has none).
+ * color gutter icons. Picking a color replaces the literal in its own format.
  */
-import type { Extension } from "@codemirror/state";
-import { GutterMarker, gutter, type EditorView } from "@codemirror/view";
+import { StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
+import { Decoration, EditorView, GutterMarker, WidgetType, gutter } from "@codemirror/view";
+import { isolateHistory } from "@codemirror/commands";
+import { syntaxTree } from "@codemirror/language";
 import type { EditorDocContext } from "@/editor/api";
-import { findColors, formatColor, fromHex6, parseComputed, toHex6, type ColorMatch, type Rgba } from "./colors";
+import {
+  cssColor,
+  findColors,
+  formatColor,
+  isMarkupLanguage,
+  parseComputed,
+  type ColorMatch,
+  type Rgba,
+} from "./colors";
+import { openColorPicker } from "./ColorPicker";
 import styles from "./ColorPreview.module.css";
 
 /** Longer lines (minified style sheets) are not scanned. */
@@ -55,76 +65,136 @@ class Swatch extends GutterMarker {
     el.className = this.editable ? `${styles.swatch} ${styles.editable}` : `${styles.swatch}`;
     el.title = this.color.text;
     const fill = document.createElement("span");
-    fill.style.background = this.color.text;
+    fill.style.background = cssColor(this.color);
     el.append(fill);
     return el;
   }
 }
 
-function lineColor(view: EditorView, pos: number, language: string): ColorMatch | null {
-  const line = view.state.doc.lineAt(pos);
+/** The literal the built-in preview shows on the line at `pos`. */
+export function lineColor(state: EditorState, pos: number, language: string): ColorMatch | null {
+  const line = state.doc.lineAt(pos);
   if (line.length > MAX_LINE) return null;
-  return findColors(line.text, language, isColorName)[0] ?? null;
+  const matches = findColors(line.text, language, isColorName);
+  if (!isMarkupLanguage(language)) return matches[0] ?? null;
+  const tree = syntaxTree(state);
+  return (
+    matches.find((color) => {
+      let node: ReturnType<typeof tree.resolveInner> | null = tree.resolveInner(line.from + color.from + 1);
+      for (; node; node = node.parent) if (node.name === "StyleSheet" || node.name === "Styles") return true;
+      return false;
+    }) ?? null
+  );
 }
 
-let picker: HTMLInputElement | null = null;
+interface ColorEdit {
+  id: symbol;
+  from: number;
+  to: number;
+  original: string;
+  preview: string;
+}
 
-/** Opens the system color picker for `color` at `from`; each pick replaces the literal. */
-function pickColor(view: EditorView, from: number, color: ColorMatch, at: { x: number; y: number }) {
-  const rgba = rgbaOf(color.text);
-  if (!rgba) return;
-  picker?.remove();
-  const input = document.createElement("input");
-  picker = input;
-  input.type = "color";
-  input.className = `${styles.picker}`;
-  input.style.left = `${at.x}px`;
-  input.style.top = `${at.y}px`;
-  input.value = toHex6(rgba);
-  document.body.append(input);
-  let current = color.text;
-  const apply = () => {
-    const next = fromHex6(input.value, rgba[3]);
-    // The literal changed meanwhile: leave it alone.
-    if (!next || view.state.sliceDoc(from, from + current.length) !== current) return;
-    const text = formatColor(next, color);
-    if (text === current) return;
-    view.dispatch({ changes: { from, to: from + current.length, insert: text }, userEvent: "input.color" });
-    current = text;
-  };
-  input.addEventListener("input", apply);
-  input.addEventListener("change", () => {
-    apply();
-    input.remove();
-  });
-  try {
-    input.showPicker();
-  } catch {
-    input.click();
+class ColorPreviewWidget extends WidgetType {
+  constructor(readonly text: string) {
+    super();
+  }
+  override eq(other: ColorPreviewWidget): boolean {
+    return this.text === other.text;
+  }
+  override toDOM(view: EditorView): HTMLElement {
+    const span = view.dom.ownerDocument.createElement("span");
+    span.textContent = this.text;
+    return span;
   }
 }
 
-export function colorPreviewGutter(ctx: EditorDocContext): Extension {
-  return gutter({
-    class: `${styles.gutter} cm-openidea-gutter-colors`,
-    lineMarker: (view, block) => {
-      const color = lineColor(view, block.from, ctx.language);
-      return color ? new Swatch(color, !view.state.readOnly) : null;
+const setColorEdit = StateEffect.define<ColorEdit | null>();
+const colorEdit = StateField.define<ColorEdit | null>({
+  create: () => null,
+  update(edit, tr) {
+    for (const effect of tr.effects) if (effect.is(setColorEdit)) return effect.value;
+    if (!edit || !tr.docChanged) return edit;
+    const from = tr.changes.mapPos(edit.from, 1);
+    const to = tr.changes.mapPos(edit.to, -1);
+    return from < to && tr.newDoc.sliceString(from, to) === edit.original ? { ...edit, from, to } : null;
+  },
+  provide: (field) =>
+    EditorView.decorations.from(field, (edit) =>
+      edit && edit.preview !== edit.original
+        ? Decoration.set(Decoration.replace({ widget: new ColorPreviewWidget(edit.preview) }).range(edit.from, edit.to))
+        : Decoration.none,
+    ),
+});
+
+/** Shows a local preview. The document and undo history change only when the choice is committed. */
+function pickColor(view: EditorView, from: number, color: ColorMatch, at: { x: number; y: number }) {
+  const rgba = rgbaOf(cssColor(color));
+  if (!rgba) return;
+  const id = Symbol();
+  const target = () => {
+    const edit = view.state.field(colorEdit, false);
+    return view.dom.isConnected && edit?.id === id ? edit : null;
+  };
+  openColorPicker({
+    view,
+    anchor: at,
+    value: rgba,
+    onChange: (next) => {
+      const edit = target();
+      if (!edit || view.state.readOnly) return;
+      const preview = next.every((channel, index) => channel === rgba[index])
+        ? edit.original
+        : formatColor(next, color);
+      if (preview !== edit.preview) view.dispatch({ effects: setColorEdit.of({ ...edit, preview }) });
     },
-    lineMarkerChange: (update) => update.docChanged || update.startState.readOnly !== update.state.readOnly,
-    domEventHandlers: {
-      mousedown: (view, block, event) => {
-        const e = event as MouseEvent;
-        const swatch = e.target instanceof Element ? e.target.closest(`.${styles.swatch}`) : null;
-        if (e.button !== 0 || !swatch || view.state.readOnly) return false;
-        const line = view.state.doc.lineAt(block.from);
-        const color = lineColor(view, block.from, ctx.language);
-        if (!color) return false;
-        e.preventDefault();
-        const rect = swatch.getBoundingClientRect();
-        pickColor(view, line.from + color.from, color, { x: rect.left, y: rect.bottom + 2 });
-        return true;
-      },
+    onCommit: (next) => {
+      const edit = target();
+      if (!edit) return;
+      const effects = setColorEdit.of(null);
+      const insert = formatColor(next, color);
+      if (view.state.readOnly || insert === edit.original) view.dispatch({ effects });
+      else
+        view.dispatch({
+          changes: { from: edit.from, to: edit.to, insert },
+          effects,
+          userEvent: "input.color",
+          annotations: isolateHistory.of("full"),
+        });
+    },
+    onCancel: () => {
+      if (target()) view.dispatch({ effects: setColorEdit.of(null) });
     },
   });
+  view.dispatch({
+    effects: setColorEdit.of({ id, from, to: from + color.text.length, original: color.text, preview: color.text }),
+  });
+}
+
+export function colorPreviewGutter(ctx: EditorDocContext): Extension {
+  return [
+    colorEdit,
+    gutter({
+      class: `${styles.gutter} cm-openidea-gutter-colors`,
+      lineMarker: (view, block) => {
+        const color = lineColor(view.state, block.from, ctx.language);
+        return color ? new Swatch(color, !view.state.readOnly) : null;
+      },
+      lineMarkerChange: (update) => update.docChanged || update.startState.readOnly !== update.state.readOnly,
+      domEventHandlers: {
+        mousedown: (view, block, event) => {
+          const e = event as MouseEvent;
+          const swatch = e.target instanceof Element ? e.target.closest(`.${styles.swatch}`) : null;
+          if (e.button !== 0 || !swatch || view.state.readOnly) return false;
+          const line = view.state.doc.lineAt(block.from);
+          const color = lineColor(view.state, block.from, ctx.language);
+          if (!color) return false;
+          e.preventDefault();
+          const rect = swatch.getBoundingClientRect();
+          pickColor(view, line.from + color.from, color, { x: rect.left, y: rect.bottom });
+          return true;
+        },
+      },
+    }),
+  ];
 }

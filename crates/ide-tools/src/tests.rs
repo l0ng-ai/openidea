@@ -50,6 +50,24 @@ fn find<'a>(list: &'a [ToolInfo], name: &str) -> &'a ToolInfo {
 }
 
 #[test]
+fn unity_adapter_download_is_pinned_and_checksum_verified() {
+    let env = Env::new();
+    let tools = env.tools();
+    let spec = registry::find("unity-debug").unwrap();
+    let Method::Release { source, assets, locate } = spec.method else { panic!("expected release") };
+    // A fixed release resolves without a network request.
+    let curl = env.sys.join(if cfg!(windows) { "curl.exe" } else { "curl" });
+    fs::write(&curl, b"unused").unwrap();
+    archive::make_executable(&curl).unwrap();
+    let http = Http::new(env.sys.as_os_str()).unwrap();
+    let download = tools.resolve_release(&http, source, assets, &CancellationToken::new()).unwrap();
+    assert_eq!(download.version, "3.0.1");
+    assert!(download.url.starts_with("https://github.com/Unity-Technologies/vscode-unity-debug/releases/download/"));
+    assert_eq!(download.sha256.as_deref(), Some("4fa00660e0b52b0413726f80962e7d3d6efd41ac6cfd4df39520cae4a8ba5bd0"));
+    assert_eq!(locate, &["UnityDebug.exe"]);
+}
+
+#[test]
 fn bundled_lombok_replaces_legacy_installs_on_every_platform_without_downloads() {
     for os in [Os::Mac, Os::Linux, Os::Windows] {
         for arch in [platform::Arch::Arm64, platform::Arch::X64] {
@@ -58,16 +76,20 @@ fn bundled_lombok_replaces_legacy_installs_on_every_platform_without_downloads()
             fs::create_dir_all(legacy.parent().unwrap()).unwrap();
             fs::write(&legacy, b"old official agent").unwrap();
             fs::write(env.root.join("lombok").join(MANIFEST), r#"{"version":"1.18.48"}"#).unwrap();
+            let previous = env.root.join("lombok/bin/lombok-1.18.48-openidea.2.jar");
+            fs::write(&previous, b"previous bundled agent").unwrap();
             let tools = Tools::with_paths(env.root.clone(), OsString::new(), Platform { os, arch });
             let info = tools.info("lombok", &[]).unwrap();
             let path = managed_bundle(env.root.parent().unwrap(), "lombok").unwrap();
             assert_eq!(info.status, ToolStatus::Installed);
-            assert_eq!(info.version.as_deref(), Some("1.18.48-openidea.2"));
+            assert_eq!(info.version.as_deref(), Some("1.18.48-openidea.3"));
             assert_eq!(info.path, Some(path.clone().into()));
-            assert_eq!(path.file_name().unwrap(), "lombok-1.18.48-openidea.2.jar");
+            assert_eq!(path.file_name().unwrap(), "lombok-1.18.48-openidea.3.jar");
             assert!(!info.can_install && !info.can_uninstall);
             assert_eq!(tools.unavailable_reason(registry::find("lombok").unwrap()), None);
             assert_eq!(fs::read(&legacy).unwrap(), b"old official agent", "other windows may still use it");
+            assert_ne!(path, previous, "new agent path must invalidate the JDT LS workspace");
+            assert_eq!(fs::read(&previous).unwrap(), b"previous bundled agent", "other windows may still use it");
         }
     }
 }
@@ -145,6 +167,11 @@ fn everything_missing_on_an_empty_system() {
     assert_eq!(angular.command, "ngserver");
     assert_eq!(angular.install_method.as_deref(), Some("npm"));
     assert_eq!(angular.languages, ["HTML", "TypeScript"]);
+    let astro = find(&list, "astro-ls");
+    assert_eq!(astro.display_name, "Astro Language Server");
+    assert_eq!(astro.install_method.as_deref(), Some("npm"));
+    assert_eq!(astro.languages, ["Astro"]);
+    assert_eq!(astro.default_args, ["--stdio"]);
     // Servers without an installer are listed with their manual hint.
     let hls = find(&list, "haskell-language-server");
     assert_eq!(hls.install_method, None);
@@ -166,6 +193,13 @@ fn interchangeable_servers_list_their_alternatives() {
         assert_eq!(find(&list, name).alternatives, python);
     }
     assert_eq!(find(&list, "vtsls").alternatives, ["vtsls", "typescript-language-server"]);
+    for name in ["jdtls", "java-analyzer", "kmp-lsp"] {
+        assert_eq!(find(&list, name).alternatives, ["jdtls", "java-analyzer", "kmp-lsp"]);
+        assert_eq!(find(&list, name).languages, if name == "kmp-lsp" { &["Java", "Kotlin"][..] } else { &["Java"] });
+    }
+    for name in ["kotlin-lsp", "kotlin-language-server"] {
+        assert_eq!(find(&list, name).alternatives, ["kotlin-lsp", "kotlin-language-server", "kmp-lsp"]);
+    }
     // A regular server after a fallback starts no group with it.
     assert!(find(&list, "angular-language-server").alternatives.is_empty());
     assert!(find(&list, "ruff").alternatives.is_empty());
@@ -281,9 +315,10 @@ fn concurrent_installs_of_one_tool_are_rejected() {
 
 /// A second caller mid-install joins the run (the other Settings window's
 /// duplicate install) and shares the result instead of `AlreadyExists`.
+// Slot names no real install in other tests uses: tests share the process-wide slots.
 #[test]
 fn second_install_joins_the_running_one() {
-    let slot = match install_slot("sqls", &CancellationToken::new()) {
+    let slot = match install_slot("join-test-slot", &CancellationToken::new()) {
         Ok(slot) => slot,
         Err(_) => panic!("no install is running"),
     };
@@ -294,7 +329,7 @@ fn second_install_joins_the_running_one() {
                 slot.broadcast(InstallEvent::Line { text: format!("line {i}") });
                 std::thread::sleep(Duration::from_millis(20));
             }
-            release_install_slot("sqls", &slot);
+            release_install_slot("join-test-slot", &slot);
             slot.finish(Err(IdeError::new(ErrorKind::Io, "compile failed")));
         })
     };
@@ -314,8 +349,8 @@ fn second_install_joins_the_running_one() {
     assert!(texts.contains(&"Joined the install already in progress…".to_string()), "{texts:?}");
     assert!(texts.iter().any(|l| l == "line 2"), "{texts:?}");
     // The slot is released: a fresh install can start.
-    match install_slot("sqls", &CancellationToken::new()) {
-        Ok(fresh) => release_install_slot("sqls", &fresh),
+    match install_slot("join-test-slot", &CancellationToken::new()) {
+        Ok(fresh) => release_install_slot("join-test-slot", &fresh),
         Err(_) => panic!("the finished install still holds its slot"),
     }
 }
@@ -323,7 +358,7 @@ fn second_install_joins_the_running_one() {
 /// A late caller gets the finished result without waiting.
 #[test]
 fn install_joined_after_it_finished_returns_the_result() {
-    let slot = match install_slot("marksman", &CancellationToken::new()) {
+    let slot = match install_slot("finished-test-slot", &CancellationToken::new()) {
         Ok(slot) => slot,
         Err(_) => panic!("no install is running"),
     };
@@ -346,8 +381,9 @@ fn install_joined_after_it_finished_returns_the_result() {
         default_args: vec![],
         default_initialization_options: None,
         alternatives: vec![],
+        companion: false,
     };
-    release_install_slot("marksman", &slot);
+    release_install_slot("finished-test-slot", &slot);
     slot.finish(Ok(ok));
     let info = join_install(&slot, &CancellationToken::new(), &|_| {}).unwrap();
     assert_eq!(info.version.as_deref(), Some("1.0"));
@@ -389,7 +425,7 @@ fn release_install_end_to_end_without_network() {
         "curl",
         &format!(
             r#"out=""; url=""
-while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2;; -A|-H|--retry|--connect-timeout) shift 2;; -*) shift;; *) url="$1"; shift;; esac; done
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2;; -A|-H|--retry|--connect-timeout|--speed-limit|--speed-time) shift 2;; -*) shift;; *) url="$1"; shift;; esac; done
 case "$url" in
   https://api.github.com/*) /bin/cat '{json}';;
   *) /bin/cp '{archive}' "$out";;
@@ -425,17 +461,65 @@ esac"#,
     assert!(exe.exists());
 }
 
+/// A PHP archive release (phpactor) keeps its `.phar` name and is launched through `php`.
+#[cfg(unix)]
+#[test]
+fn phar_release_installs_with_a_php_launcher() {
+    let env = Env::new();
+    let fixtures = env.root.parent().unwrap().join("fixtures");
+    fs::create_dir_all(&fixtures).unwrap();
+    let phar = fixtures.join("phpactor.phar");
+    fs::write(&phar, b"<?php __HALT_COMPILER();").unwrap();
+    let digest = sources::sha256_file(&phar).unwrap();
+    let json = fixtures.join("release.json");
+    fs::write(
+        &json,
+        format!(
+            r#"{{"tag_name":"2026.10.07.0","assets":[{{"name":"phpactor.phar","browser_download_url":"https://example.invalid/phpactor.phar","size":{},"digest":"sha256:{digest}"}}]}}"#,
+            fs::metadata(&phar).unwrap().len()
+        ),
+    )
+    .unwrap();
+    env.script(
+        &env.sys,
+        "curl",
+        &format!(
+            r#"out=""; url=""
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2;; -A|-H|--retry|--connect-timeout|--speed-limit|--speed-time) shift 2;; -*) shift;; *) url="$1"; shift;; esac; done
+case "$url" in
+  https://api.github.com/*) /bin/cat '{json}';;
+  *) /bin/cp '{phar}' "$out";;
+esac"#,
+            json = json.display(),
+            phar = phar.display()
+        ),
+    );
+    env.script(&env.sys, "php", r#"echo "php $*""#);
+
+    let info = env.tools().install("phpactor", &langs(), &CancellationToken::new(), &|_| {}).unwrap();
+    assert_eq!(info.status, ToolStatus::Installed);
+    let launcher = env.root.join("phpactor/bin/phpactor");
+    assert_eq!(info.path.as_deref(), Some(launcher.as_path()));
+    let archive = env.root.join("phpactor/bin/phpactor.phar");
+    assert_eq!(fs::read(&archive).unwrap(), b"<?php __HALT_COMPILER();");
+    let out = Command::new(&launcher).arg("language-server").env("PATH", &env.sys).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), format!("php {} language-server", archive.display()));
+}
+
 /// npm installs go to `<tools>/node_modules` with `--prefix`.
 #[cfg(unix)]
 #[test]
 fn npm_install_uses_tools_prefix() {
     let env = Env::new();
+    let sdk = env._tmp.path().join("selected-sdk/bin");
+    fs::create_dir_all(&sdk).unwrap();
     let log = env.root.parent().unwrap().join("npm-args.txt");
     env.script(
-        &env.sys,
+        &sdk,
         "npm",
         &format!(
-            r#"echo "$@" > '{log}'
+            r#"node --version >/dev/null || exit 98
+echo "$@" > '{log}'
 prefix=""; while [ $# -gt 0 ]; do [ "$1" = "--prefix" ] && prefix="$2"; shift; done
 /bin/mkdir -p "$prefix/node_modules/.bin" "$prefix/node_modules/bash-language-server"
 printf '#!/bin/sh\necho 5.4.0\n' > "$prefix/node_modules/.bin/bash-language-server"
@@ -445,13 +529,106 @@ echo "added 1 package""#,
             log = log.display()
         ),
     );
-    let info = env.tools().install("bash-language-server", &langs(), &CancellationToken::new(), &|_| {}).unwrap();
+    env.script(&sdk, "node", "exit 0");
+    env.script(&env.sys, "node", "exit 99");
+    env.script(&env.sys, "npm", "exit 99");
+    let tools = env.tools().with_runtime(
+        BTreeMap::from([("node".into(), sdk.join("node")), ("ruby".into(), env.sys.join("ruby"))]),
+        BTreeMap::new(),
+    );
+    let info = tools.install("bash-language-server", &langs(), &CancellationToken::new(), &|_| {}).unwrap();
     assert_eq!(info.status, ToolStatus::Installed);
     assert_eq!(info.version.as_deref(), Some("5.4.0"));
     let args = fs::read_to_string(&log).unwrap();
     assert!(args.contains("install") && args.contains("bash-language-server@latest"), "{args}");
     assert!(args.contains(&env.root.display().to_string()), "{args}");
     assert!(env.root.join("package.json").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn npm_install_retries_against_public_registry_on_mirror_miss_and_preserves_primary_error_when_unreachable() {
+    let env = Env::new();
+    let log = env.root.parent().unwrap().join("npm-fallback.txt");
+    env.script(&env.sys, "node", "exit 0");
+    env.script(
+        &env.sys,
+        "npm",
+        &format!(
+            r#"echo "$@" >> '{log}'
+case " $* " in
+  *" --registry=https://registry.npmjs.org/ --@vtsls:registry=https://registry.npmjs.org/ "*)
+    prefix=""; while [ $# -gt 0 ]; do [ "$1" = "--prefix" ] && prefix="$2"; shift; done
+    /bin/mkdir -p "$prefix/node_modules/.bin" "$prefix/node_modules/@vtsls/language-server"
+    printf '#!/bin/sh\necho 0.2.9\n' > "$prefix/node_modules/.bin/vtsls"
+    /bin/chmod +x "$prefix/node_modules/.bin/vtsls"
+    echo '{{"version":"0.2.9"}}' > "$prefix/node_modules/@vtsls/language-server/package.json"
+    exit 0
+    ;;
+  *)
+    echo "npm error code ETARGET" >&2
+    echo "npm error notarget No matching version found for @vtsls/language-server@latest." >&2
+    exit 1
+    ;;
+esac"#,
+            log = log.display()
+        ),
+    );
+    let info = env.tools().install("vtsls", &langs(), &CancellationToken::new(), &|_| {}).unwrap();
+    assert_eq!(info.status, ToolStatus::Installed);
+    let calls: Vec<String> = fs::read_to_string(&log).unwrap().lines().map(str::to_owned).collect();
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert!(!calls[0].contains("--registry="), "{calls:?}");
+    assert!(calls[1].contains("--registry=https://registry.npmjs.org/"), "{calls:?}");
+    assert!(calls[1].contains("--@vtsls:registry=https://registry.npmjs.org/"), "{calls:?}");
+
+    // When public npmjs.org is blocked (e.g. corporate firewall), surface the primary mirror error.
+    env.script(
+        &env.sys,
+        "npm",
+        r#"case " $* " in
+  *" --registry=https://registry.npmjs.org/ "*)
+    echo "npm error code ECONNRESET" >&2
+    exit 1
+    ;;
+  *)
+    echo "npm error code ETARGET" >&2
+    echo "npm error notarget No matching version found for pyright@latest." >&2
+    exit 1
+    ;;
+esac"#,
+    );
+    let err = env.tools().install("pyright", &langs(), &CancellationToken::new(), &|_| {}).unwrap_err();
+    assert!(err.message.contains("No matching version found for pyright@latest"), "{}", err.message);
+    assert!(!err.message.contains("ECONNRESET"), "{}", err.message);
+}
+
+/// Settings › Tools › Download Mirrors › Use only the configured package registries: a registry
+/// that refuses a package (a firewall's 403) is the answer.
+#[cfg(unix)]
+#[test]
+fn configured_registries_only_never_reach_public_registries() {
+    let env = Env::new();
+    let log = env.root.parent().unwrap().join("npm-only.txt");
+    env.script(&env.sys, "node", "exit 0");
+    env.script(
+        &env.sys,
+        "npm",
+        &format!(
+            r#"echo "$@" >> '{log}'
+echo "npm error code E403" >&2
+echo "npm error 403 Forbidden - GET https://nexus.example/yaml-language-server - quarantined" >&2
+exit 1"#,
+            log = log.display()
+        ),
+    );
+    let only = ToolDownloadSettings { configured_registries_only: true, ..Default::default() };
+    let tools = env.tools().with_downloads(only);
+    let err = tools.install("yaml-language-server", &langs(), &CancellationToken::new(), &|_| {}).unwrap_err();
+    assert!(err.message.contains("quarantined"), "{}", err.message);
+    let calls = fs::read_to_string(&log).unwrap();
+    assert_eq!(calls.lines().count(), 1, "{calls}");
+    assert!(!calls.contains("registry.npmjs.org"), "{calls}");
 }
 
 /// Servers that load TypeScript as a library get one with its JS API: `@latest`
@@ -462,6 +639,7 @@ echo "added 1 package""#,
 fn npm_typescript_is_pinned_and_shared() {
     let env = Env::new();
     let log = env.root.parent().unwrap().join("npm-args.txt");
+    env.script(&env.sys, "node", "exit 0");
     env.script(
         &env.sys,
         "npm",
@@ -473,6 +651,7 @@ prefix=""; for a in "$@"; do [ "$prev" = "--prefix" ] && prefix="$a"; prev="$a";
 for a in "$@"; do case "$a" in
   typescript-language-server@latest) n=typescript-language-server;;
   @vue/language-server@latest) n=vue-language-server; d=@vue/language-server;;
+  @astrojs/language-server@latest) n=astro-ls; d=@astrojs/language-server;;
   *) continue;;
 esac
 d="${{d:-$n}}"; /bin/mkdir -p "$prefix/node_modules/$d"
@@ -483,7 +662,7 @@ done"#,
         ),
     );
     let tools = env.tools();
-    for name in ["vue-language-server", "typescript-language-server"] {
+    for name in ["vue-language-server", "typescript-language-server", "astro-ls"] {
         assert_eq!(
             tools.install(name, &langs(), &CancellationToken::new(), &|_| {}).unwrap().status,
             ToolStatus::Installed
@@ -494,6 +673,7 @@ done"#,
         assert!(line.contains("typescript@6") && !line.contains("typescript@latest"), "{line}");
     }
     assert!(installs.contains("@vue/language-server@latest"), "{installs}");
+    assert!(installs.contains("@astrojs/language-server@latest"), "{installs}");
 
     fs::write(&log, "").unwrap();
     tools.uninstall("vue-language-server", &langs()).unwrap();
@@ -573,14 +753,19 @@ fn elixir_ls_needs_elixir_and_lists_its_debugger() {
 #[test]
 fn gem_install_wraps_stubs_with_gem_home() {
     let env = Env::new();
+    let sdk = env._tmp.path().join("selected-sdk/bin");
+    fs::create_dir_all(&sdk).unwrap();
     // `gem install --no-document --install-dir <home> --bindir <bin> solargraph`
     env.script(
-        &env.sys,
+        &sdk,
         "gem",
         r#"home="$4"; bin="$6"; /bin/mkdir -p "$home/gems/solargraph-0.50.0" "$bin"
 printf '#!/bin/sh\necho "$GEM_HOME"\n' > "$bin/solargraph"; /bin/chmod +x "$bin/solargraph""#,
     );
-    let tools = env.tools();
+    env.script(&sdk, "ruby", "exit 0");
+    env.script(&env.sys, "ruby", "exit 99");
+    env.script(&env.sys, "gem", "exit 99");
+    let tools = env.tools().with_runtime(BTreeMap::from([("ruby".into(), sdk.join("ruby"))]), BTreeMap::new());
     let info = tools.install("solargraph", &langs(), &CancellationToken::new(), &|_| {}).unwrap();
     assert_eq!(info.status, ToolStatus::Installed);
     assert_eq!(info.version.as_deref(), Some("0.50.0"));
@@ -592,7 +777,62 @@ printf '#!/bin/sh\necho "$GEM_HOME"\n' > "$bin/solargraph"; /bin/chmod +x "$bin/
 
 #[cfg(unix)]
 #[test]
+fn ruby_lsp_installs_into_the_project_ruby_not_a_private_gem_home() {
+    let env = Env::new();
+    let sdk = env._tmp.path().join("selected-sdk/bin");
+    fs::create_dir_all(&sdk).unwrap();
+    let project = env._tmp.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    let marker = env._tmp.path().join("installed");
+    // Homebrew's Ruby: the gem bindir is not on the search path; only the Ruby knows it.
+    let bindir = env._tmp.path().join("gems/bin");
+    fs::create_dir_all(&bindir).unwrap();
+    env.script(&sdk, "ruby", &format!("echo '{}'", bindir.display()));
+    // `gem list --exact ruby-lsp` knows the gem once `gem install ruby-lsp` ran, in the cwd it was given.
+    env.script(
+        &sdk,
+        "gem",
+        &format!(
+            r#"case "$1" in
+install) echo "$PWD $@" > '{m}'; printf '#!/bin/sh\n' > '{b}/ruby-lsp'; /bin/chmod +x '{b}/ruby-lsp' ;;
+list) [ -f '{m}' ] && echo "ruby-lsp (0.26.11)" ;;
+uninstall) /bin/rm -f '{m}' ;;
+esac"#,
+            m = marker.display(),
+            b = bindir.display()
+        ),
+    );
+    env.script(&env.sys, "ruby", "exit 99");
+    env.script(&env.sys, "gem", "exit 99");
+    let tools = env.tools().with_runtime(BTreeMap::from([("ruby".into(), sdk.join("ruby"))]), BTreeMap::new());
+    let tools = tools.with_work_dir(Some(project.clone()));
+    assert_eq!(find(&tools.list(&langs()), "ruby-lsp").status, ToolStatus::Missing);
+    let info = tools.install("ruby-lsp", &langs(), &CancellationToken::new(), &|_| {}).unwrap();
+    assert_eq!(info.status, ToolStatus::OnPath);
+    assert_eq!(info.version.as_deref(), Some("0.26.11"));
+    // Found in the Ruby's own bindir, not reported as the `gem` command.
+    assert_eq!(info.path.as_deref(), Some(bindir.join("ruby-lsp").as_path()));
+    // Run in the project (so a version manager picks its Ruby), into the Ruby's own gem home.
+    let log = fs::read_to_string(&marker).unwrap();
+    assert!(log.starts_with(&*project.canonicalize().unwrap().to_string_lossy()), "{log}");
+    assert!(log.contains("install --no-document ruby-lsp") && !log.contains("--install-dir"), "{log}");
+    // No private gem home, no wrapper directory on the search path.
+    assert!(!env.root.join("ruby-lsp").exists());
+    // Uninstalling removes the gem, and an older managed copy.
+    fs::create_dir_all(env.root.join("ruby-lsp/gems")).unwrap();
+    let info = tools.uninstall("ruby-lsp", &langs()).unwrap();
+    assert_eq!(info.status, ToolStatus::Missing);
+    assert!(!env.root.join("ruby-lsp").exists());
+}
+
+/// Installs of one tool name share a slot, so parallel csharp-ls tests would join each other's install.
+#[cfg(unix)]
+static CSHARP_LS_INSTALL: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+#[cfg(unix)]
+#[test]
 fn dotnet_tool_install_into_tool_path() {
+    let _serial = CSHARP_LS_INSTALL.lock();
     let env = Env::new();
     env.script(
         &env.sys,
@@ -602,6 +842,7 @@ install) /bin/mkdir -p "$5"; printf '#!/bin/sh\necho "$DOTNET_ROOT"\n' > "$5/csh
 list) printf 'Package Id      Version      Commands\n----\ncsharp-ls       0.15.0       csharp-ls\n' ;;
 esac
 [ "$1" = --list-runtimes ] && echo 'Microsoft.NETCore.App 9.0.1 [/opt/dotnet/shared/Microsoft.NETCore.App]'
+[ "$1" = --list-sdks ] && echo '9.0.100 [/opt/dotnet/sdk]'
 exit 0"#,
     );
     let info = env.tools().install("csharp-ls", &langs(), &CancellationToken::new(), &|_| {}).unwrap();
@@ -611,6 +852,159 @@ exit 0"#,
     assert_eq!(info.path.as_deref(), Some(wrapper.as_path()));
     let out = std::process::Command::new(&wrapper).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "/opt/dotnet");
+}
+
+/// A fake `dotnet` with SDK `sdk` that logs `tool install` arguments to `calls`, and a fake
+/// `curl` serving csharp-ls 0.28.0 (net10.0) and 0.29.0 (net11.0) as nuget.org would.
+#[cfg(unix)]
+fn dotnet_with_nuget(env: &Env, sdk: &str, install: &str) -> PathBuf {
+    let calls = env.root.parent().unwrap().join("dotnet-calls");
+    env.script(
+        &env.sys,
+        "dotnet",
+        &format!(
+            r#"case "$1 $2" in
+"tool install") echo "$@" >> '{calls}'; {install} ;;
+"tool list") printf 'Package Id      Version      Commands\n----\ncsharp-ls       0.28.0       csharp-ls\n' ;;
+"--list-sdks ") [ -n '{sdk}' ] && echo '{sdk} [/opt/dotnet/sdk]' ;;
+esac
+exit 0"#,
+            calls = calls.display(),
+        ),
+    );
+    let leaf = |v: &str| {
+        format!(
+            r#"{{"catalogEntry":{{"@id":"https://api.nuget.org/v3/catalog0/data/x/csharp-ls.{v}.json","version":"{v}","listed":true}}}}"#
+        )
+    };
+    let fixtures = env.root.parent().unwrap().join("nuget");
+    fs::create_dir_all(&fixtures).unwrap();
+    let index = fixtures.join("index.json");
+    fs::write(
+        &index,
+        format!(r#"{{"items":[{{"@id":"https://reg/page","items":[{},{}]}}]}}"#, leaf("0.28.0"), leaf("0.29.0")),
+    )
+    .unwrap();
+    for (v, tfm) in [("0.28.0", "net10.0"), ("0.29.0", "net11.0")] {
+        fs::write(
+            fixtures.join(format!("{v}.json")),
+            format!(r#"{{"packageEntries":[{{"fullName":"tools/{tfm}/any/CSharpLanguageServer.dll"}}]}}"#),
+        )
+        .unwrap();
+    }
+    env.script(
+        &env.sys,
+        "curl",
+        &format!(
+            r#"url=""
+while [ $# -gt 0 ]; do case "$1" in -o|-A|-H|--retry|--connect-timeout|--speed-limit|--speed-time) shift 2;; -*) shift;; *) url="$1"; shift;; esac; done
+case "$url" in
+  */registration5-semver1/csharp-ls/index.json) /bin/cat '{dir}/index.json';;
+  */csharp-ls.0.28.0.json) /bin/cat '{dir}/0.28.0.json';;
+  */csharp-ls.0.29.0.json) /bin/cat '{dir}/0.29.0.json';;
+  *) exit 22;;
+esac"#,
+            dir = fixtures.display()
+        ),
+    );
+    calls
+}
+
+#[cfg(unix)]
+const FAKE_TOOL_INSTALL: &str =
+    r#"/bin/mkdir -p "$5"; printf '#!/bin/sh\n' > "$5/csharp-ls"; /bin/chmod +x "$5/csharp-ls""#;
+
+#[cfg(unix)]
+#[test]
+fn dotnet_tool_too_new_for_every_sdk_names_the_sdk_it_needs() {
+    let _serial = CSHARP_LS_INSTALL.lock();
+    let env = Env::new();
+    let calls = dotnet_with_nuget(&env, "6.0.300", FAKE_TOOL_INSTALL);
+    let err = env.tools().install("csharp-ls", &langs(), &CancellationToken::new(), &|_| {}).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Unavailable);
+    assert_eq!(
+        err.message,
+        "csharp-ls 0.29.0 requires the .NET 11 SDK; found 6.0.300. Install it from https://dotnet.microsoft.com/download"
+    );
+    assert!(!calls.exists(), "dotnet tool install ran");
+}
+
+#[cfg(unix)]
+#[test]
+fn dotnet_tool_falls_back_to_the_newest_version_the_sdk_runs() {
+    let _serial = CSHARP_LS_INSTALL.lock();
+    let env = Env::new();
+    let calls = dotnet_with_nuget(&env, "10.0.403", FAKE_TOOL_INSTALL);
+    let events = Mutex::new(Vec::new());
+    let emit = |e: InstallEvent| events.lock().push(e);
+    let info = env.tools().install("csharp-ls", &langs(), &CancellationToken::new(), &emit).unwrap();
+    assert_eq!(info.status, ToolStatus::Installed);
+    assert_eq!(info.version.as_deref(), Some("0.28.0"));
+    let call = fs::read_to_string(&calls).unwrap();
+    assert!(call.trim_end().ends_with("--verbosity normal --version 0.28.0"), "{call}");
+    let said = events.into_inner().into_iter().any(|e| {
+        matches!(e, InstallEvent::Line { text } if text == "csharp-ls 0.29.0 needs the .NET 11 SDK, found 10.0.403; installing 0.28.0, the newest version that runs on it")
+    });
+    assert!(said);
+}
+
+#[cfg(unix)]
+#[test]
+fn dotnet_tool_installs_the_latest_on_a_new_enough_sdk() {
+    let _serial = CSHARP_LS_INSTALL.lock();
+    let env = Env::new();
+    let calls = dotnet_with_nuget(&env, "11.0.100", FAKE_TOOL_INSTALL);
+    env.tools().install("csharp-ls", &langs(), &CancellationToken::new(), &|_| {}).unwrap();
+    let call = fs::read_to_string(&calls).unwrap();
+    assert!(!call.contains("--version"), "{call}");
+}
+
+#[cfg(unix)]
+#[test]
+fn dotnet_without_an_sdk_is_reported_before_installing() {
+    let _serial = CSHARP_LS_INSTALL.lock();
+    let env = Env::new();
+    let calls = dotnet_with_nuget(&env, "", FAKE_TOOL_INSTALL);
+    let err = env.tools().install("csharp-ls", &langs(), &CancellationToken::new(), &|_| {}).unwrap_err();
+    assert!(
+        err.message.starts_with("csharp-ls needs the .NET SDK, but `dotnet --list-sdks` lists none"),
+        "{}",
+        err.message
+    );
+    assert!(!calls.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn dotnet_tool_failure_quotes_the_nuget_error_not_the_generic_hint() {
+    let _serial = CSHARP_LS_INSTALL.lock();
+    let env = Env::new();
+    let calls = dotnet_with_nuget(
+        &env,
+        "6.0.300",
+        r#"echo '  1>/tmp/x/restore.csproj : error NU1202: Package csharp-ls 0.29.0 is not compatible with net6.0 (.NETCoreApp,Version=v6.0) / any.'
+echo "Tool 'csharp-ls' failed to install. This failure may have been caused by:"
+echo '* You mistyped the name of the tool.'
+echo 'For more reasons, including package naming enforcement, visit https://aka.ms/failure-installing-tool'
+exit 1"#,
+    );
+    // nuget.org unreachable: the version check is skipped and the install itself fails.
+    env.script(&env.sys, "curl", "exit 6");
+    let events = Mutex::new(Vec::new());
+    let emit = |e: InstallEvent| events.lock().push(e);
+    let err = env.tools().install("csharp-ls", &langs(), &CancellationToken::new(), &emit).unwrap_err();
+    assert!(calls.exists());
+    assert!(
+        err.message.ends_with(
+            "failed (exit status: 1): error NU1202: Package csharp-ls 0.29.0 is not compatible with net6.0 (.NETCoreApp,Version=v6.0) / any."
+        ),
+        "{}",
+        err.message
+    );
+    let skipped = events.into_inner().into_iter().any(
+        |e| matches!(e, InstallEvent::Line { text } if text.starts_with("Could not check which csharp-ls version runs on .NET 6.0.300")),
+    );
+    assert!(skipped);
 }
 
 #[test]
@@ -746,4 +1140,315 @@ fn python_probes_run_in_an_empty_private_directory() {
     let out = String::from_utf8(out.stdout).unwrap();
     let dir = env.root.join(".python-cwd");
     assert_eq!(out.trim(), dir.canonicalize().unwrap().to_string_lossy());
+}
+
+#[cfg(unix)]
+#[test]
+fn go_installers_use_selected_sdk_instead_of_broken_mise_shim() {
+    for spec in registry::TOOLS.iter().filter(|s| matches!(s.method, registry::Method::Go { .. })) {
+        let env = Env::new();
+        env.script(&env.sys, "go", "echo 'mise ERROR No version is set for shim: go' >&2; exit 1");
+        let sdk = env._tmp.path().join("selected go");
+        let log = env._tmp.path().join("go.log");
+        env.script(
+            &sdk.join("bin"),
+            "go",
+            &format!(
+                r#"
+[ "$GOROOT" = '{sdk}' ] || exit 99
+echo "$@" >> '{log}'
+case "$1" in
+install) printf '#!/bin/sh\necho 1.2.3\n' > "$GOBIN/{command}"; /bin/chmod +x "$GOBIN/{command}" ;;
+version) echo 'mod example.com/tool v1.2.3' ;;
+esac
+"#,
+                sdk = sdk.display(),
+                log = log.display(),
+                command = spec.commands[0]
+            ),
+        );
+        let tools = env.tools().with_runtime(
+            BTreeMap::from([("go".into(), sdk.join("bin/go"))]),
+            BTreeMap::from([("GOROOT".into(), sdk.to_string_lossy().into_owned())]),
+        );
+        let info = tools.install(spec.name, &langs(), &CancellationToken::new(), &|_| {}).unwrap();
+        assert_eq!(info.status, ToolStatus::Installed, "{}", spec.name);
+        assert_eq!(info.version.as_deref(), Some("1.2.3"));
+        let log = fs::read_to_string(log).unwrap();
+        assert!(log.contains("install -v ") && log.contains("version -m"), "{log}");
+        tools.uninstall(spec.name, &langs()).unwrap();
+        assert!(
+            env.tools()
+                .install(spec.name, &langs(), &CancellationToken::new(), &|_| {})
+                .unwrap_err()
+                .message
+                .contains("failed")
+        );
+    }
+}
+
+/// Installs of one tool name share a process-wide slot: tests installing debugpy take turns.
+#[cfg(unix)]
+static DEBUGPY_INSTALL: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+#[cfg(unix)]
+#[test]
+fn selected_python_is_used_for_pip_and_uv_even_with_a_versioned_filename() {
+    let _guard = DEBUGPY_INSTALL.lock();
+    let env = Env::new();
+    env.script(&env.sys, "python3", "exit 99");
+    let sdk = env._tmp.path().join("python-sdk");
+    let pip_log = env._tmp.path().join("pip.log");
+    env.script(
+        &sdk,
+        "python3.14",
+        &format!(
+            r#"
+echo "$@" >> '{log}'
+[ "$1" = "-c" ] && exit 1
+while [ $# -gt 0 ]; do
+    if [ "$1" = "--target" ]; then
+        /bin/mkdir -p "$2/debugpy" "$2/debugpy-1.2.3.dist-info"
+        /usr/bin/touch "$2/debugpy/__init__.py"
+        exit 0
+    fi
+    shift
+done
+exit 1
+"#,
+            log = pip_log.display()
+        ),
+    );
+    let tools = env.tools().with_runtime(BTreeMap::from([("python".into(), sdk.join("python3.14"))]), BTreeMap::new());
+    assert_eq!(tools.python(), Some(sdk.join("python3.14")));
+    let info = tools.install("debugpy", &langs(), &CancellationToken::new(), &|_| {}).unwrap();
+    assert_eq!(info.status, ToolStatus::Installed);
+    assert_eq!(info.version.as_deref(), Some("1.2.3"));
+    assert!(fs::read_to_string(pip_log).unwrap().contains("-m pip install"));
+    let log = env._tmp.path().join("uv.log");
+    env.script(&env.sys, "uv", &format!("echo \"$@\" >> '{}'; exit 1", log.display()));
+    let _ = tools.install("ruff", &langs(), &CancellationToken::new(), &|_| {});
+    let args = fs::read_to_string(log).unwrap();
+    assert!(args.contains(&format!("--python {}", sdk.join("python3.14").display())), "{args}");
+}
+
+/// A virtualenv made by uv has no pip: debugpy's private copy is made with pip through uv.
+#[cfg(unix)]
+#[test]
+fn debugpy_installs_through_uv_when_the_selected_python_has_no_pip() {
+    let _guard = DEBUGPY_INSTALL.lock();
+    let env = Env::new();
+    let venv = env._tmp.path().join("project/.venv/bin");
+    env.script(&venv, "python", "echo \"$(basename \"$0\"): No module named pip\" >&2; exit 1");
+    let log = env._tmp.path().join("uv.log");
+    env.script(
+        &env.sys,
+        "uv",
+        &format!(
+            r#"
+echo "$@" >> '{log}'
+while [ $# -gt 0 ]; do
+    if [ "$1" = "--target" ]; then
+        /bin/mkdir -p "$2/debugpy" "$2/debugpy-1.8.0.dist-info"
+        /usr/bin/touch "$2/debugpy/__init__.py"
+        exit 0
+    fi
+    shift
+done
+exit 1
+"#,
+            log = log.display()
+        ),
+    );
+    let tools = env.tools().with_runtime(BTreeMap::from([("python".into(), venv.join("python"))]), BTreeMap::new());
+    let lines = Mutex::new(Vec::new());
+    let info = tools
+        .install("debugpy", &langs(), &CancellationToken::new(), &|e| {
+            if let InstallEvent::Line { text } = e {
+                lines.lock().push(text);
+            }
+        })
+        .unwrap();
+    assert_eq!(info.status, ToolStatus::Installed);
+    assert_eq!(info.version.as_deref(), Some("1.8.0"));
+    let args = fs::read_to_string(log).unwrap();
+    assert!(args.starts_with("tool run pip install "), "{args}");
+    assert!(args.contains("--platform any"), "{args}");
+    assert!(lines.lock().iter().any(|l| l.contains("has no pip")));
+}
+
+#[test]
+fn a_cancelled_install_leaves_the_previous_one_in_place() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (pkg, dest, aside) = (tmp.path().join("pkg"), tmp.path().join("tool"), tmp.path().join(".previous-tool"));
+    fs::create_dir_all(&pkg).unwrap();
+    fs::write(pkg.join("new"), "").unwrap();
+    fs::create_dir_all(&dest).unwrap();
+    fs::write(dest.join("old"), "").unwrap();
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let err = put_in_place(&pkg, &dest, &aside, &cancel).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Cancelled);
+    assert!(dest.join("old").exists() && pkg.join("new").exists() && !aside.exists());
+
+    put_in_place(&pkg, &dest, &aside, &CancellationToken::new()).unwrap();
+    assert!(dest.join("new").exists() && !dest.join("old").exists());
+    assert!(aside.join("old").exists(), "the previous install is moved aside");
+}
+
+/// An npm tool the IDE installed is offered the version the user's npm registry has now.
+#[cfg(unix)]
+#[test]
+fn npm_tools_report_a_newer_registry_version() {
+    let env = Env::new();
+    let sdk = env._tmp.path().join("node-sdk/bin");
+    let modules = env.root.join("node_modules");
+    env.script(&modules.join(".bin"), "bash-language-server", "echo 5.4.0");
+    fs::create_dir_all(modules.join("bash-language-server")).unwrap();
+    fs::write(modules.join("bash-language-server/package.json"), r#"{"version":"5.4.0"}"#).unwrap();
+    env.script(&sdk, "node", "exit 0");
+    let tools = |latest: &str| {
+        env.script(&sdk, "npm", &format!(r#"[ "$1 $2 $3" = "view bash-language-server version" ] && echo {latest}"#));
+        env.tools().with_runtime(BTreeMap::from([("node".into(), sdk.join("node"))]), BTreeMap::new())
+    };
+    let cancel = CancellationToken::new();
+    assert_eq!(
+        tools("5.6.1").updates(&cancel).unwrap(),
+        vec![ToolUpdate { name: "bash-language-server".into(), current: "5.4.0".into(), latest: "5.6.1".into() }]
+    );
+    assert_eq!(tools("5.4.0").updates(&cancel).unwrap(), vec![]);
+}
+
+/// Tools › Download sources: a configured mirror serves a GitHub release the official host
+/// cannot, and the official host is kept as the fallback.
+#[cfg(unix)]
+#[test]
+fn a_mirror_serves_what_the_official_host_cannot() {
+    let env = Env::new();
+    let fixtures = env.root.parent().unwrap().join("fixtures");
+    fs::create_dir_all(&fixtures).unwrap();
+    let archive = fixtures.join("lls.tar.gz");
+    {
+        let gz = flate2::write::GzEncoder::new(fs::File::create(&archive).unwrap(), flate2::Compression::fast());
+        let mut b = tar::Builder::new(gz);
+        let body = b"#!/bin/sh\necho 3.13.5\n";
+        let mut h = tar::Header::new_gnu();
+        h.set_size(body.len() as u64);
+        h.set_mode(0o755);
+        h.set_cksum();
+        b.append_data(&mut h, "bin/lua-language-server", &body[..]).unwrap();
+        b.into_inner().unwrap().finish().unwrap();
+    }
+    let digest = sources::sha256_file(&archive).unwrap();
+    // Release assets live on github.com: only those addresses are mirrored.
+    let assets: Vec<String> = ["darwin-arm64.tar.gz", "darwin-x64.tar.gz", "linux-x64.tar.gz", "linux-arm64.tar.gz"]
+        .iter()
+        .map(|s| {
+            format!(
+                r#"{{"name":"lua-language-server-3.13.5-{s}","browser_download_url":"https://github.com/LuaLS/lua-language-server/releases/download/3.13.5/{s}","size":{},"digest":"sha256:{digest}"}}"#,
+                fs::metadata(&archive).unwrap().len()
+            )
+        })
+        .collect();
+    let json = fixtures.join("release.json");
+    fs::write(&json, format!(r#"{{"tag_name":"3.13.5","assets":[{}]}}"#, assets.join(","))).unwrap();
+    // The mirror serves the asset; the official host is unreachable.
+    let log = fixtures.join("asked.log");
+    env.script(
+        &env.sys,
+        "curl",
+        &format!(
+            r#"out=""; url=""
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2;; -A|-H|--retry|--connect-timeout) shift 2;; -*) shift;; *) url="$1"; shift;; esac; done
+/bin/echo "$url" >> '{log}'
+case "$url" in
+  https://api.github.com/*) /bin/cat '{json}';;
+  https://mirror.test/https://github.com/*) /bin/cp '{archive}' "$out";;
+  *) exit 22;;
+esac"#,
+            log = log.display(),
+            json = json.display(),
+            archive = archive.display()
+        ),
+    );
+    // The first mirror is down: the next one is tried before the official host.
+    let downloads = ToolDownloadSettings {
+        github_mirror: "https://down.mirror.test/, https://mirror.test/".into(),
+        ..Default::default()
+    };
+    let emit = |_: InstallEvent| {};
+    env.tools()
+        .with_downloads(downloads)
+        .install("lua-language-server", &langs(), &CancellationToken::new(), &emit)
+        .unwrap();
+    let asked = fs::read_to_string(&log).unwrap();
+    // A configured mirror is tried first — waiting for a slow official host would defeat it.
+    let down_at = asked.find("https://down.mirror.test/https://github.com/").expect("the first mirror is tried");
+    let mirror_at = asked.find("https://mirror.test/https://github.com/").expect("the second mirror is tried");
+    assert!(down_at < mirror_at, "mirrors go in order: {asked}");
+    assert!(!asked[..down_at].contains("releases/download"), "the mirrors go first: {asked}");
+    assert!(
+        !asked.lines().any(|l| l.starts_with("https://github.com/") && l.contains("releases/download")),
+        "the official host is not needed: {asked}"
+    );
+}
+
+/// A mirror may only deliver bytes something can vouch for; the official host may not.
+#[test]
+fn a_mirror_never_installs_what_it_alone_vouches_for() {
+    let tmp = tempfile::tempdir().unwrap();
+    let archive = tmp.path().join("tool.tar.gz");
+    fs::write(&archive, b"bytes").unwrap();
+    let digest = sources::sha256_file(&archive).unwrap();
+    let dl = |sha256: Option<&str>| sources::Download {
+        version: "1.0.0".into(),
+        name: "tool.tar.gz".into(),
+        url: "https://github.com/o/r/releases/download/v1/tool.tar.gz".into(),
+        size: None,
+        sha256: sha256.map(str::to_owned),
+        checksum_url: None,
+    };
+    let lines = Mutex::new(Vec::new());
+    let emit = |e: InstallEvent| {
+        if let InstallEvent::Line { text } = e {
+            lines.lock().push(text);
+        }
+    };
+
+    // Nothing published: the official host is trusted, a mirror is not.
+    check_sha256(&archive, &dl(None), None, false, &emit).unwrap();
+    let err = check_sha256(&archive, &dl(None), None, true, &emit).unwrap_err();
+    assert!(err.message.contains("no published checksum"), "{}", err.message);
+
+    // A matching hash passes from either source.
+    check_sha256(&archive, &dl(Some(&digest)), Some(&digest), true, &emit).unwrap();
+    assert!(lines.lock().iter().any(|l| l.contains("Checksum verified")));
+
+    // A mismatch is refused whoever served it.
+    let err = check_sha256(&archive, &dl(Some(&digest)), Some(&"0".repeat(64)), true, &emit).unwrap_err();
+    assert!(err.message.contains("checksum mismatch"), "{}", err.message);
+}
+
+#[cfg(unix)]
+#[test]
+fn managed_gh_is_detected_on_tools_bin_dirs_and_available_to_http() {
+    let env = Env::new();
+    env.script(&env.sys, "curl", "exit 0");
+    let app_data = env.root.parent().unwrap();
+    let gh_bin = env.root.join("gh/bin");
+    assert!(tools_bin_dirs(app_data).contains(&gh_bin));
+
+    let missing = env.tools().info("gh", &[]).unwrap();
+    assert_eq!(missing.kind, ToolKind::Cli);
+    assert_eq!(missing.status, ToolStatus::Missing);
+    assert!(missing.can_install);
+
+    env.script(&gh_bin, "gh", "echo 'gh version 2.106.0 (2026-11-20)'");
+    let installed = env.tools().info("gh", &[]).unwrap();
+    assert_eq!(installed.status, ToolStatus::Installed);
+    assert_eq!(installed.version.as_deref(), Some("2.106.0"));
+    assert!(installed.can_uninstall);
+
+    let http = env.tools().http().unwrap();
+    assert_eq!(http.gh_path(), Some(gh_bin.join("gh").as_path()));
 }

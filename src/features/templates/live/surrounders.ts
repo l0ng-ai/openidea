@@ -143,6 +143,19 @@ const go = set("go", [
   notParens,
 ]);
 
+const zig = set("zig", [
+  { description: "if", body: braceBlock("if ($COND$)") },
+  { description: "if / else", body: "if ($COND$) {\n\t$SELECTION$\n} else {\n\t$END$\n}" },
+  { description: "while", body: braceBlock("while ($COND$)") },
+  { description: "for", body: braceBlock("for ($ITER$) |$ITEM$|"), variables: [v("ITEM", '"item"')] },
+  { description: "defer", body: braceBlock("defer") },
+  { description: "test", body: braceBlock('test "$NAME$"'), variables: [v("NAME", '"name"')] },
+  { description: "{ }", body: "{\n\t$SELECTION$\n}$END$" },
+  region("//"),
+  parens,
+  notParens,
+]);
+
 const rust = set("rust", [
   { description: "if", body: braceBlock("if $COND$") },
   { description: "if / else", body: "if $COND$ {\n\t$SELECTION$\n} else {\n\t$END$\n}" },
@@ -173,6 +186,7 @@ const BY_LANGUAGE: Record<string, readonly Surrounder[]> = {
   kotlin,
   python,
   go,
+  zig,
   rust,
   ...Object.fromEntries(TS_LANGS.map((l) => [l, js])),
   ...Object.fromEntries(["c", "cpp", "csharp", "swift", "scala", "dart", "php", "objective-c"].map((l) => [l, cLike])),

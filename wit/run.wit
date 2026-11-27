@@ -1,0 +1,137 @@
+package openidea:plugin@1.18.0;
+
+/// Launches this plugin's configurations in the invoking window's Run tool window.
+interface run {
+    use types.{error};
+    /// Output stream transport for a plugin-owned run configuration (API 1.18).
+    /// Ordinary pseudo-terminals combine stdout and stderr and can change
+    /// buffering, input handling, and terminal behavior.
+    enum output-mode {
+        /// Separate stdout and stderr pipes in the Run console (default).
+        pipes,
+        /// Pseudo-terminal ("Emulate terminal in output console").
+        pty,
+    }
+    /// Per-launch options for `start-with-options` (API 1.18).
+    record start-options {
+        debug: bool,
+        /// Optional per-invocation override. A user-saved override wins over
+        /// this value, which wins over the plugin configuration default.
+        output-mode: option<output-mode>,
+    }
+    /// Starts an owned configuration, appending args. Debug requires a debugger.
+    /// Only from a window command/event. The returned id receives run-exited.
+    start: func(config: string, args: list<string>, debug: bool) -> result<string, error>;
+    /// Starts an owned configuration with launch options, appending args (API 1.18).
+    start-with-options: func(config: string, args: list<string>, options: start-options) -> result<string, error>;
+}
+
+/// Optional dynamic configurations, refreshed alongside run detectors.
+interface run-configurations {
+    /// A configuration running an approved process in the project sandbox.
+    record run-configuration {
+        id: string,
+        name: string,
+        program: string,
+        args: list<string>,
+        cwd: option<string>,
+        test: bool,
+        framework: option<string>,
+    }
+    /// Returns the complete set for this project root.
+    configurations: func(project-root: string) -> list<run-configuration>;
+}
+
+/// Optional dynamic configurations with an environment and a debugger (API 1.9).
+/// When a plugin exports both, the IDE uses this one instead of `run-configurations`.
+interface launch-configurations {
+    use types.{extension};
+    /// A process the run starts, to attach the debugger to.
+    record attach-child {
+        /// Its debugger, as in Attach to Process: `dotnet`, `node`, `python`, `go` or `native`.
+        kind: string,
+        /// Only a process whose command line contains this text.
+        command-contains: option<string>,
+    }
+    /// How Debug starts the configuration.
+    variant debugger {
+        /// Starts `program` under the debugger of this language id (its `[debugger]`), e.g. `python`.
+        launch(string),
+        /// Runs the configuration as Run does, then attaches to the first matching process the
+        /// run starts (it waits for one up to 60 seconds).
+        attach-child(attach-child),
+        /// Later kinds; this IDE treats the configuration as having no debugger.
+        other(extension),
+    }
+    /// `run-configuration` with an environment and a debugger.
+    record launch-configuration {
+        id: string,
+        name: string,
+        program: string,
+        args: list<string>,
+        cwd: option<string>,
+        test: bool,
+        framework: option<string>,
+        /// Variables added to the run's environment (at most 64). A name the IDE's own
+        /// environment already has, such as `PATH`, is refused like in `process`.
+        env: list<tuple<string, string>>,
+        /// None: Debug infers the debugger from a source file in `args`, as before.
+        debugger: option<debugger>,
+    }
+    /// Returns the complete set for this project root.
+    configurations: func(project-root: string) -> list<launch-configuration>;
+}
+
+/// Optional dynamic configurations with environment, debugger, and output mode (API 1.18).
+/// When exported, the IDE uses this instead of `launch-configurations` and `run-configurations`.
+interface execution-configurations {
+    use launch-configurations.{debugger};
+    use run.{output-mode};
+    /// `launch-configuration` with a default output transport mode.
+    record execution-configuration {
+        id: string,
+        name: string,
+        program: string,
+        args: list<string>,
+        cwd: option<string>,
+        test: bool,
+        framework: option<string>,
+        /// Variables added to the run's environment (at most 64). A name the IDE's own
+        /// environment already has, such as `PATH`, is refused like in `process`.
+        env: list<tuple<string, string>>,
+        /// None: Debug infers the debugger from a source file in `args`, as before.
+        debugger: option<debugger>,
+        /// Default output stream mode (`pipes` or `pty`).
+        output-mode: output-mode,
+    }
+    /// Returns the complete set for this project root.
+    configurations: func(project-root: string) -> list<execution-configuration>;
+}
+
+/// Optional parser for test configurations whose framework is plugin.
+interface test-results {
+    use types.{location, extension};
+    /// A suite or test; parents must precede children and ids remain stable for a run.
+    record test-start { id: string, parent: option<string>, name: string, location: option<location> }
+    /// A successful test and optional elapsed milliseconds.
+    record test-passed { id: string, duration-ms: option<u32> }
+    /// A failed test, comparison and optional declaration location.
+    record test-failed {
+        id: string, duration-ms: option<u32>, message: string,
+        expected: option<string>, actual: option<string>, location: option<location>,
+    }
+    /// A skipped test and its explanation.
+    record test-skipped { id: string, reason: option<string> }
+    /// Output attached to a test or suite.
+    record test-output { id: string, text: string }
+    /// Incremental updates to the IDE's test tree. Unknown extensions are ignored.
+    variant test-event {
+        suite-started(test-start), test-started(test-start), passed(test-passed),
+        failed(test-failed), skipped(test-skipped), output(test-output), other(extension),
+    }
+    /// Parses one bounded output batch; failures fall back to built-in parsers.
+    parse: func(config: string, chunk: string) -> list<test-event>;
+    /// Selects test-tree name paths (parents then test), using the same config id as parse.
+    /// Returns the full replacement argument list, or none when filtering is unsupported.
+    select-tests: func(config: string, tests: list<list<string>>) -> option<list<string>>;
+}

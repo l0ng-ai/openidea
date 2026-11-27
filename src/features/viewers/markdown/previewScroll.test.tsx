@@ -11,6 +11,7 @@ let activeSlot: Partial<EditorSlot> | null = null;
 vi.mock("@/editor/core/controller", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   editorController: () => ({
+    slotFor: () => activeSlot,
     get activeSlot() {
       return activeSlot;
     },
@@ -38,7 +39,7 @@ describe("preview-only scroll position", () => {
     views.push(view);
     return view;
   };
-  const activate = (view: EditorView) => (activeSlot = { view, disposed: false });
+  const activate = (view: EditorView) => (activeSlot = { view, live: view, disposed: false });
 
   beforeEach(() => {
     disposers.push(registerMarkdownLiveSource());
@@ -56,7 +57,7 @@ describe("preview-only scroll position", () => {
   it("restores the preview's own scroll after a remount", async () => {
     open(mdCtx);
     activate(views[0]!);
-    act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [mdCtx.path]: "preview" } })));
+    act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "preview" } })));
     const first = render(
       <MarkdownEditor path={mdCtx.path} tabId="t">
         <div />
@@ -78,5 +79,162 @@ describe("preview-only scroll position", () => {
     );
     expect(screen.getByRole("document", { name: "Markdown preview" }).scrollTop).toBe(300);
     second.unmount();
+  });
+
+  it("handles a long preview gesture from its first pixel and leaves nested scrolling native", () => {
+    open(mdCtx);
+    act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "preview" } })));
+    render(
+      <MarkdownEditor path={mdCtx.path} tabId="t">
+        <div />
+      </MarkdownEditor>,
+    );
+    const preview = screen.getByRole("document", { name: "Markdown preview" });
+    Object.defineProperties(preview, {
+      clientHeight: { value: 400 },
+      scrollHeight: { value: 2000, configurable: true },
+    });
+    const scrollBy = vi.fn();
+    preview.scrollBy = scrollBy;
+    const nested = document.createElement("pre");
+    nested.style.overflowY = "auto";
+    Object.defineProperties(nested, { clientHeight: { value: 30 }, scrollHeight: { value: 120 } });
+    preview.appendChild(nested);
+    const wheel = (target: Element, init: WheelEventInit) =>
+      target.dispatchEvent(
+        new WheelEvent("wheel", {
+          bubbles: true,
+          cancelable: true,
+          ...init,
+        }),
+      );
+    expect(wheel(preview, { deltaY: 1 })).toBe(false);
+    expect(wheel(preview, { deltaY: -300 })).toBe(true);
+    expect(wheel(preview, { deltaY: 300, deltaMode: 1 })).toBe(true);
+    expect(wheel(preview, { deltaY: 300, deltaX: 400 })).toBe(true);
+    expect(wheel(nested, { deltaY: 300 })).toBe(true);
+    expect(wheel(preview, { deltaY: 300, deltaX: 1 })).toBe(false);
+    Object.defineProperty(preview, "scrollHeight", { value: 650 });
+    expect(wheel(preview, { deltaY: 1 })).toBe(true);
+    expect(scrollBy.mock.calls).toEqual([
+      [0, 1],
+      [1, 300],
+    ]);
+  });
+
+  it("keeps unchanged equations across edits and tab switches", async () => {
+    const view = open(mdCtx);
+    activate(view);
+    const source = "$x$ and $y$.";
+    act(() => view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } }));
+    const preview = () =>
+      render(
+        <MarkdownEditor path={mdCtx.path} tabId="t">
+          <div />
+        </MarkdownEditor>,
+      );
+    const nodes = () => [...screen.getByRole("document").querySelectorAll("[data-math-svg] > svg")];
+    const first = preview();
+    await vi.waitFor(() => expect(nodes()).toHaveLength(2));
+    const [x, y] = nodes();
+    const at = source.indexOf("y");
+    act(() => view.dispatch({ changes: { from: at, to: at + 1, insert: "z" } }));
+    await vi.waitFor(() => expect(nodes().map((n) => n.getAttribute("aria-label"))).toEqual(["x", "z"]));
+    const [sameX, z] = nodes();
+    expect(sameX).toBe(x);
+    expect(z).not.toBe(y);
+    first.unmount();
+    preview();
+    expect(nodes()[0]).toBe(x);
+    expect(nodes()[1]).toBe(z);
+  });
+
+  it("refreshes dependent equations after a TeX macro changes", async () => {
+    const view = open(mdCtx);
+    activate(view);
+    const text = String.raw`$\def\previewletter{a}\previewletter$ and $\previewletter$`;
+    act(() => view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } }));
+    render(
+      <MarkdownEditor path={mdCtx.path} tabId="t">
+        <div />
+      </MarkdownEditor>,
+    );
+    const letters = () =>
+      [...screen.getByRole("document").querySelectorAll("mjx-assistive-mml mi")].map((el) => el.textContent);
+    await vi.waitFor(() => expect(letters()).toEqual(["a", "a"]));
+    const at = text.indexOf("{a}") + 1;
+    act(() => view.dispatch({ changes: { from: at, to: at + 1, insert: "b" } }));
+    await vi.waitFor(() => expect(letters()).toEqual(["b", "b"]));
+  });
+
+  it("re-applies a restore that clamped to not-yet-drawn content", async () => {
+    open(mdCtx);
+    activate(views[0]!);
+    act(() => useLiveMarkdown.setState((s) => ({ [mdCtx.path]: { ...s[mdCtx.path]!, previewTop: 300 } })));
+    act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "preview" } })));
+    render(
+      <MarkdownEditor path={mdCtx.path} tabId="t">
+        <div />
+      </MarkdownEditor>,
+    );
+    const preview = screen.getByRole("document", { name: "Markdown preview" });
+
+    // While images load, the document is short and the browser clamps the offset.
+    const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
+    let top = 0;
+    let maxTop = 100;
+    Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+      configurable: true,
+      get: () => top,
+      set: (v: number) => {
+        top = Math.min(v, maxTop);
+      },
+    });
+    try {
+      // Re-running the restore (mode toggle) hits the clamp…
+      act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "split" } })));
+      act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "preview" } })));
+      expect(preview.scrollTop).toBe(100);
+      // The browser reports the clamped write as a scroll; the saved offset stays.
+      act(() => preview.dispatchEvent(new Event("scroll")));
+      expect(useLiveMarkdown.getState()[mdCtx.path]?.previewTop).toBe(300);
+
+      // …and the settle after the heights arrive applies the saved offset again.
+      await act(async () => {
+        maxTop = 1000;
+        useLiveMarkdown.setState((s) => ({ [mdCtx.path]: { ...s[mdCtx.path]!, fontZoom: 2 } }));
+      });
+      expect(preview.scrollTop).toBe(300);
+    } finally {
+      if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
+      else delete (HTMLElement.prototype as unknown as { scrollTop?: unknown }).scrollTop;
+    }
+  });
+
+  it("hands the position back to the reader once they scroll", async () => {
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+      cb(0);
+      return 0;
+    });
+    open(mdCtx);
+    activate(views[0]!);
+    act(() => useLiveMarkdown.setState((s) => ({ [mdCtx.path]: { ...s[mdCtx.path]!, previewTop: 300 } })));
+    act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "preview" } })));
+    render(
+      <MarkdownEditor path={mdCtx.path} tabId="t">
+        <div />
+      </MarkdownEditor>,
+    );
+    const preview = screen.getByRole("document", { name: "Markdown preview" });
+
+    await act(async () => {
+      preview.scrollTop = 60;
+      preview.dispatchEvent(new Event("scroll"));
+    });
+    await act(async () => {
+      useLiveMarkdown.setState((s) => ({ [mdCtx.path]: { ...s[mdCtx.path]!, fontZoom: 2 } }));
+    });
+    expect(preview.scrollTop).toBe(60);
+    expect(useLiveMarkdown.getState()[mdCtx.path]?.previewTop).toBe(60);
   });
 });

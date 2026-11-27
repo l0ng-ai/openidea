@@ -22,8 +22,11 @@ export interface LogOptions {
   showDate: boolean;
   showHash: boolean;
   showSignature: boolean;
+  showGitHubChecks: boolean;
   /** The row naming the columns, where they are resized and reordered. */
   showColumnHeaders: boolean;
+  /** Draw a 1px divider on each column's left edge (off by default, like IDEA). */
+  showColumnDividers: boolean;
   highlightMine: boolean;
   highlightMerges: boolean;
   highlightCurrentBranch: boolean;
@@ -31,8 +34,10 @@ export interface LogOptions {
   showBranches: boolean;
   /** Changed files grouped by directory (else a flat list). */
   groupByDirectory: boolean;
-  /** Selecting a changed file shows its diff in the editor's preview tab. */
+  /** Selecting a changed file updates the embedded preview or an open editor preview. */
   diffPreview: boolean;
+  /** Changed files show how many lines the commit added and deleted. */
+  showLineStats: boolean;
   showDetails: boolean;
   showRepository: boolean;
   showOnlyAffected: boolean;
@@ -58,13 +63,16 @@ export const DEFAULT_LOG_OPTIONS: LogOptions = {
   showDate: true,
   showHash: false,
   showSignature: false,
+  showGitHubChecks: false,
   showColumnHeaders: false,
+  showColumnDividers: false,
   highlightMine: true,
   highlightMerges: true,
   highlightCurrentBranch: true,
   showBranches: true,
   groupByDirectory: true,
   diffPreview: true,
+  showLineStats: false,
   showDetails: true,
   showRepository: true,
   showOnlyAffected: false,

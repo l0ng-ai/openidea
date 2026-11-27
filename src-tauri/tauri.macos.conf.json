@@ -1,5 +1,10 @@
 {
   "bundle": {
+    "macOS": {
+      "files": {
+        "Resources/bin/openidea": "./cli/openidea"
+      }
+    },
     "fileAssociations": [
       {
         "name": "Text and Source Code",

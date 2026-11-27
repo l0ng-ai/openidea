@@ -11,15 +11,12 @@
 }
 
 .sidebar {
-  flex: none;
-  width: 240px;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border-right: 1px solid var(--border);
 }
 .search {
-  margin: 10px;
+  margin: 7px 5px 6px;
 }
 .tree {
   flex: 1;
@@ -45,6 +42,14 @@
   margin-inline: 0;
   border-radius: 0;
 }
+.tree [data-tree-toggle] {
+  margin-inline-start: var(--space-2);
+  width: var(--space-3);
+}
+.tree [data-tree-toggle] svg {
+  width: var(--space-3);
+  height: var(--space-3);
+}
 .tree [role="treeitem"][aria-selected="true"] {
   background: var(--bg-tree-selected);
 }
@@ -57,11 +62,11 @@
 }
 
 .main {
-  flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  container: settings-content / inline-size;
 }
 .loading {
   flex: 1;
@@ -75,17 +80,27 @@
 .pageHeader {
   flex: none;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  height: 40px;
+  gap: var(--space-3);
+  min-height: 40px;
   padding: 0 12px 0 20px;
+}
+/* Controls a page puts beside its title (e.g. Plugins' tabs), centred in the header. */
+.headerSlot {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-width: 0;
 }
 .history {
   display: inline-flex;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .crumbs {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
   display: flex;
   align-items: center;
@@ -94,12 +109,47 @@
   color: var(--fg-strong);
   font-weight: 600;
 }
+.parentCrumbs {
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+}
 .crumb {
   display: inline-flex;
   align-items: center;
+  min-width: 0;
+}
+.crumbLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* A breadcrumb parent is a link back up the tree, like in IDEA. */
+.crumbLink {
+  min-width: 0;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+.crumbLink:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
+}
+.crumbLink:focus-visible {
+  outline: 2px solid var(--focus-ring, var(--accent));
+}
+.currentCrumb {
+  flex: none;
+  max-width: 100%;
 }
 .crumbSep {
-  margin: 0 4px;
+  flex: none;
+  margin-inline: var(--space-1);
   color: var(--fg-subtle);
 }
 .reset {
@@ -120,6 +170,7 @@
 }
 .scope {
   display: inline-flex;
+  flex: none;
   padding: 2px;
   border-radius: var(--radius-small);
   box-shadow: inset 0 0 0 1px var(--border-strong);
@@ -130,6 +181,7 @@
   border-radius: 3px;
   color: var(--fg-muted);
   font-size: var(--fs-small);
+  white-space: nowrap;
 }
 .scopeButton:hover {
   color: var(--fg-emphasis);
@@ -141,7 +193,7 @@
 .scopeNote {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   margin: 0 16px 6px;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
@@ -153,6 +205,10 @@
   padding: 4px 20px 20px;
   -webkit-user-select: text;
   user-select: text;
+}
+.pageBodyBleed {
+  padding: 0;
+  overflow: hidden;
 }
 
 .groupPage {
@@ -168,7 +224,7 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding-left: 32px;
 }
 .groupLink {
@@ -199,7 +255,7 @@
 .error {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   color: var(--danger);
 }
 
@@ -234,6 +290,6 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 12px;
+  gap: var(--space-3);
   padding: 12px 16px;
 }

@@ -30,6 +30,48 @@ pub fn position(text: &str, at: usize) -> Position {
     Position { line, character }
 }
 
+/// Position of an absolute UTF-16 code-unit offset, or `None` when the offset
+/// is outside the text or splits a surrogate pair.
+pub fn position_utf16(text: &str, at: u32) -> Option<Position> {
+    let mut offset = 0u32;
+    let mut line = 0u32;
+    let mut character = 0u32;
+    for ch in text.chars() {
+        if offset == at {
+            return Some(Position::new(line, character));
+        }
+        let width = ch.len_utf16() as u32;
+        if offset + width > at {
+            return None;
+        }
+        offset += width;
+        if ch == '\n' {
+            line += 1;
+            character = 0;
+        } else {
+            character += width;
+        }
+    }
+    (offset == at).then(|| Position::new(line, character))
+}
+
+/// The text as a JSON string literal's contents (`"`, `\`, control characters).
+pub fn escape_json(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c < ' ' => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// The text of a JSON string literal's contents (`\"`, `\\`, `\n`, `\uXXXX`).
 pub fn unescape_json(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -78,5 +120,8 @@ mod tests {
         assert_eq!(position(text, 7), Position::new(1, 2));
         assert_eq!(offset(text, Position::new(0, 99)), Some(2), "clamped to the line");
         assert_eq!(offset(text, Position::new(5, 0)), None);
+        assert_eq!(position_utf16(text, 3), Some(Position::new(1, 0)));
+        assert_eq!(position_utf16(text, 4), None, "inside a surrogate pair");
+        assert_eq!(position_utf16(text, 5), Some(Position::new(1, 2)));
     }
 }

@@ -14,12 +14,19 @@ const settingsSet = vi.fn(async (_scope: string, _key: string, value: string) =>
   status: "ok" as const,
   data: { spelling: { ideWords: [], projectWords: JSON.parse(value), customDictionaries: [] } } as unknown as Settings,
 }));
+const spellSaveToDictionary = vi.fn(async () => ({ status: "ok" as const, data: "team.dic" }));
 vi.mock("@/platform/ipc", async (orig) => {
   const actual = await orig<typeof import("@/platform/ipc")>();
   return {
     ...actual,
     isTauri: () => true,
-    commands: { ...actual.commands, spellCheck, settingsSet, cancelRequest: vi.fn(async () => {}) },
+    commands: {
+      ...actual.commands,
+      spellCheck,
+      settingsSet,
+      spellSaveToDictionary,
+      cancelRequest: vi.fn(async () => {}),
+    },
   };
 });
 
@@ -77,15 +84,13 @@ describe("Typo inspection", () => {
     expect(diagnosticMarks(lint)).toEqual([]);
 
     view.dispatch({ selection: { anchor: 5 } });
-    expect(spellingIntentions(view).map((i) => i.label)).toEqual([
-      "Typo: Change to…",
-      "Save 'mesage' to project-level dictionary",
-      "Save 'mesage' to application-level dictionary",
-    ]);
-    // IDEA's → menu: the dictionaries and the inspection's controls.
+    expect(spellingIntentions(view).map((i) => i.label)).toEqual(["Typo: Change to…", "Save 'mesage' to dictionary"]);
+    // IDEA's → menu: each dictionary level, each configured custom dictionary
+    // (the settings page when there is none) and the inspection's controls.
     expect(spellingIntentions(view)[0]!.submenu?.map((i) => ("label" in i ? i.label : "-"))).toEqual([
-      "Save 'mesage' to project-level dictionary",
-      "Save 'mesage' to application-level dictionary",
+      "Save to project-level dictionary",
+      "Save to application-level dictionary",
+      "Add custom dictionary…",
       "-",
       "Edit inspection profile setting",
       "Disable inspection",
@@ -99,6 +104,67 @@ describe("Typo inspection", () => {
     // The dictionary change re-checks the file.
     await settle();
     expect(spellCheck).toHaveBeenCalledTimes(2);
+  });
+
+  it("offers each configured custom dictionary and saves through the backend", async () => {
+    vi.useFakeTimers();
+    useProject.setState({
+      project: { root: "/p" } as never,
+      settings: { spelling: { customDictionaries: ["~/words/team.dic", " docs/local.txt "] } } as never,
+    });
+    const view = editor("// mesage");
+    await settle();
+    view.dispatch({ selection: { anchor: 5 } });
+    expect(spellingIntentions(view)[0]!.submenu?.map((i) => ("label" in i ? i.label : "-"))).toEqual([
+      "Save to project-level dictionary",
+      "Save to application-level dictionary",
+      "Save to '~/words/team.dic'",
+      "Save to 'docs/local.txt'",
+      "-",
+      "Edit inspection profile setting",
+      "Disable inspection",
+    ]);
+    const save = spellingIntentions(view)[0]!.submenu!.find(
+      (i) => "id" in i && i.id === "spelling.saveCustom.docs/local.txt",
+    );
+    if (!save || !("run" in save) || typeof save.run !== "function") throw new Error("no save row");
+    await save.run();
+    expect(spellSaveToDictionary).toHaveBeenCalledWith("docs/local.txt", "mesage");
+    // The dictionary file changed: the file is re-checked.
+    await settle();
+    expect(spellCheck).toHaveBeenCalledTimes(2);
+  });
+
+  it("saves to the default dictionary the settings chose", async () => {
+    vi.useFakeTimers();
+    // A custom dictionary as the default: the row writes the file, not settings.
+    useProject.setState({
+      project: { root: "/p" } as never,
+      settings: {
+        spelling: { customDictionaries: ["docs/local.txt"], defaultDictionary: "docs/local.txt" },
+      } as never,
+    });
+    const view = editor("// mesage");
+    await settle();
+    view.dispatch({ selection: { anchor: 5 } });
+    await spellingIntentions(view)[1]!.run();
+    expect(spellSaveToDictionary).toHaveBeenCalledWith("docs/local.txt", "mesage");
+    expect(settingsSet).not.toHaveBeenCalled();
+
+    // The application dictionary as the default, and a removed custom
+    // dictionary falls back to the project one.
+    const application = { spelling: { customDictionaries: ["docs/local.txt"], defaultDictionary: "application" } };
+    useProject.setState({ settings: application as never });
+    await spellingIntentions(view)[1]!.run();
+    expect(settingsSet).toHaveBeenCalledWith("global", "spelling.ideWords", JSON.stringify(["mesage"]));
+    vi.clearAllMocks();
+    useProject.setState({
+      settings: {
+        spelling: { customDictionaries: ["docs/local.txt"], defaultDictionary: "~/words/gone.dic" },
+      } as never,
+    });
+    await spellingIntentions(view)[1]!.run();
+    expect(settingsSet).toHaveBeenCalledWith("project", "spelling.projectWords", JSON.stringify(["mesage"]));
   });
 
   it("does not run while the inspection is disabled", async () => {
@@ -121,6 +187,27 @@ describe("Typo inspection", () => {
     await settle();
     view.dispatch({ selection: { anchor: 2 } });
     expect(spellingIntentions(view)[0]!.label).toBe("Typo: Rename to…");
+  });
+
+  it("in a read-only document saves to dictionaries but changes nothing in place", async () => {
+    vi.useFakeTimers();
+    useProject.setState({ project: { root: "/p" } as never, settings: {} as never });
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "// mesage here",
+        extensions: [
+          lspDoc.of({ doc: 7, path: "/p/a.rs", language: "rust", uiMode: null, readOnly: true }),
+          spellingExtension(),
+        ],
+      }),
+    });
+    views.push(view);
+    await settle();
+    expect(spellCheck).toHaveBeenCalled();
+    view.dispatch({ selection: { anchor: 5 } });
+    expect(spellingIntentions(view).map((i) => i.label)).toEqual(["Save 'mesage' to dictionary"]);
+    await spellingIntentions(view)[0]!.run();
+    expect(settingsSet).toHaveBeenCalledWith("project", "spelling.projectWords", JSON.stringify(["mesage"]));
   });
 
   it("checks only what the Typo options include, and re-checks when they change", async () => {

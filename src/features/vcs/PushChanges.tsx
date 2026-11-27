@@ -1,13 +1,16 @@
 /**
  * Push dialog: the files changed by the outgoing commits (the selected commit's, or all of
- * them), with the selected file's diff beside the tree. The diff stays inside the dialog,
- * which is modal. A single commit also shows its message, author and time.
+ * them), with the selected file's diff beside the tree. Double-click or Enter opens the diff in
+ * its own window, as IDEA does, since the dialog is modal and small. A single commit also shows
+ * its message, author and time.
  */
 import { useEffect, useMemo, useState } from "react";
 import type { ChangedFile, Commit, RevisionChange } from "@/bindings";
+import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
-import { Button, IconButton, Spinner, T } from "@/ui";
+import { Button, IconButton, Spinner, SplitGroup, SplitHandle, SplitPanel, T } from "@/ui";
+import { CommitMessageContent } from "./CommitMessageContent";
 import { ComparisonTree } from "./ComparisonTree";
 import { buildFileTree } from "./fileTree";
 import { flatFileNodes, toLogChanges, type LogChange } from "./logChanges";
@@ -15,6 +18,7 @@ import { KIND_COLOR, dirName, fileCount } from "./model";
 import styles from "./common.module.css";
 
 const GROUP_KEY = "openidea.vcs.push.groupByDirectory";
+const DETAILS_SPLIT_KEY = "openidea.vcs.push.detailsSplit";
 
 function readGroupByDirectory(): boolean {
   try {
@@ -36,10 +40,12 @@ export function PushChanges({
   repo,
   commits,
   onShowAll,
+  onSelectFile,
 }: {
   repo: string | null;
   commits: readonly Commit[];
   onShowAll?: () => void;
+  onSelectFile?: (change: LogChange | null) => void;
 }) {
   const [changes, setChanges] = useState<LogChange[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -75,6 +81,37 @@ export function PushChanges({
   };
   const count = commits.length;
   if (!count) return null;
+  const files = error ? (
+    <div className={styles.error}>{error}</div>
+  ) : !changes ? (
+    <div className={styles.empty}>
+      <Spinner size={14} />
+    </div>
+  ) : (
+    <ComparisonTree
+      tree={tree}
+      current={current}
+      onSelect={(c) => {
+        setCurrent(c);
+        onSelectFile?.(c);
+      }}
+      diffFor={(c) => c.diff}
+      inlineDiff={!onSelectFile}
+      openOnActivate
+      openDiff={(diff) => void executeAction("vcs.showDiffInNewWindow", diff)}
+      getColor={(c) => KIND_COLOR[c.kind === "untracked" ? "added" : c.kind]}
+      ariaLabel="Changed files"
+      renderDetails={(n) =>
+        n.file ? (
+          byDirectory ? null : (
+            <span className={styles.fileDir}>{dirName(n.file.path)}</span>
+          )
+        ) : (
+          <span className={styles.fileDir}>{n.count}</span>
+        )
+      }
+    />
+  );
   return (
     <div className={styles.pushChanges}>
       <div className={styles.pushChangesTitle}>
@@ -96,31 +133,18 @@ export function PushChanges({
           className={styles.pushGrouping}
         />
       </div>
-      {count === 1 && <PushCommitDetails commit={commits[0]!} />}
-      {error ? (
-        <div className={styles.error}>{error}</div>
-      ) : !changes ? (
-        <div className={styles.empty}>
-          <Spinner size={14} />
-        </div>
+      {count === 1 ? (
+        <SplitGroup orientation="vertical" storageKey={DETAILS_SPLIT_KEY} className={styles.pushDetailsSplit}>
+          <SplitPanel id="files" minSize="40%" defaultSize="67%" className={styles.pushDetailsPanel}>
+            {files}
+          </SplitPanel>
+          <SplitHandle />
+          <SplitPanel id="details" minSize="24%" className={styles.pushDetailsPanel}>
+            <PushCommitDetails commit={commits[0]!} />
+          </SplitPanel>
+        </SplitGroup>
       ) : (
-        <ComparisonTree
-          tree={tree}
-          current={current}
-          onSelect={setCurrent}
-          diffFor={(c) => c.diff}
-          getColor={(c) => KIND_COLOR[c.kind === "untracked" ? "added" : c.kind]}
-          ariaLabel="Changed files"
-          renderDetails={(n) =>
-            n.file ? (
-              byDirectory ? null : (
-                <span className={styles.fileDir}>{dirName(n.file.path)}</span>
-              )
-            ) : (
-              <span className={styles.fileDir}>{n.count}</span>
-            )
-          }
-        />
+        files
       )}
     </div>
   );
@@ -128,14 +152,9 @@ export function PushChanges({
 
 /** The selected commit's full message, revision, author and time. */
 function PushCommitDetails({ commit }: { commit: Commit }) {
-  const date = commit.timeMs ? new Date(commit.timeMs).toLocaleString() : null;
   return (
     <section className={styles.pushCommitDetails} aria-label={tx("Commit details")}>
-      <div className={styles.pushCommitMessage}>{commit.message.trimEnd() || commit.summary}</div>
-      <div className={styles.fileDir}>
-        {commit.shortId} {commit.author} &lt;{commit.email}&gt;
-        {date ? " " + tx`on ${date}` : ""}
-      </div>
+      <CommitMessageContent commit={commit} message={commit.message.trimEnd() || commit.summary} />
     </section>
   );
 }

@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { registerAction } from "@/platform/actions";
+import { resolveMenuItems } from "@/ui/Menu";
 import { menuItems, onLoneAlt } from "./MainMenu";
 
 describe("lone Alt opens the main menu", () => {
@@ -55,7 +57,7 @@ describe("lone Alt opens the main menu", () => {
 describe("main menu model", () => {
   it("maps menu nodes to menu items, localising spec labels only", () => {
     const items = menuItems([
-      { kind: "action", id: "file.save", label: "Save All", hint: null, arg: null },
+      { kind: "action", id: "file.save", label: "Save All", hint: null, arg: null, checked: null },
       { kind: "separator" },
       {
         kind: "submenu",
@@ -68,6 +70,7 @@ describe("main menu model", () => {
             label: "openidea  —  ~/openidea",
             hint: null,
             arg: "/p/openidea",
+            checked: null,
           },
           { kind: "placeholder", id: "recent.none", label: "No Recent Projects" },
         ],
@@ -84,5 +87,22 @@ describe("main menu model", () => {
       label: "openidea  —  ~/openidea",
     });
     expect(sub[1]).toMatchObject({ label: "No Recent Projects", disabled: true });
+  });
+});
+
+describe("check marks in the main menu", () => {
+  it("shows a frontend-listed item's own state, one row per argument", () => {
+    const off = registerAction({ id: "test.mainMenu.widget", title: "Widget", run: () => {} });
+    const node = (arg: string, checked: boolean) =>
+      ({ kind: "action", id: "test.mainMenu.widget", label: arg, hint: null, arg, checked }) as const;
+    const items = menuItems([node("memory", true), node("caret", false)]);
+    expect(items[0]).toMatchObject({ action: "test.mainMenu.widget", arg: "memory", checked: true });
+    const rows = resolveMenuItems(items);
+    expect(rows.map((r) => [r.label, r.checked])).toEqual([
+      ["memory", true],
+      ["caret", false],
+    ]);
+    expect(new Set(rows.map((r) => r.key)).size).toBe(2);
+    off();
   });
 });

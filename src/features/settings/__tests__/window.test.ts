@@ -14,4 +14,9 @@ describe("settings window bridge", () => {
     expect(info).toEqual({ id: "a.b", title: "B", when: "editorFocus" });
     expect(JSON.parse(JSON.stringify(info))).toEqual(info);
   });
+
+  it("keeps the keymap flag so hidden Cut / Copy / Paste stay in the settings window's Keymap", () => {
+    const [info] = describeActions([{ id: "edit.copy", title: "Copy", hidden: true, keymap: true, run: () => {} }]);
+    expect(info).toMatchObject({ hidden: true, keymap: true });
+  });
 });

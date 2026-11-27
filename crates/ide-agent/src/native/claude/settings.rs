@@ -48,10 +48,17 @@ impl Settings {
             .filter_map(|m| {
                 let s = |k: &str| m.get(k).and_then(Value::as_str).map(str::to_owned);
                 let value = s("value")?;
+                let resolved = s("resolvedModel");
+                // The default entry follows the account's default model, so "Default
+                // (recommended)" hides what actually runs: name the model it resolves to.
+                let name = match (value.as_str(), resolved.as_deref()) {
+                    ("default", Some(r)) if !r.is_empty() => format!("Default ({r})"),
+                    _ => s("displayName").unwrap_or_else(|| value.clone()),
+                };
                 Some(Model {
-                    name: s("displayName").unwrap_or_else(|| value.clone()),
+                    name,
                     description: s("description"),
-                    resolved: s("resolvedModel"),
+                    resolved,
                     efforts: if m.get("supportsEffort").and_then(Value::as_bool) == Some(true) {
                         m.get("supportedEffortLevels")
                             .and_then(Value::as_array)
@@ -132,17 +139,16 @@ impl Settings {
                 }).collect::<Vec<_>>(),
             }));
         }
-        let efforts = self.current_model().map(|m| m.efforts.as_slice()).unwrap_or_default();
-        if !efforts.is_empty() {
-            let mut values = vec![json!({ "value": "default", "name": "Default" })];
-            values.extend(efforts.iter().map(|e| json!({ "value": e, "name": capitalize(e) })));
-            let current = if efforts.contains(&self.effort) { self.effort.as_str() } else { "default" };
-            out.push(json!({
-                "id": EFFORT, "name": "Effort", "category": "thought_level", "type": "select",
-                "currentValue": current, "options": values,
-            }));
+        if let Some(effort) = self.current_model().and_then(|m| effort_option(m, &self.effort)) {
+            out.push(effort);
         }
         Value::Array(out)
+    }
+
+    /// Each model's effort option by model value (`None`: it has no effort levels): what a new
+    /// task offers once that model is picked, before any session has run it.
+    pub fn efforts_by_model(&self) -> Vec<(String, Option<Value>)> {
+        self.models.iter().map(|m| (m.value.clone(), effort_option(m, &self.effort))).collect()
     }
 
     pub fn valid(&self, option: &str, value: &str) -> bool {
@@ -154,6 +160,20 @@ impl Settings {
             .and_then(|o| o["options"].as_array())
             .is_some_and(|vs| vs.iter().any(|v| v["value"] == value))
     }
+}
+
+/// `model`'s effort option, with `effort` selected when the model offers it; `None` without efforts.
+fn effort_option(model: &Model, effort: &str) -> Option<Value> {
+    if model.efforts.is_empty() {
+        return None;
+    }
+    let mut values = vec![json!({ "value": "default", "name": "Default" })];
+    values.extend(model.efforts.iter().map(|e| json!({ "value": e, "name": capitalize(e) })));
+    let current = if model.efforts.iter().any(|e| e == effort) { effort } else { "default" };
+    Some(json!({
+        "id": EFFORT, "name": "Effort", "category": "thought_level", "type": "select",
+        "currentValue": current, "options": values,
+    }))
 }
 
 /// Slash commands as ACP `availableCommands`, without those that need Claude Code's terminal.
@@ -218,6 +238,19 @@ mod tests {
     }
 
     #[test]
+    fn the_default_entry_is_named_by_the_model_it_runs() {
+        let s = Settings::from_cli(&init(), &json!({"applied": {"model": "claude-sonnet-5-5"}}));
+        let names: Vec<_> = s.models.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["Default (claude-sonnet-5-5)", "Opus", "Haiku 4.5"]);
+        // Without a resolved model, the agent's own name stands.
+        let s = Settings::from_cli(
+            &json!({"models": [{"value": "default", "displayName": "Default (recommended)"}]}),
+            &json!({}),
+        );
+        assert_eq!(s.models[0].name, "Default (recommended)");
+    }
+
+    #[test]
     fn options_follow_the_model() {
         let mut s = Settings::from_cli(&init(), &json!({"applied": {"model": "claude-sonnet-5-5", "effort": "high"}}));
         let o = s.options();
@@ -230,5 +263,21 @@ mod tests {
         assert_eq!(s.options().as_array().unwrap().len(), 2, "no effort option without levels");
         let cmds = commands(init().get("commands"), &["doctor".into()]);
         assert_eq!(cmds, vec![json!({"name": "review", "description": "Review", "input": {"hint": "[pr]"}})]);
+    }
+
+    #[test]
+    fn every_model_offers_its_own_efforts() {
+        let s = Settings::from_cli(&init(), &json!({"applied": {"model": "claude-sonnet-5-5", "effort": "high"}}));
+        let efforts = s.efforts_by_model();
+        let values = |model: &str| {
+            let (_, o) = efforts.iter().find(|(m, _)| m == model).unwrap();
+            let o = o.as_ref().unwrap();
+            let values: Vec<_> = o["options"].as_array().unwrap().iter().map(|v| v["value"].clone()).collect();
+            (values, o["currentValue"].clone())
+        };
+        assert_eq!(values("default"), (vec![json!("default"), json!("low"), json!("high")], json!("high")));
+        // The configured effort only where the model offers it.
+        assert_eq!(values("opus"), (vec![json!("default"), json!("low"), json!("max")], json!("default")));
+        assert!(efforts.contains(&("claude-haiku-4-5".into(), None)), "no effort option without levels");
     }
 }

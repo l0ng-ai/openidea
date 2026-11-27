@@ -1,3 +1,4 @@
+import { useProject } from "@/platform/project";
 /**
  * Plugin host backend: `plugin_*` IPC + a `plugin_subscribe` event channel in the desktop
  * app; an in-memory simulation (the bundled samples) in plain-browser
@@ -6,28 +7,44 @@
 import { Channel } from "@tauri-apps/api/core";
 import type {
   ActiveTheme,
+  RunAnythingItem,
   CapabilityInfo,
   CatalogPlugin,
+  ClipboardAnswer,
+  CommitAnswer,
+  CommandAnswer,
+  CommitSelection,
   Consent,
   EventKind,
   InstalledIntellijTheme,
   InstallPreview,
   IntellijThemeSource,
   MarketPlugin,
+  PluginCommitCheckRef,
+  PluginCommitCheckResult,
+  PluginContextKey,
   PluginEditor,
+  PluginEndpoint,
+  PluginSearchPage,
+  RequestId,
   PluginEvent,
   PluginInfo,
-  PluginsSnapshot,
+  PluginOutputLine,
   PluginSecretState,
+  PluginsSnapshot,
   PluginStatusItem,
+  ServiceTab,
   UiContribution,
   View,
   ViewEvent,
   Viewport,
   WorkbenchEvent,
 } from "@/bindings";
+import { toBase64 } from "@/platform/base64";
+import { choosePath } from "@/platform/choosePath";
 import { tx } from "@/platform/i18n";
-import { call, commands, IpcError, isTauri } from "@/platform/ipc";
+import { useRemote } from "@/platform/remote";
+import { call, commands, IpcError, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
 import { editorContext } from "./editorContext";
 
 export interface PluginsBackend {
@@ -38,7 +55,22 @@ export interface PluginsBackend {
   installDir(path: string, consent: Consent): Promise<PluginInfo>;
   /** Confirms a plugin waiting for consent. */
   grant(id: string, consent: Consent): Promise<PluginInfo>;
+  chooseProgram(
+    pluginId: string,
+    capability: string,
+    scope: "global" | "project",
+    path: string | null,
+  ): Promise<PluginInfo>;
+  program(pluginId: string, program: string, scope: "global" | "project"): Promise<string>;
+  pickProgram(): Promise<string | null>;
   setCapability(id: string, capability: string, granted: boolean): Promise<PluginInfo>;
+  revokeNetHost(id: string, host: string): Promise<PluginInfo>;
+  /** The host a `net:setting:` grant derives from `value` (a bare host or a URL); an error refuses it. */
+  netSettingHost(id: string, setting: string, value: string): Promise<string>;
+  /** Approves `host` for a `net:setting:` grant; refused when the setting no longer holds it. */
+  approveNetSetting(id: string, setting: string, http: boolean, host: string): Promise<PluginInfo>;
+  /** Drops the approved host of a `net:setting:` grant (revoked, or the setting cleared). */
+  forgetNetSetting(id: string, setting: string, http: boolean): Promise<PluginInfo>;
   /** Validated assets (icon theme mapping and SVGs) whose id starts with `prefix`. */
   assets(pluginId: string, prefix: string): Promise<[string, string][]>;
   /** `language` / `file` / `view` activation events. */
@@ -53,14 +85,44 @@ export interface PluginsBackend {
     commandId: string,
     arg: string | null,
     editor: PluginEditor | null,
+    paths: string[],
+    settingsScope?: "global" | "project",
+    commandChain?: string[],
+    /** Aborting rejects the call and cancels that backend request. */
+    signal?: AbortSignal,
   ): Promise<string | null>;
+  /** Run Anything entries of the plugin declaring `prefix`, for the field's text (API 1.18). */
+  runAnythingSuggest(pluginId: string, prefix: string, text: string): Promise<RunAnythingItem[]>;
+  /** Runs a Run Anything line starting with the plugin's `prefix` (API 1.18): whether it claimed it. */
+  runAnythingRun(pluginId: string, prefix: string, line: string): Promise<boolean>;
   /** Workbench events plugins subscribed to (see `eventKinds`). */
   postEvents(events: WorkbenchEvent[]): Promise<void>;
   /** Kinds of workbench events plugins want; re-fetch on `subscriptionsChanged`. */
   eventKinds(): Promise<EventKind[]>;
   /** Plugin status bar items (later changes arrive as `statusItemChanged`). */
   statusItems(): Promise<PluginStatusItem[]>;
+  contextKeys(): Promise<PluginContextKey[]>;
   cancelTask(taskId: string): Promise<void>;
+  /** Reports the answer to a plugin's `promptRequested`: keys, `[text]`, anything for OK, `null` when dismissed. */
+  answerPrompt(promptId: string, answer: string[] | null): Promise<void>;
+  /** This window's answer to a plugin's `commitRequested`. */
+  answerCommand(requestId: string, answer: CommandAnswer): Promise<void>;
+  selectTests(config: string, tests: string[][]): Promise<string[] | null>;
+  parseTestResults(config: string, chunk: string): Promise<import("@/bindings").PluginTestEvent[] | null>;
+  closeTerminalSession(operation: string): Promise<void>;
+  terminalSessionSpawn(
+    operation: string,
+    cols: number,
+    rows: number,
+    output: Channel<string>,
+  ): Promise<import("@/bindings").TerminalInfo>;
+  finishOperation(id: string, status: number | null, stopped: boolean): Promise<void>;
+  contentTabAction(pluginId: string, action: import("@/bindings").ContentTabAction): Promise<void>;
+  answerCommit(requestId: string, answer: CommitAnswer): Promise<void>;
+  /** This window's clipboard for a plugin's `clipboardRequested`. */
+  answerClipboard(requestId: string, answer: ClipboardAnswer): Promise<void>;
+  /** Runs plugins' before-commit checks on what `selection` commits. */
+  commitChecks(selection: CommitSelection, checks: PluginCommitCheckRef[]): Promise<PluginCommitCheckResult[]>;
   /** Marketplace plugins: the index read again (`refresh`) or the last one read. */
   market(refresh: boolean): Promise<MarketPlugin[]>;
   marketUrl(): Promise<string | null>;
@@ -83,13 +145,43 @@ export interface PluginsBackend {
   stagePackage(name: string, files: { path: string; text: string }[]): Promise<string>;
   /** Content of a plugin view (`doc`: the document of a custom editor). */
   renderView(pluginId: string, view: string, viewport: Viewport | null, doc: number | null): Promise<View>;
-  viewEvent(pluginId: string, view: string, event: ViewEvent, doc: number | null): Promise<void>;
+  viewEvent(pluginId: string, view: string, event: ViewEvent, doc: number | null, editor?: PluginEditor): Promise<void>;
+  /** The detail tabs of item `key` in a Services or `detail = true` view. */
+  serviceDetail(pluginId: string, view: string, key: string): Promise<ServiceTab[]>;
+  /** The HTTP routes a plugin reports for this window's project (`[[contributes.endpoints]]`). */
+  runTargets(): Promise<import("@/bindings").RegisteredRunTarget[]>;
+  answerRunTarget(id: string, useTarget: boolean): Promise<import("@/bindings").Settings>;
+  endpoints(pluginId: string): Promise<PluginEndpoint[]>;
+  search(
+    pluginId: string,
+    category: string,
+    query: string,
+    limit: number,
+    request: RequestId,
+  ): Promise<PluginSearchPage>;
+  /**
+   * Runs the program of node `key`'s log tab `tab` (with the toggles in `on`) and streams its
+   * lines until it exits (`onExit`) or the returned stop function is called.
+   */
+  serviceLog(
+    pluginId: string,
+    view: string,
+    key: string,
+    tab: string,
+    on: ReadonlySet<string>,
+    onLine: (line: PluginOutputLine) => void,
+    onError: (message: string) => void,
+    onExit: (code: number | null) => void,
+  ): () => void;
   /** The URL of a web view's page (`web = …`), under the `openidea-plugin` scheme. */
   webPageUrl(pluginId: string, view: string): Promise<string>;
   /** Save dialog for a web view's `openidea.saveFile`; the path written, or `null` when cancelled. */
   saveWebFile(name: string, filters: FileFilter[] | undefined, bytes: Uint8Array): Promise<string | null>;
   /** Open dialog for a web view's `openidea.openFile`; `null` when cancelled. */
   openWebFile(filters: FileFilter[] | undefined): Promise<{ name: string; data: Uint8Array } | null>;
+  /** The bytes of a file on this machine, at most 64 MiB (a web custom editor's `document.bytes`). */
+  readFileBytes(path: string): Promise<Uint8Array>;
+  readFileRange(path: string, offset: number, length: number): Promise<{ total: number; data: Uint8Array }>;
   /** Which of a plugin's declared secrets are stored (values never come back). */
   secrets(pluginId: string): Promise<PluginSecretState[]>;
   /** Stores a secret (`null` removes it). */
@@ -119,12 +211,6 @@ export function webSchemeUrl(path: string, windows = /windows/i.test(navigator.u
   return windows ? `http://openidea-plugin.localhost/${encoded}` : `openidea-plugin://localhost/${encoded}`;
 }
 
-function toBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(binary);
-}
-
 function fromBase64(b64: string): Uint8Array {
   const binary = atob(b64);
   const out = new Uint8Array(binary.length);
@@ -140,7 +226,21 @@ export const tauriPluginsBackend: PluginsBackend = {
   previewInstall: (path) => call(commands.pluginPreviewInstall(path)),
   installDir: (path, consent) => call(commands.pluginInstallDir(path, consent)),
   grant: (id, consent) => call(commands.pluginGrant(id, consent)),
+  chooseProgram: async (id, cap, scope, path) => {
+    const remote = !!useRemote.getState().session;
+    if (remote && path !== null) await call(commands.pluginSetCapability(id, cap, true));
+    const chosen = await call(commands.pluginChooseProgram(id, cap, scope, path));
+    if (remote && !chosen.capabilities.some((c) => c.id === cap && c.granted))
+      await call(commands.pluginSetCapability(id, cap, false));
+    return chosen;
+  },
+  program: (id, program, scope) => call(commands.pluginProgram(id, program, scope)),
+  pickProgram: () => choosePath({ directory: false, title: tx("Choose plugin executable") }),
   setCapability: (id, capability, granted) => call(commands.pluginSetCapability(id, capability, granted)),
+  revokeNetHost: (id, host) => call(commands.pluginRevokeNetHost(id, host)),
+  netSettingHost: (id, setting, value) => call(commands.pluginNetSettingHost(id, setting, value)),
+  approveNetSetting: (id, setting, http, host) => call(commands.pluginApproveNetSetting(id, setting, http, host)),
+  forgetNetSetting: (id, setting, http) => call(commands.pluginForgetNetSetting(id, setting, http)),
   assets: (pluginId, prefix) => call(commands.pluginAssets(pluginId, prefix)),
   activationEvent: async (kind, value) => {
     await call(commands.pluginActivationEvent(kind, value));
@@ -150,15 +250,77 @@ export const tauriPluginsBackend: PluginsBackend = {
     await call(commands.pluginUninstall(id));
   },
   reload: (id) => call(commands.pluginReload(id)),
-  runCommand: (pluginId, commandId, arg, editor) => call(commands.pluginRunCommand(pluginId, commandId, arg, editor)),
+  runAnythingSuggest: (pluginId, prefix, text) => call(commands.pluginRunAnythingSuggest(pluginId, prefix, text)),
+  runAnythingRun: (pluginId, prefix, line) => call(commands.pluginRunAnythingRun(pluginId, prefix, line)),
+  runCommand: async (pluginId, commandId, arg, editor, paths, settingsScope, commandChain, signal) => {
+    signal?.throwIfAborted();
+    const request = signal ? nextRequestId() : null;
+    const run = () =>
+      call(
+        commands.pluginRunCommand(
+          pluginId,
+          commandId,
+          arg,
+          editor,
+          paths,
+          settingsScope ?? null,
+          commandChain ?? null,
+          request,
+        ),
+      );
+    if (!signal) return run();
+    // An abort settles this call even while the backend keeps working: a plugin
+    // that ignores its cancellation must not hold the caller (or a serialized
+    // queue behind it) open forever.
+    let abort = () => {};
+    const aborted = new Promise<never>((_, reject) => {
+      abort = () => {
+        if (request !== null) void commands.cancelRequest(request).catch(() => {});
+        reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+      };
+      signal.addEventListener("abort", abort, { once: true });
+    });
+    try {
+      return await Promise.race([run(), aborted]);
+    } finally {
+      signal.removeEventListener("abort", abort);
+    }
+  },
   postEvents: async (events) => {
-    await commands.pluginPostEvents(events);
+    await commands.pluginPostEvents(events, editorContext());
   },
   eventKinds: () => commands.pluginEventKinds(),
   statusItems: () => commands.pluginStatusItems(),
+  contextKeys: () => commands.pluginContextKeys(),
   cancelTask: async (taskId) => {
     await commands.pluginCancelTask(taskId);
   },
+  answerPrompt: async (promptId, answer) => {
+    await commands.pluginAnswerPrompt(promptId, answer);
+  },
+  selectTests: (config, tests) => call(commands.pluginSelectTests(config, tests)),
+  parseTestResults: (config, chunk) => call(commands.pluginParseTestResults(config, chunk)),
+  closeTerminalSession: async (operation) => {
+    await call(commands.pluginTerminalSessionClose(operation));
+  },
+  terminalSessionSpawn: (operation, cols, rows, output) =>
+    call(commands.pluginTerminalSessionSpawn(operation, cols, rows, output)),
+  finishOperation: async (id, status, stopped) => {
+    await call(commands.pluginFinishOperation(id, status, stopped));
+  },
+  contentTabAction: async (pluginId, action) => {
+    await call(commands.pluginContentTabAction(pluginId, action));
+  },
+  answerCommand: async (requestId, answer) => {
+    await call(commands.pluginAnswerCommand(requestId, answer));
+  },
+  answerCommit: async (requestId, answer) => {
+    await commands.pluginAnswerCommit(requestId, answer);
+  },
+  answerClipboard: async (requestId, answer) => {
+    await call(commands.pluginAnswerClipboard(requestId, answer));
+  },
+  commitChecks: (selection, checks) => call(commands.pluginCommitChecks(selection, checks, nextRequestId())),
   market: (refresh) => call(commands.pluginMarket(refresh)),
   marketUrl: () => commands.pluginMarketUrl(),
   setMarketUrl: async (url) => {
@@ -168,7 +330,7 @@ export const tauriPluginsBackend: PluginsBackend = {
   unpackPackage: (path) => call(commands.pluginUnpackPackage(path)),
   rollBack: (id) => call(commands.pluginRollBack(id)),
   pickPackage: async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const picked = await open({
       multiple: false,
       title: tx("Install Plugin from Package File"),
@@ -177,7 +339,7 @@ export const tauriPluginsBackend: PluginsBackend = {
     return (Array.isArray(picked) ? picked[0] : picked) ?? null;
   },
   pickIntellijTheme: async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const picked = await open({
       multiple: false,
       title: tx("Import IntelliJ Theme"),
@@ -191,41 +353,62 @@ export const tauriPluginsBackend: PluginsBackend = {
   // A tool window's calls (no `doc`) carry the window's active editor.
   renderView: (pluginId, view, viewport, doc) =>
     call(commands.pluginViewRender(pluginId, view, viewport, doc, doc == null ? editorContext() : null)),
-  viewEvent: async (pluginId, view, event, doc) => {
-    await call(commands.pluginViewEvent(pluginId, view, event, doc, doc == null ? editorContext() : null));
+  viewEvent: async (pluginId, view, event, doc, editor) => {
+    await call(commands.pluginViewEvent(pluginId, view, event, doc, doc == null ? (editor ?? editorContext()) : null));
+  },
+  serviceDetail: (pluginId, view, key) => call(commands.pluginServiceDetail(pluginId, view, key)),
+  runTargets: () => call(commands.pluginRunTargets()),
+  answerRunTarget: (id, useTarget) => call(commands.pluginAnswerRunTarget(id, useTarget)),
+  endpoints: (pluginId) => call(commands.pluginEndpoints(pluginId)),
+  search: (pluginId, category, query, limit, request) =>
+    call(commands.pluginSearch(pluginId, category, query, limit, request)),
+  serviceLog: (pluginId, view, key, tab, on, onLine, onError, onExit) => {
+    const request = nextRequestId();
+    const channel = new Channel<PluginOutputLine>();
+    channel.onmessage = onLine;
+    call(commands.pluginServiceLog(request, pluginId, view, key, tab, [...on], channel)).then(onExit, (e: unknown) => {
+      if (!isCancelled(e)) onError(e instanceof Error ? e.message : String(e));
+    });
+    return () => void commands.cancelRequest(request);
   },
   webPageUrl: async (pluginId, view) => {
     const page = await call(commands.pluginWebPage(pluginId, view));
     return webSchemeUrl(page.path);
   },
   saveWebFile: async (name, filters, bytes) => {
-    const { save } = await import("@tauri-apps/plugin-dialog");
+    const { save } = await import("@/platform/dialog");
     const path = await save({ defaultPath: name, filters });
     if (!path) return null;
     await call(commands.pluginWebSaveFile(path, toBase64(bytes)));
     return path;
   },
   openWebFile: async (filters) => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const picked = await open({ multiple: false, filters });
     const path = (Array.isArray(picked) ? picked[0] : picked) ?? null;
     if (!path) return null;
     const data = fromBase64(await call(commands.pluginWebReadFile(path)));
     return { name: path.split(/[\\/]/).pop() ?? path, data };
   },
+  readFileBytes: async (path) => fromBase64(await call(commands.pluginWebReadFile(path))),
+  readFileRange: async (path, offset, length) => {
+    const { total, data } = await call(commands.fsReadRange(path, offset, length));
+    return { total, data: fromBase64(data) };
+  },
   secrets: (pluginId) => call(commands.pluginSecrets(pluginId)),
   setSecret: async (pluginId, name, value) => {
     await call(commands.pluginSetSecret(pluginId, name, value));
   },
   setActiveFile: async (path) => {
-    await commands.pluginSetActiveFile(path);
+    const editor = editorContext();
+    await commands.pluginSetActiveFile(path, editor && editor.path === path ? editor : null);
   },
   setTheme: (pluginId, themeId) => call(commands.pluginSetTheme(pluginId, themeId)),
   setThemeFrame: async (color) => {
     await call(commands.pluginSetThemeFrame(color));
   },
   pickFolder: async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const picked = await open({ directory: true, multiple: false, title: "Install Plugin from Disk" });
     return (Array.isArray(picked) ? picked[0] : picked) ?? null;
   },
@@ -300,10 +483,14 @@ function samplePlugins(): PluginInfo[] {
     authors: ["OpenIDEA contributors"],
     homepage: null,
     changeNotes: null,
+    icon: null,
+    javaAgent: null,
     source: "installed" as const,
     enabled: true,
     error: null,
     capabilities: [],
+    netHosts: [],
+    netSettings: [],
     contributions: [],
     activation: [],
     warnings: [],
@@ -320,6 +507,9 @@ function samplePlugins(): PluginInfo[] {
     },
     publisher: null,
     previousVersion: null,
+    depends: [],
+    dependents: [],
+    extensionPoints: [],
   };
   return [
     {
@@ -377,6 +567,7 @@ export function sampleCatalog(): CatalogPlugin[] {
       authors: p.authors,
       homepage: p.homepage,
       changeNotes: `${p.version} — first release.`,
+      icon: null,
       path: `plugins/${p.id}`,
       hasCode: p.hasCode,
       capabilities: p.capabilities.map((c) => ({ ...c, granted: false })),
@@ -463,10 +654,54 @@ export function createMemoryPluginsBackend(
       emit({ type: "commandsChanged" });
       return { ...p };
     },
+    chooseProgram: async (id) => {
+      return { ...find(id) };
+    },
+    program: async (_id, program) => program,
+    pickProgram: async () => null,
     setCapability: async (id, capability, granted) => {
       const p = find(id);
       p.capabilities = p.capabilities.map((c) => (c.id === capability ? { ...c, granted } : c));
+      if (!granted && capability === "net:ask") p.netHosts = [];
       if (!granted && p.capabilities.some((c) => c.id === capability && !c.optional)) p.status = "needsConsent";
+      emit({ type: "commandsChanged" });
+      return { ...p };
+    },
+    revokeNetHost: async (id, host) => {
+      const p = find(id);
+      p.netHosts = p.netHosts.filter((h) => h !== host);
+      emit({ type: "commandsChanged" });
+      return { ...p };
+    },
+    netSettingHost: async (_id, _setting, value) => {
+      let host = value.trim();
+      if (host.includes("://"))
+        host = host
+          .replace(/^[a-z][a-z0-9+.-]*:\/\//i, "")
+          .replace(/[/?#].*$/, "")
+          .replace(/.*@/, "");
+      host = host.replace(/:\d+$/, "").replace(/\.$/, "").toLowerCase();
+      if (
+        !host ||
+        host.includes("*") ||
+        !/^[a-z0-9.-]+$/.test(host) ||
+        host.split(".").some((l) => !l || /[^a-z0-9-]/.test(l))
+      )
+        throw new IpcError({ kind: "invalidInput", message: `${value}: not a host (example.com) or a URL` });
+      return host;
+    },
+    approveNetSetting: async (id, setting, http, host) => {
+      const p = find(id);
+      p.netSettings = [
+        ...p.netSettings.filter((n) => n.setting !== setting || n.http !== http),
+        { setting, http, host, pending: null },
+      ];
+      emit({ type: "commandsChanged" });
+      return { ...p };
+    },
+    forgetNetSetting: async (id, setting, http) => {
+      const p = find(id);
+      p.netSettings = p.netSettings.filter((n) => n.setting !== setting || n.http !== http);
       emit({ type: "commandsChanged" });
       return { ...p };
     },
@@ -479,6 +714,8 @@ export function createMemoryPluginsBackend(
       emit({ type: "commandsChanged" });
     },
     reload: async (id) => find(id),
+    runAnythingSuggest: async () => [],
+    runAnythingRun: async () => false,
     runCommand: async (pluginId, commandId) => {
       const p = find(pluginId);
       if (p.status !== "active" && p.status !== "inactive")
@@ -488,7 +725,14 @@ export function createMemoryPluginsBackend(
       if (commandId === "word-count") {
         if (!activeFile) throw new IpcError({ kind: "internal", message: "no file is open in the editor" });
         const name = activeFile.split("/").pop() ?? activeFile;
-        emit({ type: "notification", pluginId, level: "info", title: `Word count: ${name}`, body: "(simulated)" });
+        emit({
+          type: "notification",
+          pluginId,
+          level: "info",
+          title: `Word count: ${name}`,
+          body: "(simulated)",
+          actions: [],
+        });
         return null;
       }
       throw new IpcError({ kind: "internal", message: `unknown command: ${commandId}` });
@@ -496,7 +740,9 @@ export function createMemoryPluginsBackend(
     postEvents: async () => {},
     eventKinds: async () => [],
     statusItems: async () => [],
+    contextKeys: async () => [],
     cancelTask: async () => {},
+    answerPrompt: async () => {},
     market: async () => [],
     marketUrl: async () => marketUrl,
     setMarketUrl: async (url) => {
@@ -526,11 +772,38 @@ export function createMemoryPluginsBackend(
       status: null,
     }),
     viewEvent: async () => {},
+    serviceDetail: async () => [],
+    runTargets: async () => [],
+    answerRunTarget: async () => useProject.getState().settings as import("@/bindings").Settings,
+    endpoints: async () => [],
+    search: async () => ({ items: [], hasMore: false }),
+    answerCommand: async () => {},
+    finishOperation: async () => {},
+    closeTerminalSession: async () => {},
+    terminalSessionSpawn: async () => {
+      throw new Error("Terminal unavailable");
+    },
+    parseTestResults: async () => null,
+    selectTests: async () => null,
+    contentTabAction: async () => {},
+    answerCommit: async () => {},
+    answerClipboard: async () => {},
+    commitChecks: async () => [],
+    serviceLog: (pluginId, view, key, _tab, _on, _onLine, onError) => {
+      onError(`${pluginId} · ${view} · ${key}: logs need the desktop app`);
+      return () => {};
+    },
     webPageUrl: async (pluginId, view) => {
       throw new IpcError({ kind: "unavailable", message: `${pluginId} · ${view}: web views need the desktop app` });
     },
     saveWebFile: async () => null,
     openWebFile: async () => null,
+    readFileBytes: async () => {
+      throw new IpcError({ kind: "unavailable", message: "reading the document needs the desktop app" });
+    },
+    readFileRange: async () => {
+      throw new IpcError({ kind: "unavailable", message: "reading the document needs the desktop app" });
+    },
     secrets: async (pluginId) =>
       [...secrets.entries()]
         .filter(([k]) => k.startsWith(`${pluginId}/`))

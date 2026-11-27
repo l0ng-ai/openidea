@@ -246,30 +246,24 @@ mod imp {
     }
 
     pub fn process_start() -> Option<std::time::SystemTime> {
-        #[repr(C)]
-        #[derive(Default)]
-        struct FileTime {
-            low: u32,
-            high: u32,
-        }
         #[link(name = "kernel32")]
         unsafe extern "system" {
+            // The same signature `memory.rs` declares: FILETIMEs read as packed u64s.
             fn GetProcessTimes(
                 process: *mut std::ffi::c_void,
-                creation: *mut FileTime,
-                exit: *mut FileTime,
-                kernel: *mut FileTime,
-                user: *mut FileTime,
+                creation: *mut u64,
+                exit: *mut u64,
+                kernel: *mut u64,
+                user: *mut u64,
             ) -> i32;
         }
         let (mut c, mut e, mut k, mut u) = Default::default();
-        // SAFETY: all out-pointers are valid FILETIME structs.
+        // SAFETY: all out-pointers are valid 64-bit FILETIME slots.
         let ok = unsafe { GetProcessTimes(GetCurrentProcess(), &mut c, &mut e, &mut k, &mut u) };
         if ok == 0 {
             return None;
         }
-        let c: FileTime = c;
-        let ticks = ((c.high as u64) << 32) | c.low as u64; // 100 ns since 1601-01-01
+        let ticks = c; // 100 ns since 1601-01-01
         let unix_100ns = ticks.checked_sub(116_444_736_000_000_000)?;
         Some(std::time::UNIX_EPOCH + std::time::Duration::from_nanos(unix_100ns * 100))
     }

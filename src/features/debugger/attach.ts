@@ -7,14 +7,16 @@ import type { AttachKind, AttachableProcess, LaunchConfig } from "@/platform/ipc
 import { javaAttachConfig } from "./java";
 
 export const KIND_LABELS: Record<AttachKind, string> = {
+  unity: "Unity Editor",
   java: "Java (JDWP)",
   node: "Node.js",
   python: "Python (debugpy)",
+  dotnet: ".NET (netcoredbg)",
   go: "Go (Delve)",
   native: "Native (LLDB)",
 };
 
-const KIND_ORDER: AttachKind[] = ["java", "node", "python", "go", "native"];
+const KIND_ORDER: AttachKind[] = ["unity", "java", "node", "python", "dotnet", "go", "native"];
 
 export type AttachRow =
   | { kind: "group"; key: string; label: string; count: number }
@@ -63,6 +65,14 @@ function base(p: AttachableProcess, cwd: string, extra: Record<string, unknown>)
 export async function attachConfig(p: AttachableProcess, root: string): Promise<LaunchConfig> {
   const skip = workflowSettings().debugger.skipLibraryCode;
   switch (p.kind) {
+    case "unity":
+      return {
+        ...base(p, root, {
+          name: `Unity Editor (${p.pid})`,
+          __exceptionOptions: [],
+        }),
+        adapter: "unity",
+      };
     case "java":
       return javaAttachConfig(
         { name: `${p.name} (${p.pid})`, module: "", hostName: p.host ?? "localhost", port: p.port! },
@@ -84,6 +94,8 @@ export async function attachConfig(p: AttachableProcess, root: string): Promise<
         // (`--pid` injection ships only an x86_64 helper on macOS.)
         p.port != null ? { debugServer: p.port, justMyCode: skip } : { processId: p.pid, justMyCode: skip },
       );
+    case "dotnet":
+      return base(p, root, { processId: p.pid, justMyCode: skip });
     case "go":
       return base(p, root, { mode: "local", processId: p.pid });
     case "native":

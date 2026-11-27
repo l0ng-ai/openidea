@@ -84,6 +84,28 @@ fn incoming_order_groups_the_merged_branch_before_the_main_parent() {
 }
 
 #[test]
+fn an_older_incoming_tip_uses_the_later_commit_time_when_merging_repo_pages() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-q"], None);
+    let base = commit(dir, "base.txt", "base", 1000);
+    let recent = commit(dir, "recent.txt", "recent", 4000);
+    git(dir, &["checkout", "-qb", "incoming", &base], None);
+    let incoming = commit(dir, "incoming.txt", "incoming", 2000);
+    git(dir, &["checkout", "-q", "main"], None);
+    let repo = Repo::discover(dir).unwrap().unwrap();
+    let query = LogQuery { summary_only: true, order: LogOrder::Standard, limit: 1, ..Default::default() };
+
+    let first = repo.log(&query).unwrap();
+    assert_eq!(first[0].id, incoming);
+    assert_eq!(first[0].commit_time_ms, 2_000_000.0);
+    assert_eq!(first[0].log_merge_time_ms, Some(4_000_000.0));
+    let next = repo.log(&LogQuery { skip: 1, ..query }).unwrap();
+    assert_eq!(next[0].id, recent);
+    assert_eq!(next[0].log_merge_time_ms, None);
+}
+
+#[test]
 fn no_merges_links_children_to_the_merge_parents() {
     let h = history();
     let out = log(&h, LogQuery { no_merges: true, ..Default::default() });
@@ -148,7 +170,7 @@ fn merge_with_options_and_rebase_onto() {
 
     git(dir, &["checkout", "-q", "-b", "topic", &base], None);
     commit(dir, "t.txt", "topic", 3000);
-    repo.rebase_with("main", &RebaseOptions::default()).unwrap();
+    repo.rebase_with(Some("main"), &RebaseOptions::default()).unwrap();
     assert_eq!(git(dir, &["rev-list", "--count", "main..topic"], None), "1");
     assert_eq!(git(dir, &["merge-base", "main", "topic"], None), git(dir, &["rev-parse", "main"], None));
 }
@@ -171,7 +193,7 @@ fn remotes_and_worktrees_are_managed() {
     .unwrap();
     assert_eq!(
         repo.remotes().unwrap(),
-        vec![Remote { name: "upstream".into(), url: "https://example.com/b.git".into() }]
+        vec![Remote { name: "upstream".into(), url: "https://example.com/b.git".into(), resolved_url: None }]
     );
     assert!(repo.edit_remote(&RemoteEdit::Add { name: "--bad".into(), url: "x".into() }).is_err());
     repo.edit_remote(&RemoteEdit::Remove { name: "upstream".into() }).unwrap();
@@ -184,6 +206,17 @@ fn remotes_and_worktrees_are_managed() {
     assert!(list[0].main && list[0].branch.as_deref() == Some("main"));
     assert_eq!(list[1].branch.as_deref(), Some("fix"));
     assert!(wt.join("a.txt").exists());
+    // An empty folder at the target is replaced, not moved into; anything else there is refused.
+    let moved = tmp.path().join("elsewhere/work-fix");
+    std::fs::create_dir_all(&moved).unwrap();
+    std::fs::write(moved.join("keep.txt"), "x").unwrap();
+    assert!(repo.move_worktree(&wt, &moved).is_err());
+    std::fs::remove_file(moved.join("keep.txt")).unwrap();
+    repo.move_worktree(&wt, &moved).unwrap();
+    assert!(!wt.exists() && moved.join("a.txt").exists());
+    let list = repo.worktrees().unwrap();
+    assert_eq!(dunce::canonicalize(&list[1].path).unwrap(), dunce::canonicalize(&moved).unwrap());
+    let wt = moved;
     repo.remove_worktree(&wt, false).unwrap();
     assert_eq!(repo.worktrees().unwrap().len(), 1);
 }

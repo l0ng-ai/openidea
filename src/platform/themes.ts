@@ -7,8 +7,6 @@ export const BUILTIN_THEMES = [
   { id: "dark-hc", label: "High Contrast", kind: "dark" },
   { id: "solarized-light", label: "Solarized Light", kind: "light" },
   { id: "solarized-dark", label: "Solarized Dark", kind: "dark" },
-  { id: "one-light", label: "One Light", kind: "light" },
-  { id: "one-dark", label: "One Dark", kind: "dark" },
 ] as const;
 
 export type BuiltinThemeId = (typeof BUILTIN_THEMES)[number]["id"];

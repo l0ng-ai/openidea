@@ -1,0 +1,486 @@
+import type { AgentEntry, AgentImage, AgentTask } from "@/bindings";
+import { useTx } from "@/platform/i18n";
+import { isImeKey } from "@/platform/ime";
+import { call, commands, isTauri } from "@/platform/ipc";
+import { basename } from "@/platform/project";
+import { Button, copyText, fileIconName, Icon, IconButton, T } from "@/ui";
+import { notifications } from "@/workbench/contributions";
+import clsx from "clsx";
+import { memo, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { AgentReply, MessageActions, ReplyActions } from "../AgentReply";
+import { AgentSignInDialog } from "../AgentSignInDialog";
+import { ImageStrip } from "../ImageStrip";
+import { ReferencedText } from "../ReferenceChip";
+import styles from "../Session.module.css";
+import { SubmitButton } from "../SubmitButton";
+import { useAgentSettings } from "../agentSettings";
+import { messageTokens, parseMention } from "../composerModel";
+import { formatDuration, formatSentAt, userMessageText } from "../conversation";
+import { isSignInErrorMessage, useAgentErrorText } from "../loginHint";
+import { isBusy, type ReplyTimes, type ReplyTurn } from "../model";
+import { useRevealedText } from "../reveal";
+import { forkTask, refreshProviders, rerunFrom, resendMessage, useAgents } from "../store";
+import { PermissionLine, QuestionForm, type QuestionAnswer } from "./QuestionForm";
+import { providerName, samePropsExcept, type UserEntry } from "./shared";
+import { SubagentCard, ThoughtEntry, ToolEntry } from "./toolEntries";
+
+/** When a message was sent, or when the turn behind a reply finished, and how long it took. */
+function MessageTime({
+  sentMs,
+  doneMs,
+  at = "sent",
+}: {
+  sentMs: number | null;
+  doneMs: number | null;
+  /** Replies show when they finished; messages show when they were sent. */
+  at?: "sent" | "done";
+}) {
+  const shown = at === "done" ? doneMs : sentMs;
+  if (shown == null) return null;
+  return (
+    <span className={styles.messageTime} title={new Date(shown).toLocaleString()}>
+      {formatSentAt(shown)}
+      {sentMs != null && doneMs != null && ` · ${formatDuration(Math.max(0, doneMs - sentMs))}`}
+    </span>
+  );
+}
+
+/** Memoized: the earlier entries rendered behind a reopened conversation leave the rest alone. */
+function AgentMessage({
+  task,
+  text,
+  turnCount,
+  reply,
+  time,
+  working,
+  onDiagramDrawn,
+}: {
+  task: AgentTask;
+  text: string;
+  turnCount: number;
+  reply?: ReplyTurn;
+  time?: ReplyTimes | null;
+  /** The reply streams: its text is revealed at a pace. */
+  working: boolean;
+  onDiagramDrawn: () => void;
+}) {
+  const { smoothText } = useAgentSettings();
+  const shown = useRevealedText(text, working && smoothText);
+  // The revealed text grows the conversation between its renders: keep following the end.
+  useLayoutEffect(() => {
+    if (working) onDiagramDrawn();
+  }, [shown, working, onDiagramDrawn]);
+  return (
+    <div className={styles.agentMessage}>
+      <div className={styles.agentCard}>
+        <AgentReply
+          text={shown}
+          cwd={task.cwd}
+          task={task}
+          reply={reply}
+          turnCount={turnCount}
+          onDiagramDrawn={onDiagramDrawn}
+          actions={false}
+        />
+      </div>
+      {/* Only a turn's final reply carries its time and actions, once the turn has ended. */}
+      {reply && !(isBusy(task.status) && reply.turn === turnCount - 1) && (
+        <div className={styles.messageFooter}>
+          <MessageTime sentMs={time?.sentMs ?? null} doneMs={time?.doneMs ?? null} at="done" />
+          <ReplyActions text={text} task={task} reply={reply} turnCount={turnCount} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface EntryProps {
+  task: AgentTask;
+  entry: AgentEntry;
+  /** Number of the turn this message started (from 0), when it started one. */
+  turn: number | null;
+  turnCount: number;
+  reply?: ReplyTurn;
+  /** When the turn this reply answered was asked and finished. */
+  time?: ReplyTimes | null;
+  /** How long a finished thought took. */
+  thoughtMs?: number | null;
+  working: boolean;
+  /** Answers in flight, kept across entry reloads so a refresh doesn't lose what was typed. */
+  drafts: RefObject<Map<string, QuestionAnswer[]>>;
+  onOpenSubagent: (id: string) => void;
+  onDiagramDrawn: () => void;
+}
+
+function EntryView({
+  task,
+  entry,
+  turn,
+  turnCount,
+  reply,
+  time,
+  thoughtMs,
+  working,
+  drafts,
+  onOpenSubagent,
+  onDiagramDrawn,
+}: EntryProps) {
+  switch (entry.type) {
+    case "user":
+      return <UserMessage task={task} entry={entry} turn={turn} turnCount={turnCount} />;
+    case "agent":
+      return (
+        <AgentMessage
+          task={task}
+          text={entry.text}
+          turnCount={turnCount}
+          reply={reply}
+          time={time}
+          working={working}
+          onDiagramDrawn={onDiagramDrawn}
+        />
+      );
+    case "thought":
+      return (
+        <ThoughtEntry
+          task={task}
+          text={entry.text}
+          took={thoughtMs ?? null}
+          working={working}
+          onDiagramDrawn={onDiagramDrawn}
+        />
+      );
+    case "tool":
+      return <ToolEntry task={task} entry={entry} />;
+    case "plan":
+      return (
+        <div className={styles.plan}>
+          <div className={styles.planTitle}>
+            <T>Plan</T>
+          </div>
+          {entry.items.map((item, i) => (
+            <div
+              // oxlint-disable-next-line react/no-array-index-key -- plan items can repeat; position is the identity
+              key={i}
+              className={clsx(styles.planItem, item.status === "completed" && styles.planDone)}
+            >
+              <Icon
+                name={item.status === "completed" ? "check" : item.status === "in_progress" ? "run" : "minus"}
+                size={12}
+              />
+              {item.content}
+            </div>
+          ))}
+        </div>
+      );
+    case "subagent":
+      return (
+        <SubagentCard
+          task={task}
+          entry={entry}
+          onOpen={() => onOpenSubagent(entry.id)}
+          onDiagramDrawn={onDiagramDrawn}
+        />
+      );
+    case "message":
+      return entry.incoming ? (
+        <div className={styles.message}>
+          <div className={styles.messageFrom}>
+            <T>Task from the parent agent</T>
+          </div>
+          <div className={styles.user}>
+            <ReferencedText text={entry.text} cwd={task.cwd} />
+          </div>
+        </div>
+      ) : (
+        <div>
+          <div className={styles.messageFrom}>
+            <T>Report to the parent agent</T>
+          </div>
+          <AgentReply text={entry.text} cwd={task.cwd} task={task} onDiagramDrawn={onDiagramDrawn} />
+        </div>
+      );
+    case "permission":
+      // An open AskUserQuestion is the card itself, scrolling with the conversation; answered,
+      // the record stays. Permission forms and plain approvals wait above the composer.
+      if (entry.chosen) return <PermissionLine task={task} entry={entry} />;
+      if (!entry.questions?.length) return null;
+      return <QuestionForm key={entry.id} task={task} entry={entry} questions={entry.questions} drafts={drafts} />;
+    case "question":
+      return (
+        <div className={clsx(styles.permissionLine, entry.chosen ? styles.permissionDone : styles.permissionAsking)}>
+          <Icon name={!entry.chosen ? "warning" : entry.chosen === "Skipped" ? "minus" : "check"} size={14} />
+          <div className={styles.permissionBody}>
+            <span className={styles.permissionTitle}>{entry.title}</span>
+            {entry.chosen && (
+              <span className={styles.permissionRecord}>
+                {entry.chosen === "Skipped" ? <T>Skipped</T> : entry.chosen}
+              </span>
+            )}
+          </div>
+        </div>
+      );
+    case "error":
+      return <AgentErrorEntry task={task} message={entry.message} />;
+  }
+}
+
+/** The reply and its times are rebuilt from the conversation with every chunk: what they say is what counts. */
+export const Entry = memo(
+  EntryView,
+  samePropsExcept<EntryProps>({
+    reply: (a, b) =>
+      a.reply === b.reply ||
+      (!!a.reply &&
+        !!b.reply &&
+        a.reply.turn === b.reply.turn &&
+        a.reply.steered === b.reply.steered &&
+        a.reply.prompt === b.reply.prompt),
+    time: (a, b) =>
+      a.time === b.time || (!!a.time && !!b.time && a.time.sentMs === b.time.sentMs && a.time.doneMs === b.time.doneMs),
+  }),
+);
+
+function AgentErrorEntry({ task, message }: { task: AgentTask; message: string }) {
+  const [signingIn, setSigningIn] = useState(false);
+  const text = useAgentErrorText(message);
+  const providerCanSignIn = useAgents((s) => s.providers.find((p) => p.id === task.provider)?.canSignIn ?? false);
+  const canSignIn = isTauri() && providerCanSignIn && isSignInErrorMessage(message);
+  const name = providerName(task.provider);
+  return (
+    <div className={styles.error} role="alert">
+      <Icon name="error" size={14} />
+      <div className={styles.errorContent}>
+        <span>{text}</span>
+        {canSignIn && (
+          <div>
+            <Button size="small" onClick={() => setSigningIn(true)}>
+              <T>Sign In…</T>
+            </Button>
+          </div>
+        )}
+      </div>
+      {signingIn && (
+        <AgentSignInDialog
+          target={{ kind: "agent", id: task.provider, name }}
+          onClose={() => setSigningIn(false)}
+          onCompleted={() => {
+            void refreshProviders();
+            void call(commands.agentRefreshModels(task.provider, true, null)).catch(() => {});
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function UserMessage({
+  task,
+  entry,
+  turn,
+  turnCount,
+}: {
+  task: AgentTask;
+  entry: UserEntry;
+  turn: number | null;
+  turnCount: number;
+}) {
+  const [editing, setEditing] = useState(false);
+  const failed = (title: string) => (e: unknown) => notifications().notify({ level: "error", title, body: String(e) });
+  const fail = failed("Couldn't send the message");
+  const archived = task.status === "archived";
+  const idle = !archived && !isBusy(task.status) && turn !== null;
+  const { fork = false, rollback = false } = task.capabilities ?? {};
+  // Editing and running again from a message need an agent that can drop turns.
+  const inPlace = !archived && rollback && turn !== null;
+  // A copy up to an earlier turn drops the later ones from the copied session.
+  const canFork = idle && fork && (rollback || turn === turnCount - 1);
+  const text = userMessageText(entry.text);
+  if (editing && turn !== null) {
+    return (
+      <MessageEditor
+        initial={text}
+        initialImages={entry.images ?? []}
+        later={turn < turnCount - 1}
+        onCancel={() => setEditing(false)}
+        onSend={async (text, images) => {
+          if (await rerunFrom(task.id, turn, text, images)) setEditing(false);
+        }}
+      />
+    );
+  }
+  const images = entry.images ?? [];
+  // Images are listed after the files in `attachments` and shown as thumbnails instead.
+  // Files mentioned in the text are chips there already.
+  const mentioned = new Set(
+    messageTokens(text).flatMap((t) => {
+      const m = t.kind === "file" ? parseMention(t.value) : null;
+      return m ? [basename(m.rel.replace(/\/$/, ""))] : [];
+    }),
+  );
+  const files = entry.attachments.slice(0, entry.attachments.length - images.length).filter((a) => !mentioned.has(a));
+  return (
+    <div className={clsx(styles.message, styles.userMessage)}>
+      {/* Actions and the time sit beside the author on hover: the reply under it has the turn's duration. */}
+      <div className={styles.messageHead}>
+        <MessageActions>
+          <IconButton size="small" icon="copy" title="Copy" onClick={() => void copyText(text)} />
+          {inPlace && entry.text && (
+            <IconButton size="small" icon="edit" title="Edit" onClick={() => setEditing(true)} />
+          )}
+          {inPlace && (
+            <IconButton
+              size="small"
+              icon="diff-revert"
+              iconSize={14}
+              title="Roll Back to Here"
+              action="agents.rollBackToMessage"
+              actionArg={{ task: task.id, turn }}
+            />
+          )}
+          {!archived && entry.text && entry.attachments.length === 0 && (
+            <IconButton
+              size="small"
+              icon="refresh"
+              title={inPlace ? "Run Again From Here" : "Send Again"}
+              onClick={() =>
+                void (
+                  inPlace
+                    ? rerunFrom(task.id, turn, entry.text, images, {
+                        title: "Run Again From Here",
+                        later: turn < turnCount - 1,
+                      })
+                    : resendMessage(task.id, entry.text)
+                ).catch(fail)
+              }
+            />
+          )}
+          {canFork && (
+            <IconButton
+              size="small"
+              icon="branch"
+              title="Fork"
+              onClick={() => void forkTask(task.id, turn + 1).catch(failed("Couldn't fork the task"))}
+            />
+          )}
+        </MessageActions>
+        <MessageTime sentMs={entry.sentMs ?? null} doneMs={null} />
+        <span className={styles.role}>
+          <T>You</T>
+        </span>
+      </div>
+      <div className={styles.user}>
+        <ReferencedText text={text} cwd={task.cwd} />
+        <ImageStrip images={images} />
+        {files.length > 0 && (
+          <div className={styles.attachments}>
+            {files.map((a, i) => (
+              // oxlint-disable-next-line react/no-array-index-key -- attachments from different directories can share a basename
+              <span key={i} className={styles.attachment}>
+                <Icon name={fileIconName(a)} size={12} />
+                {a}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** An earlier message edited where it is: sending runs the conversation again from it. */
+function MessageEditor({
+  initial,
+  initialImages,
+  later,
+  onCancel,
+  onSend,
+}: {
+  initial: string;
+  initialImages: AgentImage[];
+  /** Turns follow it (they are dropped on send). */
+  later: boolean;
+  onCancel: () => void;
+  onSend: (text: string, images: AgentImage[]) => Promise<void>;
+}) {
+  const tx = useTx();
+  const [text, setText] = useState(initial);
+  const [images, setImages] = useState(initialImages);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const pending = useRef(false);
+  const send = async () => {
+    if ((!text.trim() && images.length === 0) || pending.current) return;
+    pending.current = true;
+    setSending(true);
+    setError(null);
+    try {
+      await onSend(text.trim(), images);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      notifications().notify({
+        level: "error",
+        title: "Couldn't send the message",
+        body: String(e),
+      });
+    } finally {
+      pending.current = false;
+      setSending(false);
+    }
+  };
+  return (
+    <div className={styles.message}>
+      <textarea
+        className={styles.editMessage}
+        value={text}
+        rows={Math.min(Math.max(text.split("\n").length, 2), 12)}
+        autoFocus
+        readOnly={sending}
+        aria-label={tx("Message")}
+        onChange={(e) => setText(e.target.value)}
+        onFocus={(e) => e.currentTarget.setSelectionRange(text.length, text.length)}
+        onKeyDown={(e) => {
+          if (isImeKey(e.nativeEvent)) return;
+          if (e.key === "Escape") {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!pending.current) onCancel();
+          } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            void send();
+          }
+        }}
+      />
+      <ImageStrip images={images} onRemove={sending ? undefined : (i) => setImages(images.filter((_, j) => j !== i))} />
+      {error && (
+        <div className={styles.error} role="alert">
+          <Icon name="error" size={14} />
+          <span>
+            <T>Couldn't send the message</T>: {error}
+          </span>
+        </div>
+      )}
+      <div className={styles.editBar}>
+        <span className={styles.muted}>
+          {later ? (
+            <T>
+              The messages after this one are replaced, and the files the agent changed since go back to how they were
+              before this message was sent.
+            </T>
+          ) : (
+            <T>The files the agent changed since go back to how they were before this message was sent.</T>
+          )}
+        </span>
+        <span className={styles.editButtons}>
+          <IconButton icon="close" title="Cancel" disabled={sending} onClick={onCancel} />
+          <SubmitButton
+            label="Send"
+            pending={sending}
+            disabled={(!text.trim() && images.length === 0) || sending}
+            onClick={() => void send()}
+          />
+        </span>
+      </div>
+    </div>
+  );
+}

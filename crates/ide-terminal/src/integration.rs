@@ -2,11 +2,16 @@
 //! shell reports its working directory (OSC 7) at every prompt, so links and
 //! new splits resolve against the directory the user `cd`-ed into, and marks
 //! where a command starts and ends (OSC 133 C / D), so the tab shows the
-//! running program's title only while one runs.
+//! running program's title only while one runs. The end mark carries the
+//! command's exit status (`OSC 133;D;<status>`), so a finished long-running
+//! command can be reported as finished or failed.
 //!
 //! zsh starts with `ZDOTDIR` pointing at generated startup files that source
 //! the user's own ones first; bash gets an `--init-file` that replays the
-//! login sequence; fish gets an `--init-command`.
+//! login sequence; fish gets an `--init-command`. The generated `.zshrc` hands
+//! `ZDOTDIR` (and, if a startup file resolved it against the generated
+//! directory, `HISTFILE`) back to the user for login shells too, so history
+//! lands in `~/.zsh_history` despite the `zsh -l` start.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -31,19 +36,25 @@ ZDOTDIR=$OPENIDEA_USER_ZDOTDIR
 [[ -f $ZDOTDIR/.zshrc ]] && . $ZDOTDIR/.zshrc
 OPENIDEA_USER_ZDOTDIR=$ZDOTDIR
 ZDOTDIR=$_openidea_dir
-_openidea_osc7() { printf '\e]133;D\a\e]7;file://%s%s\a' "${HOST}" "${PWD}" }
+_openidea_osc7() { printf '\e]133;D;%s\a\e]7;file://%s%s\a' "$?" "${HOST}" "${PWD}" }
 _openidea_preexec() { printf '\e]133;C\a' }
 # First, so the command counts as finished before other hooks set the prompt's title.
 precmd_functions=(_openidea_osc7 ${precmd_functions:#_openidea_osc7})
 preexec_functions+=(_openidea_preexec)
-if [[ ! -o login ]]; then
-  ZDOTDIR=$OPENIDEA_USER_ZDOTDIR
-  unset OPENIDEA_USER_ZDOTDIR _openidea_dir
+# Startup files that ran before this one (e.g. /etc/zshrc's
+# HISTFILE=${ZDOTDIR:-$HOME}/.zsh_history) resolved HISTFILE against this
+# generated directory, since OpenIDEA starts zsh as a login shell (-l) and the
+# restore below used to be gated on non-login. Hand both back to the user: a
+# HISTFILE they configured themselves is never under $_openidea_dir and is kept.
+if [[ $HISTFILE == "$_openidea_dir"/* ]]; then
+  HISTFILE=${OPENIDEA_USER_ZDOTDIR:-$HOME}/.zsh_history
 fi
+ZDOTDIR=${OPENIDEA_USER_ZDOTDIR:-$HOME}
+unset OPENIDEA_USER_ZDOTDIR _openidea_dir
 "#;
 
 const ZLOGIN: &str = r#"# OpenIDEA shell integration (generated)
-ZDOTDIR=$OPENIDEA_USER_ZDOTDIR
+ZDOTDIR=${OPENIDEA_USER_ZDOTDIR:-$HOME}
 [[ -f $ZDOTDIR/.zlogin ]] && . $ZDOTDIR/.zlogin
 unset OPENIDEA_USER_ZDOTDIR _openidea_dir
 "#;
@@ -59,7 +70,7 @@ if [ "${OPENIDEA_LOGIN:-}" = 1 ]; then
 else
   [ -f ~/.bashrc ] && . ~/.bashrc
 fi
-__openidea_osc7() { printf '\e]133;D\a\e]7;file://%s%s\a' "${HOSTNAME}" "${PWD}"; }
+__openidea_osc7() { printf '\e]133;D;%s\a\e]7;file://%s%s\a' "$?" "${HOSTNAME}" "${PWD}"; }
 case ";${PROMPT_COMMAND:-};" in
   *";__openidea_osc7;"*) ;;
   *) PROMPT_COMMAND="__openidea_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
@@ -72,9 +83,11 @@ esac
 "#;
 
 const FISH_INIT: &str = concat!(
-    r#"function __openidea_osc7 --on-event fish_prompt; printf '\e]133;D\a\e]7;file://%s%s\a' (hostname) $PWD; end; "#,
+    r#"function __openidea_osc7 --on-event fish_prompt; printf '\e]133;D;%s\a\e]7;file://%s%s\a' "$status" "$hostname" $PWD; end; "#,
     r#"function __openidea_preexec --on-event fish_preexec; printf '\e]133;C\a'; end"#,
 );
+
+const POWERSHELL_INIT: &str = r#"$openideaClearHost = (Get-Command Clear-Host).ScriptBlock; $openideaClearHandler = { & $openideaClearHost @args; [Console]::Write([char]27 + ']133;OpenIDEA;ClearScrollback' + [char]7) }.GetNewClosure(); Set-Item Function:global:Clear-Host -Value $openideaClearHandler"#;
 
 /// Directory holding the generated startup files (written on demand).
 fn scripts_dir() -> PathBuf {
@@ -95,6 +108,13 @@ fn write_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
 /// resolved arguments; returns `false` (leaving everything untouched) for
 /// shells without integration or when the scripts cannot be written.
 pub(crate) fn apply(shell_name: &str, args: &mut Vec<String>, env: &mut BTreeMap<String, String>) -> bool {
+    if cfg!(windows) && (shell_name.eq_ignore_ascii_case("pwsh") || shell_name.eq_ignore_ascii_case("powershell")) {
+        if !args.is_empty() {
+            return false;
+        }
+        args.extend(["-NoExit".into(), "-Command".into(), POWERSHELL_INIT.into()]);
+        return true;
+    }
     if !cfg!(unix) {
         return false;
     }
@@ -149,6 +169,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn command_end_reports_the_exit_status() {
+        // The D mark carries the shell's exit status (`OSC 133;D;<status>`), so
+        // a finished long-running command can be told from a failed one.
+        // zsh and bash read `$?`, fish `$status`, each at hook entry before any
+        // other command runs.
+        assert!(ZSHRC.contains(r"\e]133;D;%s\a") && ZSHRC.contains("\"$?\""));
+        assert!(BASHRC.contains(r"\e]133;D;%s\a") && BASHRC.contains("\"$?\""));
+        assert!(FISH_INIT.contains(r"\e]133;D;%s\a") && FISH_INIT.contains("\"$status\""));
+    }
+
+    #[test]
+    fn powershell_clear_integration_only_changes_plain_windows_starts() {
+        for shell in ["pwsh", "powershell", "PwSh"] {
+            let mut args = Vec::new();
+            let mut env = BTreeMap::new();
+            assert_eq!(apply(shell, &mut args, &mut env), cfg!(windows));
+            if cfg!(windows) {
+                assert_eq!(args, ["-NoExit", "-Command", POWERSHELL_INIT]);
+            } else {
+                assert!(args.is_empty());
+            }
+            let mut explicit = vec!["-NoProfile".into()];
+            assert!(!apply(shell, &mut explicit, &mut env));
+            assert_eq!(explicit, ["-NoProfile"]);
+        }
+    }
+
+    #[test]
     fn bash_gets_init_file_and_login_flag() {
         if cfg!(windows) {
             return; // Unix paths and shells
@@ -182,5 +230,29 @@ mod tests {
         assert!(dir.join(".zshrc").is_file());
         assert_eq!(env["OPENIDEA_USER_ZDOTDIR"], "/home/me/zsh");
         assert_eq!(args, vec!["-l"]);
+    }
+
+    #[test]
+    fn zsh_restores_zdotdir_and_histfile_for_login_shells() {
+        // OpenIDEA starts zsh as a login shell (`zsh -l`), so the restore at the
+        // end of the generated .zshrc must not be gated on non-login shells,
+        // and HISTFILE resolved against the generated directory (e.g. by
+        // /etc/zshrc's `HISTFILE=${ZDOTDIR:-$HOME}/.zsh_history`) must be
+        // re-pointed at the user's directory.
+        assert!(!ZSHRC.contains("[[ ! -o login ]]"));
+        assert!(ZSHRC.contains("HISTFILE=${OPENIDEA_USER_ZDOTDIR:-$HOME}/.zsh_history"));
+        assert!(ZSHRC.contains("ZDOTDIR=${OPENIDEA_USER_ZDOTDIR:-$HOME}"));
+        assert!(ZSHRC.contains("unset OPENIDEA_USER_ZDOTDIR _openidea_dir"));
+        // Login shells that never read .zshrc (non-interactive ones) restore via .zlogin.
+        assert!(ZLOGIN.contains("ZDOTDIR=${OPENIDEA_USER_ZDOTDIR:-$HOME}"));
+        assert!(ZLOGIN.contains("unset OPENIDEA_USER_ZDOTDIR _openidea_dir"));
+        if cfg!(windows) {
+            return; // apply() only integrates on Unix
+        }
+        let mut args = vec!["-l".to_owned()];
+        let mut env = BTreeMap::from([("ZDOTDIR".to_owned(), "/home/me/zsh".to_owned())]);
+        assert!(apply("zsh", &mut args, &mut env));
+        let zshrc = std::fs::read_to_string(PathBuf::from(&env["ZDOTDIR"]).join(".zshrc")).unwrap();
+        assert!(zshrc.contains("HISTFILE=${OPENIDEA_USER_ZDOTDIR:-$HOME}/.zsh_history"));
     }
 }

@@ -56,7 +56,12 @@ impl<'a> Lines<'a> {
 }
 
 pub(crate) fn utf16_len(s: &str) -> u32 {
-    if s.is_ascii() { s.len() as u32 } else { s.chars().map(|c| c.len_utf16() as u32).sum() }
+    if s.is_ascii() {
+        return s.len() as u32;
+    }
+    // One unit per char (each starts with a non-continuation byte), two for
+    // 4-byte chars; byte classification vectorizes, unlike decoding `chars()`.
+    s.as_bytes().iter().map(|&b| u32::from((b & 0xC0) != 0x80) + u32::from(b >= 0xF0)).sum()
 }
 
 fn utf16_to_byte(s: &str, offset: usize) -> usize {

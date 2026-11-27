@@ -110,7 +110,8 @@ describe.each([
     view = editor();
     activateHover(view, 2, 1);
     await settle();
-    const tooltip = view.dom.querySelector(".cm-tooltip")!;
+    // Tooltips are parented to the body (#2310), not to the editor element.
+    const tooltip = document.querySelector(".cm-tooltip")!;
     tooltip.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
     expect(pointerTarget()).toBe(tooltip);
     key("keydown", mod, { [flag]: true });

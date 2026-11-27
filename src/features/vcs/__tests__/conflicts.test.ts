@@ -86,9 +86,18 @@ describe("mergeTitles", () => {
     });
     expect(mergeTitles(sides("rebase", { otherBranch: null })).theirs).toBe("Already rebased commits");
     expect(mergeTitles(sides("merge"))).toEqual({ yours: "Changes from feature", theirs: "Changes from main" });
+    expect(mergeTitles(sides("apply-patch"))).toEqual({ yours: "Local Version", theirs: "Patched Version" });
     expect(mergeTitles(sides("cherry-pick"))).toEqual({
       yours: "Local Changes",
       theirs: "Changes from cherry-pick abc12345",
+    });
+    expect(mergeTitles(sides("stash-apply"))).toEqual({
+      yours: "Local Changes",
+      theirs: "Changes from Stash",
+    });
+    expect(mergeTitles(sides("unshelve"))).toEqual({
+      yours: "Uncommitted changes from the shelf",
+      theirs: "Changes from feature",
     });
     expect(mergeTitles(sides("unstash"))).toEqual({
       yours: "Your uncommitted changes",

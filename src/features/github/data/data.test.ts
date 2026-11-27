@@ -401,18 +401,27 @@ describe("pull request helpers", () => {
       "ssh://git@github.com/o/r.git",
       "ssh://git@github.com:22/o/r.git",
       "git://github.com/o/r",
+      // GitHub's SSH-over-HTTPS host.
+      "ssh://git@ssh.github.com:443/o/r.git",
+      "git@ssh.github.com:o/r.git",
     ])
       expect(parseGitHubRemote(url), url).toEqual({ owner: "o", name: "r" });
     expect(parseGitHubRemote("https://gitlab.com/o/r.git")).toBeNull();
     expect(parseGitHubRemote("/local/repo")).toBeNull();
+    expect(parseGitHubRemote("https://ssh.github.com/o/r.git")).toBeNull();
     expect(
       githubRemotes([
         { name: "origin", url: "git@github.com:me/r.git" },
+        {
+          name: "fork",
+          url: "git@github-personal:dengliu/r.git",
+          resolvedUrl: "git@github.com:dengliu/r.git",
+        },
         { name: "upstream", url: "https://github.com/org/r.git" },
         { name: "dup", url: "https://github.com/ORG/r" },
         { name: "other", url: "https://example.com/x/y" },
       ]).map((r) => `${r.remote}=${r.owner}/${r.name}`),
-    ).toEqual(["origin=me/r", "upstream=org/r"]);
+    ).toEqual(["origin=me/r", "fork=dengliu/r", "upstream=org/r"]);
   });
 });
 

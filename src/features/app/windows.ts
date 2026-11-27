@@ -8,22 +8,28 @@
  * editor tabs only. One LightEdit window collects them all.
  */
 import { executeAction, type Action } from "@/platform/actions";
-import { t } from "@/platform/i18n";
+import { t, tx } from "@/platform/i18n";
 import { call, commands, isCancelled, isTauri } from "@/platform/ipc";
+import { isWebMode } from "@/platform/webBridge";
 import {
   basename,
   confirmLeaveProject,
   dirname,
   openLightEdit,
+  openLightEditUntitled,
   openProject,
   provideStartupLaunch,
   useProject,
 } from "@/platform/project";
-import { connectRemote, isRemoteWindow } from "@/platform/remote";
+import { confirmProjectTrust } from "@/platform/projectTrust";
+import { ask } from "@/workbench/messages";
+import { connectRemote, isRemoteWindow, parseRemoteLocation } from "@/platform/remote";
 import { holdSplash } from "@/platform/splash";
 import { editorService, maybeEditorService, notifications } from "@/workbench/contributions";
-import { chooseProjectWindow } from "@/workbench/projectWindow";
+import { chooseProjectWindow, openRemoteProject, type ProjectWindowOverride } from "@/workbench/projectWindow";
+import { openTabColorPicker } from "@/workbench/TabColorPicker";
 import { cycleWindowTab, useWindowGroup } from "@/platform/windowGroups";
+import { editorSwitching } from "@/editor/api";
 import { showWorkspaceDialog } from "./WorkspaceDialog";
 
 export const LAUNCH_EVENT = "openidea://launch";
@@ -51,9 +57,19 @@ function openFailed(path: string, e: unknown) {
 /** Opens project `path` in this window; true once it is this window's project. */
 async function openHere(path: string): Promise<boolean> {
   if (!isRemoteWindow() && useProject.getState().project?.root === path) return true;
-  if (!(await confirmLeaveProject())) return false;
+  // A folder of a WSL distro runs there, not as a network folder; the window then drops untitled buffers.
+  const wsl = await commands.wslResolve(path).catch(() => null);
   try {
-    await openProject(path);
+    // Asked before leaving, so Don't Open keeps the current project and its processes running.
+    if (!wsl) await confirmProjectTrust(path, "local");
+  } catch (e) {
+    openFailed(path, e);
+    return false;
+  }
+  if (!(await confirmLeaveProject(!wsl))) return false;
+  try {
+    if (wsl) await connectRemote(wsl.target, wsl.path);
+    else await openProject(path);
     return true;
   } catch (e) {
     maybeEditorService()?.cancelClose?.();
@@ -62,19 +78,20 @@ async function openHere(path: string): Promise<boolean> {
   }
 }
 
-/** Opens `files` as editor tabs of this window, focusing the last. */
 /** Caret positions of files opened from the command line (`--line` / `--column`), 0-based. */
 type Positions = ReadonlyArray<{ path: string; line: number; column: number }>;
 
+/** Opens `files` as editor tabs of this window, focusing the last. */
 async function openInEditor(files: readonly string[], positions: Positions = []): Promise<void> {
   for (const [i, path] of files.entries()) {
     const at = positions.find((p) => p.path === path);
+    // oxlint-disable-next-line no-await-in-loop -- tabs open in argument order so the last file is focused
     await editorService()
       .openFile(path, {
         focus: i === files.length - 1,
         ...(at ? { selection: { line: at.line, col: at.column } } : {}),
       })
-      .catch((e) => console.warn(`could not open ${path}`, e));
+      .catch((e) => openFailed(path, e));
   }
 }
 
@@ -111,16 +128,32 @@ export async function openFiles(files: readonly string[]): Promise<void> {
 
 const pathIsDir = (path: string) => call(commands.fsReadDir(path)).then(() => true);
 
+/** A file that names the project around it: dropping it opens that folder, as a double-click would. */
+const projectMarker = /\.uproject$/i;
+
 /** Opens dropped paths: files as loose files ({@link openFiles}), the first folder as a project. */
 export async function openPaths(
   paths: readonly string[],
   isDir: (path: string) => Promise<boolean> = pathIsDir,
 ): Promise<void> {
   const kinds = await Promise.all(paths.map((p) => isDir(p).catch(() => false)));
-  const files = paths.filter((_, i) => !kinds[i]);
-  const dir = paths.find((_, i) => kinds[i]);
+  // An Unreal project is dragged in as its `.uproject`, which names the folder to open.
+  const marker = paths.find((p, i) => !kinds[i] && projectMarker.test(p));
+  const files = paths.filter((p, i) => !kinds[i] && p !== marker);
+  const dir = paths.find((_, i) => kinds[i]) ?? (marker ? dirname(marker) : undefined);
   await openFiles(files);
   if (dir) await openProjectWithPolicy(dir);
+}
+
+/**
+ * `window_open_project`. When that may create a window, the trust question is asked here
+ * first (IntelliJ IDEA asks before the project frame opens): the new window would otherwise
+ * show its Welcome screen under the question. A WSL folder opens as a remote project, whose
+ * window asks about the distribution's folder itself.
+ */
+async function openProjectWindow(path: string, newWindow: boolean, files: readonly string[] = []) {
+  if (newWindow && !(await commands.wslResolve(path).catch(() => null))) await confirmProjectTrust(path, "local");
+  return call(commands.windowOpenProject(path, newWindow, [...files]));
 }
 
 /**
@@ -132,8 +165,15 @@ export async function openProjectInWindow(path: string, newWindow: boolean, file
   if (desktopOnly()) return;
   const s = useProject.getState();
   const inNew = newWindow || s.project !== null || s.lightEdit;
+  if (inNew && isWebMode()) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("project", path);
+    url.searchParams.set("newWindow", "1");
+    const opened = window.open(url.toString(), "_blank", "noopener");
+    if (opened) return;
+  }
   try {
-    const outcome = await call(commands.windowOpenProject(path, inNew, [...files]));
+    const outcome = await openProjectWindow(path, inNew, files);
     if (outcome.kind === "current" && (await openHere(path))) await openInEditor(files);
   } catch (e) {
     openFailed(path, e);
@@ -142,37 +182,31 @@ export async function openProjectInWindow(path: string, newWindow: boolean, file
 
 /**
  * Opens `path` following "Open project in" when this window already has a
- * project or LightEdit session, then `files` in its editor.
+ * project or LightEdit session, then `files` in its editor. `override` (a
+ * modifier key on a recent project) picks the window instead.
  */
-export async function openProjectWithPolicy(path: string, files: readonly string[] = []): Promise<void> {
+export async function openProjectWithPolicy(
+  path: string,
+  files: readonly string[] = [],
+  override?: ProjectWindowOverride | null,
+): Promise<void> {
   if (desktopOnly()) return;
   const { project: current, lightEdit } = useProject.getState();
-  if (!current && !lightEdit) return openProjectInWindow(path, false, files);
+  if (!current && !lightEdit) return openProjectInWindow(path, override === "new", files);
   if (!isRemoteWindow() && current?.root === path) return openInEditor(files);
   if (!isRemoteWindow() && current?.workspace?.projects.includes(path)) {
     await executeAction("project.reveal", path);
     return openInEditor(files);
   }
-  const mode = await chooseProjectWindow(basename(path));
+  const mode = override ?? (await chooseProjectWindow(basename(path)));
   if (!mode) return;
   if (mode === "new") return openProjectInWindow(path, true, files);
   if (mode === "attach") {
-    try {
-      if (!current?.workspace && !(await confirmLeaveProject())) return;
-      const root = await call(commands.workspaceAttach(path));
-      if (root === current?.root) {
-        if (!current.workspace) maybeEditorService()?.cancelClose?.();
-        const project = await commands.projectCurrent();
-        if (project) useProject.setState({ project, settings: project.settings });
-      } else {
-        await openProject(root);
-      }
-      await executeAction("project.reveal", path);
-      await openInEditor(files);
-    } catch (e) {
-      maybeEditorService()?.cancelClose?.();
-      openFailed(path, e);
-    }
+    await attachProject(path, files);
+    return;
+  }
+  if (mode === "tab") {
+    await openProjectTab(path, files);
     return;
   }
   try {
@@ -181,6 +215,48 @@ export async function openProjectWithPolicy(path: string, files: readonly string
     if (outcome.kind === "current" && (await openHere(path))) await openInEditor(files);
   } catch {
     if (await openHere(path)) await openInEditor(files);
+  }
+}
+
+/** What the recent lists pass to `file.openRecentProject`: the path, plus the window a modifier key picked. */
+function recentProjectArg(arg: unknown): { path: string; window: ProjectWindowOverride | null } | null {
+  if (typeof arg === "string") return { path: arg, window: null };
+  if (!arg || typeof arg !== "object" || !("path" in arg) || typeof arg.path !== "string") return null;
+  const { window } = arg as { window?: unknown };
+  return { path: arg.path, window: window === "new" || window === "same" ? window : null };
+}
+
+async function attachProject(path: string, files: readonly string[] = []): Promise<void> {
+  try {
+    await confirmProjectTrust(path, "local");
+    if (!(await call(commands.projectTrustStatus(path))).trusted) {
+      notifications().notify({
+        level: "warning",
+        title: tx("Project not attached"),
+        body: tx`Cannot attach ${path} because it is restricted. Open it separately and choose Trust Project, then attach it again.`,
+      });
+      return;
+    }
+    await call(commands.workspaceAttach(path));
+    const project = await commands.projectCurrent();
+    if (project) useProject.setState({ project, settings: project.settings });
+    await executeAction("project.reveal", path);
+    await openInEditor(files);
+  } catch (e) {
+    openFailed(path, e);
+  }
+}
+
+/** Opens `path` as a new project tab of this window: a window of its own, joined into this window's group. */
+async function openProjectTab(path: string, files: readonly string[]): Promise<void> {
+  try {
+    // `new_window` always answers with the window holding the project, focused or just created;
+    // either way that window becomes this window's tab.
+    const outcome = await openProjectWindow(path, true, files);
+    if (outcome.kind === "current") return;
+    await call(commands.windowGroupJoin(outcome.label));
+  } catch (e) {
+    openFailed(path, e);
   }
 }
 
@@ -197,38 +273,81 @@ export function defaultProjectDirectory(): string | undefined {
 }
 
 async function pickFolder(title: string): Promise<string | null> {
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({ directory: true, multiple: false, title, defaultPath: defaultProjectDirectory() });
   const path = Array.isArray(picked) ? picked[0] : picked;
   return path ?? null;
 }
 
 async function pickFiles(title: string): Promise<string[]> {
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({ directory: false, multiple: true, title, defaultPath: defaultProjectDirectory() });
   return picked === null ? [] : Array.isArray(picked) ? picked : [picked];
 }
 
-/** Takes this window's pending launch (if any) and opens its project and files. */
-export async function consumeLaunch(): Promise<void> {
+/** Takes this window's pending launch (if any) and opens its project, files or diff pair. */
+let launchQueue: Promise<void> = Promise.resolve();
+export function consumeLaunch(): Promise<void> {
+  const request = launchQueue.then(consumePendingLaunch);
+  launchQueue = request.catch(() => {});
+  return request;
+}
+
+async function consumePendingLaunch(): Promise<void> {
   if (!isTauri()) return;
   const launch = await commands.windowTakeLaunch().catch(() => null);
-  const files = launch?.files ?? [];
-  const positions = launch?.positions ?? [];
-  if (launch?.project) {
-    if (await openHere(launch.project)) await openInEditor(files, positions);
-  } else if (files.length) await openFilesHere(files, positions);
-  else if (launch?.remote) {
-    const { sshConfig, path } = launch.remote;
-    await connectRemote(sshConfig, path).catch((e) =>
-      notifications().notify({
-        level: "error",
-        title: t("app.window.openFailed", { name: basename(path) }),
-        body: errorText(e),
-        key: `app.open:${path}`,
-      }),
-    );
+  if (!launch) return;
+  try {
+    // Session restoration may already be opening this window's project.
+    if (useProject.getState().opening) {
+      await new Promise<void>((resolve) => {
+        const off = useProject.subscribe((state) => {
+          if (!state.opening) {
+            off();
+            resolve();
+          }
+        });
+      });
+    }
+    const files = launch.files ?? [];
+    const positions = launch.positions ?? [];
+    if (launch.project && !(await openHere(launch.project))) return;
+    if (launch.diff && launch.diffBeforeFiles) {
+      const diff = launch.diff;
+      await openCliDiff(diff).catch((e) => openFailed(diff.right, e));
+    }
+    if (launch.project) {
+      await openInEditor(files, positions);
+    } else if (files.length) await openFilesHere(files, positions);
+    else if (launch.remote) {
+      const { target, path } = launch.remote;
+      await connectRemote(target, path).catch((e) =>
+        notifications().notify({
+          level: "error",
+          title: t("app.window.openFailed", { name: basename(path) }),
+          body: errorText(e),
+          key: `app.open:${path}`,
+        }),
+      );
+    }
+    if (launch.diff && !launch.diffBeforeFiles) await openCliDiff(launch.diff);
+  } finally {
+    await call(commands.windowCompleteLaunch());
   }
+}
+
+/**
+ * `openidea diff a.txt b.txt`: the two files side by side in the diff viewer (both editable).
+ * Without a project or LightEdit session the right file opens one first, like a launched file does.
+ */
+async function openCliDiff(diff: { left: string; right: string }): Promise<void> {
+  const s = useProject.getState();
+  if (!s.project && !s.lightEdit) await openLightEdit(diff.right).catch(() => {});
+  const [{ openVcsDiff }, { compareFilesData }] = await Promise.all([
+    import("@/features/vcs/diffInput"),
+    import("@/features/vcs/compareData"),
+  ]);
+  await openVcsDiff({ ...compareFilesData(diff.left, diff.right), swappable: true });
 }
 
 /** Closes the project tabs on `side` of the `arg` tab (default: the current one), keeping that tab. */
@@ -245,24 +364,69 @@ function closeProjectTabs(side: "others" | "left" | "right"): Action["run"] {
   };
 }
 
+const removeProject: Action["run"] = async ({ arg }) => {
+  const current = useProject.getState().project;
+  const workspace = current?.workspace;
+  if (typeof arg !== "string" || !workspace || !workspace.projects.includes(arg)) return;
+  if (workspace.projects[0] === current.root) {
+    if (arg === current.root) return;
+    const result = await ask({
+      title: t("app.window.detachTitle"),
+      body: t("app.window.detachBody", { name: basename(arg) }),
+      buttons: [
+        { id: "cancel", label: t("common.cancel") },
+        { id: "detach", label: t("app.window.detach"), primary: true },
+      ],
+    });
+    if (result.button !== "detach") return;
+  }
+  const project = await call(
+    commands.workspaceUpdate(
+      workspace.name,
+      workspace.projects.filter((p) => p !== arg),
+    ),
+  );
+  useProject.setState({ project, settings: project.settings });
+};
+
 export function windowActions(): Action[] {
   return [
+    {
+      id: "project.attach",
+      title: t("app.action.attachProject"),
+      category: t("app.category.file"),
+      icon: "folder-open",
+      when: "projectLocal && !projectOpenAsk",
+      run: async () => {
+        if (desktopOnly()) return;
+        const path = await pickFolder(t("app.action.attachProject"));
+        if (path) await attachProject(path);
+      },
+    },
+    {
+      // Import Module from Existing Sources for a folder without a build file.
+      id: "project.attachFolder",
+      title: t("app.action.attachProject"),
+      category: t("app.category.file"),
+      hidden: true,
+      when: "projectLocal",
+      run: async ({ arg }) => {
+        if (typeof arg === "string" && !desktopOnly()) await attachProject(arg);
+      },
+    },
     {
       id: "workspace.removeProject",
       title: "Remove from Workspace",
       category: t("app.category.file"),
-      when: "workspaceOpen",
-      run: async ({ arg }) => {
-        const workspace = useProject.getState().project?.workspace;
-        if (typeof arg !== "string" || !workspace || !workspace.projects.includes(arg)) return;
-        const project = await call(
-          commands.workspaceUpdate(
-            workspace.name,
-            workspace.projects.filter((p) => p !== arg),
-          ),
-        );
-        useProject.setState({ project, settings: project.settings });
-      },
+      when: "workspaceOpen && !projectAttached",
+      run: removeProject,
+    },
+    {
+      id: "project.detach",
+      title: "Detach Project",
+      category: t("app.category.file"),
+      when: "projectAttached",
+      run: removeProject,
     },
     {
       id: "workspace.create",
@@ -288,7 +452,7 @@ export function windowActions(): Action[] {
       id: "workspace.manage",
       title: "Manage Workspace…",
       category: t("app.category.file"),
-      when: "workspaceOpen",
+      when: "workspaceContainer",
       run: () => showWorkspaceDialog("manage"),
     },
     {
@@ -305,7 +469,29 @@ export function windowActions(): Action[] {
       title: "Move Tab to New Window",
       category: t("app.category.window"),
       when: "windowGrouped",
-      run: () => call(commands.windowGroupDetach()),
+      run: async ({ arg }) => {
+        const label = typeof arg === "string" ? arg : useWindowGroup.getState().tabs.find((tab) => tab.current)?.label;
+        if (label) await call(commands.windowGroupDetach(label));
+      },
+    },
+    {
+      id: "window.setTabColor",
+      title: "Change Project Color…",
+      category: t("app.category.window"),
+      when: "windowGrouped",
+      run: ({ arg }) => {
+        const tabs = useWindowGroup.getState().tabs;
+        const label = typeof arg === "string" ? arg : tabs.find((tab) => tab.current)?.label;
+        const tab = tabs.find((t) => t.label === label);
+        if (!tab?.root) return;
+        const rect = document.querySelector(`[data-project-tab="${CSS.escape(tab.label)}"]`)?.getBoundingClientRect();
+        openTabColorPicker({
+          root: tab.root,
+          name: tab.name,
+          x: rect ? rect.left : window.innerWidth / 2 - 110,
+          y: rect ? rect.bottom : 64,
+        });
+      },
     },
     {
       id: "window.selectTab",
@@ -393,6 +579,20 @@ export function windowActions(): Action[] {
       },
     },
     {
+      id: "file.newUntitled",
+      title: t("app.action.newFile"),
+      category: t("app.category.file"),
+      icon: "file-new",
+      keywords: ["new", "create", "untitled", "file", "light edit"],
+      run: async () => {
+        if (desktopOnly()) return;
+        const s = useProject.getState();
+        // A welcome window becomes a LightEdit one first (its buffers need a backend project).
+        if (!s.project && !s.lightEdit) await openLightEditUntitled();
+        await editorService().openUntitled?.({ focus: true });
+      },
+    },
+    {
       // Files and folders dropped on the Welcome screen.
       id: "file.openPaths",
       title: "Open Paths",
@@ -412,12 +612,22 @@ export function windowActions(): Action[] {
       run: openLightEditFileAsProject,
     },
     {
+      // The recent lists pass `{ path, window }` when a modifier key picks the window.
       id: "file.openRecentProject",
       title: t("app.action.openRecentProject"),
       category: t("app.category.file"),
       hidden: true,
       run: async (c) => {
-        if (typeof c.arg === "string") await openProjectWithPolicy(c.arg);
+        const recent = recentProjectArg(c.arg);
+        if (!recent) return;
+        // Open Recent lists Remote Development projects by their location (`ssh://host/path`).
+        const remote = parseRemoteLocation(recent.path);
+        if (!remote) return openProjectWithPolicy(recent.path, [], recent.window);
+        try {
+          await openRemoteProject(remote.target, remote.path, undefined, recent.window);
+        } catch (e) {
+          openFailed(remote.path, e);
+        }
       },
     },
     {
@@ -427,7 +637,15 @@ export function windowActions(): Action[] {
       category: t("app.category.file"),
       hidden: true,
       run: async (c) => {
-        if (typeof c.arg === "string") await openProjectWithPolicy(c.arg);
+        if (typeof c.arg === "string") return openProjectWithPolicy(c.arg);
+        const arg = c.arg as { path?: unknown; newWindow?: unknown } | null;
+        if (!arg || typeof arg.path !== "string" || typeof arg.newWindow !== "boolean") return;
+        try {
+          const outcome = await openProjectWindow(arg.path, arg.newWindow);
+          if (outcome.kind === "current") await openHere(arg.path);
+        } catch (error) {
+          openFailed(arg.path, error);
+        }
       },
     },
     {
@@ -475,13 +693,16 @@ async function closeThisWindow(): Promise<void> {
 }
 
 /**
- * LightEdit: closing its last editor tab closes the window (through the close guard,
- * so the last window shows the Welcome screen instead).
+ * LightEdit: closing its last editor tab closes the window, through the close guard.
+ * The last window returns to Welcome unless "Close the window instead of showing the
+ * Welcome screen" is on.
  */
 export function installLightEditAutoClose(closeWindow: () => Promise<void> = closeThisWindow): () => void {
   const editor = maybeEditorService();
   const off = editor?.onActiveInputChange?.((input) => {
-    if (input || !useProject.getState().lightEdit || editor?.openTabs?.().length) return;
+    // A mode switch clears and re-fills the tabs in place: while it runs, the
+    // momentarily empty editor must not read as "the user closed everything".
+    if (input || !useProject.getState().lightEdit || editor?.openTabs?.().length || editorSwitching()) return;
     void closeWindow().catch((e) => console.warn("could not close the window", e));
   });
   return () => off?.();
@@ -491,14 +712,32 @@ export function installLaunchHandling(): () => void {
   if (!isTauri()) return () => {};
   let disposed = false;
   let unlisten: (() => void) | undefined;
-  const launch = consumeLaunch();
-  provideStartupLaunch(launch);
-  holdSplash(launch);
-  void import("@tauri-apps/api/webviewWindow").then(async ({ getCurrentWebviewWindow }) => {
-    const off = await getCurrentWebviewWindow().listen(LAUNCH_EVENT, () => void consumeLaunch());
+  const launch = import("@tauri-apps/api/webviewWindow").then(async ({ getCurrentWebviewWindow }) => {
+    const off = await getCurrentWebviewWindow().listen(LAUNCH_EVENT, () => {
+      if (!disposed) void consumeLaunch().catch(console.warn);
+    });
     if (disposed) off();
-    else unlisten = off;
+    else {
+      unlisten = off;
+      // Subscribe before taking pending files so launches during startup aren't missed.
+      await consumeLaunch();
+    }
   });
+  provideStartupLaunch(launch);
+  // Uncover once the launch project starts opening — the opening view shows the title bar and its
+  // own progress — rather than holding the splash over it until the project is fully open.
+  const shown = new Promise<void>((resolve) => {
+    const done = () => {
+      off();
+      resolve();
+    };
+    const off = useProject.subscribe((s) => {
+      if (s.openingPath !== null) done();
+    });
+    if (useProject.getState().openingPath !== null) done();
+    void launch.then(done, done);
+  });
+  holdSplash(shown);
   return () => {
     disposed = true;
     unlisten?.();

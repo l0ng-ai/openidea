@@ -4,9 +4,11 @@ import { allActions, executeAction, isActionEnabled, registerAction } from "@/pl
 import { getContext, setContext } from "@/platform/context";
 import type { BuildModel, RunConfig } from "@/platform/ipc";
 import { useContributions } from "@/workbench/contributions";
-import { MavenView } from "./BuildToolView";
+import { GradleView, MavenView } from "./BuildToolView";
 import { activate } from "./index";
+import { gradleProjectKey } from "./model";
 import { useBuild } from "./store";
+import styles from "./BuildTools.module.css";
 
 const mavenModel: BuildModel = {
   maven: {
@@ -77,6 +79,8 @@ describe("build tools feature", () => {
       "maven.addProjects",
       "maven.analyzeDependencies",
       "maven.executeGoal",
+      "maven.generateSources",
+      "maven.importExternal",
       "maven.reload",
       "maven.settings",
       "maven.toggleOffline",
@@ -119,7 +123,12 @@ describe("build tools feature", () => {
     await executeAction("maven.toggleSkipTests");
     render(<MavenView />);
     expect(screen.getByText("Build files changed since the last reload")).toBeTruthy();
-    const phase = screen.getByText("package");
+    const phase = screen.getByText("test");
+    expect(phase).toHaveClass(styles.skippedGoal!);
+    await act(() => executeAction("maven.toggleSkipTests"));
+    expect(phase).not.toHaveClass(styles.skippedGoal!);
+    await act(() => executeAction("maven.toggleSkipTests"));
+    expect(phase).toHaveClass(styles.skippedGoal!);
     await act(async () => {
       phase.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
     });
@@ -128,10 +137,102 @@ describe("build tools feature", () => {
     const { config, temporary } = started[0] as { config: RunConfig; temporary: boolean };
     expect(temporary).toBe(true);
     expect(config).toMatchObject({
-      name: "spring-demo [package]",
+      name: "spring-demo [test]",
       command: "/p/mvnw",
-      args: ["package", "-DskipTests"],
+      args: ["test", "-DskipTests"],
       kind: "maven",
+    });
+  });
+
+  it("does not mark Gradle test tasks as skipped when Maven Skip Tests is on", async () => {
+    const build = {
+      dir: "",
+      projects: [
+        {
+          path: ":",
+          name: "demo",
+          dir: "",
+          buildFile: "build.gradle.kts",
+          tasks: [{ name: "test", group: "verification", description: null }],
+        },
+      ],
+      command: "gradle",
+      env: {},
+      javaVersion: null,
+      syncedAt: null,
+      stale: false,
+      syncError: null,
+    };
+    const key = gradleProjectKey(build, build.projects[0]!);
+    act(() =>
+      useBuild.setState({
+        root: "/p",
+        model: { maven: mavenModel.maven, gradle: [build] },
+        expanded: { maven: new Set(), gradle: new Set([key, `${key}:tasks`, `${key}:tasks:verification`]) },
+      }),
+    );
+    await executeAction("maven.toggleSkipTests");
+    render(<GradleView />);
+    expect(screen.getByText("test")).not.toHaveClass(styles.skippedGoal!);
+  });
+
+  it("toggles Gradle Skip Tests and runs tasks with -x test", async () => {
+    const started: unknown[] = [];
+    const off = registerAction({
+      id: "run.runConfig",
+      title: "Run",
+      hidden: true,
+      run: ({ arg }) => void started.push(arg),
+    });
+    const build = {
+      dir: "",
+      projects: [
+        {
+          path: ":",
+          name: "demo",
+          dir: "",
+          buildFile: "build.gradle.kts",
+          tasks: [{ name: "test", group: "verification", description: null }],
+        },
+      ],
+      command: "/p/gradlew",
+      env: {},
+      javaVersion: null,
+      syncedAt: null,
+      stale: false,
+      syncError: null,
+    };
+    const key = gradleProjectKey(build, build.projects[0]!);
+    act(() =>
+      useBuild.setState({
+        root: "/p",
+        model: { maven: mavenModel.maven, gradle: [build] },
+        expanded: { maven: new Set(), gradle: new Set([key, `${key}:tasks`, `${key}:tasks:verification`]) },
+      }),
+    );
+    await executeAction("gradle.toggleSkipTests");
+    expect(useBuild.getState().settings.gradle).toMatchObject({ skipTests: true });
+    expect(JSON.parse(localStorage.getItem("openidea.buildTools:/p")!).gradle.skipTests).toBe(true);
+    expect(
+      allActions()
+        .find((a) => a.id === "gradle.toggleSkipTests")!
+        .toggled?.(),
+    ).toBe(true);
+    render(<GradleView />);
+    const task = screen.getByText("test");
+    expect(task).toHaveClass(styles.skippedGoal!);
+    await act(async () => {
+      task.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+    off();
+    expect(started).toHaveLength(1);
+    const { config } = started[0] as { config: RunConfig };
+    expect(config).toMatchObject({
+      name: "demo [test]",
+      command: "/p/gradlew",
+      args: ["test", "-x", "test"],
+      kind: "gradle",
+      isTest: false,
     });
   });
 });

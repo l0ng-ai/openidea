@@ -18,7 +18,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 import { collapseLinear, computeGraph, hideLongEdges, reachableFrom } from "../graph";
 import { DEFAULT_LOG_OPTIONS, parseLogOptions, refLabels, setLogOptions, useLogOptions } from "../logOptions";
 import { emptyFilters, goToRef, isMine, reloadLog, updateLogOptions, useGitLog } from "../logStore";
-import { defaultWorktreePath, disabledMergeFlags, remoteBranchesOf, validateRemoteName } from "../gitMenuDialogs";
+import { remoteBranchesOf, validateRemoteName } from "../gitMenuDialogs";
 import type { Branch, Commit } from "@/bindings";
 
 const c = (id: string, parents: string[] = [], refs: string[] = []) => ({ id, parents, refs });
@@ -90,8 +90,9 @@ describe("long edges", () => {
 describe("highlighting", () => {
   it("finds the loaded commits of the current branch", () => {
     const commits = [c("s", ["a"]), c("h", ["a"]), c("a", ["r"]), c("r")];
-    expect([...reachableFrom(commits, "h")].sort()).toEqual(["a", "h", "r"]);
-    expect(reachableFrom(commits, null).size).toBe(0);
+    expect([...reachableFrom(commits, ["h"])].sort()).toEqual(["a", "h", "r"]);
+    expect([...reachableFrom(commits, ["h", "s"])].sort()).toEqual(["a", "h", "r", "s"]);
+    expect(reachableFrom(commits, []).size).toBe(0);
   });
 
   it("matches my commits by email or name", () => {
@@ -172,12 +173,6 @@ describe("log options", () => {
 });
 
 describe("Git menu dialogs", () => {
-  it("disables merge flags git refuses together", () => {
-    expect([...disabledMergeFlags(new Set(["ffOnly"]))].sort()).toEqual(["noCommit", "noFf", "squash"]);
-    expect(disabledMergeFlags(new Set(), true).size).toBe(4);
-    expect(disabledMergeFlags(new Set()).size).toBe(0);
-  });
-
   it("lists a remote's branches without its prefix", () => {
     const b = (name: string, remote: boolean) => ({ name, remote, current: false }) as Branch;
     const branches = [b("main", false), b("origin/main", true), b("origin/HEAD", true), b("fork/dev", true)];
@@ -189,11 +184,5 @@ describe("Git menu dialogs", () => {
     expect(validateRemoteName("my remote", [])).toBe("Invalid remote name");
     expect(validateRemoteName("", [])).toBe("Enter a remote name");
     expect(validateRemoteName("upstream", ["origin"])).toBeNull();
-  });
-
-  it("suggests a worktree folder next to the repository", () => {
-    expect(defaultWorktreePath("/src/app", "feature/x")).toBe("/src/app-feature-x");
-    expect(defaultWorktreePath("/src/app/", "main")).toBe("/src/app-main");
-    expect(defaultWorktreePath("C:\\src\\app", "fix")).toBe("C:\\src\\app-fix");
   });
 });

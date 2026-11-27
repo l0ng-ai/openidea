@@ -2,12 +2,21 @@
  * "Rerun Failed Tests": derives a run configuration that runs only the failed
  * tests of a previous run, using each framework's own filter syntax.
  */
+import { selectPluginTests } from "@/workbench/contributions";
 import { phpunitArgs, phpunitFilter } from "./phpunit";
 import type { RunConfig } from "@/platform/ipc";
-import { formatArgs } from "../configs";
+import { formatArgs, parseArgs } from "../configs";
+import { isJunitRunner } from "../application";
+import { JUNIT_RUNNER_MAIN } from "@/platform/javaLaunch";
+import { appendScriptArgs } from "../scriptArgs";
 import { djangoTestsOf } from "../djangoTypes";
 import { goTestParts, withoutGoSelection } from "../goArguments";
+import { withMavenTests } from "../mavenTests";
 import { frameworkFor } from "./index";
+import { dotnetFilter } from "./dotnet";
+import { cypressSelection } from "./cypress";
+import { playwrightProject, playwrightTitles } from "./playwright";
+import { withNodeTestNamePattern } from "./nodeTest";
 import { nodeStatus, type TestNode, type TestResults } from "./results";
 
 /** Paths of failed tests: failed leaves, plus failed suites without any failed children reported. */
@@ -65,17 +74,42 @@ function cargoArgs(base: string[], paths: string[][]): string[] | null {
   return [...before, "--", ...rest, ...names, "--exact"];
 }
 
+function dotnetArgs(base: string[], filter: string): string[] {
+  const { before, after } = splitDashDash(base);
+  return [...dropFlag(before, ["--filter"]), "--filter", filter, ...(after ? ["--", ...after] : [])];
+}
+
 function jsArgs(config: RunConfig, paths: string[][]): string[] | null {
   const base = config.args;
   const files = unique(paths.map((p) => p[0]!).filter(Boolean));
   const names = unique(paths.filter((p) => p.length > 1).map((p) => p.slice(1).join(" ")));
   if (!files.length) return null;
   const { before, after } = splitDashDash(base);
-  const rest = dropFlag(after ?? [], ["-t", "--testNamePattern"]);
+  const flags = ["-t", "--testNamePattern"];
+  const args = after === null ? dropFlag(before, flags) : [...before, "--", ...dropFlag(after, flags)];
   const filter = names.length ? ["-t", `^(?:${names.map(escapeRegExp).join("|")})$`] : [];
-  // npm/pnpm/yarn/bun pass everything after `--` to the script; deno/npx take them directly.
-  const needsDashDash = after !== null || /(^|\/)(npm|pnpm|yarn|bun)$/.test(config.command);
-  return needsDashDash ? [...before, "--", ...rest, ...files, ...filter] : [...before, ...files, ...filter];
+  return appendScriptArgs(config.command, args, [...files, ...filter]);
+}
+
+/**
+ * Playwright: the files, `--grep` on the describe chain and title (its grep text is the project,
+ * the file relative to the test directory, the titles and the tags, space separated), and the
+ * project when the run named one (`testsConfigs` splits a selection by project).
+ */
+function playwrightArgs(config: RunConfig, paths: string[][]): string[] | null {
+  const files = unique(paths.map((p) => p[0]!).filter(Boolean));
+  if (!files.length) return null;
+  const titles = unique(paths.map((p) => playwrightTitles(p).join(" ")).filter(Boolean));
+  const project = playwrightProject(paths[0]!);
+  const grep = titles.length ? ["--grep", `(?:^| )(?:${titles.map(escapeRegExp).join("|")})(?: @\\S+)*$`] : [];
+  const { before, after } = splitDashDash(config.args);
+  const flags = ["-g", "--grep", ...(project === null ? [] : ["--project"])];
+  const args = after === null ? dropFlag(before, flags) : [...before, "--", ...dropFlag(after, flags)];
+  return appendScriptArgs(config.command, args, [
+    ...files,
+    ...grep,
+    ...(project === null ? [] : ["--project", project]),
+  ]);
 }
 
 function pytestArgs(base: string[], paths: string[][]): string[] | null {
@@ -86,23 +120,32 @@ function pytestArgs(base: string[], paths: string[][]): string[] | null {
   return [...kept, ...ids];
 }
 
-function goArgs(base: string[], paths: string[][]): string[] | null {
+function goArgs(base: string[], paths: string[][], file?: string): string[] | null {
   const pkgs = unique(paths.map((p) => p[0]!).filter(Boolean));
-  if (!pkgs.length) return null;
-  const tests = paths.filter((p) => p.length > 1);
+  if (pkgs.length !== 1) return null;
   const parts = goTestParts(base);
-  const top = unique(tests.map((p) => p[1]!));
-  const pattern =
-    tests.length === 1 && tests[0]!.length > 2
-      ? tests[0]!
+  const targets = file ? [file] : pkgs.includes("command-line-arguments") ? parts.targets : pkgs;
+  if (paths.some((path) => path.length === 1)) return ["test", ...parts.flags, ...targets, ...parts.program];
+  const pattern = (selected: string[][]) =>
+    unique(
+      selected.map((path) =>
+        path
           .slice(1)
           .map((name) => `^${escapeRegExp(name)}$`)
-          .join("/")
-      : `^(${top.map(escapeRegExp).join("|")})$`;
-  const run = top.length ? ["-run", pattern] : [];
-  // A file-scoped run is reported under this synthetic import path; keep its file targets.
-  const targets = pkgs.includes("command-line-arguments") ? parts.targets : pkgs;
-  return ["test", ...withoutGoSelection(parts.flags), ...run, ...targets, ...parts.program];
+          .join("/"),
+      ),
+    ).join("|");
+  const benchmarks = paths.filter((path) => path[1]?.startsWith("Benchmark"));
+  const tests = paths.filter((path) => !path[1]?.startsWith("Benchmark"));
+  return [
+    "test",
+    ...withoutGoSelection(parts.flags),
+    "-run",
+    tests.length ? pattern(tests) : "^$",
+    ...(benchmarks.length ? ["-bench", pattern(benchmarks)] : []),
+    ...targets,
+    ...withoutGoSelection(parts.program),
+  ];
 }
 
 function jvmArgs(config: RunConfig, paths: string[][]): string[] | null {
@@ -111,6 +154,10 @@ function jvmArgs(config: RunConfig, paths: string[][]): string[] | null {
     .map((p) => ({ cls: p[0]!, method: p[p.length - 1]!.replace(/\(\)$/, "") }));
   const classes = unique(paths.filter((p) => p.length === 1).map((p) => p[0]!));
   if (!tests.length && !classes.length) return null;
+  if (isJunitRunner(config)) {
+    const runner = config.args.slice(0, config.args.indexOf(JUNIT_RUNNER_MAIN) + 1);
+    return [...runner, ...unique(tests.map((t) => `${t.cls}#${t.method}`)), ...classes];
+  }
   if (config.kind === "maven" || /\bmvnw?\b/.test(config.command)) {
     const byClass = new Map<string, string[]>();
     for (const t of tests) byClass.set(t.cls, [...(byClass.get(t.cls) ?? []), t.method]);
@@ -118,7 +165,7 @@ function jvmArgs(config: RunConfig, paths: string[][]): string[] | null {
       ...[...byClass].map(([cls, ms]) => `${cls}#${unique(ms).join("+")}`),
       ...classes.filter((c) => !byClass.has(c)),
     ];
-    return [...config.args.filter((a) => !a.startsWith("-Dtest=")), `-Dtest=${specs.join(",")}`];
+    return withMavenTests(config.args, specs.join(","));
   }
   const filters = [...unique(tests.map((t) => `${t.cls}.${t.method}`)), ...classes];
   return [...dropFlag(config.args, ["--tests"]), ...filters.flatMap((f) => ["--tests", f])];
@@ -140,22 +187,128 @@ export function leafTestPaths(nodes: readonly TestNode[]): string[][] {
 }
 
 /** Config running only `paths` (failed test paths from the results tree), or null when unsupported. */
-export function rerunFailedConfig(config: RunConfig, paths: string[][]): RunConfig | null {
+export function rerunFailedConfig(config: RunConfig, paths: string[][]): RunConfig | null | Promise<RunConfig | null> {
+  const configs = rerunFailedConfigs(config, paths);
+  const single = (configs: RunConfig[]) => (configs.length === 1 ? configs[0]! : null);
+  return configs instanceof Promise ? configs.then(single) : single(configs);
+}
+
+export function rerunFailedConfigs(config: RunConfig, paths: string[][]): RunConfig[] | Promise<RunConfig[]> {
   const baseName = config.name.replace(/^Failed: /, "");
-  return testsConfig(config, paths, `Failed: ${baseName}`);
+  return testsConfigs(config, paths, `Failed: ${baseName}`);
+}
+
+/** Go filters apply to every package of an invocation, Playwright's to every project: each keeps its own selection. */
+export function testsConfigs(config: RunConfig, paths: string[][], name: string): RunConfig[] | Promise<RunConfig[]> {
+  if (!paths.length) return [];
+  if (config.params?.framework === "plugin") {
+    const selected = testsConfig(config, paths, name);
+    const list = (config: RunConfig | null) => (config ? [config] : []);
+    return selected instanceof Promise ? selected.then(list) : list(selected);
+  }
+  const groups = new Map<string, string[][]>();
+  const framework = frameworkFor(config);
+  for (const path of paths) {
+    const key =
+      framework === "go" ? (path[0] ?? "") : framework === "playwright" ? (playwrightProject(path) ?? "") : "";
+    const group = groups.get(key) ?? [];
+    group.push(path);
+    groups.set(key, group);
+  }
+  return [...groups].flatMap(([pkg, selected]) => {
+    const derived = builtinTestsConfig(config, selected, groups.size > 1 ? `${name} (${pkg})` : name);
+    if (!derived) return [];
+    return [{ ...derived, id: groups.size > 1 ? `context:tests:${config.id}:${pkg}` : derived.id }];
+  });
 }
 
 /** Config running only the tests at `paths` (test tree paths), named `name`; null when unsupported. */
-export function testsConfig(config: RunConfig, paths: string[][], name: string): RunConfig | null {
+export function testsConfig(
+  config: RunConfig,
+  paths: string[][],
+  name: string,
+): RunConfig | null | Promise<RunConfig | null> {
+  if (!paths.length) return null;
+  if (config.params?.framework === "plugin") {
+    return selectPluginTests(config.id, paths)
+      .then((args) => (args === null ? null : { ...config, args, name, detected: true, env: { ...config.env } }))
+      .catch(() => null);
+  }
+  return builtinTestsConfig(config, paths, name);
+}
+
+function builtinTestsConfig(config: RunConfig, paths: string[][], name: string): RunConfig | null {
   if (!paths.length) return null;
   let args: string[] | null;
   switch (frameworkFor(config)) {
+    case "dotnet": {
+      const filter = dotnetFilter(paths);
+      if (!filter) return null;
+      args = dotnetArgs(config.args, filter);
+      if (config.kind === "dotnet-test") {
+        return {
+          ...config,
+          args,
+          name,
+          detected: true,
+          env: { ...config.env },
+          params: {
+            ...config.params,
+            testMethods: JSON.stringify([...new Set(paths.map((p) => `${p[1]}.${p[2]}`))]),
+            programArgs: formatArgs(dotnetArgs(parseArgs(config.params?.programArgs || ""), filter)),
+          },
+        };
+      }
+      break;
+    }
     case "cargo":
       args = cargoArgs(config.args, paths);
       break;
     case "js":
       args = jsArgs(config, paths);
       break;
+    case "playwright":
+      args = playwrightArgs(config, paths);
+      break;
+    case "cypress": {
+      // Tree files may be relative to the specs' common folder (see `cypress.ts`): `**/` finds them from the project.
+      const files = unique(paths.map((p) => p[0]!).filter(Boolean)).map((f) => (f.startsWith("**/") ? f : `**/${f}`));
+      const names = unique(paths.filter((p) => p.length > 1).map((p) => p.slice(1).join(" ")));
+      if (!files.length) return null;
+      return { ...config, ...cypressSelection(config, files, { grep: names }), name, detected: true };
+    }
+    case "node-test": {
+      // The files narrow a script's run when it gives `node --test` no patterns of its own; the names always do.
+      const files = unique(paths.map((p) => p[0]!).filter(Boolean));
+      const names = unique(paths.filter((p) => p.length > 1).map((p) => p.slice(1).join(" ")));
+      if (!files.length) return null;
+      const env = names.length
+        ? withNodeTestNamePattern(config.env, `^(?:${names.map(escapeRegExp).join("|")})$`)
+        : { ...config.env };
+      return { ...config, args: appendScriptArgs(config.command, config.args, files), name, detected: true, env };
+    }
+    case "mocha": {
+      // Mocha's `--grep` matches a test's full title: its describe chain and name, space separated.
+      const files = unique(paths.map((p) => p[0]!).filter(Boolean));
+      const names = unique(paths.filter((p) => p.length > 1).map((p) => p.slice(1).join(" ")));
+      if (!files.length) return null;
+      const { before, after } = splitDashDash(config.args);
+      const flags = ["-g", "--grep", "-f", "--fgrep"];
+      const base = after === null ? dropFlag(before, flags) : [...before, "--", ...dropFlag(after, flags)];
+      const grep = names.length ? ["--grep", `^(?:${names.map(escapeRegExp).join("|")})$`] : [];
+      args = appendScriptArgs(config.command, base, [...files, ...grep]);
+      break;
+    }
+    case "jasmine": {
+      // Jasmine's `--filter=` matches a spec's full name: its describe chain and name, space separated.
+      // A failed suite (`afterAll`) has no spec of that name: its name followed by a space matches its specs.
+      const files = unique(paths.map((p) => p[0]!).filter(Boolean));
+      const names = unique(paths.filter((p) => p.length > 1).map((p) => p.slice(1).join(" ")));
+      if (!files.length) return null;
+      const filter = names.length ? [`--filter=^(?:${names.map(escapeRegExp).join("|")})(?: |$)`] : [];
+      args = appendScriptArgs(config.command, dropFlag(config.args, ["--filter"]), [...files, ...filter]);
+      break;
+    }
     case "pytest":
       args = pytestArgs(config.args, paths);
       break;
@@ -169,8 +322,22 @@ export function testsConfig(config: RunConfig, paths: string[][], name: string):
       args = phpunitArgs(config.args, { filter: phpunitFilter(paths) });
       break;
     case "go":
-      args = goArgs(config.args, paths);
+      args = goArgs(config.args, paths, config.params?.scope === "file" ? config.params.target : undefined);
       break;
+    case "zig": {
+      // `zig test <file>` filters directly. A build-based run (`zig build test`) forwards no
+      // args to the test binary, so it re-runs through the module root the detection recorded
+      // — exact for projects whose tests live in one module's import graph.
+      const file = config.args[0] === "test" ? config.args[1] : config.params?.testRoot;
+      const names = unique(paths.map((p) => p[p.length - 1]!).filter(Boolean));
+      if (!file || !names.length) {
+        args = null;
+        break;
+      }
+      const rest = dropFlag(config.args[0] === "test" ? config.args.slice(2) : [], ["--test-filter"]);
+      args = ["test", file, ...rest, ...names.flatMap((n) => ["--test-filter", n])];
+      break;
+    }
     case "jvm":
       args = jvmArgs(config, paths);
       break;
@@ -191,10 +358,11 @@ export function testsConfig(config: RunConfig, paths: string[][], name: string):
             config.params.scope === "file"
               ? {
                   ...config.params,
-                  pattern: args[args.indexOf("-run") + 1] ?? "",
-                  toolArgs: formatArgs(withoutGoSelection(goTestParts(args).flags)),
+                  pattern: args.includes("-run") ? args[args.indexOf("-run") + 1]! : "",
+                  toolArgs: formatArgs(dropFlag(goTestParts(args).flags, ["-run", "-test.run"])),
+                  programArgs: formatArgs(goTestParts(args).program.slice(1)),
                 }
-              : { module: config.params.module ?? "", useTags: config.params.useTags ?? "false" },
+              : { module: config.params.module ?? "", useTags: config.params.useTags ?? "true" },
         }
       : {}),
   };

@@ -1,0 +1,11 @@
+{
+  "tools": {
+    "jdtls": "1.63.0-202610191322",
+    "java": "21.0.13.0.2 (Homebrew)"
+  },
+  "groups": {
+    "documentation": [
+      "Order com.example.orders.OrderBook.place(String customer, String product, int quantity, long unitPriceCents) Places an order and returns it. Parameters: customer product quantity unitPriceCents Source: openidea-fixture-orders"
+    ]
+  }
+}

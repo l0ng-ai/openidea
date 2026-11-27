@@ -15,6 +15,8 @@ const all = new Set<Map<number, number>>();
 export interface FeatureBackoff {
   /** Stop asking about `doc` for a while. */
   mark(doc: number): void;
+  /** Allow `doc` to ask again right away. */
+  clear(doc: number): void;
   /** Whether `doc` is still being left alone. */
   active(doc: number): boolean;
 }
@@ -27,6 +29,9 @@ export function featureBackoff(ms = DEFAULT_BACKOFF_MS): FeatureBackoff {
     mark(doc) {
       until.set(doc, Date.now() + ms);
     },
+    clear(doc) {
+      until.delete(doc);
+    },
     active(doc) {
       const t = until.get(doc);
       if (t === undefined) return false;
@@ -37,7 +42,7 @@ export function featureBackoff(ms = DEFAULT_BACKOFF_MS): FeatureBackoff {
   };
 }
 
-function clearBackoffs() {
+export function clearBackoffs() {
   for (const until of all) until.clear();
 }
 
@@ -68,38 +73,91 @@ const LONG_BUSY_MS = 1500;
 /** A busy spell starting this soon after `fn` ran may be `fn`'s own requests. */
 const ECHO_MS = 2000;
 
+/** A busy spell starting this soon after a start is the server loading the project. */
+const LOADING_AFTER_START_MS = 5000;
+
+type Settle = (server: number, spellStart: number, loading: boolean) => void;
+
+/** Servers starting (`-Infinity`) or busy since when. */
+const spells = new Map<number, number>();
+/** When servers became ready after starting, until their next spell ends. */
+const readyAfterStart = new Map<number, number>();
+const settles = new Set<Settle>();
+let tracking = false;
+
+/**
+ * Follows every server's spells from app start, so an editor that mounts while its
+ * server starts or loads (one restored at launch) still learns when that ends.
+ */
+function trackSpells() {
+  if (tracking || !isTauri()) return;
+  tracking = true;
+  onIdeEvent("languageServer", (e) => {
+    if (e.status === "starting") {
+      spells.set(e.server, -Infinity);
+      readyAfterStart.delete(e.server);
+    } else if (e.status === "busy") {
+      if (!spells.has(e.server)) spells.set(e.server, Date.now());
+    } else if (e.status === "ready") {
+      const t = spells.get(e.server);
+      spells.delete(e.server);
+      if (t === undefined) return;
+      const startedAt = readyAfterStart.get(e.server);
+      if (t === -Infinity) readyAfterStart.set(e.server, Date.now());
+      else readyAfterStart.delete(e.server);
+      const loading = startedAt !== undefined && t - startedAt < LOADING_AFTER_START_MS;
+      for (const settle of settles) settle(e.server, t, loading);
+    } else {
+      spells.delete(e.server);
+      readyAfterStart.delete(e.server);
+    }
+  });
+}
+
+/**
+ * Whether any language server is mid-spell (starting or busy): answers given
+ * meanwhile may be partial, so background features keep what they show until
+ * it settles instead of replacing it with an empty or incomplete answer.
+ */
+export function anyServerBusy(): boolean {
+  trackSpells();
+  return spells.size > 0;
+}
+
 /**
  * Calls `fn` when a server becomes ready after starting or after a long busy
  * spell (indexing), when earlier answers may have been incomplete. Short busy
  * spells are ignored: jdtls reports progress for the very requests a caller
  * sends, and re-asking on each of them would never stop. For the same reason
  * a long spell that began right after `fn` ran (slow requests `fn` sent, or
- * indexing right after start) re-runs it only once in a row.
+ * indexing right after start) re-runs it only once in a row. The spell right
+ * after a start counts whatever its length: it is the project loading (vtsls
+ * loads a small one in about a second), and answers given meanwhile are partial.
  */
 export function onServerSettled(fn: () => void): () => void {
   if (!isTauri()) return () => {};
-  const since = new Map<number, number>();
+  trackSpells();
   const fired = new Map<number, { at: number; echoed: boolean }>();
-  return onIdeEvent("languageServer", (e) => {
-    if (e.status === "starting") {
-      since.set(e.server, -Infinity);
-      fired.delete(e.server);
-    } else if (e.status === "busy") {
-      if (!since.has(e.server)) since.set(e.server, Date.now());
-    } else if (e.status === "ready") {
-      const t = since.get(e.server);
-      since.delete(e.server);
-      if (t === undefined || Date.now() - t < LONG_BUSY_MS) return;
-      const last = fired.get(e.server);
-      const echo = !!last && t - last.at < ECHO_MS;
-      if (echo && last.echoed) return;
-      fired.set(e.server, { at: Date.now(), echoed: echo });
-      fn();
-    } else since.delete(e.server);
+  const settle: Settle = (server, t, loading) => {
+    if (!loading && Date.now() - t < LONG_BUSY_MS) return;
+    const last = fired.get(server);
+    const echo = !!last && t - last.at < ECHO_MS;
+    if (echo && last.echoed) return;
+    fired.set(server, { at: Date.now(), echoed: echo });
+    fn();
+  };
+  settles.add(settle);
+  const offStarting = onIdeEvent("languageServer", (e) => {
+    if (e.status === "starting") fired.delete(e.server);
   });
+  return () => {
+    settles.delete(settle);
+    offStarting();
+  };
 }
 
 export function installAvailabilityEvents(): () => void {
+  trackSpells();
   return onIdeEvent("languageServer", (e) => {
     if (e.status === "ready") clearBackoffs();
   });

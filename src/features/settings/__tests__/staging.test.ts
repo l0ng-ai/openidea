@@ -4,15 +4,21 @@ import { DEFAULT_SSH_CONFIG } from "@/platform/remoteSettings";
 import { SUPPORTED_LOCALES } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { DEFAULT_SETTINGS, getAt, setAt, validateSettings } from "../model/schema";
+import { DEFAULT_PAGE } from "../model/staging";
+import { lastSettingsPage, rememberSettingsPage } from "../model/lastPage";
 import {
   applySettings,
   closeSettings,
   openSettings,
+  selectNextPage,
+  selectPage,
+  selectPreviousPage,
   pendingChanges,
   persistChanges,
   resetPage,
   stage,
   stageSshSecret,
+  stageMapEntry,
   SSH_SETTINGS_PAGE,
   stagedValue,
   useSettingsDialog,
@@ -302,5 +308,135 @@ describe("validateSettings", () => {
     expect(src.editor.fontSize).toBe(13);
     expect(getAt(out, "editor.fontSize")).toBe(14);
     expect(getAt(out, "editor.nope.deeper")).toBeUndefined();
+  });
+});
+
+describe("literal map entry staging", () => {
+  beforeEach(() => {
+    useProject.setState({ settings: structuredClone(DEFAULT_SETTINGS) as Settings, project: null });
+    openSettings();
+  });
+  it("preserves literal dots, per-page ownership, and merges one write per scope", async () => {
+    stageMapEntry("templates", "global", "plugins", ["example.helper", "prompt.with.dots"], ["one"]);
+    stageMapEntry("llm", "global", "plugins", ["example.helper", "profiles"], [{ name: "Local" }]);
+    stageMapEntry("other", "project", "plugins", ["other.plugin", "enabled"], true);
+    expect(pendingChanges(useSettingsDialog.getState())).toHaveLength(2);
+    resetPage("llm");
+    expect(stagedValue(useSettingsDialog.getState(), "global", "plugins")).toEqual({
+      "example.helper": { "prompt.with.dots": ["one"] },
+    });
+    const backend = fakeBackend();
+    expect(await applySettings(backend.deps)).toBe(true);
+    expect(backend.set.mock.calls.map((c) => [c[0], c[1], JSON.parse(c[2])])).toEqual([
+      ["global", "plugins", { "example.helper": { "prompt.with.dots": ["one"] } }],
+      ["project", "plugins", { "other.plugin": { enabled: true } }],
+    ]);
+    expect(useSettingsDialog.getState().staged).toEqual({});
+  });
+  it("removes only its own override and clears a reverted edit", () => {
+    const base = validateSettings({ plugins: { "example.helper": { "a.b": 1, keep: true } } });
+    useSettingsDialog.setState({ base, globalBase: base });
+    stageMapEntry("a", "global", "plugins", ["example.helper", "a.b"], null);
+    expect(stagedValue(useSettingsDialog.getState(), "global", "plugins")).toEqual({
+      "example.helper": { keep: true },
+    });
+    stageMapEntry("a", "global", "plugins", ["example.helper", "a.b"], 1);
+    expect(useSettingsDialog.getState().staged).toEqual({});
+  });
+});
+
+describe("reopening Settings", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    useProject.setState({ settings: structuredClone(DEFAULT_SETTINGS) as Settings, project: null });
+    useSettingsDialog.setState({ pageId: DEFAULT_PAGE, newProjects: false });
+  });
+
+  it("reopens on the page the last session left", () => {
+    openSettings();
+    selectPage("editor.general");
+    closeSettings();
+    // A new session starts from the default page; the remembered one has to win.
+    useSettingsDialog.setState({ pageId: DEFAULT_PAGE });
+    openSettings();
+    expect(useSettingsDialog.getState().pageId).toBe("editor.general");
+  });
+
+  it("remembers the page of a deep link that opens Settings directly", () => {
+    openSettings("tools.sshConfigurations#add");
+    expect(lastSettingsPage()).toBe("tools.sshConfigurations");
+    expect(useSettingsDialog.getState().focus).toBe("add");
+  });
+
+  it("keeps Settings for New Projects out of the remembered page", () => {
+    selectPage("keymap");
+    openSettings("languages.java", { newProjects: true });
+    selectPage("languages.python");
+    expect(lastSettingsPage()).toBe("keymap");
+    openSettings();
+    expect(useSettingsDialog.getState().pageId).toBe("keymap");
+  });
+
+  it("falls back to the first page when nothing was recorded", () => {
+    openSettings();
+    expect(useSettingsDialog.getState().pageId).toBe(DEFAULT_PAGE);
+  });
+
+  it("keeps a page history with back / forward (IDEA ⇧⌘⌥← / →)", () => {
+    openSettings();
+    selectPage("editor.general");
+    selectPage("editor.font");
+    expect(useSettingsDialog.getState().history).toEqual({
+      stack: [DEFAULT_PAGE, "editor.general", "editor.font"],
+      index: 2,
+    });
+
+    expect(selectPreviousPage()).toBe(true);
+    expect(useSettingsDialog.getState().pageId).toBe("editor.general");
+    expect(selectPreviousPage()).toBe(true);
+    expect(useSettingsDialog.getState().pageId).toBe(DEFAULT_PAGE);
+    expect(selectPreviousPage()).toBe(false);
+    expect(useSettingsDialog.getState().pageId).toBe(DEFAULT_PAGE);
+
+    expect(selectNextPage()).toBe(true);
+    expect(useSettingsDialog.getState().pageId).toBe("editor.general");
+    // Visiting a new page truncates the forward entries, like a browser.
+    selectPage("keymap");
+    expect(useSettingsDialog.getState().history).toEqual({
+      stack: [DEFAULT_PAGE, "editor.general", "keymap"],
+      index: 2,
+    });
+    expect(selectNextPage()).toBe(false);
+  });
+
+  it("walks back and forward when selectPage revisits a neighbouring page", () => {
+    openSettings("editor.general");
+    selectPage("editor.font");
+    // Back to the start page: it is the direct neighbour, so this walks instead of pushing.
+    selectPage("editor.general");
+    expect(useSettingsDialog.getState().history).toEqual({
+      stack: ["editor.general", "editor.font"],
+      index: 0,
+    });
+    // Forward again walks, too.
+    selectPage("editor.font");
+    expect(useSettingsDialog.getState().history).toEqual({
+      stack: ["editor.general", "editor.font"],
+      index: 1,
+    });
+    // A visit to a page that is not the neighbour pushes, truncating ahead.
+    selectPage("keymap");
+    expect(useSettingsDialog.getState().history).toEqual({
+      stack: ["editor.general", "editor.font", "keymap"],
+      index: 2,
+    });
+  });
+
+  it("ignores a recorded value that is not a page id", () => {
+    rememberSettingsPage("editor.general");
+    localStorage.setItem("openidea.settings.lastPage.v1", "not a page!");
+    expect(lastSettingsPage()).toBeNull();
+    openSettings();
+    expect(useSettingsDialog.getState().pageId).toBe(DEFAULT_PAGE);
   });
 });

@@ -104,6 +104,11 @@ impl Mappings {
         &self.root
     }
 
+    /// The local folder of the mapping that holds `local`.
+    pub fn local_root(&self, local: &Path) -> Option<&Path> {
+        self.entries.iter().find_map(|(l, _, _)| local.starts_with(l).then_some(l.as_path()))
+    }
+
     /// The remote path of a local file or folder (`None`: not under any mapping).
     pub fn remote(&self, local: &Path) -> Option<String> {
         self.entries.iter().find_map(|(l, r, _)| {
@@ -170,6 +175,8 @@ impl Mappings {
 #[derive(Debug, Clone)]
 pub struct Excludes {
     names: GlobSet,
+    /// The name patterns `find -name` matches the same way (no `/`, braces, classes or `**`).
+    plain: Vec<String>,
     /// Remote paths (absolute) never touched.
     remote: Vec<String>,
 }
@@ -177,10 +184,14 @@ pub struct Excludes {
 impl Excludes {
     pub fn new(settings: &DeploymentSettings, server: &DeploymentServer, remote_root: &str) -> Self {
         let mut b = GlobSetBuilder::new();
+        let mut plain = Vec::new();
         for pattern in settings.exclude.iter().flat_map(|p| p.split(';')).map(str::trim).filter(|p| !p.is_empty()) {
             match Glob::new(pattern) {
                 Ok(g) => {
                     b.add(g);
+                    if !pattern.contains(['/', '\\', '{', '}', '[', ']']) && !pattern.contains("**") {
+                        plain.push(pattern.to_owned());
+                    }
                 }
                 Err(e) => tracing::warn!("deployment exclude {pattern:?}: {e}"),
             }
@@ -192,7 +203,12 @@ impl Excludes {
             .filter(|p| !p.is_empty())
             .map(|p| join(remote_root, p.trim_start_matches('/')).trim_end_matches('/').to_owned())
             .collect();
-        Self { names: b.build().unwrap_or_else(|_| GlobSet::empty()), remote }
+        Self { names: b.build().unwrap_or_else(|_| GlobSet::empty()), plain, remote }
+    }
+
+    /// Name patterns a remote `find` can skip whole folders by; the rest is filtered afterwards.
+    pub fn prunable_names(&self) -> &[String] {
+        &self.plain
     }
 
     pub fn name(&self, name: &str) -> bool {

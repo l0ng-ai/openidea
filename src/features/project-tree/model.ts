@@ -5,12 +5,15 @@
  */
 import type { FileEntry, OutlineItem } from "@/bindings";
 import { isIgnoredName } from "@/platform/ignoredNames";
-import { ancestorsWithin, isInside, isSameOrInside, nameOf, parentOf, relativeTo } from "./paths";
+import { ancestorsWithin, insideAnyOf, isInside, isSameOrInside, nameOf, parentOf, relativeTo } from "./paths";
 
 export interface TreeOptions {
   /** Applied only by the Unity pane, never persisted as a user preference. */
   unityRoot?: string;
+  /** Applied only by the Unreal pane, never persisted as a user preference. */
+  unrealRoot?: string;
   showUnityMeta: boolean;
+  /** Generated build output, shared by the engine panes (Unity's Library, Unreal's Binaries/Intermediate). */
   showUnityGenerated: boolean;
   /** Show ignored names (`files.ignoredNames`: `.git`, `.DS_Store`, …). Dotfiles are always shown. */
   showHidden: boolean;
@@ -90,8 +93,21 @@ export function unityPathVisible(path: string, opts: TreeOptions): boolean {
   return true;
 }
 
+/** The Unreal pane hides what UBT writes: build output, and the project files it generates. */
+export function unrealPathVisible(path: string, opts: TreeOptions): boolean {
+  if (opts.unrealRoot && path.startsWith(opts.unrealRoot + "/")) {
+    const relative = path.slice(opts.unrealRoot.length + 1);
+    if (!opts.showUnityGenerated) {
+      if (/^(Binaries|Intermediate|Saved|DerivedDataCache|\.vs)(\/|$)/.test(relative)) return false;
+      if (!relative.includes("/") && /\.(sln|slnx|suo|user|vcxproj|pidb)$/i.test(relative)) return false;
+    }
+  }
+  return true;
+}
+
 export function isVisible(entry: FileEntry, opts: TreeOptions): boolean {
   if (!unityPathVisible(entry.path, opts)) return false;
+  if (!unrealPathVisible(entry.path, opts)) return false;
   // Ignored names are also excluded on the backend; only "Show Hidden" brings them back.
   if (isIgnoredName(entry.name)) return opts.showHidden;
   if (!opts.showExcluded && entry.ignored) return false;
@@ -99,6 +115,10 @@ export function isVisible(entry: FileEntry, opts: TreeOptions): boolean {
 }
 
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
+export function compareNames(a: string, b: string): number {
+  return collator.compare(a, b) || (a < b ? -1 : a > b ? 1 : 0);
+}
 
 /** Symlinks report the target's metadata; folders have size 0 (the entry has no target kind). */
 export const isDirEntry = (e: FileEntry) => e.kind === "dir" || (e.kind === "symlink" && e.size === 0);
@@ -125,7 +145,7 @@ export function sortEntries(
       const m = (b.mtimeMs ?? 0) - (a.mtimeMs ?? 0);
       if (m) return m;
     }
-    return collator.compare(a.name, b.name) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    return compareNames(a.name, b.name);
   });
 }
 
@@ -206,7 +226,7 @@ export function buildModel(
         const visible = visibleEntries(listing, opts);
         if (visible.length !== 1) break;
         const only = visible[0]!;
-        if (!isDirEntry(only) || only.ignored !== entry.ignored || only.excluded !== entry.excluded) break;
+        if (only.kind !== "dir" || only.ignored !== entry.ignored || only.excluded !== entry.excluded) break;
         if (placeholder && placeholder.parent === only.path) break;
         end = only;
         chain.push(only.path);
@@ -580,15 +600,21 @@ export interface RefreshPlan {
 }
 
 export function planRefresh(
-  event: { created: readonly string[]; modified: readonly string[]; removed: readonly string[] },
+  event: {
+    created: readonly string[];
+    modified: readonly string[];
+    removed: readonly string[];
+    ignoreRules?: readonly string[];
+  },
   loaded: ReadonlySet<string>,
 ): RefreshPlan {
   const reload = new Set<string>();
   const drop = new Set<string>();
   const loadedList = [...loaded];
 
+  const inRemoved = insideAnyOf(event.removed);
+  for (const dir of loadedList) if (inRemoved(dir)) drop.add(dir);
   for (const p of event.removed) {
-    for (const dir of loadedList) if (isSameOrInside(dir, p)) drop.add(dir);
     const parent = parentOf(p);
     if (loaded.has(parent)) reload.add(parent);
   }
@@ -601,6 +627,8 @@ export function planRefresh(
       drop.delete(p);
     }
   }
+  const inIgnoreRoot = insideAnyOf(event.ignoreRules ?? []);
+  for (const dir of loadedList) if (inIgnoreRoot(dir)) reload.add(dir);
   for (const d of drop) reload.delete(d);
   // A reloaded parent may report the folder as present again; keep its descendants then.
   return { reload: [...reload], drop: [...drop] };
@@ -639,5 +667,6 @@ export function mergeListing(prev: readonly FileEntry[] | undefined, next: reado
 /** Removes `dirs` and every loaded folder inside them. */
 export function dropListings(listings: Map<string, readonly FileEntry[]>, dirs: readonly string[]) {
   if (!dirs.length) return;
-  for (const key of [...listings.keys()]) if (dirs.some((d) => isSameOrInside(key, d))) listings.delete(key);
+  const dropped = insideAnyOf(dirs);
+  for (const key of [...listings.keys()]) if (dropped(key)) listings.delete(key);
 }

@@ -13,9 +13,9 @@
 //! macro event operator key heading impl extension.
 
 use super::Grammar;
-use super::lines::LineIndex;
+use super::lines::{LineIndex, shift_range};
 use crate::SymbolTag;
-use ide_core::{OutlineItem, SymbolKind, Visibility};
+use ide_core::{LanguageId, OutlineItem, Pos, SymbolKind, Visibility};
 use std::collections::HashMap;
 use tree_sitter::{Node, Query, QueryCursor, StreamingIterator, Tree};
 
@@ -143,6 +143,8 @@ struct Raw {
     visibility: Option<Visibility>,
     /// Rust `impl Trait for Type`: members take the trait's visibility.
     trait_impl: bool,
+    /// Base names of a class definition (empty where the grammar has none).
+    bases: Vec<String>,
 }
 
 struct Built {
@@ -221,6 +223,13 @@ fn collect(g: &Grammar, q: &OutlineQuery, tree: &Tree, text: &str) -> Vec<Built>
             detail: detail.map(|d| clean(node_text(&d, text), 80)).filter(|d| !d.is_empty()),
             visibility: explicit_visibility(&node, text),
             trait_impl,
+            // The index needs every class's bases; Python is the grammar that has them.
+            bases: match kind {
+                ItemKind::Symbol(SymbolKind::Class) if g.spec.name == "python" => {
+                    super::inheritance::class_base_names(node, text)
+                }
+                _ => Vec::new(),
+            },
         };
         match by_node.get(&raw.node_id) {
             Some(existing) if existing.pattern <= raw.pattern => {}
@@ -296,6 +305,69 @@ pub(crate) fn outline(g: &Grammar, q: &OutlineQuery, tree: &Tree, text: &str) ->
     collect(g, q, tree, text).into_iter().map(convert).collect()
 }
 
+/// [`outline`], plus, for the HTML grammar, each inline `<script>` region's
+/// TS/JS declarations nested under its `script` entry and shifted to document
+/// coordinates (Vue SFC / HTML documents). `block` outlines one region's
+/// language, answering in region-local coordinates.
+pub(crate) fn outline_nested(
+    g: &Grammar,
+    q: &OutlineQuery,
+    tree: &Tree,
+    text: &str,
+    block: &impl Fn(&LanguageId, &str) -> Vec<OutlineItem>,
+) -> Vec<OutlineItem> {
+    let mut items = outline(g, q, tree, text);
+    if g.spec.name != "html" {
+        return items;
+    }
+    let lines = LineIndex::new(text);
+    for region in super::sfc::script_regions(tree, text) {
+        let mut decls = block(&region.language, &region.text);
+        if decls.is_empty() {
+            continue;
+        }
+        let base = lines.pos(region.base);
+        shift_outline(&mut decls, base);
+        if !attach_script(&mut items, base, &mut Some(decls)) {
+            // The region and the entry come from the same `script_element` node,
+            // so this means the outline query no longer matches script elements.
+            tracing::debug!("outline: no script entry for the <script> region at byte {}", region.base);
+        }
+    }
+    items
+}
+
+/// Recursively shifts region-local positions in `items` to document coordinates.
+fn shift_outline(items: &mut [OutlineItem], base: Pos) {
+    for item in items {
+        item.range = shift_range(item.range, base);
+        item.selection_range = shift_range(item.selection_range, base);
+        shift_outline(&mut item.children, base);
+    }
+}
+
+/// Nests `decls` under the innermost `script` entry covering `base`. The
+/// region and the entry both come from the same `script_element` node, so the
+/// entry always exists; a miss means the outline query no longer matches it.
+fn attach_script(items: &mut [OutlineItem], base: Pos, decls: &mut Option<Vec<OutlineItem>>) -> bool {
+    let covers = |range: &ide_core::Range| {
+        (range.start.line, range.start.col) <= (base.line, base.col)
+            && (base.line, base.col) < (range.end.line, range.end.col)
+    };
+    for item in items.iter_mut() {
+        if item.name.eq_ignore_ascii_case("script") && covers(&item.range) {
+            item.children.extend(decls.take().unwrap_or_default());
+            return true;
+        }
+    }
+    for item in items.iter_mut() {
+        if attach_script(&mut item.children, base, decls) {
+            return true;
+        }
+    }
+    false
+}
+
 pub(crate) fn tags(g: &Grammar, q: &OutlineQuery, tree: &Tree, text: &str) -> Vec<SymbolTag> {
     fn walk(items: Vec<Built>, container: Option<&str>, out: &mut Vec<SymbolTag>) {
         for b in items {
@@ -306,6 +378,7 @@ pub(crate) fn tags(g: &Grammar, q: &OutlineQuery, tree: &Tree, text: &str) -> Ve
                     kind: b.kind,
                     container: own_container.map(str::to_owned),
                     range: b.raw.sel,
+                    bases: b.raw.bases.clone(),
                 });
             }
             let next = if b.raw.tag || matches!(b.raw.kind, ItemKind::Impl | ItemKind::Extension) {
@@ -411,6 +484,36 @@ pub fn merge_visibility(target: &mut [OutlineItem], source: &[OutlineItem]) {
         for i in items {
             if i.visibility.is_none() {
                 i.visibility = map.get(&(i.selection_range.start, i.name.clone())).copied();
+            }
+            apply(&mut i.children, map);
+        }
+    }
+    let mut map = HashMap::new();
+    index(source, &mut map);
+    if !map.is_empty() {
+        apply(target, &map);
+    }
+}
+
+/// Takes the syntax tree's kind where a server reported a declared type as a value or a type
+/// parameter: LSP has no kind for type aliases, so servers fall back to one of those
+/// (typescript-language-server: Variable; rust-analyzer, sourcekit-lsp: TypeParameter).
+/// Matched by name and position like [`merge_visibility`].
+pub fn merge_kinds(target: &mut [OutlineItem], source: &[OutlineItem]) {
+    fn index(items: &[OutlineItem], out: &mut HashMap<(ide_core::Pos, String), SymbolKind>) {
+        for i in items {
+            if i.kind.is_type_like() {
+                out.insert((i.selection_range.start, i.name.clone()), i.kind);
+            }
+            index(&i.children, out);
+        }
+    }
+    fn apply(items: &mut [OutlineItem], map: &HashMap<(ide_core::Pos, String), SymbolKind>) {
+        for i in items {
+            if matches!(i.kind, SymbolKind::Variable | SymbolKind::TypeParameter)
+                && let Some(&kind) = map.get(&(i.selection_range.start, i.name.clone()))
+            {
+                i.kind = kind;
             }
             apply(&mut i.children, map);
         }

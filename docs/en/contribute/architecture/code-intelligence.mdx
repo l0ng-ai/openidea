@@ -1,0 +1,95 @@
+---
+title: "Code intelligence"
+description: "Where completion, navigation and other language features come from: language servers, the IDE's own index, tree-sitter syntax and plugins, and how their results are combined."
+---
+
+OpenIDEA's language features come from four sources, layered so that something useful is always available and the most precise source wins when it can answer.
+
+| Source                     | Crates / code                                             | Gives                                                                                                                                                           |
+| -------------------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Language servers (LSP)** | `ide-lsp`, `ide-jsonrpc`, `ide-tools` (installer)         | Semantic features: completion, go to definition, find usages, hover, diagnostics and quick fixes, rename, formatting, inlay hints, semantic tokens…             |
+| **The IDE's own index**    | `ide-index`                                               | Files and symbols of the whole project: Go to File / Class / Symbol and Search Everywhere, also before a server is ready.                                       |
+| **Tree-sitter syntax**     | `ide-language`, `ide-syntax`, `ide-analysis`, `ide-spell` | Outline, folding, highlighting for languages without an editor mode, structural fallbacks, duplicates and structural search, spell checking.                    |
+| **Plugins**                | `ide-host::plugins`                                       | Providers for the languages a plugin declares: completion, code actions, definitions, line markers, hover, inlay hints, semantic tokens, diagnostics, indexers. |
+
+The editor itself adds CodeMirror language modes for immediate highlighting (`ui-mode` in a language definition), before any backend answer arrives.
+
+## Language definitions
+
+Every language is a TOML file in `languages/` (embedded at build time; users can add more in their config directory). It names detection, comments, the tree-sitter grammar, the editor mode, and the language servers and debugger to start:
+
+```toml languages/rust.toml
+id = "rust"
+name = "Rust"
+extensions = ["rs"]
+line-comment = "//"
+block-comment = ["/*", "*/"]
+ui-mode = "Rust"
+tree-sitter = "rust"
+
+[[language-servers]]
+name = "rust-analyzer"
+command = "rust-analyzer"
+root-markers = ["Cargo.toml", "rust-project.json"]
+install-hint = "rustup component add rust-analyzer"
+
+[debugger]
+adapter = "codelldb"
+command = "codelldb"
+```
+
+A language can list several `[[language-servers]]` (for example `vtsls` and `eslint` for TypeScript). `ide-tools` has a registry of installable servers keyed by the same `name`, and installs them into the app's managed tools directory without `sudo`.
+
+## Language servers
+
+`ide-lsp` is a language server manager:
+
+- **Lazy start.** A server starts per `(server name, workspace root)` when a document of a matching language opens. The root comes from `root-markers`.
+- **Document sync.** The backend keeps the authoritative copy of each open document (`ide-text`). The editor sends change sets tagged with their base version; the backend applies them and forwards `didChange`. A stale change set is rejected with `outOfSync` and the editor resyncs.
+- **IDE types only.** Every request takes IDE coordinates (UTF-16, 0-based) and returns types from `ide_lsp::types`, never `lsp-types`, so the IPC surface stays stable whatever the server sends.
+- **Capabilities.** A request a server doesn't support returns `unavailable` with a message such as "jdtls doesn't support inline completion". The editor backs off per document and per feature (`src/editor/lsp/availability.ts`), so a server lacking one capability doesn't switch off the others.
+- **Trust.** Servers start only in trusted projects: they execute project build scripts.
+
+Where plain LSP isn't enough, the IDE extends the server it ships. For Java, JDT LS gets app-owned extension bundles from `java/`: `java-usages` (semantic usages with read/write access, configuration navigation), `kotlin-bridge` (Kotlin libraries on the Java classpath), and a patched Lombok agent. They are embedded by `ide-sdk` / `ide-tools`. When the `java-usages` command is missing or fails, find usages falls back to standard LSP references.
+
+## The IDE's own index
+
+`ide-index` indexes the project's files and their symbols in the background. Symbols come from tree-sitter tags (`ide-language`), so the index works for every language with a bundled grammar, without a language server. It is persisted in redb and queried with nucleo's fuzzy matcher.
+
+Indexing never blocks: queries answer from whatever is indexed so far, and `IdeEvent::IndexState` tells the UI when indexing completes (the "dumb mode" indicator).
+
+## Tree-sitter syntax
+
+`ide-language` bundles the tree-sitter grammars and keeps one syntax tree per open document: parsed lazily on the first query, re-parsed incrementally after edits, dropped on close. On top of it:
+
+- outline (Structure), folding, symbol tags, and highlighting for languages that have no CodeMirror mode;
+- `ide-syntax`, the **structure service**: node and expression lookup, syntax errors, scopes and locals, identifier occurrences, structural ranges.
+
+The structure service is a **fallback**: features use it only when the language server is unavailable, not ready or failing, or when a refactoring came back empty over code that doesn't parse. Its answers are purely syntactic and only claim what is certain — ambiguous cases are flagged (`certain: false`, `exact: false`, candidate lists) rather than guessed.
+
+`ide-analysis` (Locate Duplicates, structural search and replace) and `ide-spell` (identifiers, comments and strings) also work on these trees.
+
+## How results are combined
+
+| Where                                                   | What is merged                                                                                                                                                                                                                                                    |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ide-lsp`                                               | Results of all servers serving a language. Locations are de-duplicated by file and start; rename edits are merged into one workspace edit.                                                                                                                        |
+| `ide-host::ops::lsp`                                    | Plugin providers' results are added to the servers': plugin completion items are appended to the server's list, plugin locations and highlights are added if not already present. Plugins are called only when their declaration matches the document's language. |
+| Search Everywhere (`src/features/search/everywhere/`)   | Symbols from the IDE's index and the language servers' workspace symbols, merged and ranked in the UI. The index answers immediately; server results join when they arrive.                                                                                       |
+| Editor navigation (`src/editor/navigationProviders.ts`) | Optional asynchronous providers contributed by features, versioned by the editor text so stale answers are dropped.                                                                                                                                               |
+
+## LSP instead of a PSI-like model
+
+OpenIDEA does not have a unified, IDE-owned semantic model of the code (what IntelliJ calls PSI). Semantic knowledge — types, resolution, references — comes from each language's server. The IDE's own layers (index, tree-sitter structure) are syntactic.
+
+What that means in practice:
+
+- **Breadth comes from existing servers.** Supporting a language is mostly a language definition plus a server the IDE can install, not a parser and resolver written inside the IDE.
+- **Depth is bounded by the server.** Find usages, rename, refactorings, inspections and quick fixes are as good as the server's implementation of the LSP request. Where a server lacks a feature, the IDE says so (`unavailable`) instead of inventing an answer.
+- **No cross-language semantic model.** Refactorings that need to understand several languages at once, or structural search that matches on resolved types, are not possible on this architecture. The [roadmap](/en/roadmap) states this scope, and each [language page](/en/languages/index) lists its limits.
+- **Extensions fill gaps per language.** When a server can be extended (JDT LS bundles above) or a plugin adds providers, the IDE goes further for that language without a general semantic model.
+- **Syntactic fallbacks are conservative.** The tree-sitter layer never guesses semantics; it marks what it can't be sure of.
+
+## Testing it
+
+The language smoke tests (`crates/ide-host/tests/language_smoke.rs`) run the everyday checklist — completion, go to definition, find usages, hover, diagnostics with a quick fix, an intention, rename, formatting, parameter info, the Structure view, auto-import, Optimize Imports and moving a file — against each language's `fixtures/` project with its real server. See [Smoke tests](/en/contribute/testing/smoke).

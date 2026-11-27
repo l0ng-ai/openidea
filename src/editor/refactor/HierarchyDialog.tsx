@@ -58,7 +58,11 @@ function HierarchyDialogInner({ request }: { request: HierarchyRequest }) {
       open
       onClose={close}
       title={titleOf(kind)}
+      className={styles.dialog}
       width={560}
+      minHeight={300}
+      maxHeight={560}
+      resizable="both"
       buttons={[
         { label: "Preview", role: "extra", disabled: !ready, onClick: () => void submit(true) },
         { label: "Refactor", role: "default", disabled: !ready, onClick: () => void submit(false) },

@@ -1,6 +1,8 @@
-import { useMemo, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { writeClipboardText } from "@/platform/clipboard";
+import { useMemo, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import clsx from "clsx";
 import { call, commands, type RecentProject, type RecentProjectGroup } from "@/platform/ipc";
+import { revealInFileManager, showInFileManagerLabel } from "@/platform/fileManager";
 import { parseRemoteLocation } from "@/platform/remote";
 import {
   HighlightedText,
@@ -14,8 +16,14 @@ import {
   type MenuItem,
 } from "@/ui";
 import { promptInput } from "@/workbench/inputDialogs";
-import { confirm } from "@/workbench/messages";
-import { projectColorVars, projectInitials } from "@/workbench/projectColor";
+import { confirm, showError } from "@/workbench/messages";
+import { describeError } from "@/platform/errorLog";
+import { projectWindowOverride, type ModifierKeys } from "@/workbench/projectWindow";
+import { ProjectAvatar } from "@/workbench/ProjectBadge";
+import { hasCustomProjectIcon, setProjectIcon } from "@/workbench/projectIcon";
+import { openProjectColorPicker } from "@/workbench/TabColorPicker";
+import { open as openDialog } from "@/platform/dialog";
+import { subscribeTabColors, tabColorOverride, tabColorVars, tabColorsVersion } from "@/workbench/tabColors";
 import {
   createGroup,
   filterRecent,
@@ -32,8 +40,13 @@ import {
 import styles from "./Welcome.module.css";
 import { tx } from "@/platform/i18n";
 
-/** IDEA's "Remove Recent Project" confirmation, then removes it from the list. */
-export async function askRemoveRecent(project: RecentProject) {
+/**
+ * IDEA's "Remove Recent Project" confirmation, then removes it from the list.
+ * `before` runs just before the confirmation opens: hosts above the dialog's
+ * layer (a popup) pass their closer so the confirmation is not covered (#1883).
+ */
+export async function askRemoveRecent(project: RecentProject, before?: () => void) {
+  before?.();
   const ok = await confirm({
     title: "Remove Recent Project",
     message: tx`Remove '${project.name}' from the list of recent projects?`,
@@ -42,13 +55,63 @@ export async function askRemoveRecent(project: RecentProject) {
   if (ok) await removeRecent(project.path);
 }
 
-/** Rounded-square project avatar; same colour slot and initials as the title bar's project widget. */
-export function ProjectBadge({ name, className }: { name: string; className?: string }) {
+/** Rounded-square project avatar; same colour and initials as the title bar's project widget. */
+export function ProjectBadge({
+  name,
+  path,
+  className,
+  missing,
+}: {
+  name: string;
+  path: string;
+  className?: string;
+  missing?: boolean;
+}) {
+  useSyncExternalStore(subscribeTabColors, tabColorsVersion);
   return (
-    <span className={clsx(styles.tile, className)} style={projectColorVars(name)} aria-hidden>
-      {projectInitials(name)}
+    <span
+      className={clsx(styles.tile, missing && styles.tileMissing, className)}
+      style={tabColorVars(name, tabColorOverride(path))}
+      aria-hidden
+    >
+      <ProjectAvatar name={name} root={path} />
     </span>
   );
+}
+
+/** Change Project Icon…: an SVG or PNG for the project, kept in its `.openidea` folder. */
+async function chooseProjectIcon(root: string) {
+  const file = await openDialog({ filters: [{ name: tx("Image files"), extensions: ["svg", "png"] }] });
+  if (typeof file !== "string") return;
+  await setProjectIcon(root, file).catch((e: unknown) =>
+    showError(tx("Cannot change the project icon"), describeError(e)),
+  );
+}
+
+async function resetProjectIcon(root: string) {
+  await setProjectIcon(root, null).catch((e: unknown) =>
+    showError(tx("Cannot reset the project icon"), describeError(e)),
+  );
+}
+
+/**
+ * IDEA's project widget and Welcome screen: Change Project Color…, and for a local project
+ * Change Project Icon… (with Reset Project Icon once it has one). Also an open project's menu.
+ */
+export function projectAppearanceMenu(project: Pick<RecentProject, "path" | "name">): MenuItem[] {
+  const items: MenuItem[] = [
+    { id: "color", label: "Change Project Color…", run: () => openProjectColorPicker(project.path, project.name) },
+  ];
+  if (parseRemoteLocation(project.path)) return items;
+  items.push({ id: "icon", label: "Change Project Icon…", run: () => void chooseProjectIcon(project.path) });
+  if (hasCustomProjectIcon(project.path))
+    items.push({ id: "resetIcon", label: "Reset Project Icon", run: () => void resetProjectIcon(project.path) });
+  return items;
+}
+
+/** The tooltip of a recent project whose folder is gone. */
+export function unavailableTitle(project: Pick<RecentProject, "path" | "missing">): string | undefined {
+  return project.missing ? tx`${project.path} (unavailable)` : undefined;
 }
 
 /** New Project Group…: asks for a name; with `path`, that project moves into the new group. */
@@ -108,7 +171,7 @@ export function groupMenu(group: RecentProjectGroup): MenuItem[] {
   ];
 }
 
-export function recentMenu(project: RecentProject, onOpened?: () => void): MenuItem[] {
+export function recentMenu(project: RecentProject, onOpened?: () => void, onRemove?: () => void): MenuItem[] {
   // A remote project has no local folder.
   const remote = parseRemoteLocation(project.path);
   const items: MenuItem[] = [
@@ -124,24 +187,25 @@ export function recentMenu(project: RecentProject, onOpened?: () => void): MenuI
           label: "Open in New Window",
           icon: "folder-open",
           run: () =>
-            void call(commands.windowOpenRemote(remote.sshConfig, remote.path, true))
+            void call(commands.windowOpenRemote(remote.target, remote.path, true))
               .then(() => onOpened?.())
               .catch(() => undefined),
         }
       : { kind: "action", action: "file.openInNewWindow", arg: project.path, label: "Open in New Window" },
     {
       id: "reveal",
-      label: "Show in Finder",
+      label: showInFileManagerLabel(),
       icon: "external-link",
-      run: () =>
-        void import("@tauri-apps/plugin-opener").then((m) => m.revealItemInDir(project.path)).catch(() => undefined),
+      run: () => void revealInFileManager(project.path, null).catch(() => undefined),
     },
     {
       id: "copy",
       label: "Copy Path",
       icon: "copy",
-      run: () => void navigator.clipboard?.writeText(project.path).catch(() => undefined),
+      run: () => void writeClipboardText(project.path).catch(() => undefined),
     },
+    { kind: "separator" },
+    ...projectAppearanceMenu(project),
     { kind: "separator" },
     // Groups hold local projects (remote ones live in this window's own list).
     ...(remote ? [] : [moveToGroupMenu(project), { kind: "separator" } as const]),
@@ -150,7 +214,7 @@ export function recentMenu(project: RecentProject, onOpened?: () => void): MenuI
       label: "Remove from Recent Projects…",
       icon: "close",
       danger: true,
-      run: () => void askRemoveRecent(project),
+      run: () => void askRemoveRecent(project, onRemove),
     },
   ];
   return remote ? items.filter((i) => !("id" in i && i.id === "reveal")) : items;
@@ -182,12 +246,12 @@ function RecentRow({
   const opening = useRecent((s) => s.opening === m.project.path);
   const when = relativeTime(m.project.openedAtMs);
   return (
-    <div className={clsx(styles.recent, compact && styles.recentCompact)}>
-      <ProjectBadge name={m.project.name} />
+    <div className={styles.recent} title={unavailableTitle(m.project)}>
+      <ProjectBadge name={m.project.name} path={m.project.path} missing={!!m.project.missing} />
       <span className={styles.recentText}>
         <span className={styles.recentTop}>
           <HighlightedText
-            className={styles.recentName}
+            className={clsx(styles.recentName, m.project.missing && styles.unavailable)}
             text={m.project.name}
             indices={m.nameMatch}
             tone={active ? "accent" : "strong"}
@@ -249,17 +313,22 @@ export function RecentList({ exclude, compact, autoFocus, onOpened, className, t
   );
   const current = Math.min(active, items.length - 1);
 
-  const open = (m: RecentMatch | undefined) => {
-    if (m) void openRecent(m.project).then((ok) => ok && onOpened?.());
+  /** `e`'s modifier keys pick the window ({@link projectWindowOverride}); a plain click or Enter follows "Open project in". */
+  const open = (m: RecentMatch | undefined, e: ModifierKeys) => {
+    if (m) void openRecent(m.project, projectWindowOverride(e)).then((ok) => ok && onOpened?.());
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      open(items[current]);
+      open(items[current], e);
       return;
     }
-    if ((e.key === "Delete" || (e.key === "Backspace" && e.metaKey)) && items[current]) {
+    // Delete removes the selected project only when it has no text to delete: the caret is at the end
+    // of the query (⌘⌫: the query is empty). Otherwise it edits the query.
+    const field = e.currentTarget;
+    const atEnd = field.selectionStart === field.value.length && field.selectionEnd === field.value.length;
+    if (((e.key === "Delete" && atEnd) || (e.key === "Backspace" && e.metaKey && !field.value)) && items[current]) {
       e.preventDefault();
       void askRemoveRecent(items[current]!.project);
       return;
@@ -304,7 +373,7 @@ export function RecentList({ exclude, compact, autoFocus, onOpened, className, t
         focusable={false}
         rowHeight={compact ? 40 : 48}
         className={styles.list}
-        onActivate={(m) => open(m)}
+        onActivate={(m, _i, e) => open(m, e)}
         onContextMenu={(m, i, e: MouseEvent) => {
           e.preventDefault();
           setActive(i);

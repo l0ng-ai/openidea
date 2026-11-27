@@ -1,0 +1,184 @@
+---
+title: "MCP server"
+description: "Let Claude Code, Codex and other MCP clients use OpenIDEA's search, code insight, editing, run and Git tools on your open projects."
+---
+
+OpenIDEA has a built-in [Model Context Protocol](https://modelcontextprotocol.io) server. With it on, AI agents running outside the IDE, such as Claude Code in a terminal, Codex or Cursor, can call the IDE's tools on the projects you have open: search with the project index, look up symbols through the language servers, read the Problems view, rename, reformat, build, run configurations and read Git status.
+
+Agent tasks started inside OpenIDEA (see [Agents](/en/guide/agents)) get the same tools automatically while the server is on.
+
+## Turn it on
+
+<Steps>
+  <Step title="Open the settings page">Go to **Settings › Agents › IDE MCP Server**.</Step>
+  <Step title="Enable it">Turn on **Enable MCP server** and apply. It is off by default.</Step>
+  <Step title="Check the status">
+    **Status** shows the port it is running on, or why it failed to start. **Endpoint** shows the URL for the current
+    window's project.
+  </Step>
+</Steps>
+
+By default the server listens on `127.0.0.1` only, and every request must carry a bearer token. Requests from another origin, or naming the server by a host name other than `localhost`, are refused.
+
+- **Listen address.** `127.0.0.1` (the default) lets only this computer connect. To let agents on another computer connect, enter another address of this computer (a LAN or VPN address) or `0.0.0.0` for every address; they connect to `http://<that address>:<port>/mcp` with the token. Anyone who can reach the address and has the token can use the tools, so keep it to networks you trust. **Status** shows the address when it is not `127.0.0.1`.
+- **Port.** By default it listens on the same port, 26371, in every run (**Use a fixed port** and **Port**), so HTTP clients and port forwards (an SSH tunnel to another machine, say) keep working after a restart. When the port is in use or reserved, that run takes a free port and **Status** says why. Turn **Use a fixed port** off for a free port in every run.
+- **Token.** By default the token changes each time OpenIDEA starts. Turn on **Keep the token** to keep one across runs, stored in OpenIDEA's application data for your account only; **Regenerate Token** replaces it, and clients configured with the old one stop working.
+
+## Connect a client
+
+The settings page has two buttons under **Client configuration**. Both copy an `mcpServers` entry in the JSON format most clients accept.
+
+- **Copy Stdio Config** (recommended): the client starts OpenIDEA's executable with `--mcp-stdio`, which relays to the running IDE. It holds no token and keeps working after OpenIDEA restarts.
+- **Copy HTTP Config**: the client connects to `http://<address>:<port>/mcp` (`127.0.0.1` when listening on every address) with `Authorization: Bearer <token>`. It keeps working after OpenIDEA restarts only with a fixed port and a kept token; otherwise copy it again after each restart.
+
+The stdio configuration looks like this (the path is the one on your machine):
+
+```json
+{
+  "mcpServers": {
+    "openidea": {
+      "type": "stdio",
+      "command": "/Applications/OpenIDEA.app/Contents/MacOS/openidea",
+      "args": ["--mcp-stdio", "--project", "/path/to/project"]
+    }
+  }
+}
+```
+
+`--project` names the project the client works on. Leave it out and the bridge uses the directory the client starts it in, so one configuration works for every project you open in OpenIDEA.
+
+<Tabs>
+  <Tab title="Claude Code">
+    Add the server for the current project from a terminal in the project directory:
+
+    ```sh
+    claude mcp add openidea -- /Applications/OpenIDEA.app/Contents/MacOS/openidea --mcp-stdio
+    ```
+
+    Or paste the copied JSON into a `.mcp.json` file at the project root to share it with your team.
+
+  </Tab>
+  <Tab title="Codex">
+    Add the server to `~/.codex/config.toml`:
+
+    ```toml
+    [mcp_servers.openidea]
+    command = "/Applications/OpenIDEA.app/Contents/MacOS/openidea"
+    args = ["--mcp-stdio"]
+    ```
+
+    Codex starts it in the directory you run `codex` from.
+
+  </Tab>
+  <Tab title="Other clients">
+    Paste the copied configuration into the client's MCP settings (for example `mcp.json` in Cursor). Clients that only speak HTTP can use **Copy HTTP Config**, but must be updated after every restart of OpenIDEA.
+  </Tab>
+</Tabs>
+
+Use the executable path from **Copy Stdio Config**; the macOS path above is only an example. On Windows it is `openidea.exe` in the installation (or portable) folder.
+
+OpenIDEA must be running for the tools to work, and the project must be open in a window or served as a [background project](#background-projects). A client may name any folder inside such a project; the server picks the project that contains it. HTTP clients name it with the `X-OpenIDEA-Project` header or the `?project=` query.
+
+While the server runs, OpenIDEA writes its port and token to `mcp/server.json` in its application data directory (readable only by you); the stdio bridge reads it from there.
+
+## Tools
+
+| Area          | Tools                                                                                             |
+| ------------- | ------------------------------------------------------------------------------------------------- |
+| Files         | `get_workspace_roots`, `read_file`, `list_directory_tree`, `create_new_file`, `apply_patch`       |
+| Search        | `search_text`, `search_regex`, `search_symbol`, `search_file`                                     |
+| Editors       | `get_all_open_file_paths`, `get_current_file`, `open_file_in_editor`                              |
+| Code          | `get_symbol_info`, `find_references`, `get_call_hierarchy`, `rename_refactoring`, `reformat_file` |
+| Problems      | `get_file_problems`, `get_project_problems`, `check_files`                                        |
+| Run and build | `get_run_configurations`, `execute_run_configuration`, `build_project`                            |
+| Commands      | `run_command`, `wait_for_run`, `send_run_input`, `stop_run`                                       |
+| Command state | `get_run_status`, `read_run_output`, `list_runs`                                                  |
+| Git           | `get_repositories`, `git_status`, `git_diff`                                                      |
+| HTTP Client   | `http_list_requests`, `http_run_request`                                                          |
+
+Notes on what they do:
+
+- `get_workspace_roots` lists the project and the trusted projects attached to it, so an agent working in one of them knows the rest of the workspace.
+- `read_file` also reads sources of dependencies and files inside jar and zip archives.
+- The tools that list things return one page: `limit` items (100 by default; 50 for `search_symbol`, 10 for `list_runs`), from `offset`. `total` (where counting is cheap), `more` and `nextOffset` say what follows. `list_runs` filters by `state` (`running`, `idle`, `error` or one state), `get_run_configurations` by `query`, and `get_project_problems` lists errors only unless `errorsOnly` is false.
+- The query tools (the searches, `find_references`, `get_call_hierarchy`, `get_project_problems`, `git_status`, `get_all_open_file_paths`, `get_run_configurations`, `list_runs`) take `paths`: globs relative to the project root (`src/**`, `!**/test/**`, `*.rs`), or absolute for a project attached outside it, that limit their results. The searches walk only the folders the globs name.
+- `search_text`, `search_regex` and `search_file` skip what `.gitignore` ignores and what the project excludes, also in the folders `paths` names, unless `includeExcluded` is true.
+- `list_directory_tree` lists everything and marks what `.gitignore` ignores `[git-ignored]` and what the project excludes `[ide-excluded]`.
+- `search_symbol` and `find_references` use the IDE's index and the language servers; `get_symbol_info` returns what Quick Documentation shows.
+- `get_call_hierarchy` lists the callers of the function or method at a position, or with `direction` `outgoing` the functions it calls, one level per call. A position inside a function body means that function. To go one level deeper, call it again with an item's `filePath`, `startLine` and `startColumn`. Items in libraries show a URI as `filePath` and cannot be expanded.
+- `get_file_problems` and `get_project_problems` return what the Problems tool window shows, after your inspection profile is applied, rather than a fresh analysis.
+- `check_files` is the fresh analysis, for after an edit made by any tool: it syncs each file from disk, tells its language servers it was saved (so on-save checks such as `cargo check` run) and waits until they answered and finished. Each file gets a `status` that says whether the problems are complete, or why it could not be checked: no language server for it, or one that is not installed, misconfigured or crashed.
+- `rename_refactoring` renames through the language server, so references that a text search would miss are updated too. It can preview without writing.
+- `apply_patch` accepts the Codex `apply_patch` format and unified diffs. Paths must stay inside the project.
+- `git_diff` compares files on disk, so unsaved editor text is not included.
+- `http_list_requests` lists requests in a project `.http` / `.rest` file; `http_run_request` sends one by index (optional `env` from `http-client.env.json`), asks first, and returns status plus a truncated body — not request headers or body.
+
+## Commands in the Run tool window
+
+`run_command` runs a shell command line in a tab of the Run tool window, with the shell of **Settings › Tools › Terminal**. The agent names the tab and OpenIDEA shows it as `_agent_<name>`, so you see the output as it comes and can type into the command, rerun it or stop it like any run.
+
+As JetBrains IDEs do, the command runs on pipes, not a terminal: programs print plain lines instead of progress bars and redraws. The agent gets that output cleaned of escape sequences and cut to 2000 lines (`maxLinesCount`); beyond that the end stays, or the start or both ends with `truncateMode`. The tab's raw output log stays complete.
+
+- **Servers return once they are up.** The call waits 10 seconds by default for the command to finish. A server, watcher or app never finishes: the agent passes `pattern` with its ready line (`Listening on`, `Started … in`) and gets the answer as soon as the line appears, while the command keeps running.
+- **One tab per name.** A name whose command finished runs the next command in the same tab. A name whose command is still running is refused, with that command and its last output: the agent has to stop it with `stop_run` first or pick another name. Nothing is stopped behind your back.
+- **Following a command up.** `wait_for_run` waits for the command to end or for a pattern in its output (a server's "listening" line), `read_run_output` reads the output from any point, `get_run_status` tells whether it is running, succeeded, failed, crashed or was stopped by the agent or by you, and `send_run_input` writes text and Enter to its input; Ctrl+C stops it and Ctrl+D ends its input.
+- **You can step in.** What you type into the tab's input line, a rerun, a Stop and closing the tab are reported to the agent with their time. A wait ends at once, and the agent is advised to stop what it is doing, tell you it received the intervention and wait for your confirmation.
+- **Finished tabs are greyed out.** Beyond **Finished agent tabs to show** (1 by default) the oldest finished ones move to an archive at the end of the tab strip, shown as **Archived (n)**. Beyond **Archived agent tabs to keep** (999) the oldest archived ones are closed. Running commands are never archived or closed. Both settings are on **Settings › Agents › IDE MCP Server**.
+
+Plugins can add more tools; they appear in the same list. A plugin tool marked as destructive asks for confirmation the same way.
+
+## Background projects
+
+By default the server answers only for projects open in a window. **Serve without a window** lets it also answer for a folder that has no window: the first tool call for a path inside it opens the project, and OpenIDEA unloads it again after it has been idle for a while. The setting is under **Background projects** on **Settings › Agents › IDE MCP Server**. It is off by default.
+
+**Serve without a window** picks which folders are served:
+
+- **Off** (the default): only projects open in a window.
+- **Trusted projects**: trusted projects, trusted recent projects and repositories inside trusted locations, plus the folders in **Folders**. A folder under a root you restricted is not served.
+- **Listed projects**: only the folders in **Folders**.
+
+While the mode is **Off**, **Folders**, **Unload after** and **Project limit** are disabled.
+
+**Folders** is the list. **+** adds a folder through the folder chooser of this computer, or opens a new entry where you can type or paste a path; **−** removes the selected entry, and the edit button (or a double click) changes it. Entries are absolute paths, and a relative entry is ignored. Like the rest of the page, the list applies when you apply the settings. When a path is inside several listed folders, the innermost one is the project.
+
+In `settings.toml` the four options are `backgroundProjects` (`"off"`, `"trusted"` or `"listed"`), `backgroundProjectPaths`, `backgroundIdleMinutes` (0 to 1440) and `backgroundProjectLimit` (1 to 32) under `[mcpServer]`, in the global file only.
+
+When a project loads and unloads:
+
+- **It loads on the first tool call** for a path inside it. `initialize` and `tools/list` open nothing, so a client that only connects loads no project.
+- **A call in flight keeps it loaded**, and so does a run it started that is still alive.
+- **Idle projects unload.** After **Unload after** minutes without a request (30 by default) a project unloads. Set it to 0 to keep idle projects loaded.
+- **The limit.** **Project limit** (8 by default, 1 to 32) is the most projects loaded at once. At the limit, the project idle longest unloads to make room. When every loaded project is busy, the client's request is refused.
+- **Opening the folder in a window** unloads its background project, and the window takes over. A call that arrives while the window is still opening the folder is asked to retry.
+- **Changing what is served unloads at once.** Switching **Serve without a window** to **Off**, removing a folder from the list, revoking the trust that made a project served and turning the server off unload the affected projects without waiting for the idle time.
+- **Unloading stops the runs.** The **Unload** button, a change of the setting or the list, revoking trust and opening the folder in a window unload the project at once and stop the runs it started, without asking. Only the idle unload and the limit leave a project with a live run alone.
+- **Restarting OpenIDEA** starts with none loaded.
+
+**Open now** lists the loaded projects, each with what it is doing (answering a request, kept open by a run, or how long it has been idle and when it unloads) and an **Unload** button. Unloading does not wait for **Apply**. The project loads again on the next tool call that names it, if the setting still serves it.
+
+While any project is loaded, the **Background Projects** item in the status bar (a layers icon and the count) opens the same list. Each row has the **Open in New Window** and **Unload** icon buttons, and below the list are **Unload All** and **MCP Server Settings…**.
+
+What trust decides: a trusted project works as one open in a window, with its language servers and the tools that write. A listed folder you have not trusted opens in Restricted Mode and gets only the read-only tools.
+
+A background project has no window, so some tools differ:
+
+- `run_command` and `open_file_in_editor` need a window.
+- `get_file_problems` and `get_project_problems` report what a window shows. In a background project they answer with an error that points to `check_files`.
+- `get_current_file` and `get_all_open_file_paths` also describe a window. In a background project they answer with an error that says the project needs a window.
+- `execute_run_configuration` and `build_project` work in a background project when **Run tools without confirmation (brave mode)** is on.
+
+## Safety
+
+- **Untrusted projects** expose only the read-only tools. Tools that write files, rename, reformat, build or run need a project you have trusted.
+- **Running and building ask first.** `execute_run_configuration`, `build_project`, `run_command` and `http_run_request` show a dialog in OpenIDEA naming the client, the project, the tool and what will run. Choose **Allow** or **Deny**; several requests queue up.
+- Tools that write refuse paths outside the project.
+- **Background projects.** Anyone with the token can make the IDE load a project that **Serve without a window** serves, so the setting and the token decide who can open folders on this computer. Listed folders you have not trusted open in Restricted Mode and get only the read-only tools. Keep the list to folders you want agents to reach.
+
+## Remote development
+
+In a remote window ([SSH](/en/guide/remote/ssh), WSL or [Dev Containers](/en/guide/remote/containers)), `openidea-server` runs its own MCP server on the remote host, configured independently in **Settings › Agents › IDE MCP Server** while that remote window is focused. Coding agents started inside the remote window connect to it automatically; external CLI clients on the remote host can use **Copy Stdio Config** (`~/.openidea/bin/openidea-server --mcp-stdio`) or **Copy HTTP Config**, and clients on your desktop can reach it by forwarding its port in the **Ports** tool window. The remote server serves only the project open in its window: [background projects](#background-projects) are served by OpenIDEA on your desktop, and the **Background projects** group is disabled in a remote window's Settings.
+
+## Limits
+
+- The server serves projects open in a window and, with **Serve without a window** on, the background projects it loads. A project that is neither is not served, and closing a project's window makes its tools unavailable unless the setting serves it. Background projects exist only while OpenIDEA runs.
+- Responses are plain JSON; the server does not stream over SSE.

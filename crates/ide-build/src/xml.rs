@@ -3,6 +3,57 @@
 //! skipped. Namespace prefixes are dropped (`<x:project>` → `project`).
 //! Elements keep their byte offsets in the source, for edits ([`crate::pom_edit`]).
 
+use encoding_rs::Encoding;
+use std::path::Path;
+
+/// Reads an XML file, honoring its `encoding="…"` declaration: a GBK POM
+/// (issue #2439) is not valid UTF-8, and `read_to_string` would drop the
+/// whole project as "No maven project" while CLI Maven reads it fine.
+pub fn read_text(path: &Path) -> Option<String> {
+    std::fs::read(path).ok().map(|bytes| decode_bytes(&bytes))
+}
+
+/// Decodes XML bytes: BOM first, then the `encoding` declaration (ASCII in
+/// every single-byte encoding, so the head scans before decoding), then
+/// UTF-8, then a chardetng guess.
+pub fn decode_bytes(bytes: &[u8]) -> String {
+    if let Some((enc, len)) = Encoding::for_bom(bytes) {
+        let (text, _) = enc.decode_without_bom_handling(&bytes[len..]);
+        return text.into_owned();
+    }
+    if let Some(enc) = declared_encoding(bytes) {
+        let (text, _) = enc.decode_without_bom_handling(bytes);
+        return text.into_owned();
+    }
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return text.to_owned();
+    }
+    let mut detector = chardetng::EncodingDetector::new();
+    detector.feed(bytes, true);
+    let (text, _) = detector.guess(None, true).decode_without_bom_handling(bytes);
+    text.into_owned()
+}
+
+fn declared_encoding(bytes: &[u8]) -> Option<&'static Encoding> {
+    let head = std::str::from_utf8(bytes.get(..bytes.len().min(1024))?).ok()?;
+    let mut rest = head.split("?>").next().unwrap_or(head);
+    while let Some(i) = rest.find("encoding") {
+        rest = &rest[i + "encoding".len()..];
+        let Some(value) = rest.trim_start().strip_prefix('=') else { continue };
+        let value = value.trim_start();
+        let (&quote, after) = value.as_bytes().split_first()?;
+        if quote != b'"' && quote != b'\'' {
+            continue;
+        }
+        let after = std::str::from_utf8(after).ok()?;
+        let end = after.find(quote as char)?;
+        if let Some(enc) = Encoding::for_label(after[..end].trim().as_bytes()) {
+            return Some(enc);
+        }
+    }
+    None
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Element {
     pub name: String,
@@ -209,5 +260,20 @@ mod tests {
         assert_eq!(root.at("b/d").unwrap().text, "y");
         assert!(parse("").is_none());
         assert!(parse("just text").is_none());
+    }
+
+    #[test]
+    fn decodes_the_declared_encoding() {
+        // Issue #2439: a GBK POM is not valid UTF-8; decoding must honor the declaration.
+        let (bytes, _, _) =
+            encoding_rs::GBK.encode("<?xml version=\"1.0\" encoding=\"GBK\"?>\n<project><name>中文</name></project>");
+        let text = decode_bytes(&bytes);
+        assert_eq!(parse(&text).unwrap().text_of("name").as_deref(), Some("中文"));
+        // An unknown label falls back to UTF-8 rather than mis-decoding.
+        let text = decode_bytes(b"<?xml version=\"1.0\" encoding=\"X-UNKNOWN\"?>\n<project><name>ok</name></project>");
+        assert_eq!(parse(&text).unwrap().text_of("name").as_deref(), Some("ok"));
+        // No declaration: plain UTF-8 passes through untouched.
+        let text = decode_bytes("<project><name>plain</name></project>".as_bytes());
+        assert_eq!(parse(&text).unwrap().text_of("name").as_deref(), Some("plain"));
     }
 }

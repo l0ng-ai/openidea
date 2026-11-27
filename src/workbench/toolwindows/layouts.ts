@@ -72,6 +72,20 @@ export function restoreLayout(name: string): boolean {
   return true;
 }
 
+/** Restore Current Layout: the active saved layout again, or the default one when none is active. */
+export function restoreCurrentLayout() {
+  const { active } = useToolWindowLayouts.getState();
+  if (!active || !restoreLayout(active)) restoreDefaultLayout();
+}
+
+/** Save Changes in Current Layout: the active saved layout takes the windows as they are now. */
+export function saveCurrentLayout(): boolean {
+  const { active } = useToolWindowLayouts.getState();
+  if (!active) return false;
+  saveLayout(active);
+  return true;
+}
+
 export function restoreDefaultLayout() {
   applyToolWindowLayout(defaultLayoutSnapshot());
   write({ ...useToolWindowLayouts.getState(), active: null });

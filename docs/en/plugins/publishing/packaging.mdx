@@ -1,0 +1,78 @@
+---
+title: "Packaging and signing"
+description: "Create a publisher key, pack a plugin into a signed .oiplugin package, and what the package contains."
+---
+
+A plugin is distributed as a **package**: a zip file named `<id>-<version>.oiplugin`. Signing it with a publisher key lets the IDE check who published it and that it hasn't changed since.
+
+## Create a publisher key
+
+```sh
+openidea-plugin keygen acme.key
+```
+
+`keygen` writes a new Ed25519 key to `acme.key` (on macOS and Linux the file is made readable only by you), prints its **public key**, and refuses to overwrite an existing file. Do this once per publisher and keep the file secret: anyone who has it can publish as you.
+
+The public key goes into the marketplace index with your publisher id. The publisher id owns the plugin id prefix: publisher `acme` can sign only plugins named `acme.*`.
+
+## Pack
+
+```sh
+openidea-plugin pack                                         # unsigned, from the current folder
+openidea-plugin pack path/to/plugin --key acme.key --publisher acme
+openidea-plugin pack --key acme.key --publisher acme --out dist/acme.tools.oiplugin
+```
+
+`pack`:
+
+1. runs `openidea-plugin check` on the folder and stops if it fails;
+2. collects the manifest and every file the manifest and its contributions reference, plus the component;
+3. adds `LICENSE`, `LICENSE.md`, `LICENSE.txt`, `NOTICE`, `NOTICE.md`, `COPYING` and `README.md` if they exist;
+4. with `--key` and `--publisher` (always both), signs the package, after checking that the plugin id starts with `<publisher>.`;
+5. writes `<id>-<version>.oiplugin`, or the `--out` path.
+
+Run `openidea-plugin build` first so that `dist/plugin.wasm` is current.
+
+## What a package contains
+
+| Entry                    | Contents                                                                          |
+| ------------------------ | --------------------------------------------------------------------------------- |
+| `plugin.toml`            | The manifest                                                                      |
+| Referenced files         | Themes, icons, language definitions, schemas, web view directories, …             |
+| The component            | The `wasm` path, if the plugin has code                                           |
+| License and readme files | Those listed above, when present                                                  |
+| `SIGNATURE.json`         | When signed: `publisher`, `key` (the public key, base64) and `signature` (base64) |
+
+The signature is Ed25519 over the plugin id, the version and the **digest** of the package: a BLAKE3 hash of the manifest and the package files (paths and contents, in sorted order). Changing any file after signing breaks the signature.
+
+When installing, the IDE unpacks at most 10,000 entries and 512 MiB.
+
+## Install a package
+
+- **Settings › Plugins** › gear menu › **Install Plugin from Package File…** installs an `.oiplugin`, a `.zip` with the package at its root or in its only folder, or a folder's `plugin.toml`. A zip without a `plugin.toml` there (an IntelliJ plugin, for example) is refused.
+- **Install Plugin from Disk…** installs an unpacked package folder.
+- Installing from a marketplace downloads the package and checks it against the index entry and the publisher's key first.
+
+The permission dialog says whether the package is signed. Unsigned packages install from disk with a warning; a package whose signature doesn't hold is refused. See [Policy and security](/en/plugins/publishing/policy).
+
+## Check a package
+
+```sh
+openidea-plugin check acme.tools-1.0.0.oiplugin
+```
+
+`check` unpacks the package as installing would and validates it.
+
+## Rotate a key
+
+To move to a new key, have the old key vouch for the new one so installed plugins update without asking the user to confirm a new signer:
+
+```sh
+openidea-plugin keygen acme-2026.key
+# in an index you write yourself:
+openidea-plugin index market/ --publisher acme --name "ACME" --key acme-2026.key --previous-key acme.key
+# for an index someone else writes (such as the community registry):
+openidea-plugin endorse "<new public key>" --key acme.key --publisher acme
+```
+
+`endorse` prints the endorsement as JSON. See [Self-hosted marketplace](/en/plugins/publishing/self-hosted) and [Policy and security](/en/plugins/publishing/policy#key-rotation).

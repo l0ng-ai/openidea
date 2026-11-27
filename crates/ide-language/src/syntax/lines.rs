@@ -79,11 +79,16 @@ impl<'a> LineIndex<'a> {
 }
 
 fn memchr_newlines(bytes: &[u8]) -> impl Iterator<Item = usize> + '_ {
-    bytes.iter().enumerate().filter(|&(_, &b)| b == b'\n').map(|(i, _)| i + 1)
+    memchr::memchr_iter(b'\n', bytes).map(|i| i + 1)
 }
 
 pub(crate) fn utf16_len(s: &str) -> u32 {
-    if s.is_ascii() { s.len() as u32 } else { s.chars().map(|c| c.len_utf16() as u32).sum() }
+    if s.is_ascii() {
+        return s.len() as u32;
+    }
+    // One unit per char (each starts with a non-continuation byte), two for
+    // 4-byte chars; byte classification vectorizes, unlike decoding `chars()`.
+    s.as_bytes().iter().map(|&b| u32::from((b & 0xC0) != 0x80) + u32::from(b >= 0xF0)).sum()
 }
 
 /// Byte offset of `pos` (line, UTF-16 column) in `text`; None past the last line.
@@ -94,6 +99,19 @@ pub(crate) fn byte_at(text: &str, pos: Pos) -> Option<usize> {
     }
     let line_end = text[start..].find('\n').map_or(text.len(), |i| start + i);
     Some(start + utf16_to_byte(&text[start..line_end], pos.col as usize))
+}
+
+/// Shifts a position from a document suffix that starts at `base` into document
+/// coordinates: the suffix's first line continues `base`'s line, later lines
+/// add the base line. Used to map inline `<script>` region answers (Vue SFC /
+/// HTML) back onto the whole document; positions are 0-based lines / UTF-16 cols.
+pub fn shift_pos(pos: Pos, base: Pos) -> Pos {
+    if pos.line == 0 { Pos::new(base.line, base.col + pos.col) } else { Pos::new(base.line + pos.line, pos.col) }
+}
+
+/// [`shift_pos`] for both ends of a range.
+pub fn shift_range(range: Range, base: Pos) -> Range {
+    Range::new(shift_pos(range.start, base), shift_pos(range.end, base))
 }
 
 pub(crate) fn utf16_to_byte(s: &str, offset: usize) -> usize {
@@ -158,6 +176,18 @@ mod tests {
         for off in [1usize, 3, 4, 9999, 40_001] {
             assert_eq!(idx.byte_of_utf16(off as u32), utf16_to_byte(&text, off), "offset {off}");
         }
+    }
+
+    #[test]
+    fn shifts_suffix_positions_into_document_coordinates() {
+        let base = Pos::new(3, 7);
+        assert_eq!(shift_pos(Pos::new(0, 2), base), Pos::new(3, 9));
+        assert_eq!(shift_pos(Pos::new(0, 0), base), base);
+        assert_eq!(shift_pos(Pos::new(2, 1), base), Pos::new(5, 1));
+        assert_eq!(
+            shift_range(Range::new(Pos::new(0, 1), Pos::new(1, 4)), base),
+            Range::new(Pos::new(3, 8), Pos::new(4, 4))
+        );
     }
 
     #[test]

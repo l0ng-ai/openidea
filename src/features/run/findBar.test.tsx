@@ -44,6 +44,13 @@ function markCount(container: HTMLElement) {
 }
 
 describe("Run console find", () => {
+  it("offers a visible Find entry in a console without a toolbar (stack traces)", () => {
+    setup();
+    fireEvent.click(screen.getByRole("button", { name: "Find in console" }));
+    expect(screen.getByRole("search")).toBeInTheDocument();
+    expect(input()).toHaveFocus();
+  });
+
   it("opens on ⌘F, searches as you type and highlights every match", () => {
     const { log, view } = setup();
     const bar = openFind(log);

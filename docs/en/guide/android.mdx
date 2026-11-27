@@ -1,0 +1,69 @@
+---
+title: "Android and Logcat"
+description: "Watch the log of a connected Android device or emulator in the Logcat tool window."
+---
+
+OpenIDEA's Android support is the **Logcat** tool window: it streams the log of a connected device or emulator through `adb`, with level and text filters. It does not build, install or run Android apps, manage emulators or edit Android resources.
+
+## Set up adb
+
+Logcat drives the `adb` command from the Android SDK platform-tools. OpenIDEA does not bundle it. It looks for `adb` in this order:
+
+1. The `OPENIDEA_ADB` environment variable (full path to the executable).
+2. `platform-tools/` under `ANDROID_HOME` or `ANDROID_SDK_ROOT`.
+3. The usual SDK locations: `~/Library/Android/sdk` (macOS), `~/Android/Sdk` (Linux), `%LOCALAPPDATA%\Android\Sdk` (Windows).
+4. `adb` on `PATH`, then a few common install paths such as `/opt/homebrew/bin/adb` or `C:\platform-tools\adb.exe`.
+
+<Note>
+  On macOS, an app started from the Dock does not see variables exported in your shell profile. If you rely on
+  `ANDROID_HOME`, install the SDK in the default location or start OpenIDEA from a terminal.
+</Note>
+
+## Open Logcat
+
+Logcat is not shown on the tool window bar until you first open it. Open it from **More Tool Windows** (the `…` button on the tool window bar), from **View › Tool Windows › Logcat**, or with Find Action (`⌘⇧A` / `Ctrl+Shift+A`). It works without a project open.
+
+Connect a device over USB or start an emulator. The device list shows each device as `model (serial)`; devices that are offline or unauthorized are listed but cannot be selected. Click **Refresh devices** after connecting a new one.
+
+When you pick a device, Logcat shows the last 200 lines of its buffer and then follows new output. Switching to another device starts with an empty view.
+
+## Toolbar
+
+| Control                | What it does                                                                                                                                  |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Device**             | The device to watch.                                                                                                                          |
+| **Minimum level**      | Show lines at this level or above: Verbose, Debug, Info, Warnings, Errors, Fatal. Lines that don't follow the logcat format are always shown. |
+| Filter box             | A filter expression (see below).                                                                                                              |
+| **Filter history**     | Recent filters. **Clear History** empties the list.                                                                                           |
+| **Pause** / **Resume** | Stop updating the view. Lines that arrive while paused are added when you resume.                                                             |
+| Scroll to end          | Follow the newest line. Scrolling up stops following; click the button to follow again.                                                       |
+| **Clear**              | Empty the view. The device's own log buffer is not cleared.                                                                                   |
+| **Refresh devices**    | Ask `adb` for the device list again.                                                                                                          |
+
+The status line shows whether the stream is running, `Paused` while paused, the number of lines (`shown / total` when filtered), and an error if the filter is invalid.
+
+## Filter expressions
+
+The filter box takes expressions in the same shape as Android Studio's Logcat:
+
+| Expression                                   | Matches                                             |
+| -------------------------------------------- | --------------------------------------------------- |
+| `tag:glide`                                  | Tag contains `glide`                                |
+| `message:boom` (or `msg:`)                   | Message contains `boom`                             |
+| `pid:4242`                                   | Process or thread id is 4242                        |
+| `level:error`, `level:warn,error`, `level:e` | Level is one of those (names or letters)            |
+| `-tag:chatty`                                | Excludes matching lines (`!` works too)             |
+| `a b`                                        | Both (`&` works too)                                |
+| `a\|b`                                       | Either                                              |
+| `(a\|b) -c`                                  | Grouping                                            |
+| `message~:^Tile.*`                           | Case-insensitive regular expression                 |
+| `message:"two words"`                        | Quoted value                                        |
+| `glide`                                      | A bare word matches the tag, the message, or `#pid` |
+
+Text matching is case-insensitive. Press `Enter` to save the filter to the history, and `↑` / `↓` in the filter box to step through earlier filters. The history keeps the last 20 filters.
+
+## Limits
+
+- The view keeps the most recent 20,000 lines.
+- One device at a time.
+- No package or process picker, no saved filter presets and no export of the log.

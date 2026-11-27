@@ -5,17 +5,18 @@
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
+import { useEditorRegistry } from "@/editor/api";
 import { onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { FloatingToolbar, IconButton } from "@/ui";
-import { browserIcon, openInBrowser, useBrowsers, useWebPreview, webUrl } from "./browsers";
+import { browserIcon, isWebResource, openInBrowser, useBrowsers, useWebPreview, webUrl } from "./browsers";
 import styles from "./Web.module.css";
 import { tx } from "@/platform/i18n";
 
 const RELOAD_DELAY = 250;
 
-export function WebEditor({ path, children }: { path: string; tabId: string; children: ReactNode }) {
-  const preview = useWebPreview((s) => !!s[path]);
+export function WebEditor({ path, tabId, children }: { path: string; tabId: string; children: ReactNode }) {
+  const preview = useWebPreview((s) => !!s[tabId]);
   const browsers = useBrowsers((s) => s.list);
   const ref = useRef<HTMLDivElement>(null);
   return (
@@ -29,7 +30,7 @@ export function WebEditor({ path, children }: { path: string; tabId: string; chi
               size="small"
               iconSize={16}
               action="web.togglePreview"
-              actionArg={path}
+              actionArg={tabId}
               pressed={preview}
               title="Built-in Preview"
             />
@@ -68,19 +69,23 @@ function WebPreview({ path }: { path: string }) {
     };
   }, [path]);
 
-  // Saved edits anywhere in the project (scripts, styles) reload the page.
+  // Saved edits to the page or the project's web resources (scripts, styles, images) reload it;
+  // other files (notes, sources the page doesn't load) leave its state alone.
   useEffect(() => {
     const scope = root ?? path.slice(0, path.lastIndexOf("/"));
+    const affects = (p: string) => p === path || ((p.startsWith(scope + "/") || p === scope) && isWebResource(p));
     let timer: ReturnType<typeof setTimeout> | undefined;
     const reload = () => {
       clearTimeout(timer);
       timer = setTimeout(() => setSeq((n) => n + 1), RELOAD_DELAY);
     };
     const offFs = onIdeEvent("fsChanged", (e) => {
-      if ([...e.created, ...e.modified, ...e.removed].some((p) => p === scope || p.startsWith(scope + "/"))) reload();
+      if ([...e.created, ...e.modified, ...e.removed].some(affects)) reload();
     });
     const offDirty = onIdeEvent("docDirty", (e) => {
-      if (!e.dirty) reload();
+      if (e.dirty) return;
+      const saved = [...useEditorRegistry.getState().editors].find((ed) => ed.ctx.doc === e.doc)?.ctx.path;
+      if (!saved || affects(saved)) reload();
     });
     return () => {
       clearTimeout(timer);

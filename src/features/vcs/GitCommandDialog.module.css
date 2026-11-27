@@ -1,0 +1,48 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  font-size: var(--fs-ui);
+}
+
+.source,
+.command,
+.rebaseBase {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.source > .repository {
+  flex: 1 1 124px;
+}
+
+.command,
+.noRemotes {
+  flex: 4 1 352px;
+}
+
+.verb {
+  flex: none;
+  color: var(--fg-secondary);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.command > .remote {
+  flex: 1 1 104px;
+}
+
+.command > .branch,
+.rebaseBase > .branch {
+  flex: 3 1 208px;
+}
+
+.message {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}

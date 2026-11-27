@@ -17,22 +17,31 @@
 
 pub mod archive;
 mod bundled;
+mod dotnet;
 pub mod formatter;
 pub mod jdk;
+pub mod mirror;
+mod moved_venv;
 pub mod platform;
+#[cfg(any(windows, test))]
+pub mod portable_update;
 mod process;
 pub mod registry;
 pub mod server;
 pub mod sources;
 
 use ide_core::error::ErrorKind;
+use ide_core::settings::ToolDownloadSettings;
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use ide_language::LanguageConfig;
 use parking_lot::Mutex;
 use platform::{Os, Platform};
 pub use process::progress_event;
-pub use process::{Emit, Http, run_streamed};
-use process::{run_collect, run_quiet};
+pub use process::{
+    Emit, Http, PUBLIC_NPM_REGISTRY, is_npm_registry_miss, npm_public_registry_args, run_npm_with_public_fallback,
+    run_quiet, run_streamed,
+};
+use process::{run_collect, run_streamed_picking};
 pub use registry::{Method, ReleaseSource, TOOLS, ToolKind, ToolSpec};
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -44,6 +53,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
+
+pub use moved_venv::drop_moved_venvs;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -90,6 +101,10 @@ pub struct ToolInfo {
     /// The interchangeable servers this one belongs to, in preference order: a
     /// server and the `fallback` ones after it. Empty when it has none.
     pub alternatives: Vec<String>,
+    /// A language server used for part of what its languages need (`features` in its
+    /// definition: pylsp-rope's refactorings next to basedpyright). Not offered for install
+    /// when missing; the Language Servers page lists it.
+    pub companion: bool,
 }
 
 /// Streamed install progress.
@@ -100,6 +115,17 @@ pub enum InstallEvent {
     Line { text: String },
     /// Download progress; `fraction` is 0..1 when the size is known.
     Progress { fraction: Option<f64>, message: String },
+}
+
+/// A newer version of a tool the IDE installed, as its install source offers it now.
+#[derive(Clone, Debug, PartialEq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolUpdate {
+    pub name: String,
+    /// The installed version.
+    pub current: String,
+    /// The version installing the tool again would get.
+    pub latest: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -154,7 +180,11 @@ fn managed_bin_dir(root: &Path, spec: &ToolSpec, platform: Platform) -> Option<P
         Method::PipVenv { .. } => {
             Some(root.join(spec.name).join("venv").join(if platform.os == Os::Windows { "Scripts" } else { "bin" }))
         }
-        Method::Bundled { .. } | Method::Rustup { .. } | Method::PipUser { .. } | Method::PipTarget { .. } => None,
+        Method::Bundled { .. }
+        | Method::Rustup { .. }
+        | Method::PipUser { .. }
+        | Method::PipTarget { .. }
+        | Method::GemActive { .. } => None,
     }
 }
 
@@ -314,6 +344,7 @@ struct Usage {
     args: Vec<String>,
     initialization_options: Option<String>,
     alternatives: Vec<String>,
+    companion: bool,
 }
 
 fn usages(langs: &[LanguageConfig]) -> BTreeMap<String, Usage> {
@@ -345,6 +376,11 @@ fn usages(langs: &[LanguageConfig]) -> BTreeMap<String, Usage> {
             let name =
                 if servers.contains(d.adapter.as_str()) && d.command != d.adapter { &d.command } else { &d.adapter };
             add(name, &d.command, ToolKind::Debugger, d.install_hint.as_ref(), &l.name);
+        }
+    }
+    for s in langs.iter().flat_map(|l| &l.language_servers).filter(|s| !s.features.is_empty()) {
+        if let Some(u) = map.get_mut(&s.name) {
+            u.companion = true;
         }
     }
     for (plugin, host) in registry::PLUGIN_HOSTS {
@@ -417,6 +453,7 @@ pub fn managed_bundle(app_data: &Path, name: &str) -> Option<PathBuf> {
 }
 
 /// Installer and detector over one tools directory.
+#[derive(Clone)]
 pub struct Tools {
     root: PathBuf,
     /// Search path for system tools (excludes our own dirs).
@@ -428,7 +465,14 @@ pub struct Tools {
     custom: BTreeMap<String, PathBuf>,
     /// Executables found outside the search path (app bundles), by command.
     found: BTreeMap<String, PathBuf>,
+    runtime_commands: BTreeMap<String, PathBuf>,
+    runtime_env: BTreeMap<String, String>,
     version_timeout: Duration,
+    /// The project the tools are used for: tools that install into "the active runtime" (gems) run here,
+    /// so a version manager picks the project's Ruby.
+    work_dir: Option<PathBuf>,
+    /// Tools › Download sources: the mirror prefix and its fallback behaviour.
+    downloads: ToolDownloadSettings,
 }
 
 impl Tools {
@@ -449,8 +493,46 @@ impl Tools {
             platform,
             custom: BTreeMap::new(),
             found: BTreeMap::new(),
+            runtime_commands: BTreeMap::new(),
+            runtime_env: BTreeMap::new(),
             version_timeout: Duration::from_secs(4),
+            work_dir: None,
+            downloads: ToolDownloadSettings::default(),
         }
+    }
+
+    /// [`Self::downloads`] from Tools › Download sources.
+    pub fn with_downloads(mut self, downloads: ToolDownloadSettings) -> Self {
+        self.downloads = downloads;
+        self
+    }
+
+    /// Applies the project's SDKs to prerequisite lookup, probes and installer children.
+    pub fn with_runtime(mut self, commands: BTreeMap<String, PathBuf>, env: BTreeMap<String, String>) -> Self {
+        self.runtime_commands = commands;
+        self.runtime_env = env;
+        self
+    }
+
+    fn for_method(&self, method: Method) -> Self {
+        let commands: &[&str] = match method {
+            Method::Go { .. } => &["go"],
+            Method::Npm { .. } => &["node"],
+            Method::Gem { .. } | Method::GemActive { .. } => &["ruby"],
+            Method::PipVenv { .. } | Method::PipUser { .. } | Method::PipTarget { .. } => &["python"],
+            _ => &[],
+        };
+        let mut runtime = self.clone();
+        runtime.runtime_commands.retain(|name, _| commands.contains(&name.as_str()));
+        runtime.runtime_env.retain(|name, _| name == "GOROOT" && commands.contains(&"go"));
+        let dirs: Vec<PathBuf> =
+            runtime.runtime_commands.values().filter_map(|p| p.parent().map(Path::to_path_buf)).collect();
+        runtime.system_path =
+            std::env::join_paths(dirs.iter().cloned().chain(std::env::split_paths(&self.system_path)))
+                .unwrap_or_else(|_| self.system_path.clone());
+        runtime.child_path = std::env::join_paths(dirs.iter().cloned().chain(std::env::split_paths(&self.child_path)))
+            .unwrap_or_else(|_| self.child_path.clone());
+        runtime
     }
 
     /// Reports the executables chosen in settings (command → path) as the tools' location.
@@ -465,11 +547,33 @@ impl Tools {
         self
     }
 
+    /// Runs per-project installs (see [`registry::Method::GemActive`]) in `dir`.
+    pub fn with_work_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.work_dir = dir.filter(|d| d.is_dir());
+        self
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
 
+    pub(crate) fn http(&self) -> IdeResult<Http> {
+        Ok(Http::new(&self.system_path)?.with_gh_from(&self.child_path))
+    }
+
+    /// [`Tools::command`] in the project directory.
+    fn command_in_project(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
+        let mut cmd = self.command(program);
+        if let Some(dir) = &self.work_dir {
+            cmd.current_dir(dir);
+        }
+        cmd
+    }
+
     fn which(&self, cmd: &str) -> Option<PathBuf> {
+        if let Some(path) = self.runtime_commands.get(cmd) {
+            return path.is_file().then(|| path.clone());
+        }
         ide_core::tool_path::find_command(cmd, &self.system_path, &self.root)
     }
 
@@ -479,7 +583,7 @@ impl Tools {
 
     fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
         let mut cmd = Command::new(program);
-        ide_core::process::prepare(&mut cmd).env("PATH", &self.child_path);
+        ide_core::process::prepare(&mut cmd).envs(&self.runtime_env).env("PATH", &self.child_path);
         cmd
     }
 
@@ -501,6 +605,9 @@ impl Tools {
     /// Aliases that only open the Store unless the Store's Python is installed, so they count
     /// only when they run.
     fn python(&self) -> Option<PathBuf> {
+        if self.runtime_commands.contains_key("python") {
+            return self.which("python");
+        }
         if self.platform.os != Os::Windows {
             return self.which_any(&["python3", "python"]);
         }
@@ -614,7 +721,9 @@ impl Tools {
                 "npm or pnpm is required: install Node.js (https://nodejs.org)",
             ),
             Method::Go { .. } => need(self.which("go").is_some(), "Go is required (https://go.dev/dl)"),
-            Method::Gem { .. } => need(self.which("gem").is_some(), "Ruby is required (https://www.ruby-lang.org)"),
+            Method::Gem { .. } | Method::GemActive { .. } => {
+                need(self.which("gem").is_some(), "Ruby is required (https://www.ruby-lang.org)")
+            }
             Method::DotnetTool { .. } => {
                 need(self.which("dotnet").is_some(), ".NET SDK is required (https://dotnet.microsoft.com/download)")
             }
@@ -639,6 +748,13 @@ impl Tools {
     }
 
     fn info_for(&self, name: &str, usage: Option<&Usage>) -> Option<ToolInfo> {
+        match registry::find(name) {
+            Some(spec) => self.for_method(spec.method).info_for_runtime(name, usage),
+            None => self.info_for_runtime(name, usage),
+        }
+    }
+
+    fn info_for_runtime(&self, name: &str, usage: Option<&Usage>) -> Option<ToolInfo> {
         let spec = registry::find(name);
         let languages = usage.map(|u| u.languages.clone()).unwrap_or_default();
         let install_hint = usage.and_then(|u| u.install_hint.clone());
@@ -665,6 +781,7 @@ impl Tools {
                 default_args: u.args.clone(),
                 default_initialization_options: u.initialization_options.clone(),
                 alternatives: u.alternatives.clone(),
+                companion: u.companion,
             })
             .map(|info| self.apply_custom(info, None));
         };
@@ -691,6 +808,7 @@ impl Tools {
             default_args: usage.map(|u| u.args.clone()).unwrap_or_default(),
             default_initialization_options: usage.and_then(|u| u.initialization_options.clone()),
             alternatives: usage.map(|u| u.alternatives.clone()).unwrap_or_default(),
+            companion: usage.is_some_and(|u| u.companion),
         })
         .map(|info| self.apply_custom(info, Some(spec)))
     }
@@ -772,7 +890,23 @@ impl Tools {
                     _ => (ToolStatus::Missing, None, None),
                 }
             }
-            _ => match self.which(main) {
+            Method::GemActive { gem } => {
+                // Installed for the Ruby active in the project, not merely a shim of some other version's.
+                let Some(gem_cmd) = self.which("gem") else { return (ToolStatus::Missing, None, None) };
+                let mut c = self.command_in_project(&gem_cmd);
+                c.args(["list", "--exact", gem]);
+                match run_quiet(c, Duration::from_secs(10)) {
+                    Some((true, out)) if out.contains(&format!("{gem} (")) => {
+                        // Homebrew's Ruby keeps its gem bindir off PATH: ask the Ruby where it is.
+                        match self.gem_executable(main) {
+                            Some(path) => (ToolStatus::OnPath, Some(path), parse_version(&out)),
+                            None => (ToolStatus::Missing, None, None),
+                        }
+                    }
+                    _ => (ToolStatus::Missing, None, None),
+                }
+            }
+            _ => match self.which(main).or_else(|| self.found.get(main).cloned()) {
                 Some(path) => {
                     let version = self.query_version(spec, &path);
                     (ToolStatus::OnPath, Some(path), version)
@@ -828,6 +962,19 @@ impl Tools {
         cancel: &CancellationToken,
         emit: Emit,
     ) -> IdeResult<ToolInfo> {
+        match registry::find(name) {
+            Some(spec) => self.for_method(spec.method).install_for_runtime(name, langs, cancel, emit),
+            None => self.install_for_runtime(name, langs, cancel, emit),
+        }
+    }
+
+    fn install_for_runtime(
+        &self,
+        name: &str,
+        langs: &[LanguageConfig],
+        cancel: &CancellationToken,
+        emit: Emit,
+    ) -> IdeResult<ToolInfo> {
         let spec = registry::find(name).ok_or_else(|| {
             let hint = usages(langs).get(name).and_then(|u| u.install_hint.clone());
             IdeError::unavailable(match hint {
@@ -868,6 +1015,7 @@ impl Tools {
                 Method::Npm { packages } => self.install_npm(packages, cancel, emit)?,
                 Method::Go { module } => self.install_go(spec, module, cancel, emit)?,
                 Method::Gem { gem } => self.install_gem(spec, gem, cancel, emit)?,
+                Method::GemActive { gem } => self.install_gem_active(gem, cancel, emit)?,
                 Method::DotnetTool { package } => self.install_dotnet_tool(spec, package, cancel, emit)?,
                 Method::PipVenv { package } => self.install_venv(spec, package, cancel, emit)?,
                 Method::PipUser { package, .. } => self.install_pip_user(package, cancel, emit)?,
@@ -916,15 +1064,29 @@ impl Tools {
     fn install_npm(&self, packages: &[&str], cancel: &CancellationToken, emit: Emit) -> IdeResult<()> {
         let (manager, pnpm) = self.npm_manager()?;
         self.ensure_package_json()?;
-        let mut c = self.command(manager);
-        let specs = packages.iter().map(|p| if npm_name(p) == *p { format!("{p}@latest") } else { p.to_string() });
-        if pnpm {
-            c.arg("add").arg("--dir").arg(&self.root).args(specs);
-        } else {
-            c.args(["install", "--no-fund", "--no-audit", "--loglevel=http", "--prefix"]).arg(&self.root).args(specs);
-        }
-        c.current_dir(&self.root);
-        run_streamed(c, cancel, emit).map(drop)
+        let specs: Vec<String> =
+            packages.iter().map(|p| if npm_name(p) == *p { format!("{p}@latest") } else { (*p).to_string() }).collect();
+        run_npm_with_public_fallback(
+            |extra| {
+                let mut c = self.command(&manager);
+                if pnpm {
+                    c.arg("add").arg("--dir").arg(&self.root).args(extra).args(&specs);
+                } else {
+                    c.args(["install", "--no-fund", "--no-audit", "--loglevel=http", "--prefix"])
+                        .arg(&self.root)
+                        .args(extra)
+                        .args(&specs);
+                }
+                c.current_dir(&self.root);
+                c
+            },
+            &specs,
+            pnpm,
+            !self.downloads.configured_registries_only,
+            cancel,
+            emit,
+        )
+        .map(drop)
     }
 
     fn install_go(&self, spec: &ToolSpec, module: &str, cancel: &CancellationToken, emit: Emit) -> IdeResult<()> {
@@ -951,6 +1113,41 @@ impl Tools {
             })
         });
         self.write_manifest(spec.name, &Manifest { version, source: Some(module.to_string()) })
+    }
+
+    /// Where the project's Ruby installs gem executables (`Gem.bindir`, `Gem.user_dir`'s `bin`).
+    fn gem_bin_dirs(&self) -> Vec<PathBuf> {
+        let Some(ruby) = self.which("ruby") else { return Vec::new() };
+        let mut c = self.command_in_project(ruby);
+        c.args(["-e", ide_core::tool_path::RUBY_GEM_BIN_SCRIPT]);
+        match run_quiet(c, Duration::from_secs(10)) {
+            Some((true, out)) => ide_core::tool_path::gem_bin_dirs(&out),
+            _ => Vec::new(),
+        }
+    }
+
+    /// An installed gem's executable: on the search path, else in one of the Ruby's gem bin directories.
+    fn gem_executable(&self, cmd: &str) -> Option<PathBuf> {
+        self.which(cmd).or_else(|| self.gem_bin_dirs().iter().find_map(|d| self.exe_in(d, cmd)))
+    }
+
+    /// `gem install` into the active Ruby, then makes version-manager shims see the new executable.
+    fn install_gem_active(&self, gem: &str, cancel: &CancellationToken, emit: Emit) -> IdeResult<()> {
+        let mut c = self.command_in_project(self.which("gem").expect("checked"));
+        c.args(["install", "--no-document", gem]);
+        run_streamed(c, cancel, emit)?;
+        // mise / asdf / rbenv list executables in shims written at install time; a gem installed
+        // afterwards has none until they are regenerated. Best effort: the tool may not be installed.
+        for (manager, args) in
+            [("mise", &["reshim"][..]), ("asdf", &["reshim", "ruby"][..]), ("rbenv", &["rehash"][..])]
+        {
+            if let Some(path) = self.which(manager) {
+                let mut c = self.command_in_project(path);
+                c.args(args);
+                let _ = run_quiet(c, Duration::from_secs(30));
+            }
+        }
+        Ok(())
     }
 
     fn install_gem(&self, spec: &ToolSpec, gem: &str, cancel: &CancellationToken, emit: Emit) -> IdeResult<()> {
@@ -999,9 +1196,13 @@ impl Tools {
         let tool = dir.join("tool");
         std::fs::create_dir_all(&tool)?;
         let dotnet = self.which("dotnet").expect("checked");
+        let version = self.dotnet_tool_version(spec, package, &dotnet, cancel, emit)?;
         let mut c = self.command(&dotnet);
-        c.args(["tool", "install", package, "--tool-path"]).arg(&tool);
-        let result = run_streamed(c, cancel, emit).and_then(|_| {
+        c.args(["tool", "install", package, "--tool-path"]).arg(&tool).args(["--verbosity", "normal"]);
+        if let Some(version) = &version {
+            c.args(["--version", version]);
+        }
+        let result = run_streamed_picking(c, cancel, emit, dotnet::nuget_errors).and_then(|_| {
             // The tool's apphost looks for .NET in the default location only; a
             // Homebrew / user-local SDK must be named through DOTNET_ROOT.
             let root = self.dotnet_root(&dotnet);
@@ -1033,6 +1234,59 @@ impl Tools {
         self.write_manifest(spec.name, &Manifest { version, source: Some(format!("nuget:{package}")) })
     }
 
+    /// The `--version` to install `package` with: `None` for the latest, or the newest version
+    /// the installed SDK supports. Fails when there is no SDK, or no version runs on it.
+    fn dotnet_tool_version(
+        &self,
+        spec: &ToolSpec,
+        package: &str,
+        dotnet: &Path,
+        cancel: &CancellationToken,
+        emit: Emit,
+    ) -> IdeResult<Option<String>> {
+        let mut c = self.command(dotnet);
+        c.arg("--list-sdks");
+        let Some((true, out)) = run_quiet(c, Duration::from_secs(20)) else { return Ok(None) };
+        let Some(sdk) = dotnet::newest_sdk(&out) else {
+            return Err(IdeError::unavailable(format!(
+                "{} needs the .NET SDK, but `dotnet --list-sdks` lists none. Install it from {}",
+                spec.display,
+                dotnet::SDK_DOWNLOAD_URL
+            )));
+        };
+        let pick = self
+            .http()
+            .and_then(|http| dotnet::pick_tool_version(package, sdk.major, |url| http.get_text(url, cancel)));
+        match pick {
+            Ok(dotnet::ToolPick::Latest) => Ok(None),
+            Ok(dotnet::ToolPick::Older { version, latest, needs }) => {
+                emit(InstallEvent::Line {
+                    text: format!(
+                        "{package} {latest} needs the .NET {needs} SDK, found {}; installing {version}, the newest version that runs on it",
+                        sdk.version
+                    ),
+                });
+                Ok(Some(version))
+            }
+            Ok(dotnet::ToolPick::Incompatible { latest, needs }) => Err(IdeError::unavailable(format!(
+                "{} {latest} requires the .NET {needs} SDK; found {}. Install it from {}",
+                spec.display,
+                sdk.version,
+                dotnet::SDK_DOWNLOAD_URL
+            ))),
+            Err(e) if e.kind == ErrorKind::Cancelled => Err(e),
+            Err(e) => {
+                emit(InstallEvent::Line {
+                    text: format!(
+                        "Could not check which {package} version runs on .NET {}: {}",
+                        sdk.version, e.message
+                    ),
+                });
+                Ok(None)
+            }
+        }
+    }
+
     /// The .NET install `dotnet` runs from: `Microsoft.NETCore.App 9.0.1 [<root>/shared/Microsoft.NETCore.App]`.
     fn dotnet_root(&self, dotnet: &Path) -> Option<PathBuf> {
         let mut c = self.command(dotnet);
@@ -1053,6 +1307,9 @@ impl Tools {
             if let Some(uv) = self.which("uv") {
                 let mut c = self.command(&uv);
                 c.arg("venv").arg(&venv);
+                if let Some(python) = self.runtime_commands.get("python") {
+                    c.arg("--python").arg(python);
+                }
                 run_streamed(c, cancel, emit)?;
                 let mut c = self.command(&uv);
                 c.args(["pip", "install", "--python"]).arg(&python).arg(package);
@@ -1104,6 +1361,42 @@ impl Tools {
         Err(IdeError::new(ErrorKind::Io, format!("pip install {package} failed ({status})")))
     }
 
+    /// A command running pip, before its arguments. The interpreter's own pip when it has one;
+    /// a virtualenv made by uv has none, so then pip through `uv tool run`, or another Python
+    /// on `PATH` that has it.
+    fn pip_command(&self, python: PathBuf, emit: Emit) -> Command {
+        let has_pip = |python: &Path| {
+            let mut c = self.python_command(python);
+            c.args(["-m", "pip", "--version"]);
+            run_quiet(c, Duration::from_secs(20)).is_some_and(|(ok, _)| ok)
+        };
+        let module = |python: &Path| {
+            let mut c = self.python_command(python);
+            c.args(["-m", "pip"]);
+            c
+        };
+        if has_pip(&python) {
+            return module(&python);
+        }
+        let note = format!("{} has no pip", python.display());
+        if let Some(uv) = self.which("uv") {
+            emit(InstallEvent::Line { text: format!("{note}; running pip with uv") });
+            // pip runs in uv's own Python: the same private working directory applies.
+            let mut c = self.python_command(uv);
+            c.args(["tool", "run", "pip"]);
+            return c;
+        }
+        let other = ["python3", "python"]
+            .into_iter()
+            .filter_map(|name| ide_core::tool_path::find_command(name, &self.system_path, &self.root))
+            .find(|p| *p != python && has_pip(p));
+        if let Some(other) = other {
+            emit(InstallEvent::Line { text: format!("{note}; using {}", other.display()) });
+            return module(&other);
+        }
+        module(&python)
+    }
+
     /// The universal (`py3-none-any`) wheel, so the copy works with every interpreter
     /// version a project selects, not just the one that installed it.
     fn install_pip_target(
@@ -1117,8 +1410,8 @@ impl Tools {
         let _ = std::fs::remove_dir_all(&dir);
         let lib = python_lib_dir(&self.root, spec.name);
         std::fs::create_dir_all(&lib)?;
-        let mut c = self.python_command(self.python().expect("checked"));
-        c.args(["-m", "pip", "install", "--disable-pip-version-check", "--no-deps", "--upgrade", "--target"])
+        let mut c = self.pip_command(self.python().expect("checked"), emit);
+        c.args(["install", "--disable-pip-version-check", "--no-deps", "--upgrade", "--target"])
             .arg(&lib)
             .args(["--only-binary=:all:", "--platform", "any", "--implementation", "py"])
             .arg(package);
@@ -1144,9 +1437,17 @@ impl Tools {
         cancel: &CancellationToken,
     ) -> IdeResult<sources::Download> {
         match source {
-            ReleaseSource::GitHub { repo } => {
-                let json = http.get_text(&sources::github_latest_url(repo), cancel)?;
-                sources::github_pick(&json, assets, self.platform)
+            ReleaseSource::Fixed { version, url, sha256 } => Ok(sources::Download {
+                version: version.into(),
+                name: url.rsplit('/').next().unwrap_or("download").into(),
+                url: url.into(),
+                size: None,
+                sha256: Some(sha256.into()),
+                checksum_url: None,
+            }),
+            ReleaseSource::GitHub { repo } => self.resolve_github_release(http, repo, None, assets, cancel),
+            ReleaseSource::GitHubTag { repo, tag } => {
+                self.resolve_github_release(http, repo, Some(tag), assets, cancel)
             }
             ReleaseSource::HashiCorp { product } => {
                 let json = http.get_text(&sources::hashicorp_latest_url(product), cancel)?;
@@ -1168,9 +1469,72 @@ impl Tools {
                 sources::openvsx_pick(&json, assets, self.platform)
             }
             ReleaseSource::MavenCentral { group, artifact } => {
+                if self.downloads.configured_registries_only {
+                    return Err(IdeError::unavailable(format!(
+                        "{group}:{artifact} is downloaded from Maven Central, and Settings › Tools › Download Mirrors \
+                         allows only the configured package registries"
+                    )));
+                }
                 let xml = http.get_text(&sources::maven_metadata_url(group, artifact), cancel)?;
                 sources::maven_pick(group, artifact, &xml)
             }
+        }
+    }
+
+    fn resolve_github_release(
+        &self,
+        http: &Http,
+        repo: &str,
+        tag: Option<&str>,
+        assets: &[platform::AssetRule],
+        cancel: &CancellationToken,
+    ) -> IdeResult<sources::Download> {
+        let api_url = tag.map_or_else(|| sources::github_latest_url(repo), |tag| sources::github_tag_url(repo, tag));
+        match http.get_text(&api_url, cancel) {
+            Ok(json) => sources::github_pick(&json, assets, self.platform),
+            Err(e) if e.kind == ErrorKind::Cancelled => Err(e),
+            // Shared IP addresses can run out of unauthenticated API requests (403/429).
+            Err(api) => self.resolve_github_web(http, repo, tag, assets, cancel).map_err(|web| {
+                if web.kind == ErrorKind::Cancelled {
+                    return web;
+                }
+                let page = tag.map_or_else(|| sources::github_latest_page(repo), |tag| sources::github_tag_page(repo, tag));
+                tracing::warn!("GitHub release lookup for {repo} failed: {api}; web pages: {web}");
+                IdeError::new(
+                    api.kind,
+                    format!(
+                        "{}\nDownload it from {page} and set its Path in Settings › Languages & Frameworks › Language Servers.",
+                        api.message
+                    ),
+                )
+            }),
+        }
+    }
+
+    /// Resolve a GitHub release from its web pages when the API is unavailable.
+    fn resolve_github_web(
+        &self,
+        http: &Http,
+        repo: &str,
+        tag: Option<&str>,
+        assets: &[platform::AssetRule],
+        cancel: &CancellationToken,
+    ) -> IdeResult<sources::Download> {
+        let tag = match tag {
+            Some(tag) => tag.to_owned(),
+            None => {
+                let page = http.effective_url(&sources::github_latest_page(repo), cancel)?;
+                sources::github_tag_from_url(&page)
+                    .ok_or_else(|| IdeError::unavailable(format!("{repo} has no published release")))?
+            }
+        };
+        let list = http.get_text(&sources::github_assets_page(repo, &tag), cancel)?;
+        match sources::github_pick_web(repo, &tag, &list, None, assets, self.platform) {
+            Err(e) if e.kind == ErrorKind::Unavailable => {
+                let notes = http.get_text(&sources::github_tag_page(repo, &tag), cancel)?;
+                sources::github_pick_web(repo, &tag, &list, Some(&notes), assets, self.platform)
+            }
+            result => result,
         }
     }
 
@@ -1183,8 +1547,12 @@ impl Tools {
         cancel: &CancellationToken,
         emit: Emit,
     ) -> IdeResult<()> {
-        let http = Http::new(&self.system_path)?;
-        emit(InstallEvent::Line { text: "Resolving the latest release…".into() });
+        let http = self.http()?;
+        let message = match source {
+            ReleaseSource::GitHubTag { tag, .. } => format!("Resolving release {tag}…"),
+            _ => "Resolving the latest release…".into(),
+        };
+        emit(InstallEvent::Line { text: message });
         let dl = self.resolve_release(&http, source, assets, cancel)?;
         emit(InstallEvent::Line { text: format!("Downloading {} ({})", dl.name, dl.url) });
         let staging = self.root.join(format!(".staging-{}", spec.name));
@@ -1206,12 +1574,14 @@ impl Tools {
         cancel: &CancellationToken,
         emit: Emit,
     ) -> IdeResult<()> {
-        let archive = fetch_verified(http, dl, staging, cancel, emit)?;
+        let archive = fetch_verified(&self.downloads, http, dl, staging, cancel, emit)?;
         emit(InstallEvent::Line { text: "Extracting…".into() });
         let pkg = staging.join("pkg");
         let kind = archive::ArchiveKind::from_name(&dl.name);
         let main = spec.commands[0];
-        let exe_name = self.platform.exe(main);
+        // A PHP archive keeps its name and runs through `php` (Windows can't launch it itself).
+        let phar = dl.name.ends_with(".phar");
+        let exe_name = if phar { format!("{main}.phar") } else { self.platform.exe(main) };
         match kind {
             archive::ArchiveKind::Gz | archive::ArchiveKind::Raw => {
                 archive::extract(&archive, kind, &pkg.join("bin"), &exe_name, cancel)?
@@ -1232,10 +1602,16 @@ impl Tools {
             .ok_or_else(|| IdeError::new(ErrorKind::Io, format!("`{main}` was not found in {}", dl.name)))?;
         let rel = found.strip_prefix(&pkg).expect("inside pkg").to_path_buf();
         let final_dir = self.root.join(spec.name);
-        if final_dir.exists() {
-            std::fs::remove_dir_all(&final_dir)?;
-        }
-        std::fs::rename(&pkg, &final_dir)?;
+        // Downloads made by the IDE itself are not quarantined, but archives may carry the flag.
+        clear_quarantine(&pkg);
+        // The previous install is removed in the background once replaced: deleting a large
+        // tool takes a while, and there is nothing left to cancel by then.
+        let previous = self.root.join(format!(".previous-{}", spec.name));
+        let _ = std::fs::remove_dir_all(&previous);
+        put_in_place(&pkg, &final_dir, &previous, cancel)?;
+        std::thread::spawn(move || {
+            let _ = std::fs::remove_dir_all(previous);
+        });
         let target = final_dir.join(&rel);
         let bin = final_dir.join("bin");
         if is_bundle(main) {
@@ -1247,16 +1623,112 @@ impl Tools {
         } else {
             archive::make_executable(&target)?;
             if self.exe_in(&bin, main).as_deref() != Some(target.as_path()) {
-                archive::link_executable(&bin, main, &target)?;
+                if spec.name == "unity-debug" && cfg!(unix) {
+                    archive::link_executable_with_runtime(&bin, main, &target, Some("mono"))?;
+                } else if phar {
+                    archive::link_executable_with_runtime(&bin, main, &target, Some("php"))?;
+                } else {
+                    archive::link_executable(&bin, main, &target)?;
+                }
             }
         }
-        // Downloads made by the IDE itself are not quarantined, but archives may carry the flag.
-        clear_quarantine(&final_dir);
         self.write_manifest(spec.name, &Manifest { version: Some(dl.version.clone()), source: Some(dl.url.clone()) })
+    }
+
+    /// Newer versions of the tools the IDE installed into its tools folder, for the install
+    /// sources that can be asked: release downloads (GitHub, Open VSX, Maven Central, …) and
+    /// npm packages. A tool whose lookup fails (offline, rate limited) is left out.
+    pub fn updates(&self, cancel: &CancellationToken) -> IdeResult<Vec<ToolUpdate>> {
+        let installed: Vec<(&ToolSpec, Method, String)> = TOOLS
+            .iter()
+            .filter_map(|spec| {
+                let method = self.install_method(spec);
+                Some((spec, method, self.installed_version(spec, method)?))
+            })
+            .collect();
+        let updates = std::thread::scope(|scope| {
+            let lookups: Vec<_> = installed
+                .iter()
+                .map(|(spec, method, current)| {
+                    scope.spawn(move || match self.for_method(*method).latest_version(*method, cancel) {
+                        Ok(Some(latest)) if latest != *current => {
+                            Some(ToolUpdate { name: spec.name.into(), current: current.clone(), latest })
+                        }
+                        Ok(_) => None,
+                        Err(e) => {
+                            tracing::info!("update check for {}: {}", spec.name, e.message);
+                            None
+                        }
+                    })
+                })
+                .collect();
+            lookups.into_iter().filter_map(|lookup| lookup.join().ok().flatten()).collect()
+        });
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        Ok(updates)
+    }
+
+    /// The version of `spec` in the IDE's tools folder, when `method` (how it was installed)
+    /// can tell the latest one.
+    fn installed_version(&self, spec: &ToolSpec, method: Method) -> Option<String> {
+        match method {
+            Method::Release { .. } => {
+                managed_bin_dir(&self.root, spec, self.platform).and_then(|dir| self.exe_in(&dir, spec.commands[0]))?;
+                self.manifest(spec.name)?.version
+            }
+            // A pinned package (`typescript@6`) stays on its major version.
+            Method::Npm { packages } if npm_name(packages[0]) == packages[0] => self.npm_package_version(packages[0]),
+            _ => None,
+        }
+    }
+
+    /// The version installing with `method` would get now.
+    fn latest_version(&self, method: Method, cancel: &CancellationToken) -> IdeResult<Option<String>> {
+        match method {
+            Method::Release { source, assets, .. } => {
+                let http = self.http()?;
+                Ok(Some(self.resolve_release(&http, source, assets, cancel)?.version))
+            }
+            Method::Npm { packages } => {
+                let (manager, pnpm) = self.npm_manager()?;
+                let view = |extra: &[String]| {
+                    let mut c = self.command(&manager);
+                    c.args(["view", packages[0], "version"]).args(extra).current_dir(&self.root);
+                    run_quiet(c, Duration::from_secs(60))
+                };
+                // The registry the user's npm configuration names (a mirror, a proxy). A cold npm
+                // on a slow registry takes several seconds per package, more when run side by side.
+                let out = match view(&[]) {
+                    Some((true, out)) => Some(out),
+                    Some((false, out)) if !self.downloads.configured_registries_only && is_npm_registry_miss(&out) => {
+                        let extra = npm_public_registry_args([packages[0]], pnpm);
+                        view(&extra).and_then(|(ok, retry)| ok.then_some(retry))
+                    }
+                    _ => None,
+                };
+                match out {
+                    Some(out) => Ok(out.lines().map(str::trim).rfind(|l| !l.is_empty()).map(String::from)),
+                    None => Err(IdeError::unavailable(format!(
+                        "cannot look up the latest {} with npm (it uses the registry of the npm configuration: `npm config get registry`)",
+                        packages[0]
+                    ))),
+                }
+            }
+            _ => Ok(None),
+        }
     }
 
     /// Removes a tool the IDE installed.
     pub fn uninstall(&self, name: &str, langs: &[LanguageConfig]) -> IdeResult<ToolInfo> {
+        match registry::find(name) {
+            Some(spec) => self.for_method(spec.method).uninstall_for_runtime(name, langs),
+            None => self.uninstall_for_runtime(name, langs),
+        }
+    }
+
+    fn uninstall_for_runtime(&self, name: &str, langs: &[LanguageConfig]) -> IdeResult<ToolInfo> {
         let spec = registry::find(name).ok_or_else(|| IdeError::not_found(format!("unknown tool `{name}`")))?;
         // Uninstalling mid-install would tear down the directory under the running installer.
         if INSTALLING.lock().as_ref().is_some_and(|m| m.contains_key(name)) {
@@ -1310,6 +1782,18 @@ impl Tools {
                     run_streamed(c, &cancel, &quiet)?;
                 }
             }
+            Method::GemActive { gem } => {
+                if let Some(gem_cmd) = self.which("gem") {
+                    let mut c = self.command_in_project(&gem_cmd);
+                    c.args(["uninstall", "--all", "--executables", "--ignore-dependencies", gem]);
+                    run_streamed(c, &cancel, &quiet)?;
+                }
+                // A copy an older version installed under the tools directory.
+                let dir = self.root.join(spec.name);
+                if dir.exists() {
+                    std::fs::remove_dir_all(&dir)?;
+                }
+            }
             Method::Go { .. }
             | Method::Gem { .. }
             | Method::DotnetTool { .. }
@@ -1326,9 +1810,14 @@ impl Tools {
     }
 }
 
-/// Downloads `dl` into `staging` and checks its SHA-256 when one is published;
-/// returns the downloaded file.
+/// Downloads `dl` from the best source that answers (Tools › Download sources) and checks its
+/// SHA-256 when one is published; returns the downloaded file.
+///
+/// A mirror may only deliver bytes that can be checked: when neither the release nor its
+/// checksum file gives a hash, an archive from a mirror is discarded and the official host is
+/// tried, because a third party must not be the only word on what gets installed.
 fn fetch_verified(
+    downloads: &ToolDownloadSettings,
     http: &Http,
     dl: &sources::Download,
     staging: &Path,
@@ -1336,36 +1825,119 @@ fn fetch_verified(
     emit: Emit,
 ) -> IdeResult<PathBuf> {
     let archive = staging.join(&dl.name);
-    http.download(&dl.url, &archive, dl.size, cancel, emit)?;
-    let expected = match (&dl.sha256, &dl.checksum_url) {
-        (Some(h), _) => Some(h.clone()),
-        (None, Some(url)) => match http.get_text(url, cancel) {
-            Ok(text) => sources::parse_checksum(&text, &dl.name),
-            Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
-            Err(_) => None,
-        },
-        (None, None) => None,
-    };
-    match expected {
-        Some(expected) => {
-            let actual = sources::sha256_file(&archive)?;
-            if actual != expected {
-                return Err(IdeError::new(
-                    ErrorKind::Io,
-                    format!("checksum mismatch for {}: expected {expected}, got {actual}", dl.name),
-                ));
-            }
-            emit(InstallEvent::Line { text: "Checksum verified (SHA-256)".into() });
+    let candidates = mirror::candidates(&dl.url, downloads);
+    let expected = expected_sha256(http, dl, cancel)?;
+    let mut failures: Vec<String> = Vec::new();
+    for (index, candidate) in candidates.iter().enumerate() {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
         }
-        None => emit(InstallEvent::Line { text: "No checksum published; skipping verification".into() }),
+        // Bytes a failed source left behind must not be resumed or mistaken for this one's.
+        if index > 0 {
+            let _ = std::fs::remove_file(&archive);
+        }
+        // Only worth saying when there is a choice of source: with one candidate the line
+        // would just repeat the download message that follows.
+        if candidates.len() > 1 {
+            emit(InstallEvent::Line {
+                text: format!("Trying {} ({} of {})…", candidate.describe(), index + 1, candidates.len()),
+            });
+        }
+        let attempt = http.download(&candidate.url, &archive, dl.size, cancel, emit);
+        if let Some(mirror) = &candidate.mirror
+            && attempt.as_ref().err().is_none_or(|e| e.kind != ErrorKind::Cancelled)
+        {
+            mirror::report(mirror, attempt.is_ok());
+        }
+        match attempt {
+            Ok(()) => match check_sha256(&archive, dl, expected.as_deref(), candidate.mirror.is_some(), emit) {
+                Ok(()) => {
+                    if cancel.is_cancelled() {
+                        return Err(IdeError::cancelled());
+                    }
+                    return Ok(archive);
+                }
+                // A mismatch from a mirror is that mirror's failure: the official host below
+                // still gets its chance. From the official host it is the download's failure.
+                Err(e) if candidate.mirror.is_some() => {
+                    failures.push(format!("{}: {}", candidate.describe(), e.message))
+                }
+                Err(e) => return Err(e),
+            },
+            // Cancelling stops the install: the remaining sources are not tried.
+            Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
+            Err(e) => failures.push(format!("{}: {}", candidate.describe(), e.message)),
+        }
     }
-    if cancel.is_cancelled() {
-        return Err(IdeError::cancelled());
+    Err(IdeError::new(ErrorKind::Io, format!("could not download {} ({})", dl.name, failures.join("; "))))
+}
+
+/// The SHA-256 `dl` must match, when one is published.
+///
+/// The checksum file is read from its official URL, never through the mirror: otherwise a
+/// mirror could vouch for bytes it chose itself.
+fn expected_sha256(http: &Http, dl: &sources::Download, cancel: &CancellationToken) -> IdeResult<Option<String>> {
+    match (&dl.sha256, &dl.checksum_url) {
+        (Some(h), _) => Ok(Some(h.clone())),
+        (None, Some(url)) => match http.get_text(url, cancel) {
+            Ok(text) => Ok(sources::parse_checksum(&text, &dl.name)),
+            Err(e) if e.kind == ErrorKind::Cancelled => Err(e),
+            Err(_) => Ok(None),
+        },
+        (None, None) => Ok(None),
     }
-    Ok(archive)
+}
+
+/// Checks `archive` against `expected`, if any. `via_mirror` refuses an archive nothing can
+/// vouch for rather than installing unverifiable bytes from a third party.
+fn check_sha256(
+    archive: &Path,
+    dl: &sources::Download,
+    expected: Option<&str>,
+    via_mirror: bool,
+    emit: Emit,
+) -> IdeResult<()> {
+    let Some(expected) = expected else {
+        if via_mirror {
+            return Err(IdeError::new(
+                ErrorKind::Io,
+                format!("{} has no published checksum, so the mirror's copy is not trusted", dl.name),
+            ));
+        }
+        emit(InstallEvent::Line { text: "No checksum published; skipping verification".into() });
+        return Ok(());
+    };
+    let actual = sources::sha256_file(archive)?;
+    if actual != expected {
+        return Err(IdeError::new(
+            ErrorKind::Io,
+            format!("checksum mismatch for {}: expected {expected}, got {actual}", dl.name),
+        ));
+    }
+    emit(InstallEvent::Line { text: "Checksum verified (SHA-256)".into() });
+    Ok(())
 }
 
 /// Removes the quarantine flag archives may carry, so macOS runs what was unpacked.
+/// Moves the unpacked `pkg` to `dest`, moving a previous install aside to `aside`.
+/// Cancelling stops it until then: the last point where the previous install is untouched.
+fn put_in_place(pkg: &Path, dest: &Path, aside: &Path, cancel: &CancellationToken) -> IdeResult<()> {
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    let replaced = dest.exists();
+    if replaced {
+        std::fs::rename(dest, aside)?;
+    }
+    if let Err(e) = std::fs::rename(pkg, dest) {
+        if replaced {
+            let _ = std::fs::rename(aside, dest);
+        }
+        return Err(e.into());
+    }
+    Ok(())
+}
+
 fn clear_quarantine(dir: &Path) {
     #[cfg(target_os = "macos")]
     {

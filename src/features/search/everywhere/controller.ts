@@ -16,22 +16,27 @@ import type {
   SymbolMatch,
   WorkspaceSymbol,
 } from "@/platform/ipc";
-import type { EndpointEntry, SettingsSearchEntry } from "@/workbench/contributions";
+import type { SearchCategory, EndpointEntry, SettingsSearchEntry } from "@/workbench/contributions";
 import { parseLocationQuery } from "../common/query";
 import { matchRoutes } from "./routes";
 import { passesFilter, type ResolvedFilter } from "./filters";
 import {
+  isCustomTab,
   ALL_TAB_LIMIT,
   RECENT_LIMIT,
   TAB_LIMIT,
   actionItem,
   fileItem,
+  folderItem,
   matchActions,
+  matchOutsideFiles,
   matchSettings,
   mergeActionResults,
   mergeSymbols,
   sectionsFor,
+  splitSymbolQuery,
   textItems,
+  type OutsideFile,
   type SeItem,
   type SeTab,
   type SectionId,
@@ -40,6 +45,10 @@ import {
 
 export interface SeDeps {
   findFiles(query: string, limit: number): Promise<FileMatch[]>;
+  /** Directories by name or path (`relPath` ending in `/`), listed with the files. */
+  findDirs?(query: string, limit: number): Promise<FileMatch[]>;
+  /** Files outside the project index listed with its matches (Scratches). */
+  outsideFiles?(): Promise<OutsideFile[]>;
   findSymbols(query: string, filter: SymbolFilter, limit: number): Promise<SymbolMatch[]>;
   /** Optional language-server symbols; rejects with `unavailable` when no server. */
   workspaceSymbols?(request: RequestId, query: string): Promise<WorkspaceSymbol[]>;
@@ -59,6 +68,7 @@ export interface SeDeps {
   inFileSet?(set: ProjectFileSet, path: string): boolean;
   /** Endpoints of the project, for request-path matches. */
   routes?(): Promise<EndpointEntry[]>;
+  categories?(): readonly SearchCategory[];
 }
 
 export interface SeRequest {
@@ -91,8 +101,11 @@ export const TEXT_MIN_QUERY = 2;
 
 export function sectionLimit(tab: SeTab, section: SectionId, extra: number): number {
   if (section === "recent" || section === "recentActions") return RECENT_LIMIT + extra;
-  return (tab === "all" ? ALL_TAB_LIMIT : TAB_LIMIT) + extra;
+  const limit = (tab === "all" ? ALL_TAB_LIMIT : TAB_LIMIT) + extra;
+  return isCustomTab(section) ? Math.min(200, limit) : limit;
 }
+
+const LITERAL_SECTIONS: ReadonlySet<SectionId> = new Set(["endpoints", "actions", "text"]);
 
 export class SeController {
   private gen = 0;
@@ -111,13 +124,38 @@ export class SeController {
     private readonly onChange: (s: SeSnapshot) => void,
   ) {}
 
+  invalidateEndpoints() {
+    this.signatures.delete("endpoints");
+  }
+
+  invalidateCategories() {
+    for (const id of this.sections.keys())
+      if (isCustomTab(id)) {
+        this.cancelSection(id);
+        this.sections.delete(id);
+        this.signatures.delete(id);
+      }
+    this.notify();
+  }
+
+  invalidateFiles() {
+    for (const id of ["files", "classes", "symbols", "text"] as const) this.signatures.delete(id);
+  }
+
   run(req: SeRequest) {
     const gen = ++this.gen;
     this.disposed = false;
     this.req = { query: req.query, tab: req.tab };
     const parsed = parseLocationQuery(req.query, this.deps.root());
     const text = parsed.text.trim();
-    const wanted = sectionsFor(req.tab, !text);
+    // `File.kt:42` is a location only where a result opens at it; text, actions,
+    // endpoints and plugin categories match the query as typed (`localhost:8080`).
+    const raw = req.query.trim();
+    const queryOf = (id: SectionId) => (LITERAL_SECTIONS.has(id) || isCustomTab(id) ? raw : text);
+    const wanted =
+      isCustomTab(req.tab) && !this.deps.categories?.().some((c) => c.id === req.tab)
+        ? []
+        : sectionsFor(req.tab, !(req.tab === "all" ? text : queryOf(req.tab)));
     this.started = this.deps.now();
     this.elapsed = null;
 
@@ -143,9 +181,13 @@ export class SeController {
       this.signatures.set(id, sig);
       this.cancelSection(id);
       const prev = this.sections.get(id);
-      this.sections.set(id, { items: prev?.items ?? [], hasMore: prev?.hasMore ?? false, loading: true });
+      this.sections.set(id, {
+        items: isCustomTab(id) ? [] : (prev?.items ?? []),
+        hasMore: isCustomTab(id) ? false : (prev?.hasMore ?? false),
+        loading: true,
+      });
       this.live.set(id, gen);
-      void this.start(id, gen, { text, line: parsed.line, col: parsed.col, req, limit });
+      void this.start(id, gen, { text: queryOf(id), line: parsed.line, col: parsed.col, req, limit });
     }
     this.notify();
   }
@@ -212,6 +254,50 @@ export class SeController {
   ) {
     const { text, limit, req } = q;
     try {
+      if (isCustomTab(id)) {
+        const category = this.deps.categories?.().find((c) => c.id === id);
+        if (!category) {
+          this.set(id, gen, [], false, false);
+          return;
+        }
+        const page = await category.search(this.track(id), req.query, limit);
+        const root = this.deps.root();
+        const items: SeItem[] = page.items.slice(0, limit).map((item): SeItem => {
+          const key = `${id}:${item.id}`;
+          if (item.target.kind === "location") {
+            const loc = item.target.value;
+            return {
+              kind: "symbol",
+              key,
+              name: item.title,
+              display: item.title,
+              symbolKind: "function",
+              container: item.description,
+              path: loc.path,
+              rel: root && loc.path.startsWith(`${root}/`) ? loc.path.slice(root.length + 1) : loc.path,
+              line: loc.range.start.line,
+              col: loc.range.start.col,
+              indices: [],
+            };
+          }
+          const target = item.target.value;
+          const action = category.command(target.id);
+          return {
+            kind: "action",
+            key,
+            id: action?.id ?? key,
+            title: item.title,
+            run: action ? (ctx) => action.run({ ctx, arg: target.arg ?? undefined }) : undefined,
+            description: item.description ?? undefined,
+            category: item.description ?? undefined,
+            enabled: !!action && this.deps.isEnabled(action),
+            indices: [],
+            score: 0,
+          };
+        });
+        this.set(id, gen, items, page.hasMore && limit < 200, false);
+        return;
+      }
       switch (id) {
         case "recent": {
           const paths = await this.deps.recentFiles();
@@ -232,8 +318,9 @@ export class SeController {
             .recentActions()
             .map((aid) => byId.get(aid))
             .filter((a): a is Action => !!a && !a.hidden)
-            .slice(0, limit)
-            .map((a) => actionItem(a, this.deps.isEnabled(a)));
+            .map((a) => actionItem(a, this.deps.isEnabled(a)))
+            .filter((a) => a.enabled || req.includeDisabled !== false)
+            .slice(0, limit);
           this.set(id, gen, items, false, false);
           break;
         }
@@ -245,12 +332,27 @@ export class SeController {
               ? (path: string) => (!scope || scope(path)) && (!filter || passesFilter(filter, path))
               : null;
           // Over-fetch so a narrowed scope still fills the section.
-          const fetched = await this.deps.findFiles(text, keep ? limit * 4 + 1 : limit + 1);
-          const matches = keep ? fetched.filter((m) => keep(m.path)) : fetched;
+          const want = keep ? limit * 4 + 1 : limit + 1;
+          // Directories rank with the files (equal scores: the file first); a file type filter
+          // and a `File.kt:42` query ask for files only.
+          const withDirs = !!this.deps.findDirs && !!text && !filter && q.line === null;
+          const [indexed, dirs, outside] = await Promise.all([
+            this.deps.findFiles(text, want),
+            withDirs ? this.deps.findDirs!(text, want).catch(() => []) : [],
+            text && this.deps.outsideFiles ? this.deps.outsideFiles().catch(() => []) : [],
+          ]);
+          const fetched = outside.length ? [...indexed, ...matchOutsideFiles(outside, text)] : indexed;
+          const merged =
+            dirs.length || outside.length
+              ? [...fetched.map((m) => ({ m, folder: false })), ...dirs.map((m) => ({ m, folder: true }))].sort(
+                  (a, b) => b.m.score - a.m.score || Number(a.folder) - Number(b.folder),
+                )
+              : fetched.map((m) => ({ m, folder: false }));
+          const matches = keep ? merged.filter(({ m }) => keep(m.path)) : merged;
           this.set(
             id,
             gen,
-            matches.slice(0, limit).map((m) => fileItem(m, q.line, q.col)),
+            matches.slice(0, limit).map(({ m, folder }) => (folder ? folderItem(m) : fileItem(m, q.line, q.col))),
             matches.length > limit,
             false,
           );
@@ -331,7 +433,8 @@ export class SeController {
     };
     const lspPromise = this.deps.workspaceSymbols
       ? this.deps
-          .workspaceSymbols(this.track(id), text)
+          // Servers match names, not `Class::method`: ask for the name and filter by container.
+          .workspaceSymbols(this.track(id), splitSymbolQuery(text).name || text)
           .then((r) => {
             lsp = r;
           })

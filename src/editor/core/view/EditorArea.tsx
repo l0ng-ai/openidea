@@ -1,35 +1,54 @@
-import { useFilePresentationIcons } from "@/platform/filePresentation";
+import { ContributedToolbar } from "@/workbench/ContributedToolbar";
+import { useFilePresentations } from "@/ui/filePresentation";
 /**
  * The editor area: split layout of panes, each with IDEA-style tabs (preview
  * tab in italics, pinned tabs, modified dot, file icons coloured by file
  * decorations, middle-click close, Alt+click close others, double-click to
  * keep a preview / maximize the editor, context menu) and the active editor.
  */
-import { Fragment, useEffect, useMemo, useRef, useState, type FocusEvent, type ReactNode } from "react";
+import {
+  Fragment,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FocusEvent,
+  type ReactNode,
+} from "react";
 import clsx from "clsx";
 import { useShallow } from "zustand/react/shallow";
 import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { useEditorPrefs } from "@/platform/editorSettings";
 import { basename, dirname } from "@/platform/project";
+import { gitRevisionOf } from "@/platform/virtualDocs";
 import {
   EDITOR_TAB_MIME,
   acceptsEditorDrop,
   dropOnEditor,
+  editorDropAllowsSplit,
   getFileDecoration,
   prepareMenuGroups,
   textEditorWrapperFor,
+  EditorShownProvider,
+  EditorTabIdProvider,
   useContributions,
+  useEditorGroupPanels,
   useFileDecorations,
   useEditorDocumentRevision,
+  useEditorTabTitles,
   useTextEditorWrappers,
   type EditorInput,
+  type EditorKindContribution,
+  useEditorShown,
+  type TextEditorWrapperContribution,
 } from "@/workbench/contributions";
 import { useDistractionFree } from "@/workbench/distractionFree";
+import { useFileColors } from "@/workbench/fileColors";
 import { EmptyEditor } from "@/workbench/EditorArea";
 import {
   EmptyState,
-  Icon,
   IconButton,
   Menu,
   SplitGroup,
@@ -38,11 +57,20 @@ import {
   Tabs,
   showContextMenu,
   registerDropTarget,
+  useSelectionVisibility,
   FILES_DRAG,
   type TabItem,
   type TabsDnd,
 } from "@/ui";
-import { editorController, isTextInput, tabIcon, tabTitle, useTabs, type VirtualInputData } from "../controller";
+import {
+  editorController,
+  isTextInput,
+  tabIcon,
+  tabTitle,
+  tabTrailing,
+  useTabs,
+  type VirtualInputData,
+} from "../controller";
 import { useDocMeta } from "../model/document";
 import { inputDirty } from "../model/customDocuments";
 import type { LayoutNode, SplitEdge, Tab } from "../model/tabs";
@@ -52,8 +80,14 @@ import { TextEditorHost } from "./TextEditorHost";
 import { FindBar } from "./FindBar";
 import { EditorBanners, VirtualBanner } from "./Banner";
 import { CodeBreadcrumbs } from "./StatusItems";
+import { SideTabsResizer, useSideTabsStyle } from "./SideTabsResizer";
 import styles from "./EditorArea.module.css";
 import { tx } from "@/platform/i18n";
+
+/** The documents of a project-files drag: folders (trailing `/`) are not opened as editors. */
+function droppedFiles(payload: string): string[] {
+  return payload.split("\n").filter((p) => !!p && !p.endsWith("/"));
+}
 
 export function EditorAreaView() {
   const layout = useTabs((s) => s.layout);
@@ -74,19 +108,19 @@ function EmptyEditorArea() {
     const el = ref.current;
     if (!el) return;
     return registerDropTarget(el, {
-      accepts: (type) => type === EDITOR_TAB_MIME || type === FILES_DRAG || acceptsEditorDrop(type),
-      over: () => setOver(true),
+      accepts: (type, data) => type === EDITOR_TAB_MIME || type === FILES_DRAG || acceptsEditorDrop(type, data),
+      over: (data) => setOver(data.type !== FILES_DRAG || droppedFiles(data.payload).length > 0),
       leave: () => setOver(false),
       drop: (data) => {
         setOver(false);
         const paneId = Object.keys(useTabs.getState().panes)[0];
         if (!paneId) return;
         if (data.type === FILES_DRAG) {
-          void editorController().openFilesIn(data.payload.split("\n").filter(Boolean), paneId, "center");
+          void editorController().openFilesIn(droppedFiles(data.payload), paneId, "center");
           return;
         }
         if (data.type !== EDITOR_TAB_MIME) {
-          dropOnEditor(data);
+          dropOnEditor(data, { paneId, zone: "center", index: 0 });
           return;
         }
         const p = parseTabPayload(data.payload);
@@ -97,7 +131,7 @@ function EmptyEditorArea() {
   return (
     <div ref={ref} className={styles.area}>
       <EmptyEditor />
-      {over && <div className={clsx(styles.dropZone, styles["drop-center"])} aria-hidden="true" />}
+      {over && <div className={styles.dropZone} aria-hidden="true" />}
     </div>
   );
 }
@@ -139,7 +173,11 @@ function useTitleHints(): Map<string, string> {
       return out.sort();
     }),
   );
-  return useMemo(() => disambiguateTitles(paths), [paths]);
+  const labels = useFileDecorations(useShallow(() => paths.map((p) => getFileDecoration(p)?.tabTitle ?? basename(p))));
+  return useMemo(() => {
+    const byPath = new Map(paths.map((p, i) => [p, labels[i]!]));
+    return disambiguateTitles(paths, (p) => byPath.get(p) ?? basename(p));
+  }, [paths, labels]);
 }
 
 const virtualData = (input: EditorInput) => input.data as VirtualInputData | undefined;
@@ -150,6 +188,8 @@ function PaneView({ paneId }: { paneId: string }) {
   const isActivePane = useTabs((s) => s.activePane === paneId);
   const multiPane = useTabs((s) => s.layout.kind === "split");
   const kinds = useContributions((s) => s.editorKinds);
+  const wrappers = useTextEditorWrappers((s) => s.wrappers);
+  const titleRevision = useEditorTabTitles((s) => s.revision);
   const tabs = useMemo(() => pane?.tabs ?? [], [pane]);
   const paths = tabs.map((t) => t.input.path ?? "");
   const textDirty = useDocMeta(useShallow((s) => paths.map((p) => !!s[p]?.dirty)));
@@ -157,6 +197,10 @@ function PaneView({ paneId }: { paneId: string }) {
   const dirty = tabs.map((tab, i) => inputDirty(tab.input, kinds) ?? textDirty[i] ?? false);
   const colors = useFileDecorations(useShallow(() => paths.map((p) => (p ? (getFileDecoration(p)?.color ?? "") : ""))));
   const tints = useFileDecorations(useShallow(() => paths.map((p) => (p ? (getFileDecoration(p)?.tint ?? "") : ""))));
+  const tabLabels = useFileDecorations(useShallow(() => paths.map((p) => getFileDecoration(p)?.tabTitle)));
+  const tabIcons = useFileDecorations(useShallow(() => paths.map((p) => getFileDecoration(p)?.tabIcon)));
+  const errors = useFileDecorations(useShallow(() => paths.map((p) => !!p && !!getFileDecoration(p)?.error)));
+  const fileColors = useFileColors("editorTabs");
 
   const hints = useTitleHints();
   const [dropZone, setDropZone] = useState<DropZone | null>(null);
@@ -165,52 +209,77 @@ function PaneView({ paneId }: { paneId: string }) {
   const { showExtension, markModified, showCloseButton, showFileIcon, showDirectoryForNonUnique, showFullPathOnHover } =
     tabPrefs;
 
-  const fileIcons = useFilePresentationIcons(
-    showFileIcon ? tabs.flatMap((t) => (t.input.kind === "file" && t.input.path ? [t.input.path] : [])) : [],
+  const files = useFilePresentations(
+    tabs.flatMap((t) => (t.input.kind === "file" && t.input.path ? [t.input.path] : [])),
   );
   const items: TabItem[] = useMemo(() => {
+    // A kind's title may change without the tab state (a renamed agent task).
+    void titleRevision;
     const names = tabs.map((t) => tabTitle(t.input, kinds));
     return tabs.map((t, i) => {
       const full = names[i]!;
       const dot = full.lastIndexOf(".");
-      const name = t.input.kind === "file" && !showExtension && dot > 0 ? full.slice(0, dot) : full;
+      const name = tabLabels[i] ?? (t.input.kind === "file" && !showExtension && dot > 0 ? full.slice(0, dot) : full);
       const dupe = !showDirectoryForNonUnique
         ? null
         : t.input.kind === "file" && t.input.path
           ? (hints.get(t.input.path) ?? null)
           : names.filter((n) => n === name).length > 1 && t.input.path
-            ? basename(dirname(t.input.path))
+            ? (gitRevisionOf(t.input.path)?.revision.slice(0, 8) ?? basename(dirname(t.input.path)))
             : null;
+      const kindMark = tabTrailing(t.input, kinds);
+      const file = t.input.kind === "file" && t.input.path ? files.get(t.input.path) : undefined;
+      const title = markModified && dirty[i] ? `*${name}` : name;
+      const prefix = t.input.kind === "file" && dupe ? (dupe.endsWith("/") ? dupe : `${dupe}/`) : null;
       return {
         id: t.id,
-        label: (
+        label: prefix ? (
+          <span className={styles.tabPath}>
+            <span className={styles.tabDirectory}>
+              <span>{prefix}</span>
+            </span>
+            <span className={clsx(styles.tabFilename, file?.deprecated && styles.deprecated)}>{title}</span>
+          </span>
+        ) : (
           <>
-            {markModified && dirty[i] ? `*${name}` : name}
+            {file?.deprecated ? <span className={styles.deprecated}>{title}</span> : title}
             {dupe && <span className={styles.dupe}>{dupe}</span>}
           </>
         ),
-        text: dupe ? `${name} — ${dupe}` : name,
+        text: prefix ? `${prefix}${name}` : dupe ? `${name} — ${dupe}` : name,
+        verbatim: true,
         icon: showFileIcon
           ? t.input.kind === "file" && t.input.path
-            ? fileIcons.get(t.input.path)
+            ? (tabIcons[i] ?? file?.icon)
             : tabIcon(t.input, kinds)
           : undefined,
         italic: t.preview,
+        pinned: t.pinned,
+        error: t.input.kind === "file" && errors[i],
         modified: dirty[i],
-        closable: showCloseButton,
+        // IDEA: hiding the close button is visual only. Keep close gestures
+        // (middle click, Shift+click, Delete) alive when its position is None.
+        showCloseButton,
         color: colors[i] || undefined,
-        tint: tints[i] || undefined,
+        tint:
+          tints[i] || (fileColors && t.input.kind === "file" && t.input.path ? fileColors(t.input.path) : undefined),
+        tintStrength: tints[i] ? undefined : "var(--file-tint-strength)",
         tooltip: virtualTooltip(t.input) ?? (showFullPathOnHover ? (t.input.path ?? name) : undefined),
-        trailing: t.pinned ? <Icon name="pin" size={11} className={styles.pin} label="Pinned" /> : undefined,
+        trailing: kindMark,
       };
     });
   }, [
-    fileIcons,
+    files,
     tabs,
     kinds,
+    titleRevision,
     dirty,
     colors,
+    errors,
     tints,
+    tabLabels,
+    tabIcons,
+    fileColors,
     hints,
     showExtension,
     markModified,
@@ -223,6 +292,7 @@ function PaneView({ paneId }: { paneId: string }) {
   const pinnedCount = tabs.filter((t) => t.pinned).length;
   // Settings › Editor Tabs › Tab placement Left / Right: a vertical, scrolling column.
   const vertical = tabPrefs.placement === "left" || tabPrefs.placement === "right";
+  const sideTabsStyle = useSideTabsStyle();
   const pinnedRow = tabPrefs.pinnedSeparateRow && pinnedCount > 0 && pinnedCount < tabs.length;
   const dnd = useMemo(() => {
     // A tab released outside the window detaches into a forced new window.
@@ -233,9 +303,13 @@ function PaneView({ paneId }: { paneId: string }) {
     const strip = (offset: number, pin?: boolean): TabsDnd => ({
       type: EDITOR_TAB_MIME,
       payload: (tabId) => JSON.stringify({ paneId, tabId }),
+      accepts: (data) => acceptsEditorDrop(data.type, data),
       onDrop: (raw, index) => {
         const p = parseTabPayload(raw);
         if (p) ctrl.moveTab(p.paneId, p.tabId, paneId, index + offset, pin);
+      },
+      onExternalDrop: (data, index) => {
+        dropOnEditor(data, { paneId, zone: "center", index: index + offset, pinned: pin });
       },
       onDropOutside: dropOutside,
     });
@@ -250,19 +324,25 @@ function PaneView({ paneId }: { paneId: string }) {
     if (!el) return;
     const zoneAt = (x: number, y: number) => dropZoneAt(x, y, el.getBoundingClientRect());
     return registerDropTarget(el, {
-      accepts: (type) => type === EDITOR_TAB_MIME || type === FILES_DRAG || acceptsEditorDrop(type),
-      over: (data, x, y) =>
-        setDropZone(data.type === EDITOR_TAB_MIME || data.type === FILES_DRAG ? zoneAt(x, y) : "center"),
+      accepts: (type, data) => type === EDITOR_TAB_MIME || type === FILES_DRAG || acceptsEditorDrop(type, data),
+      over: (data, x, y) => {
+        if (data.type === FILES_DRAG) setDropZone(droppedFiles(data.payload).length ? zoneAt(x, y) : null);
+        else
+          setDropZone(
+            data.type === EDITOR_TAB_MIME || editorDropAllowsSplit(data.type, data) ? zoneAt(x, y) : "center",
+          );
+      },
       leave: () => setDropZone(null),
       drop: (data, x, y) => {
         const zone = zoneAt(x, y);
         setDropZone(null);
         if (data.type === FILES_DRAG) {
-          void ctrl.openFilesIn(data.payload.split("\n").filter(Boolean), paneId, zone);
+          void ctrl.openFilesIn(droppedFiles(data.payload), paneId, zone);
           return;
         }
         if (data.type !== EDITOR_TAB_MIME) {
-          dropOnEditor(data);
+          const target = useTabs.getState().panes[paneId];
+          dropOnEditor(data, { paneId, zone, ...(zone === "center" ? { index: target?.tabs.length ?? 0 } : {}) });
           return;
         }
         const p = parseTabPayload(data.payload);
@@ -276,10 +356,11 @@ function PaneView({ paneId }: { paneId: string }) {
 
   if (!pane) return null;
   const active = pane.tabs.find((t) => t.id === pane.active) ?? null;
+  const kept = keptTabs(pane.tabs, pane.mru, kinds, wrappers);
 
   const onFocus = () => {
     setContext("editorFocus", true);
-    if (!isActivePane) useTabs.setState((s) => ({ ...s, activePane: paneId }), true);
+    if (!isActivePane) ctrl.focusPane(paneId);
     ctrl.publishContext();
   };
   const onBlur = (e: FocusEvent) => {
@@ -298,10 +379,12 @@ function PaneView({ paneId }: { paneId: string }) {
       panelIdPrefix={`editor-${paneId}`}
       dnd={stripDnd}
       layout={tabPrefs.multipleRows ? "wrap" : tabPrefs.oneRowOverflow === "squeeze" ? "squeeze" : "scroll"}
+      hiddenTabsOnly
       closePosition={tabPrefs.closeButtonPosition === "left" ? "left" : "right"}
       onSelect={(id) => ctrl.activate(paneId, id)}
       onClose={(id) => void ctrl.closeTab(paneId, id)}
       onCloseOthers={(id) => void ctrl.closeOthers(paneId, id)}
+      onTogglePin={(id) => ctrl.togglePin(paneId, id)}
       closeOnShiftClick
       onDoubleClick={(id) => {
         // IDEA: a preview tab becomes a regular one; any other tab maximizes the editor.
@@ -334,7 +417,9 @@ function PaneView({ paneId }: { paneId: string }) {
         vertical && styles.tabsVertical,
         tabPrefs.placement === "right" && styles.tabsRight,
       )}
+      style={vertical ? sideTabsStyle : undefined}
       data-pane-id={paneId}
+      data-focus-scope=""
       aria-label={tx("Editor")}
       onFocus={onFocus}
       onBlur={onBlur}
@@ -348,17 +433,52 @@ function PaneView({ paneId }: { paneId: string }) {
       ) : (
         strip(items, dnd.all, actions)
       )}
-      <div
-        className={styles.content}
-        role="tabpanel"
-        id={active ? `editor-${paneId}-panel-${active.id}` : undefined}
-        aria-labelledby={active ? `editor-${paneId}-tab-${active.id}` : undefined}
-        ref={contentRef}
-      >
-        {active ? <PaneContent paneId={paneId} tab={active} tabsVisible={!hidden} /> : <EmptyEditor />}
-        {dropZone && <div className={clsx(styles.dropZone, styles[`drop-${dropZone}`])} aria-hidden="true" />}
+      {vertical && !hidden && <SideTabsResizer side={tabPrefs.placement === "left" ? "left" : "right"} />}
+      <div className={styles.body}>
+        <div
+          className={styles.content}
+          role="tabpanel"
+          id={active ? `editor-${paneId}-panel-${active.id}` : undefined}
+          aria-labelledby={active ? `editor-${paneId}-tab-${active.id}` : undefined}
+          ref={contentRef}
+        >
+          {kept.map((tab) => (
+            <EditorSurface key={tab.id} tab={tab} shown={tab === active} kept>
+              {isTextInput(tab.input) ? (
+                <PaneContent paneId={paneId} tab={tab} tabsVisible={!hidden} />
+              ) : (
+                <KindEditor tab={tab} />
+              )}
+            </EditorSurface>
+          ))}
+          {!active ? (
+            <EmptyEditor />
+          ) : (
+            !kept.includes(active) && <PaneContent paneId={paneId} tab={active} tabsVisible={!hidden} />
+          )}
+          {dropZone && <div className={clsx(styles.dropZone, styles[`drop-${dropZone}`])} aria-hidden="true" />}
+        </div>
+        <GroupPanels paneId={paneId} tabId={active && isTextInput(active.input) ? active.id : null} />
       </div>
     </section>
+  );
+}
+
+/**
+ * The group's contributed panels (plugin minimaps) at its right edge. Mounted once per group,
+ * kept while it switches tabs; hidden while the group shows something other than a text editor.
+ */
+function GroupPanels({ paneId, tabId }: { paneId: string; tabId: string | null }) {
+  const panels = useEditorGroupPanels((s) => s.panels);
+  if (!panels.size) return null;
+  return (
+    <div className={styles.groupPanels} hidden={!tabId}>
+      {[...panels.values()].map((p) => (
+        <div key={p.id} className={styles.groupPanel} style={{ width: p.width }}>
+          <p.component paneId={paneId} tabId={tabId} />
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -369,23 +489,52 @@ function virtualTooltip(input: EditorInput): string | null {
   return [d?.description, input.path].filter(Boolean).join("\n");
 }
 
+const sourceShown = () => false;
+
+/** Code breadcrumbs of a text editor, unless its wrapper hides the source (Markdown Preview Only). */
+function PaneBreadcrumbs({
+  wrapper,
+  path,
+  tabId,
+  position,
+}: {
+  wrapper: TextEditorWrapperContribution | undefined;
+  path: string;
+  tabId: string;
+  position: "top" | "bottom";
+}) {
+  // Keyed by the wrapper id, so the hook stays the same for the component's life.
+  const useSourceHidden = wrapper?.useSourceHidden ?? sourceShown;
+  if (useSourceHidden(tabId)) return null;
+  return <CodeBreadcrumbs path={path} tabId={tabId} position={position} />;
+}
+
 function PaneContent({ paneId, tab, tabsVisible }: { paneId: string; tab: Tab; tabsVisible: boolean }) {
-  const kinds = useContributions((s) => s.editorKinds);
-  const crumbs = !useDistractionFree((s) => s.active);
+  const shown = useEditorShown();
+  const crumbs = !useDistractionFree((s) => s.active) && shown;
   const wrappers = useTextEditorWrappers((s) => s.wrappers);
   if (isTextInput(tab.input)) {
     const virtual = tab.input.kind === "virtual" ? virtualData(tab.input) : undefined;
     const wrapper = tab.input.kind === "file" ? textEditorWrapperFor(wrappers, tab.input.path) : undefined;
-    const host = <TextEditorHost key={tab.id} tabId={tab.id} />;
+    const host = shown && <TextEditorHost key={tab.id} tabId={tab.id} />;
     return (
       <>
-        {virtual ? (
-          <VirtualBanner path={tab.input.path!} decompiled={virtual.decompiled} description={virtual.description} />
-        ) : (
-          <EditorBanners path={tab.input.path} />
+        {shown &&
+          (virtual ? (
+            <VirtualBanner path={tab.input.path!} decompiled={virtual.decompiled} description={virtual.description} />
+          ) : (
+            <EditorBanners path={tab.input.path} />
+          ))}
+        {shown && <FindBar paneId={paneId} />}
+        {crumbs && (
+          <PaneBreadcrumbs
+            key={`top:${wrapper?.id}`}
+            wrapper={wrapper}
+            path={tab.input.path!}
+            tabId={tab.id}
+            position="top"
+          />
         )}
-        <FindBar paneId={paneId} />
-        {crumbs && <CodeBreadcrumbs path={tab.input.path!} tabId={tab.id} position="top" />}
         {wrapper ? (
           <wrapper.component
             key={tab.id}
@@ -398,18 +547,102 @@ function PaneContent({ paneId, tab, tabsVisible }: { paneId: string; tab: Tab; t
         ) : (
           host
         )}
-        {crumbs && <CodeBreadcrumbs path={tab.input.path!} tabId={tab.id} position="bottom" />}
+        {crumbs && (
+          <PaneBreadcrumbs
+            key={`bottom:${wrapper?.id}`}
+            wrapper={wrapper}
+            path={tab.input.path!}
+            tabId={tab.id}
+            position="bottom"
+          />
+        )}
       </>
     );
   }
+  return (
+    <EditorSurface key={tab.id} tab={tab} shown>
+      <KindEditor tab={tab} />
+    </EditorSurface>
+  );
+}
+
+/** Tabs of a pane kept mounted while hidden: the most recently used ones of `keepAlive` kinds. */
+const KEPT_TABS = 5;
+
+function keptTabs(
+  tabs: Tab[],
+  mru: string[],
+  kinds: Map<string, EditorKindContribution>,
+  wrappers: ReadonlyMap<string, TextEditorWrapperContribution>,
+): Tab[] {
+  const recent = mru
+    .map((id) => tabs.find((t) => t.id === id))
+    .filter(
+      (t): t is Tab =>
+        !!t &&
+        (!!kinds.get(t.input.kind)?.keepAlive ||
+          (t.input.kind === "file" &&
+            t.input.path !== undefined &&
+            !!textEditorWrapperFor(wrappers, t.input.path)?.keepAlive)),
+    )
+    .slice(0, KEPT_TABS);
+  // In tab order, so switching tabs doesn't move their DOM (which would lose scroll offsets).
+  return tabs.filter((t) => recent.includes(t));
+}
+
+/**
+ * `shown`: the pane's visible tab, which focusing the editor area reaches. A hidden `kept` tab
+ * keeps its layout (content-visibility), so showing it again needn't lay it out from scratch;
+ * its content can't be focused or hit while skipped.
+ */
+function EditorSurface({
+  tab,
+  shown,
+  kept = false,
+  children,
+}: {
+  tab: Tab;
+  shown: boolean;
+  kept?: boolean;
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useSelectionVisibility(ref, kept);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!kept || shown || !el) return;
+    const sel = el.ownerDocument.getSelection();
+    if (sel && !sel.isCollapsed && sel.rangeCount > 0 && sel.getRangeAt(0).intersectsNode(el)) {
+      el.setAttribute("data-selection", "");
+      sel.removeAllRanges();
+    }
+  }, [kept, shown]);
+  return (
+    <div
+      ref={ref}
+      className={clsx(
+        styles.kind,
+        kept && styles.kept,
+        kept && isTextInput(tab.input) && styles.keptText,
+        !shown && styles.keptHidden,
+      )}
+      data-editor-focus={shown && !isTextInput(tab.input) ? "" : undefined}
+      tabIndex={-1}
+      aria-hidden={shown ? undefined : true}
+    >
+      <EditorTabIdProvider value={tab.id}>
+        <EditorShownProvider value={shown}>{children}</EditorShownProvider>
+      </EditorTabIdProvider>
+    </div>
+  );
+}
+
+function KindEditor({ tab }: { tab: Tab }) {
+  const kinds = useContributions((s) => s.editorKinds);
   const kind = kinds.get(tab.input.kind);
   if (!kind) return <EmptyState icon="file" title={tx`No editor for “${tab.input.kind}”`} />;
   const Component = kind.component;
-  return (
-    <div className={styles.kind} data-editor-focus="" tabIndex={-1} key={tab.id}>
-      <Component input={tab.input} />
-    </div>
-  );
+  return <Component input={tab.input} />;
 }
 
 /** Actions at the right end of the tab row (IDEA: split, tab actions ⋮). */
@@ -424,6 +657,7 @@ function EditorTabActions({ paneId, tab }: { paneId: string; tab: Tab }) {
   const moreRef = useRef<HTMLButtonElement>(null);
   return (
     <div className={styles.tabActions}>
+      <ContributedToolbar slot="editor.title" />
       {LayoutActions && <LayoutActions path={tab.input.path!} tabId={tab.id} />}
       <IconButton
         icon="split"
@@ -449,7 +683,8 @@ function EditorTabActions({ paneId, tab }: { paneId: string; tab: Tab }) {
         anchor={moreRef}
         placement="bottom-end"
         aria-label="Tab actions"
-        items={ctrl.tabMenu(paneId, tab)}
+        // Built when shown: every tab render (each open and switch) would otherwise assemble the whole menu.
+        items={open ? ctrl.tabMenu(paneId, tab) : []}
       />
     </div>
   );

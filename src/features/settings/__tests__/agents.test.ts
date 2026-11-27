@@ -8,8 +8,48 @@ describe("agent chat settings", () => {
       showWorkTime: true,
       showUsageLimits: true,
       showCost: false,
+      smoothText: true,
+      fitWindowWidth: false,
+      thinking: "auto",
+      toolCalls: "grouped",
+      expandToolOutput: false,
+      sendWith: "enter",
+      whileRunning: "queue",
+      newTaskApprovals: "bypass",
+      defaults: {},
+      mcpServers: {},
+      skills: {},
     });
-    const stored = validateSettings({ agents: { showUsageLimits: false, showCost: true, showWorkTime: "no" } }).agents;
-    expect(stored).toEqual({ showContextUsage: true, showWorkTime: true, showUsageLimits: false, showCost: true });
+    const stored = validateSettings({
+      agents: { showUsageLimits: false, showCost: true, showWorkTime: "no", fitWindowWidth: true },
+    }).agents;
+    expect(stored).toMatchObject({
+      showContextUsage: true,
+      showWorkTime: true,
+      showUsageLimits: false,
+      showCost: true,
+      fitWindowWidth: true,
+    });
+    expect(validateSettings({ agents: { fitWindowWidth: "yes" } }).agents.fitWindowWidth).toBe(false);
+  });
+
+  it("keeps valid chat choices and per-agent defaults", () => {
+    const stored = validateSettings({
+      agents: {
+        thinking: "collapsed",
+        toolCalls: "nope",
+        sendWith: "modEnter",
+        newTaskApprovals: "ask",
+        defaults: { claude: { model: "opus", effort: 3 }, codex: "x" },
+      },
+    }).agents;
+    expect(stored).toMatchObject({
+      thinking: "collapsed",
+      toolCalls: "grouped",
+      sendWith: "modEnter",
+      newTaskApprovals: "ask",
+      defaults: { claude: { model: "opus" }, codex: {} },
+    });
+    expect(validateSettings({ agents: { newTaskApprovals: "never" } }).agents.newTaskApprovals).toBe("bypass");
   });
 });

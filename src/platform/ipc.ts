@@ -8,6 +8,9 @@
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { commands, type IdeError, type IdeEvent, type RequestId } from "@/bindings";
+import { notifyEach } from "./listeners";
+import { invokeLocal } from "./tauriCore";
+import type { InvokeArgs } from "@tauri-apps/api/core";
 
 export { commands };
 export type * from "@/bindings";
@@ -23,6 +26,16 @@ export class IpcError extends Error {
   }
 }
 
+/** Matches both wrapped IPC errors and raw invoke rejections by kind. */
+export function isErrorKind(e: unknown, kind: IdeError["kind"]): boolean {
+  if (typeof e !== "object" || e === null) return false;
+  try {
+    return "kind" in e && e.kind === kind;
+  } catch {
+    return false;
+  }
+}
+
 type Result<T> = { status: "ok"; data: T } | { status: "error"; error: IdeError };
 
 /** Unwraps a fallible command result: `await call(commands.docOpen(path))`. */
@@ -30,6 +43,16 @@ export async function call<T>(result: Promise<Result<T>>): Promise<T> {
   const r = await result;
   if (r.status === "error") throw new IpcError(r.error);
   return r.data;
+}
+
+/** Run a command in the desktop process when its path came from that machine. */
+export async function callDesktop<T>(command: string, args: InvokeArgs): Promise<T> {
+  try {
+    return await invokeLocal<T>(command, args);
+  } catch (e) {
+    if (e && typeof e === "object" && "kind" in e && "message" in e) throw new IpcError(e as IdeError);
+    throw e;
+  }
 }
 
 export function isCancelled(e: unknown): boolean {
@@ -69,13 +92,16 @@ type Handler = (event: IdeEvent) => void;
 const handlers = new Map<string, Set<Handler>>();
 let unlisten: Promise<UnlistenFn> | null = null;
 
+function dispatch(event: IdeEvent) {
+  const what = `IDE event ${event.type}`;
+  notifyEach(handlers.get(event.type) ?? [], (h) => h(event), what);
+  notifyEach(handlers.get("*") ?? [], (h) => h(event), what);
+}
+
 function ensureListening() {
   if (unlisten || !isTauri()) return;
   // Window-scoped: a global `listen` also receives events emitted to other windows.
-  unlisten = getCurrentWebviewWindow().listen<IdeEvent>(IDE_EVENT, ({ payload }) => {
-    handlers.get(payload.type)?.forEach((h) => h(payload));
-    handlers.get("*")?.forEach((h) => h(payload));
-  });
+  unlisten = getCurrentWebviewWindow().listen<IdeEvent>(IDE_EVENT, ({ payload }) => dispatch(payload));
 }
 
 /** Resolves once backend events reach this window's handlers. */
@@ -92,15 +118,15 @@ export function onIdeEvent<K extends IdeEvent["type"]>(
   ensureListening();
   let set = handlers.get(type);
   if (!set) handlers.set(type, (set = new Set()));
-  const h = handler as Handler;
+  // A wrapper per subscription, so unsubscribing one of two identical handlers keeps the other.
+  const h: Handler = (event) => handler(event as EventOf<K>);
   set.add(h);
   return () => set.delete(h);
 }
 
 /** Test helper: dispatch an event as if it came from the backend. */
 export function emitLocalIdeEvent(event: IdeEvent) {
-  handlers.get(event.type)?.forEach((h) => h(event));
-  handlers.get("*")?.forEach((h) => h(event));
+  dispatch(event);
 }
 
 export function isTauri(): boolean {

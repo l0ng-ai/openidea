@@ -14,6 +14,8 @@ const SCAN_LIMIT: usize = 100_000;
 /// tsserver turns its language service off past 20 MiB of JavaScript in a project.
 const SCRIPT_BYTES_LIMIT: u64 = 16 << 20;
 const REFRESH_DELAY: Duration = Duration::from_millis(300);
+/// Bounds the loading phase reported after registering a project.
+const LOADING_LIMIT: Duration = Duration::from_secs(60);
 const TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Default)]
@@ -47,7 +49,13 @@ fn is_source(ext: &str) -> bool {
 
 /// All-or-nothing at the caps: a partial project could displace an inferred
 /// project while omitting some of its files. Configured trees stay with tsserver.
-fn source_files(root: &Path, exclude_root: &Path, excludes: Vec<String>, limit: usize) -> Vec<PathBuf> {
+fn source_files(
+    root: &Path,
+    exclude_root: &Path,
+    excludes: Vec<String>,
+    extra: &[String],
+    limit: usize,
+) -> Vec<PathBuf> {
     if root.ancestors().any(configured) {
         return Vec::new();
     }
@@ -80,8 +88,9 @@ fn source_files(root: &Path, exclude_root: &Path, excludes: Vec<String>, limit: 
             return Vec::new();
         }
         let ext = entry.path().extension().and_then(|s| s.to_str()).unwrap_or_default();
-        if entry.file_type().is_some_and(|t| t.is_file()) && is_source(ext) {
-            if is_script(ext) {
+        let plugin = extra.iter().any(|e| e == ext);
+        if entry.file_type().is_some_and(|t| t.is_file()) && (is_source(ext) || plugin) {
+            if is_script(ext) || plugin {
                 script_bytes += entry.metadata().map_or(0, |m| m.len());
                 if script_bytes > SCRIPT_BYTES_LIMIT {
                     tracing::debug!("external TypeScript project exceeds its script size; retaining inferred projects");
@@ -104,16 +113,22 @@ fn project_name(server: &Server) -> PathBuf {
 }
 
 async fn request(run: &Running, command: &str, args: Value) -> bool {
+    send(run, command, args, false, TIMEOUT).await
+}
+
+/// `is_async`: a command tsserver answers with events, such as `geterr` (vtsls returns once
+/// they all arrived).
+async fn send(run: &Running, command: &str, args: Value, is_async: bool, timeout: Duration) -> bool {
     let request = run.peer.request::<_, Value>(
         "workspace/executeCommand",
         json!({
             "command": COMMAND,
-            "arguments": [command, args, { "isAsync": false, "expectsResult": true }]
+            "arguments": [command, args, { "isAsync": is_async, "expectsResult": true }]
         }),
         None,
     );
-    match tokio::time::timeout(TIMEOUT, request).await {
-        Ok(Ok(result)) if result.get("success").and_then(Value::as_bool) == Some(true) => true,
+    match tokio::time::timeout(timeout, request).await {
+        Ok(Ok(result)) if is_async || result.get("success").and_then(Value::as_bool) == Some(true) => true,
         result => {
             tracing::debug!("tsserver {command}: {result:?}");
             false
@@ -126,7 +141,7 @@ impl LspManager {
         *self.excludes_hook.write() = Some(Arc::from(hook));
     }
 
-    pub(crate) async fn refresh_external_project(&self, server: &Server, run: &Running) {
+    pub(crate) async fn refresh_external_project(&self, server: &Arc<Server>, run: &Running) {
         if !supported(server, run) {
             return;
         }
@@ -135,11 +150,13 @@ impl LspManager {
             *state = State { generation: run.generation, files: Vec::new() };
             server.external_diagnostics.store(false, Ordering::Release);
         }
+        let extras = server.effective_config().tsserver_project_extras;
         let root = server.root.clone();
         let exclude_root = self.project_root_for(&root);
         let hook = self.excludes_hook.read().clone();
+        let extensions = extras.extensions.clone();
         let files = tokio::task::spawn_blocking(move || {
-            source_files(&root, &exclude_root, hook.map(|h| h()).unwrap_or_default(), LIMIT)
+            source_files(&root, &exclude_root, hook.map(|h| h()).unwrap_or_default(), &extensions, LIMIT)
         })
         .await
         .unwrap_or_default();
@@ -155,17 +172,19 @@ impl LspManager {
         }
         server.external_diagnostics.store(true, Ordering::Release);
         let roots: Vec<_> = files.iter().map(|p| json!({ "fileName": p })).collect();
+        // What an inferred project assumes, so sharing a project changes no diagnostics.
+        let mut options = json!({ "allowJs": true, "target": "ES2022", "module": "ESNext",
+            "moduleResolution": "Node", "allowNonTsExtensions": true, "jsx": "preserve",
+            "allowSyntheticDefaultImports": true, "strictNullChecks": true,
+            "strictFunctionTypes": true, "moduleDetection": "force" });
+        // Absolute targets need no `baseUrl` (deprecated in TypeScript 6).
+        if !extras.paths.is_empty() {
+            options["paths"] = json!(extras.paths);
+        }
         if request(
             run,
             "openExternalProject",
-            json!({
-                "projectFileName": project_name(server), "rootFiles": roots,
-                // What an inferred project assumes, so sharing a project changes no diagnostics.
-                "options": { "allowJs": true, "target": "ES2022", "module": "ESNext",
-                    "moduleResolution": "Node", "allowNonTsExtensions": true, "jsx": "preserve",
-                    "allowSyntheticDefaultImports": true, "strictNullChecks": true,
-                    "strictFunctionTypes": true, "moduleDetection": "force" }
-            }),
+            json!({ "projectFileName": project_name(server), "rootFiles": roots, "options": options }),
         )
         .await
         {
@@ -175,24 +194,32 @@ impl LspManager {
                 files.len(),
                 server.root.display()
             );
+            if state.files.is_empty() {
+                self.await_external_project(server, run.generation, files[0].clone());
+            }
             state.files = files;
         }
     }
 
     /// Re-registers config-less projects after sources or configurations changed on disk.
     pub fn project_files_changed<'a>(&self, paths: impl IntoIterator<Item = &'a PathBuf>) {
-        let relevant = paths.into_iter().any(|p| {
-            p.extension().and_then(|s| s.to_str()).is_some_and(is_source)
-                || p.file_name().is_some_and(|n| n == "tsconfig.json" || n == "jsconfig.json")
-        });
-        if !relevant {
-            return;
-        }
-        for server in self.servers.lock().iter().filter(|s| s.config.tsserver_project) {
+        let paths: Vec<&PathBuf> = paths.into_iter().collect();
+        let servers: Vec<_> = self.servers.lock().iter().filter(|s| s.config.tsserver_project).cloned().collect();
+        for server in servers {
+            let extensions = server.effective_config().tsserver_project_extras.extensions;
+            let relevant = paths.iter().any(|p| {
+                p.extension()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|ext| is_source(ext) || extensions.iter().any(|e| e == ext))
+                    || p.file_name().is_some_and(|n| n == "tsconfig.json" || n == "jsconfig.json")
+            });
+            if !relevant {
+                continue;
+            }
             if server.external_refresh_queued.swap(true, Ordering::AcqRel) {
                 continue;
             }
-            let (me, server) = (self.me.clone(), server.clone());
+            let me = self.me.clone();
             self.runtime.spawn(async move {
                 tokio::time::sleep(REFRESH_DELAY).await;
                 server.external_refresh_queued.store(false, Ordering::Release);
@@ -201,6 +228,36 @@ impl LspManager {
                 }
             });
         }
+    }
+
+    /// vtsls answers requests from its single-file syntax server until the semantic server
+    /// reports a project loaded or diagnostics; a project registered this way reports no
+    /// loading, so the first usage counts would all be zero. Until the diagnostics of an open
+    /// file arrive, the server is loading: empty answers are incomplete and asked again.
+    fn await_external_project(&self, server: &Arc<Server>, generation: u64, fallback: PathBuf) {
+        server.external_loading.store(generation, Ordering::Release);
+        server.set_loading(&self.sink, true);
+        let (me, server) = (self.me.clone(), server.clone());
+        self.runtime.spawn(async move {
+            // Documents are (re)opened once the instance is ready. An unopened file has no
+            // project in tsserver until one of its files is opened: no diagnostics come.
+            if let Some(run) = server.wait_ready(LOADING_LIMIT).await.filter(|r| r.generation == generation)
+                && let Some(file) = me.upgrade().map(|me| {
+                    me.docs
+                        .lock()
+                        .values()
+                        .find(|d| d.servers.iter().any(|a| a.server.id == server.id))
+                        .map_or(fallback, |d| d.path.clone())
+                })
+            {
+                send(&run, "geterr", json!({ "files": [file], "delay": 0 }), true, LOADING_LIMIT).await;
+            }
+            if server.external_loading.compare_exchange(generation, 0, Ordering::AcqRel, Ordering::Acquire).is_ok()
+                && let Some(me) = me.upgrade()
+            {
+                server.set_loading(&me.sink, false);
+            }
+        });
     }
 
     pub(crate) async fn close_external_project(&self, server: &Server, run: &Running) {
@@ -241,17 +298,32 @@ mod tests {
         }
         std::fs::write(root.join(".gitignore"), "ignored/\n").unwrap();
         assert_eq!(
-            source_files(root, root, vec!["excluded".into()], LIMIT),
+            source_files(root, root, vec!["excluded".into()], &[], LIMIT),
             vec![root.join("a.ts"), root.join("src/b.js"), root.join("src/c.tsx")]
         );
-        assert!(source_files(root, root, vec![], 1).is_empty());
+        assert!(source_files(root, root, vec![], &[], 1).is_empty());
         std::fs::File::create(root.join("large.js")).unwrap().set_len(SCRIPT_BYTES_LIMIT + 1).unwrap();
-        assert!(source_files(root, root, vec![], LIMIT).is_empty());
+        assert!(source_files(root, root, vec![], &[], LIMIT).is_empty());
         std::fs::remove_file(root.join("large.js")).unwrap();
         std::fs::File::create(root.join("large.ts")).unwrap().set_len(SCRIPT_BYTES_LIMIT + 1).unwrap();
-        assert_eq!(source_files(root, root, vec!["excluded".into()], LIMIT).len(), 4);
+        assert_eq!(source_files(root, root, vec!["excluded".into()], &[], LIMIT).len(), 4);
         std::fs::remove_file(root.join("large.ts")).unwrap();
-        assert_eq!(source_files(&root.join("src"), root, vec![], LIMIT).len(), 2);
+        assert_eq!(source_files(&root.join("src"), root, vec![], &[], LIMIT).len(), 2);
+    }
+
+    #[test]
+    fn plugin_extensions_join_the_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        for path in ["src/main.js", "src/App.vue", "src/page.svelte"] {
+            write(dir.path(), path);
+        }
+        assert_eq!(source_files(dir.path(), dir.path(), vec![], &[], LIMIT), vec![dir.path().join("src/main.js")]);
+        assert_eq!(
+            source_files(dir.path(), dir.path(), vec![], &["vue".into()], LIMIT),
+            vec![dir.path().join("src/App.vue"), dir.path().join("src/main.js")]
+        );
+        std::fs::File::create(dir.path().join("src/Big.vue")).unwrap().set_len(SCRIPT_BYTES_LIMIT + 1).unwrap();
+        assert!(source_files(dir.path(), dir.path(), vec![], &["vue".into()], LIMIT).is_empty());
     }
 
     #[test]
@@ -261,13 +333,13 @@ mod tests {
             let root = dir.path();
             write(root, "a.ts");
             write(root, "pkg/b.js");
-            assert_eq!(source_files(root, root, vec![], LIMIT).len(), 2);
+            assert_eq!(source_files(root, root, vec![], &[], LIMIT).len(), 2);
             write(root, &format!("pkg/{name}"));
-            assert!(source_files(root, root, vec![], LIMIT).is_empty());
+            assert!(source_files(root, root, vec![], &[], LIMIT).is_empty());
             std::fs::remove_file(root.join("pkg").join(name)).unwrap();
             write(root, name);
-            assert!(source_files(root, root, vec![], LIMIT).is_empty());
-            assert!(source_files(&root.join("pkg"), root, vec![], LIMIT).is_empty());
+            assert!(source_files(root, root, vec![], &[], LIMIT).is_empty());
+            assert!(source_files(&root.join("pkg"), root, vec![], &[], LIMIT).is_empty());
         }
     }
 
@@ -275,12 +347,12 @@ mod tests {
     fn additions_deletions_and_renames_change_membership() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "a.js");
-        let first = source_files(dir.path(), dir.path(), vec![], LIMIT);
+        let first = source_files(dir.path(), dir.path(), vec![], &[], LIMIT);
         write(dir.path(), "b.ts");
-        assert_eq!(source_files(dir.path(), dir.path(), vec![], LIMIT).len(), 2);
+        assert_eq!(source_files(dir.path(), dir.path(), vec![], &[], LIMIT).len(), 2);
         std::fs::rename(dir.path().join("b.ts"), dir.path().join("b.txt")).unwrap();
-        assert_eq!(source_files(dir.path(), dir.path(), vec![], LIMIT), first);
+        assert_eq!(source_files(dir.path(), dir.path(), vec![], &[], LIMIT), first);
         std::fs::remove_file(dir.path().join("a.js")).unwrap();
-        assert!(source_files(dir.path(), dir.path(), vec![], LIMIT).is_empty());
+        assert!(source_files(dir.path(), dir.path(), vec![], &[], LIMIT).is_empty());
     }
 }

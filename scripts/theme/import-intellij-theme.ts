@@ -59,5 +59,5 @@ if (scheme) {
 console.log(
   `${theme.name} (${theme.kind}): ${Object.keys(theme.tokens).length} UI tokens` +
     (scheme ? `, ${Object.keys(scheme.tokens).length} editor tokens` : "") +
-    ` → ${values.out}\nUnmapped tokens keep the built-in ${theme.kind} values; see docs/plugins/themes.md to fill them in.`,
+    ` → ${values.out}\nUnmapped tokens keep the built-in ${theme.kind} values; see plugins/themes.md to fill them in.`,
 );

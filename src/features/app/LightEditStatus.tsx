@@ -12,12 +12,17 @@ export function LightEditStatus() {
   const t = useT();
   const lightEdit = useProject((s) => s.lightEdit);
   const path = useEditorRegistry((s) => s.active?.ctx.path);
-  if (!lightEdit || !path || isVirtualUri(path)) return null;
+  if (!lightEdit) return null;
+  const hasRealFile = !!path && !isVirtualUri(path);
   return (
     <BarButton
       emphasis
-      tooltip={t("app.lightEdit.openProjectTooltip", { folder: dirname(path) })}
-      onClick={() => void executeAction(LIGHT_EDIT_OPEN_PROJECT)}
+      tooltip={
+        hasRealFile
+          ? t("app.lightEdit.openProjectTooltip", { folder: dirname(path) })
+          : t("app.lightEdit.pickFolderTooltip")
+      }
+      onClick={() => void executeAction(hasRealFile ? LIGHT_EDIT_OPEN_PROJECT : "file.openProject")}
     >
       <Icon name="folder-open" size={14} />
       {t("app.lightEdit.openProject")}

@@ -1,7 +1,16 @@
 /** Page context for the form components: which page / scope they edit and the search query. */
 import { createContext, useCallback, useContext, useMemo } from "react";
 import type { SettingsForm } from "@/workbench/contributions";
-import { externalKey, stage, stageExternal, stagedValue, useSettingsDialog, type Scope } from "../model/staging";
+import {
+  applySettings,
+  externalKey,
+  stage,
+  stageMapEntry,
+  stageExternal,
+  stagedValue,
+  useSettingsDialog,
+  type Scope,
+} from "../model/staging";
 import { labelMatches } from "../model/pages";
 
 export interface PageContextValue {
@@ -24,6 +33,15 @@ export function useSetting<T>(key: string, scopeOverride?: Scope): [T, (value: T
   return [value, set];
 }
 
+/** The value of a settings key as last applied, without this dialog's staged edits. */
+export function useAppliedSetting<T>(key: string, scopeOverride?: Scope): T {
+  const { scope: pageScope } = usePageContext();
+  const scope = scopeOverride ?? pageScope;
+  const base = useSettingsDialog((s) => s.base);
+  const globalBase = useSettingsDialog((s) => s.globalBase);
+  return useMemo(() => stagedValue({ base, globalBase, staged: {} }, scope, key), [base, globalBase, scope, key]) as T;
+}
+
 /** `stagedValue` for components; recomputed only when the base or the staged edits change. */
 export function useStagedValue(scope: Scope, key: string): unknown {
   const base = useSettingsDialog((s) => (scope === "global" ? s.globalBase : s.base));
@@ -36,8 +54,10 @@ export function useSettingsFormFor(pageId: string, scope: Scope): SettingsForm {
   return useMemo(
     () => ({
       scope,
+      apply: () => applySettings(),
       useValue: (key: string) => useStagedValue(scope, key),
       set: (key: string, value: unknown) => stage(pageId, scope, key, value),
+      setMapEntry: (key: string, path: string[], value: unknown) => stageMapEntry(pageId, scope, key, path, value),
       useExternal: <T>(key: string, base: T, apply: (value: T) => Promise<T>) =>
         useExternalValue(pageId, key, base, apply),
     }),

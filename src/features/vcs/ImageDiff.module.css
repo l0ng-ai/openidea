@@ -1,0 +1,96 @@
+.root {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  height: 100%;
+  min-height: 180px;
+  min-width: 0;
+  background: var(--bg-editor);
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+.toolbar > button[aria-pressed="true"] {
+  background: var(--bg-toolbar-selected, var(--bg-tree-selected));
+  color: var(--fg-strong);
+}
+.separator {
+  height: 16px;
+  border-inline-start: 1px solid var(--border-strong);
+}
+.actions {
+  display: flex;
+  margin-inline-start: auto;
+}
+.panes {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-width: 0;
+}
+.pane + .pane {
+  border-inline-start: 1px solid var(--border);
+}
+.heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1);
+  padding: var(--space-1-5) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+}
+.heading strong {
+  overflow: hidden;
+  color: var(--fg-strong);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.surface {
+  container-type: size;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-2);
+}
+.plane {
+  position: relative;
+  flex: none;
+  width: var(--plane-width);
+  aspect-ratio: var(--plane-ratio);
+  margin: auto;
+}
+.panes[data-fit] .plane {
+  width: min(var(--plane-width), 100cqw, calc(100cqh * var(--plane-ratio)));
+}
+.art {
+  position: absolute;
+  inset: 0 auto auto 0;
+  max-width: none;
+  box-shadow: 0 0 0 1px var(--border-strong);
+  background-color: var(--bg-elev);
+  background-image: conic-gradient(var(--bg-hover) 25%, transparent 0 50%, var(--bg-hover) 0 75%, transparent 0);
+  background-size: 16px 16px;
+}
+.message {
+  margin: auto;
+  text-align: center;
+  overflow-wrap: anywhere;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}

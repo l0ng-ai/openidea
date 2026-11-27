@@ -1,7 +1,7 @@
 /** Read-only remote snapshots for the deployment comparison; project files are never downloaded over. */
 import { call, commands, type SyncEntry } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
-import { deploymentConnection, type DeploymentServerValid } from "@/platform/remoteSettings";
+import { deploymentConnection, deploymentSecretKey, type DeploymentServerValid } from "@/platform/remoteSettings";
 import { withSsh } from "./ssh";
 
 const PREVIEW_LIMIT = 8 * 1024 * 1024;
@@ -25,7 +25,7 @@ export function createDeploymentComparison(server: DeploymentServerValid, root: 
   const remoteSnapshot = (entry: SyncEntry) => {
     let pending = snapshots.get(entry.remotePath);
     if (!pending) {
-      pending = withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
+      pending = withSsh(deploymentSecretKey(server), () =>
         call(commands.remoteOpen(deploymentConnection(server), entry.remotePath)),
       );
       snapshots.set(entry.remotePath, pending);
@@ -74,6 +74,7 @@ export function createDeploymentComparison(server: DeploymentServerValid, root: 
       // Read once for empty files too, to detect files changed since the listing.
       for (let offset = 0; offset === 0 || offset < entry.local.size; offset += BLOCK_SIZE) {
         signal.throwIfAborted();
+        // oxlint-disable-next-line no-await-in-loop -- bounded reads are ordered: abort is rechecked per block and a size change must stop before reading further blocks.
         const [a, b] = await Promise.all(
           [localPath(entry), remote].map((path) => call(commands.fsReadRange(path, offset, BLOCK_SIZE))),
         );

@@ -4,8 +4,10 @@
  * IDEA's Configurable `isModified` / `apply` / `reset` cycle.
  */
 import { create } from "zustand";
+import { overrideActions } from "@/platform/actions";
 import { call, commands, isTauri, type Settings } from "@/platform/ipc";
 import { loadSettings, useProject } from "@/platform/project";
+import { lastSettingsPage, rememberSettingsPage } from "./lastPage";
 import { deepEqual, getAt, putAt, setAt, validateSettings, type ValidSettings } from "./schema";
 
 export type Scope = "global" | "project";
@@ -13,6 +15,8 @@ export type Scope = "global" | "project";
 export interface StagedChange {
   scope: Scope;
   key: string;
+  /** Literal map segments; dots inside plugin IDs and keys are data. */
+  path?: string[];
   value: unknown;
   /** Page that made the change (Reset discards per page). */
   page: string;
@@ -24,8 +28,35 @@ interface ExternalChange {
   apply(): Promise<unknown>;
 }
 
+export type ProjectStructureSection =
+  | "project"
+  | "modules"
+  | "dependencies"
+  | "libraries"
+  | "facets"
+  | "artifacts"
+  | "sdks";
+
+const PROJECT_STRUCTURE_SECTIONS: readonly ProjectStructureSection[] = [
+  "project",
+  "modules",
+  "dependencies",
+  "libraries",
+  "facets",
+  "artifacts",
+  "sdks",
+];
+
+function parseProjectStructureSection(raw?: string): ProjectStructureSection {
+  if (!raw) return "project";
+  const clean = raw.replace(/^projectStructure\./, "").trim() as ProjectStructureSection;
+  return PROJECT_STRUCTURE_SECTIONS.includes(clean) ? clean : "project";
+}
+
 export interface SettingsDialogState {
   open: boolean;
+  projectStructureOpen: boolean;
+  projectStructureSection: ProjectStructureSection;
   pageId: string;
   /** What the page should select when opened as `page#focus` (an inspection id). */
   focus: string | null;
@@ -44,6 +75,13 @@ export interface SettingsDialogState {
   externalApplied: Record<string, unknown>;
   /** Scope chosen per page (Global / This project). */
   scopes: Record<string, Scope>;
+  /**
+   * Pages visited while this dialog is open (back / forward navigation, like
+   * IDEA's ⇧⌥←). Kept in the store so every entry point — header buttons,
+   * breadcrumb links, the keymap's navigate.back / navigate.forward — walks
+   * the same history.
+   */
+  history: { stack: string[]; index: number };
   saving: boolean;
   error: string | null;
   pagesLoading: boolean;
@@ -54,6 +92,8 @@ export const SSH_SETTINGS_PAGE = "tools.sshConfigurations";
 
 export const useSettingsDialog = create<SettingsDialogState>(() => ({
   open: false,
+  projectStructureOpen: false,
+  projectStructureSection: "project",
   pageId: DEFAULT_PAGE,
   focus: null,
   query: "",
@@ -65,6 +105,7 @@ export const useSettingsDialog = create<SettingsDialogState>(() => ({
   stagedExternal: {},
   externalApplied: {},
   scopes: {},
+  history: { stack: [], index: -1 },
   saving: false,
   error: null,
   pagesLoading: false,
@@ -78,18 +119,46 @@ export function splitPageTarget(target: string): { pageId: string; focus: string
   return i < 0 ? { pageId: target, focus: null } : { pageId: target.slice(0, i), focus: target.slice(i + 1) || null };
 }
 
-export function openSettings(pageId?: string, opts: { newProjects?: boolean } = {}) {
+export function openSettings(pageId?: string, opts: { newProjects?: boolean; globalBase?: ValidSettings } = {}) {
   const s = useSettingsDialog.getState();
   const base = validateSettings(useProject.getState().settings);
-  const target = pageId ? splitPageTarget(pageId) : { pageId: s.pageId, focus: null };
+  const newProjects = opts.newProjects ?? false;
+  // IDEA reopens Settings on the page it was left on; Settings for New Projects has its own pages.
+  const target = splitPageTarget(pageId ?? (newProjects ? s.pageId : (lastSettingsPage() ?? s.pageId)));
   useSettingsDialog.setState({
     open: true,
+    projectStructureOpen: false,
     pageId: target.pageId,
     focus: target.focus,
     query: "",
     base,
+    globalBase: opts.globalBase ?? base,
+    newProjects,
+    staged: {},
+    stagedSecrets: {},
+    stagedExternal: {},
+    externalApplied: {},
+    history: { stack: [target.pageId], index: 0 },
+    saving: false,
+    error: null,
+  });
+  if (!newProjects) rememberSettingsPage(target.pageId);
+  if (!opts.globalBase) void loadGlobalBase();
+}
+
+export function openProjectStructure(section?: string) {
+  if (useSettingsDialog.getState().projectStructureOpen) {
+    if (section) selectProjectStructureSection(parseProjectStructureSection(section));
+    return;
+  }
+  const base = validateSettings(useProject.getState().settings);
+  useSettingsDialog.setState({
+    open: false,
+    projectStructureOpen: true,
+    projectStructureSection: parseProjectStructureSection(section),
+    base,
     globalBase: base,
-    newProjects: opts.newProjects ?? false,
+    newProjects: false,
     staged: {},
     stagedSecrets: {},
     stagedExternal: {},
@@ -100,21 +169,37 @@ export function openSettings(pageId?: string, opts: { newProjects?: boolean } = 
   void loadGlobalBase();
 }
 
+export function closeProjectStructure() {
+  useSettingsDialog.setState({
+    projectStructureOpen: false,
+    staged: {},
+    stagedSecrets: {},
+    stagedExternal: {},
+    externalApplied: {},
+    error: null,
+    saving: false,
+  });
+}
+
+export function selectProjectStructureSection(section: ProjectStructureSection) {
+  useSettingsDialog.setState({ projectStructureSection: section });
+}
+
 /** With a project open the effective settings include its values; the Global scope shows the global layer. */
 async function loadGlobalBase() {
   if (!isTauri() || !useProject.getState().project) return;
   try {
     const globalBase = validateSettings(await commands.settingsGetGlobal());
-    useSettingsDialog.setState((s) => (s.open ? { globalBase } : {}));
+    useSettingsDialog.setState((s) => (s.open || s.projectStructureOpen ? { globalBase } : {}));
   } catch (e) {
     console.warn("cannot load global settings", e);
   }
 }
 
-export function rebaseSettings() {
+export function rebaseSettings(globalBase?: ValidSettings) {
   const base = validateSettings(useProject.getState().settings);
-  useSettingsDialog.setState((s) => (s.open ? { base, globalBase: base } : {}));
-  void loadGlobalBase();
+  useSettingsDialog.setState((s) => (s.open || s.projectStructureOpen ? { base, globalBase: globalBase ?? base } : {}));
+  if (!globalBase) void loadGlobalBase();
 }
 
 /** IDEA's File › New Projects Setup › Settings for New Projects. */
@@ -141,9 +226,68 @@ export function closeSettings() {
   });
 }
 
+let disposePageHistoryActions: (() => void) | null = null;
+
+/**
+ * While Settings is open, its page history takes over the workbench keymap's
+ * navigate.back / navigate.forward (⌘[, ⌘], mouse side buttons, swipes);
+ * closing hands them back to the actions registered before. In the workbench
+ * window those usually drive the editor's back / forward; the native Settings
+ * window has no competing registration, so this simply installs the actions.
+ */
+export function trackPageHistoryActions(): () => void {
+  const take = () => {
+    disposePageHistoryActions ??= overrideActions([
+      { id: "navigate.back", title: "Back", category: "Navigate", run: () => void selectPreviousPage() },
+      { id: "navigate.forward", title: "Forward", category: "Navigate", run: () => void selectNextPage() },
+    ]);
+  };
+  const give = () => {
+    disposePageHistoryActions?.();
+    disposePageHistoryActions = null;
+  };
+  if (useSettingsDialog.getState().open) take();
+  const unsubscribe = useSettingsDialog.subscribe((s, prev) => {
+    if (s.open !== prev.open) (s.open ? take : give)();
+  });
+  return () => {
+    unsubscribe();
+    give();
+  };
+}
+
 /** Shows `pageId` (`page#focus` also selects `focus` on it). */
 export function selectPage(pageId: string) {
-  useSettingsDialog.setState(splitPageTarget(pageId));
+  const target = splitPageTarget(pageId);
+  useSettingsDialog.setState((s) => {
+    // A navigation to the page right next in history walks it (back / forward);
+    // anything else truncates the forward entries, like a browser location bar.
+    const at = s.history.stack[s.history.index];
+    if (at === target.pageId) return target;
+    const back = s.history.stack[s.history.index - 1] === target.pageId;
+    const forward = s.history.stack[s.history.index + 1] === target.pageId;
+    const history = back
+      ? { stack: s.history.stack, index: s.history.index - 1 }
+      : forward
+        ? { stack: s.history.stack, index: s.history.index + 1 }
+        : { stack: [...s.history.stack.slice(0, s.history.index + 1), target.pageId], index: s.history.index + 1 };
+    return { ...target, history };
+  });
+  if (!useSettingsDialog.getState().newProjects) rememberSettingsPage(target.pageId);
+}
+
+export function selectPreviousPage(): boolean {
+  const { history } = useSettingsDialog.getState();
+  if (history.index <= 0) return false;
+  selectPage(history.stack[history.index - 1]!);
+  return true;
+}
+
+export function selectNextPage(): boolean {
+  const { history } = useSettingsDialog.getState();
+  if (history.index >= history.stack.length - 1) return false;
+  selectPage(history.stack[history.index + 1]!);
+  return true;
 }
 
 export function setQuery(query: string) {
@@ -156,17 +300,67 @@ export function setPageScope(pageId: string, scope: Scope) {
 
 const isInside = (key: string, parent: string) => key.startsWith(`${parent}.`);
 
+function mapEntry(value: unknown, path: readonly string[]): unknown {
+  for (const key of path)
+    value =
+      value && typeof value === "object" && Object.hasOwn(value, key)
+        ? (value as Record<string, unknown>)[key]
+        : undefined;
+  return value;
+}
+
+function putEntry(value: unknown, path: readonly string[], next: unknown): unknown {
+  const [head, ...tail] = path;
+  if (head === undefined) return next;
+  const out = { ...(value as Record<string, unknown> | undefined) };
+  const child = tail.length ? putEntry(out[head], tail, next) : next;
+  if (child == null || (tail.length && typeof child === "object" && !Object.keys(child).length)) delete out[head];
+  else Object.defineProperty(out, head, { value: child, enumerable: true, configurable: true, writable: true });
+  return out;
+}
+
+/** Merge literal map entries only at the persistence boundary; their page ownership stays separate. */
+function mergedChanges(s: Bases & Pick<SettingsDialogState, "staged">): StagedChange[] {
+  const all = Object.values(s.staged);
+  const roots = new Map(all.filter((c) => !c.path).map((c) => [stageKey(c.scope, c.key), { ...c }]));
+  for (const c of all) {
+    if (!c.path) continue;
+    const id = stageKey(c.scope, c.key);
+    const root = roots.get(id) ?? {
+      scope: c.scope,
+      key: c.key,
+      page: c.page,
+      value: getAt(baseFor(s, c.scope), c.key),
+    };
+    root.value = putEntry(root.value, c.path, c.value);
+    roots.set(id, root);
+  }
+  return [...roots.values()];
+}
+
+/** Stage one literal map entry independently of every other page. */
+export function stageMapEntry(page: string, scope: Scope, key: string, path: string[], value: unknown) {
+  if (!path.length) return stage(page, scope, key, value);
+  useSettingsDialog.setState((s) => {
+    const staged = { ...s.staged };
+    const id = `${stageKey(scope, key)}|${JSON.stringify(path)}`;
+    const next = value ?? null;
+    if (deepEqual(next ?? undefined, mapEntry(getAt(baseFor(s, scope), key), path))) delete staged[id];
+    else staged[id] = { scope, key, path, value: next, page };
+    return { staged, error: null };
+  });
+}
+
 /**
  * Current value of `key` as the page shows it: staged edit, else the effective
  * value. Edits staged for a parent (a whole map entry) or inside `key` (one
  * field of it) show through too.
  */
 export function stagedValue(s: Bases & Pick<SettingsDialogState, "staged">, scope: Scope, key: string): unknown {
-  const hit = s.staged[stageKey(scope, key)];
+  const changes = mergedChanges(s);
+  const hit = changes.find((c) => c.scope === scope && c.key === key);
   if (hit) return hit.value;
-  const related = Object.values(s.staged).filter(
-    (c) => c.scope === scope && (isInside(key, c.key) || isInside(c.key, key)),
-  );
+  const related = changes.filter((c) => c.scope === scope && (isInside(key, c.key) || isInside(c.key, key)));
   let value = getAt(baseFor(s, scope), key);
   for (const c of related.sort((a, b) => a.key.length - b.key.length)) {
     value = isInside(key, c.key)
@@ -190,7 +384,8 @@ export function stage(page: string, scope: Scope, key: string, value: unknown) {
       staged[stageKey(scope, parent.key)] = { ...parent, value: merged };
       return { staged, error: null };
     }
-    for (const [id, c] of Object.entries(staged)) if (c.scope === scope && isInside(c.key, key)) delete staged[id];
+    for (const [id, c] of Object.entries(staged))
+      if (c.scope === scope && (isInside(c.key, key) || (c.key === key && c.path))) delete staged[id];
     const id = stageKey(scope, key);
     const next = value === undefined ? null : value;
     // Back to the scope's current value: nothing to write.
@@ -235,7 +430,7 @@ export function resetPage(page: string) {
 
 /** Writes to perform, global layer first so a project value still wins afterwards. */
 export function pendingChanges(s: Bases & Pick<SettingsDialogState, "staged">): StagedChange[] {
-  return Object.values(s.staged)
+  return mergedChanges(s)
     .filter((c) => !deepEqual(c.value ?? undefined, getAt(baseFor(s, c.scope), c.key)))
     .sort((a, b) => (a.scope === b.scope ? a.key.localeCompare(b.key) : a.scope === "global" ? -1 : 1));
 }
@@ -280,6 +475,7 @@ export async function persistChanges(
   let error: string | null = null;
   for (const c of changes) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- writes are ordered, stop at the first failure, and each response replaces the shared project settings
       const settings = await deps.set(c.scope, c.key, JSON.stringify(c.value));
       useProject.setState({ settings });
       written.push(stageKey(c.scope, c.key));
@@ -314,7 +510,9 @@ export async function applySettings(deps: PersistDeps = defaultDeps()): Promise<
           .filter((c) => c.scope === "global" && done.has(stageKey(c.scope, c.key)))
           .reduce((g, c) => putAt(g, c.key, c.value), st.globalBase)
       : base,
-    staged: Object.fromEntries(Object.entries(st.staged).filter(([k]) => !done.has(k))),
+    staged: Object.fromEntries(
+      Object.entries(st.staged).filter(([id, c]) => !done.has(stageKey(c.scope, c.key)) || initial.staged[id] !== c),
+    ),
   }));
   await loadGlobalBase();
   if (!error) {
@@ -325,6 +523,7 @@ export async function applySettings(deps: PersistDeps = defaultDeps()): Promise<
       if (current.stagedSecrets[id] !== secret) continue;
       try {
         if (config && config.auth !== "openSsh" && deps.backend) {
+          // oxlint-disable-next-line no-await-in-loop -- staged secrets are re-read from live state each iteration; the first failure stops the loop
           await deps.setSecret(id, secret, config.saveSecret);
         }
         useSettingsDialog.setState((s) => {
@@ -342,6 +541,7 @@ export async function applySettings(deps: PersistDeps = defaultDeps()): Promise<
     for (const [id, change] of external) {
       if (useSettingsDialog.getState().stagedExternal[id] !== change) continue;
       try {
+        // oxlint-disable-next-line no-await-in-loop -- each change rechecks live staged state and publishes its applied value before the next
         const value = await change.apply();
         useSettingsDialog.setState((s) => {
           const stagedExternal = { ...s.stagedExternal };

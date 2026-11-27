@@ -39,7 +39,7 @@ describe("Markdown Preview only", () => {
     disposers.push(registerMarkdownLiveSource());
     const live = editorContributions().find((c) => c.id === "viewers.markdownLive")!;
     view = new EditorView({ state: EditorState.create({ doc: source, extensions: [live.extensions(ctx)] }) });
-    act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [path]: "preview" } })));
+    act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "preview" } })));
   });
   afterEach(() => {
     cleanup();
@@ -97,7 +97,7 @@ describe("Markdown Preview only", () => {
   });
 
   it("leaves the split preview to the editor's scroll sync", () => {
-    act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [path]: "split" } })));
+    act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "split" } })));
     const el = preview();
     goTo(20);
     expect(el.scrollTop).toBe(0);
@@ -110,10 +110,10 @@ describe("Markdown Preview only", () => {
     const el = preview();
     goTo(20);
     expect(shown()).toBe(20);
-    act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [path]: "split" } })));
+    act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "split" } })));
     expect(shown()).toBeNull();
 
-    act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [path]: "preview" } })));
+    act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "preview" } })));
     expect(shown()).not.toBeNull();
     cleanup();
     expect(shown()).toBeNull();

@@ -13,11 +13,16 @@ import {
   commands,
   isCancelled,
   isTauri,
+  ideEventsReady,
+  onIdeEvent,
   nextRequestId,
   type UpdateInfo,
   type UpdateProgress,
+  type UpdateSource,
 } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { recordInstalledUpdate } from "@/platform/releaseNotes";
+import { updateSource } from "@/platform/updateSource";
 import { notifications } from "@/workbench/contributions";
 import { upsertTask } from "@/workbench/tasks";
 import { UpdateBalloonBody } from "./UpdateBalloonBody";
@@ -28,6 +33,31 @@ export const INSTALL_TASK_ID = "app.update.install";
 
 function errorText(e: unknown) {
   return e instanceof Error ? e.message : String(e);
+}
+
+const SOURCE_NAMES: Record<UpdateSource, string> = { github: "GitHub", cnb: "CNB" };
+
+/** Makes `source` the update source; the retry it precedes uses it even if saving fails. */
+async function chooseSource(source: UpdateSource) {
+  try {
+    useProject.setState({
+      settings: await call(commands.settingsSet("global", "general.updateSource", JSON.stringify(source))),
+    });
+  } catch {
+    /* the choice still applies to this retry */
+  }
+}
+
+/**
+ * Offered once a download failed or was cancelled (likely too slow): the same install from
+ * the other source. A check never needs it, since it already falls back to the other source.
+ */
+function otherSourceAction(version: string, source: UpdateSource, notes: string | null) {
+  const other: UpdateSource = source === "cnb" ? "github" : "cnb";
+  return {
+    label: t("app.update.retryWith", { source: SOURCE_NAMES[other] }),
+    run: () => void chooseSource(other).then(() => installUpdate(version, other, notes)),
+  };
 }
 
 let checking: Promise<void> | null = null;
@@ -54,9 +84,10 @@ async function runCheck() {
       title,
       body: <UpdateBalloonBody task={CHECK_TASK_ID} />,
       key: UPDATE_KEY,
+      userInitiated: true,
     });
   try {
-    const r = await Promise.race([call(commands.appCheckUpdate()), abandoned]);
+    const r = await Promise.race([call(commands.appCheckUpdate(updateSource())), abandoned]);
     if (r === "cancelled") return;
     if (!r.enabled) {
       notifications().notify({
@@ -64,6 +95,7 @@ async function runCheck() {
         title: t("app.update.disabled"),
         body: t("app.update.disabledBody"),
         key: UPDATE_KEY,
+        userInitiated: true,
       });
     } else if (!r.update) {
       const info = await commands.appBuildInfo();
@@ -71,32 +103,69 @@ async function runCheck() {
         level: "info",
         title: t("app.update.none", { version: info.version }),
         key: UPDATE_KEY,
+        userInitiated: true,
       });
     } else if (!installing) {
-      notifyUpdate(r.update);
+      await notifyUpdate(r.update, true);
     }
   } catch (e) {
-    notifications().notify({ level: "error", title: t("app.update.failed"), body: errorText(e), key: UPDATE_KEY });
+    notifications().notify({
+      level: "error",
+      title: t("app.update.failed"),
+      body: errorText(e),
+      key: UPDATE_KEY,
+      userInitiated: true,
+    });
   } finally {
     upsertTask({ id: CHECK_TASK_ID, title, message: null, fraction: 1, done: true });
   }
 }
 
-/** Silent check once per app start; only an available update is shown. */
-export async function checkForUpdatesOnStartup(): Promise<void> {
-  if (!isTauri()) return;
-  const update = await commands.appStartupUpdateCheck().catch(() => null);
-  if (update) notifyUpdate(update);
+/** Start one backend schedule after this window can receive its notifications. */
+export function installUpdateChecks(): () => void {
+  let disposed = false;
+  const off = onIdeEvent("updateAvailable", ({ update }) => {
+    if (!installing) void notifyUpdate(update);
+  });
+  void ideEventsReady().then(() => {
+    if (!disposed && isTauri())
+      void call(commands.appUpdateWindowReady(true, navigator.language)).catch((e) =>
+        console.warn("cannot start update checks", e),
+      );
+  });
+  return () => {
+    disposed = true;
+    off();
+    if (isTauri()) void call(commands.appUpdateWindowReady(false, navigator.language)).catch(() => {});
+  };
 }
 
-export function notifyUpdate(update: UpdateInfo) {
+/** The balloon shows the first paragraph; the whole notes belong to the What's New page. */
+function updateSummary(notes: string | null): string | undefined {
+  const text = notes?.trim();
+  if (!text) return undefined;
+  const paragraph = text.split(/\r?\n\s*\r?\n/)[0]?.trim() || text;
+  return paragraph.length > 300 ? paragraph.slice(0, 300).trimEnd() + "…" : paragraph;
+}
+
+/** `userInitiated`: the update came from a manual check, so it pops up regardless of the balloon settings. */
+export async function notifyUpdate(update: UpdateInfo, userInitiated = false): Promise<void> {
+  if (isTauri()) {
+    const claimed = await call(commands.appUpdateAnnouncement(update.version, !userInitiated)).catch(
+      () => userInitiated,
+    );
+    if (!claimed) return;
+  }
   notifications().notify({
     level: "info",
     title: t("app.update.available", { version: update.version }),
-    body: update.notes ?? undefined,
+    body: updateSummary(update.notes ?? null),
     sticky: true,
     key: UPDATE_KEY,
-    actions: [{ label: t("app.update.install"), run: () => void installUpdate(update.version) }],
+    actions: [
+      { label: t("app.update.install"), run: () => void installUpdate(update.version, updateSource(), update.notes) },
+    ],
+    userInitiated,
   });
 }
 
@@ -118,13 +187,13 @@ export function progressText(p: UpdateProgress): { message: string; fraction: nu
 }
 
 /** Downloads and installs `version`, then restarts. A second call while one runs joins it. */
-export function installUpdate(version: string): Promise<void> {
+export function installUpdate(version: string, source = updateSource(), notes: string | null = null): Promise<void> {
   if (!isTauri()) return Promise.resolve();
-  installing ??= runInstall(version).finally(() => (installing = null));
+  installing ??= runInstall(version, source, notes).finally(() => (installing = null));
   return installing;
 }
 
-async function runInstall(version: string) {
+async function runInstall(version: string, source: UpdateSource, notes: string | null) {
   const title = t("app.update.downloading", { version });
   const request = nextRequestId();
   const cancel = () => void commands.cancelRequest(request).catch(() => {});
@@ -137,6 +206,7 @@ async function runInstall(version: string) {
       sticky: true,
       key: UPDATE_KEY,
       actions,
+      userInitiated: true,
     });
   let installingShown = false;
   channel.onmessage = (p) => {
@@ -159,18 +229,32 @@ async function runInstall(version: string) {
   upsertTask({ id: INSTALL_TASK_ID, title, message: null, fraction: null, done: false, cancel });
   // Replaces the notification whose action is now spent.
   balloon([{ label: t("app.update.cancel"), run: cancel }]);
+  // The restarted app reads this to show the What's New page of the version it now runs.
+  // Recorded first: the Windows installer ends the app before the install returns.
+  const undoRecord = recordInstalledUpdate(version, notes);
   try {
-    await call(commands.appInstallUpdate(request, channel));
+    await call(commands.appInstallUpdate(source, request, channel));
   } catch (e) {
+    undoRecord();
     if (isCancelled(e)) {
-      notifications().notify({ level: "info", title: t("app.update.cancelled"), key: UPDATE_KEY });
+      notifications().notify({
+        level: "info",
+        title: t("app.update.cancelled"),
+        key: UPDATE_KEY,
+        actions: [otherSourceAction(version, source, notes)],
+        userInitiated: true,
+      });
     } else {
       notifications().notify({
         level: "error",
         title: t("app.update.installFailed"),
         body: errorText(e),
         key: UPDATE_KEY,
-        actions: [{ label: t("app.update.retry"), run: () => void installUpdate(version) }],
+        actions: [
+          { label: t("app.update.retry"), run: () => void installUpdate(version, source, notes) },
+          otherSourceAction(version, source, notes),
+        ],
+        userInitiated: true,
       });
     }
     return;
@@ -186,6 +270,7 @@ async function runInstall(version: string) {
     sticky: true,
     key: UPDATE_KEY,
     actions: [{ label: t("app.update.restart"), run: restart }],
+    userInitiated: true,
   });
   restart();
 }

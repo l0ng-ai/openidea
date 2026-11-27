@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ExceptionFilter } from "@/platform/ipc";
 import {
+  anyException,
   exceptionGroups,
   isFilterEnabled,
   mergeKnown,
@@ -46,5 +47,15 @@ describe("exception breakpoints", () => {
     expect(sanitizeChoices({ a: true, b: "x", c: false })).toEqual({ a: true, c: false });
     expect(sanitizeChoices([1])).toEqual({});
     expect(sanitizeKnown({ x: [f("a"), { nope: 1 }], y: "z" })).toEqual({ x: [f("a")] });
+  });
+
+  it("reads Any exception from the choices java-debug's filters were stored under", () => {
+    const known = { "java-debug": [f("caught"), f("uncaught")] };
+    expect(anyException(known, {})).toEqual({ caught: false, uncaught: false });
+    expect(anyException(known, { "java-debug:caught": true, uncaught: true })).toEqual({
+      caught: true,
+      uncaught: true,
+    });
+    expect(anyException({}, { "java-debug:uncaught": true })).toEqual({ caught: false, uncaught: true });
   });
 });

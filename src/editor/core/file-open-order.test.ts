@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { registerFileEditorProvider } from "@/workbench/contributions";
+import { registerExternalFileOpenHandler, registerFileEditorProvider } from "@/workbench/contributions";
 import { EditorController, openFilePaths, useTabs } from "./controller";
 import { createMemoryBackend } from "./backend";
+import { storeSession } from "./model/session";
 import { initialTabsState } from "./model/tabs";
 import { useProject } from "@/platform/project";
 
@@ -63,6 +64,36 @@ function tabFor(path: string) {
 }
 
 describe("file open order", () => {
+  it("leaves a file for another application unopened when external opens are off", async () => {
+    const open = vi.fn(() => true);
+    dispose = registerExternalFileOpenHandler({ id: "ext", matches: (p) => p === "/p/a.ts", open });
+    const controller = setup();
+    await controller.openFile("/p/a.ts", { focus: false, external: false });
+    expect(open).not.toHaveBeenCalled();
+    expect(openFilePaths(useTabs.getState())).toEqual([]);
+    await controller.openFile("/p/a.ts", { focus: false });
+    expect(open).toHaveBeenCalledWith("/p/a.ts");
+  });
+
+  it("keeps the caret and activation of a file opened while the project's session restores", async () => {
+    const before = setup();
+    before.restoreSession("/p");
+    await before.openFile("/p/b.ts", { focus: false });
+    before.stop();
+    useTabs.setState(initialTabsState(), true);
+    try {
+      const controller = setup();
+      const open = controller.openFile("/p/a.ts", { selection: { line: 1, col: 2 }, focus: false });
+      controller.restoreSession("/p");
+      await open;
+      expect(openFilePaths(useTabs.getState()).sort()).toEqual(["/p/a.ts", "/p/b.ts"]);
+      expect(activePath()).toBe("/p/a.ts");
+      expect(controller.slotFor(tabFor("/p/a.ts")!.id)?.caret()).toMatchObject({ line: 1, col: 2 });
+    } finally {
+      storeSession("/p", null);
+    }
+  });
+
   it.each([1, 30])("keeps the newer file active after an earlier probe (tab limit: %s)", async (tabLimit) => {
     useProject.setState({ settings: { editor: { tabs: { tabLimit } } } as never });
     const { started, response } = delayProvider();

@@ -1,0 +1,188 @@
+---
+title: "索引"
+description: "发布跨文件关联，供 IDE 用于导航、行号槽标记、查找用法和重命名，并共享项目的 HTTP 端点。"
+---
+
+编辑器提供者在用户输入时回答关于**单个**文档的问题。有些功能需要整个项目的信息：MyBatis 映射器方法和它的 XML 语句、
+路由和对应的控制器。对于这类需求，插件可以为每个文档发布一次数据，由宿主从内存中回答：
+
+- **文档索引器**（`indexing.wit`，API 1.2）：以插件自选的字符串为 key 的定义、引用、别名和行号槽标记。
+  宿主据此处理跳转到声明、行号槽标记，以及（API 1.3 起）查找用法和重命名，无需再次调用插件。
+- **端点提供者**（`endpoints.wit`，API 1.3）：项目的 HTTP 路由，用于随处搜索和 HTTP 客户端。
+
+如果只是在宿主现有的符号索引中快速查找，用 `Project::symbols(query, limit)`（API 1.3）就够了，
+见 [文件操作](/zh/plugins/guides/file-actions)。
+
+## 声明文档索引器
+
+```toml
+engines.openidea = "^1.3"
+wasm = "dist/plugin.wasm"
+
+[capabilities]
+required = ["project.read"]
+
+[[contributes.documentIndexers]]
+extensions = ["java", "xml"]
+```
+
+实现 `openidea_plugin::indexing::DocumentIndexer` 并注册 `indexing`（插件同时有交互式提供者时写
+`register_plugin!(MyPlugin, providers, indexing)`）。用其他工具构建的组件以 `plugin-indexing` world 为目标。
+索引器需要 `project.read`，且只在受信任项目中运行。
+
+## 发布关联（edges）
+
+`index(doc)` 收到文档文本（打开时为编辑器中的文本）以及宿主语法支持识别出的符号，返回该文档的 `Edges`：
+
+| 字段          | 含义                                                                                                                 |
+| ------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `definitions` | key 的声明位置。                                                                                                     |
+| `references`  | 在跳转到声明（`⌘B` / `Ctrl+B`）和 Ctrl/⌘ 点击时跳到对应 key 定义的范围。其他位置照常由语言服务器回答。               |
+| `aliases`     | `Alias { prefix, target }`：以 `prefix` 开头的 key 也按以 `target` 开头来解析（两者都以 `#` 结尾），用于继承的成员。 |
+| `markers`     | 在锚点首行显示的行号槽图标，点击跳到对应 key 的定义。                                                                |
+
+key 可以是插件选择的任意字符串（如 `com.example.UserMapper#findById`），按原样比较。范围使用 UTF-16。
+一个文档的 edges 会替换它之前发布的内容。
+
+下面摘自 [索引器测试插件](https://github.com/l0ng-ai/openidea/tree/main/crates/ide-plugin/tests/fixtures/indexer)，
+它用一种按行组织的测试语言：`def key` 是定义，`ref key` 是引用，`alias prefix# target#` 是别名：
+
+```rust
+use openidea_plugin::indexing::{Alias, Anchor, Document, DocumentIndexer, Edges};
+use openidea_plugin::{Position, Range, register_plugin};
+
+impl DocumentIndexer for Indexer {
+    fn index(&mut self, doc: &Document) -> Edges {
+        let mut out = Edges::default();
+        for (line, text) in doc.text.lines().enumerate() {
+            let Some((kind, value)) = text.split_once(' ') else { continue };
+            let range = Range {
+                start: Position { line: line as u32, character: kind.len() as u32 + 1 },
+                end: Position { line: line as u32, character: text.encode_utf16().count() as u32 },
+            };
+            let anchor = Anchor { key: value.into(), range };
+            match kind {
+                "def" => out.definitions.push(anchor),
+                "ref" => {
+                    out.references.push(anchor.clone());
+                    out.markers.push(anchor);
+                }
+                "alias" => {
+                    if let Some((prefix, target)) = value.split_once(' ') {
+                        out.aliases.push(Alias { prefix: prefix.into(), target: target.into() });
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+}
+
+register_plugin!(Indexer, indexing);
+```
+
+`doc.symbols` 列出宿主识别的符号（`name`、`kind`、`container`、`range`），插件无需自己解析语言，就能把 key 锚定到声明上。
+
+### 解析规则
+
+- 如果某个 key 在同一检测到的模块中有定义，其他模块的定义会被排除。有多个目标时弹出选择列表。
+- 别名链会被跟踪，但深度和候选数有上限。
+- 标记的提示文字列出其所有目标。
+
+## 自定义标记图标（API 1.3）
+
+带 `markers` 的 `[[contributes.markerIcons]]` 条目会给 key 以其某个前缀开头的标记使用包内图标和可选的提示文字；
+匹配最长前缀者优先，其次按声明顺序。其他标记保持默认的导航图标。
+
+```toml
+[[contributes.markerIcons]]
+id = "usages"
+icon = "icons/usages.svg"
+iconDark = "icons/usages_dark.svg"
+markers = ["usages#"]                # 最多 16 个前缀，每个 1–256 字节
+tooltip = "Usages of this class"     # 1–256 字节，显示在目标列表上方
+```
+
+这样发布的 `Anchor { key: "usages#User".into(), range }` 就会显示该图标。早于 API 1.3 的 IDE 会拒绝包含
+`markers` 或 `tooltip` 的清单。
+
+## 查找用法与重命名（API 1.3）
+
+无需额外导出，这张关联图还能回答：
+
+- 在已发布的定义或引用上执行 **查找用法**，会列出该 key 的所有定义和引用，与语言服务器的结果并列。
+- **重命名** 会把所有这些锚点替换为新名称，并与语言服务器的编辑合并为一次工作区编辑。即使只涉及一个文件也总会显示预览；
+  取消则不做任何修改，应用后是一次可撤销的改动。
+
+要让它正常工作，锚点必须**恰好覆盖名称本身**：不含引号、分隔符或周围的语法，列号为 UTF-16（一个增补平面字符占两列）。
+标记不参与，因为它的范围可能覆盖注解或整行。
+
+- 通过别名关联的 key 与导航使用相同的目标和模块优先规则。
+- 查询会先处理排队中的索引工作，但不会重新扫描项目；外部修改必须先被文件监视器捕获并完成索引。
+  如果文档已经变化，请等索引完成后再重命名。
+- 当该位置没有语言服务器能执行重命名时，位于代码标识符上的锚点（依据文件的语法树判断）不会被重命名，
+  因为那样会漏掉声明、import 和文件名。位于字符串、注释、属性值中的锚点，以及没有语法的文件中的锚点，仍会仅依据索引重命名。
+
+## 索引如何运行
+
+- 初次发现复用宿主的项目索引。编辑器按每批最多 16 个文件调度可取消的批次；编辑和文件变化会先使相关条目失效，再重新索引。
+- 重新加载、禁用或插件出错会丢弃其关联图。永远不会用比编辑器更旧的文档版本来回答。
+
+限制：每个文档 2 MiB，每张图 20,000 个文件，每个文档 4,096 个定义和引用、4,096 个标记，256 个别名，每张图 200,000 个条目，
+16 张项目/窗口图，每次查找 256 个候选。超过限制的文档不会被索引；编辑永远不会被阻塞。
+
+想试用测试插件，可以用 `plugins/build.sh crates/ide-plugin/tests/fixtures/indexer` 构建，然后在包含 `.idx`
+文件的受信任项目中把该目录作为开发插件加载，具体步骤见其 README。`cargo test -p ide-host --test plugin_indexing`
+会运行真实组件的契约测试。
+
+## 项目 HTTP 端点（API 1.3）
+
+了解某个框架路由的插件可以把路由共享给 IDE：随处搜索的 **端点** 分类、`.http` 文件中的 URL 补全，以及每个声明处的
+**在 HTTP 客户端中打开** 行号槽操作。
+
+```toml
+engines.openidea = "^1.3"
+
+[capabilities]
+required = ["project.read"]
+
+[[contributes.endpoints]]
+files = ["config/routes.rb", "routes/**/*.php"]
+```
+
+```rust
+use openidea_plugin::endpoints::{Endpoint, EndpointsProvider};
+use openidea_plugin::{Error, Invocation, Location, Position, Range, register_plugin};
+
+impl EndpointsProvider for Routes {
+    fn endpoints(&mut self, ctx: &Invocation) -> Result<Vec<Endpoint>, Error> {
+        let project = ctx.project().ok_or("no project")?;
+        let root = project.root()?;
+        let text = project.read_file("config/routes.rb")?;
+        Ok(parse_routes(&text)
+            .into_iter()
+            .map(|(line, method, path, handler)| Endpoint {
+                method,                         // None 表示接受任意方法
+                path,                           // 路径参数用花括号：/photos/{id}
+                framework: "Rails".into(),
+                handler: Some(handler),         // 显示名称，如 PhotosController#show
+                location: Location {
+                    path: format!("{root}/config/routes.rb"),
+                    range: Range::new(Position::new(line, 0), Position::new(line, 0)),
+                },
+            })
+            .collect())
+    }
+}
+
+register_plugin!(Routes, endpoints);
+```
+
+- IDE 第一次需要该项目的路由时调用 `endpoints(ctx)`，之后每当与 `files` 匹配的文件被创建、修改或删除时再调用；
+  其间宿主直接用缓存回答。请返回完整列表（空列表即清空）。
+- 它在后台运行，不能弹出对话框。每个端点的位置都必须在项目内。
+- **在 HTTP 客户端中打开** 会打开生成请求的草稿文件；请求以 `http://localhost:8080` 开头，路径参数变成 HTTP 客户端变量，
+  接受任意方法的路由使用 GET。
+- 宿主会先校验整批结果，再替换上一次的有效结果：最多 10,000 个端点、4 MiB 路由元数据、16 MiB 声明文档。
+- 禁用、卸载、重新加载或崩溃会撤回这些路由；空闲回收时保留缓存。该 API 不会新增端点工具窗口。

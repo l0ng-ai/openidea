@@ -131,7 +131,7 @@ export function tokenSets(groups: readonly TokenGroup[]): { ui: string[]; scheme
 const cell = (v: string) => "`" + v.replace(/\|/g, "\\|") + "`";
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
-/** Markdown token reference (one table per group) for docs/plugins/themes.md. */
+/** Markdown token reference (one table per group) for plugins/themes.md. */
 export function referenceMarkdown(groups: readonly TokenGroup[]): string {
   const { ui, scheme } = tokenSets(groups);
   const parts = [

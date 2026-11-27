@@ -10,7 +10,15 @@ type Literal = {
   multiline: boolean;
   braces: number;
 };
-type Frame<S> = { code: S; literal?: Literal; depth: number; name?: boolean; close?: string };
+type Frame<S> = {
+  code: S;
+  literal?: Literal;
+  depth: number;
+  name?: boolean;
+  close?: string;
+  doc?: boolean;
+  commentDepth?: number;
+};
 type State<S> = { frames: Frame<S>[]; indentUnit: number };
 
 /** Preserve the stock code tokenizer while suspending strings around embedded code. */
@@ -25,7 +33,7 @@ export function interpolationParser<S>(base: StreamParser<S>, dialect: Interpola
   return {
     name: base.name,
     languageData: base.languageData,
-    tokenTable: { ...base.tokenTable, templateDelimiter: tags.special(tags.brace) },
+    tokenTable: { ...base.tokenTable, templateDelimiter: tags.special(tags.brace), stringRaw: tags.string },
     startState: (indentUnit) => ({ frames: [{ code: start(indentUnit), depth: 0 }], indentUnit }),
     copyState: (state) => ({
       ...state,
@@ -76,7 +84,7 @@ export function interpolationParser<S>(base: StreamParser<S>, dialect: Interpola
           if (stream.next() === "\\" && literal.escape) stream.next();
         }
         if (stream.eol() && !literal.multiline) frame.literal = undefined;
-        return "string";
+        return dialect === "Kotlin" && literal.quote.length > 1 ? "stringRaw" : "string";
       }
       // Probe with a copy so quotes/braces inside comments or characters stay opaque.
       const from = stream.pos;
@@ -106,7 +114,11 @@ export function interpolationParser<S>(base: StreamParser<S>, dialect: Interpola
       }
       if (opening && style !== "comment" && style !== "string.special") {
         stream.pos = from + opening.length;
-        base.token(new StringStream('""', 4, state.indentUnit), frame.code);
+        // Let the base tokenizer see an empty string at the literal's own column: a stream
+        // at column 0 would read as a new line and reset the base's line indentation.
+        const empty = new StringStream(stream.string.slice(0, from) + '""', 4, state.indentUnit);
+        empty.pos = empty.start = from;
+        base.token(empty, frame.code);
         frame.literal = {
           quote,
           braces,
@@ -118,7 +130,7 @@ export function interpolationParser<S>(base: StreamParser<S>, dialect: Interpola
             !(dialect === "Scala" && stream.string.slice(0, from).endsWith("raw")),
           multiline: quote.length >= 3 || verbatim,
         };
-        return "string";
+        return dialect === "Kotlin" && quote.length > 1 ? "stringRaw" : "string";
       }
       if (state.frames.length > 1 && style !== "comment" && !style?.startsWith("string") && end === from + 1) {
         if (frame.depth === 0 && stream.match(frame.close ?? "}")) {
@@ -129,7 +141,51 @@ export function interpolationParser<S>(base: StreamParser<S>, dialect: Interpola
         if (text[0] === "}") frame.depth--;
       }
       stream.pos = from;
-      return base.token(stream, frame.code);
+      const result = base.token(stream, frame.code);
+      if (dialect === "Kotlin" && result === "comment" && (frame.commentDepth || text.startsWith("/*"))) {
+        // Keep the doc flag in the incremental parser state, including through nested comments.
+        const doc = frame.commentDepth ? frame.doc : text.startsWith("/**") && !text.startsWith("/**/");
+        let depth = frame.commentDepth ?? 0;
+        for (const delimiter of stream.string.slice(from, stream.pos).matchAll(/\/\*|\*\//g))
+          depth += delimiter[0] === "/*" ? 1 : -1;
+        frame.commentDepth = depth;
+        frame.doc = depth > 0 && doc;
+        return doc ? "docComment" : result;
+      }
+      if (dialect === "Kotlin" && result === "keyword" && !kotlinKeywordAt(stream.string, from, stream.pos))
+        return "variable";
+      // The clike modes call these atoms, like enum-ish constants; JetBrains colours them as keywords.
+      if (result === "atom") {
+        const word = stream.string.slice(from, stream.pos);
+        if (word === "true" || word === "false") return "bool";
+        if (word === "null") return "null";
+      }
+      return result;
     },
   };
+}
+
+/** Kotlin's hard keywords: never names, wherever they appear (except after a dot). */
+const KOTLIN_HARD_KEYWORDS = new Set(
+  "as as? break class continue do else false for fun if in !in interface is !is null object package return super this throw true try typealias typeof val var when while".split(
+    " ",
+  ),
+);
+/** Soft keywords that open a block or a parameter list rather than precede a name. */
+const KOTLIN_BLOCK_SOFT_KEYWORDS = new Set(["catch", "finally", "init", "constructor", "get", "set"]);
+
+/**
+ * Whether the word the base mode calls a keyword is one here. A word after `.` is a member or
+ * package name (`import a.data.b`, `result.data`). Soft keywords (`data`, `open`, `get`…) are
+ * keywords only where they act as one, before a declaration or another modifier (`data class`,
+ * `get() = …`); elsewhere they are ordinary names (`val data = …`), as IDEA colours them.
+ */
+function kotlinKeywordAt(line: string, from: number, to: number): boolean {
+  if (/\??\.\s*$/.test(line.slice(0, from))) return false;
+  const word = line.slice(from, to);
+  if (KOTLIN_HARD_KEYWORDS.has(word)) return true;
+  const next = line.slice(to).match(/^\s*(.)/u)?.[1];
+  if (next === undefined) return false;
+  if (/[\p{L}_`@]/u.test(next)) return true;
+  return KOTLIN_BLOCK_SOFT_KEYWORDS.has(word) && (next === "(" || next === "{");
 }

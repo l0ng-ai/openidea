@@ -9,7 +9,8 @@ use specta::Type;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct SqlStatement {
-    /// UTF-16 offsets of the statement text (whitespace trimmed, `;` excluded).
+    /// UTF-16 offsets of the statement text (whitespace trimmed, `;` excluded except
+    /// after an Oracle PL/SQL block, whose `END;` needs it).
     pub from: u32,
     pub to: u32,
     pub text: String,
@@ -29,6 +30,9 @@ enum State {
 pub fn split(text: &str, driver: DbDriver) -> Vec<SqlStatement> {
     let mysql = driver == DbDriver::Mysql;
     let clickhouse = driver == DbDriver::Clickhouse;
+    // PL/SQL: `;` inside BEGIN…END / DECLARE…END blocks does not terminate a statement.
+    let plsql = driver == DbDriver::Oracle;
+    let snowflake = driver == DbDriver::Snowflake;
     let chars: Vec<(usize, char)> = text.char_indices().collect();
     // UTF-16 offset of each char index (plus the end).
     let mut u16_at = Vec::with_capacity(chars.len() + 1);
@@ -46,6 +50,18 @@ pub fn split(text: &str, driver: DbDriver) -> Vec<SqlStatement> {
     // Whether the current segment has anything but whitespace / comments.
     let mut has_code = false;
     let mut i = 0usize;
+    // PL/SQL block depth (BEGIN / CASE / LOOP open, END closes).
+    let mut depth = 0usize;
+    // Inside a top-level block's declaration section (`DECLARE … BEGIN`).
+    let mut declarations = false;
+    // The segment is a PL/SQL block: its closing `;` is part of the statement.
+    let mut block = false;
+    // `CREATE PACKAGE` / `TYPE BODY`: only `/` on its own line (or the end) ends it.
+    let mut package = false;
+    // The segment is a Snowflake Scripting block (`DECLARE … BEGIN … END`, `BEGIN … END`).
+    let mut script = false;
+    // The segment may carry a Scripting block as its body (`CREATE TASK … AS BEGIN … END`).
+    let mut defines = false;
     let push = |out: &mut Vec<SqlStatement>, s: usize, e: usize, has_code: bool| {
         if !has_code {
             return;
@@ -69,11 +85,42 @@ pub fn split(text: &str, driver: DbDriver) -> Vec<SqlStatement> {
         let next = chars.get(i + 1).map(|c| c.1);
         match state {
             State::Code => match c {
-                ';' => {
-                    push(&mut out, start, i, has_code);
+                _ if plsql && !has_code && c.is_alphabetic() => {
+                    match plsql_unit(&chars, i) {
+                        Unit::Sql => {}
+                        Unit::Block => block = true,
+                        Unit::Subprogram => (block, declarations) = (true, true),
+                        Unit::Package => (block, package) = (true, true),
+                    }
+                    has_code = true;
+                    // Re-read this character as code (it may start BEGIN / DECLARE).
+                    continue;
+                }
+                _ if snowflake && !has_code && c.is_alphabetic() => {
+                    if word_at(&chars, i, "DECLARE") {
+                        (script, block, declarations) = (true, true, true);
+                    } else if word_at(&chars, i, "BEGIN") {
+                        // `BEGIN;`, `BEGIN TRANSACTION`… open a transaction; anything else a block.
+                        let after = skip_ws(&chars, i + 5);
+                        let transaction = chars.get(after).is_none_or(|&(_, c)| c == ';')
+                            || ["TRANSACTION", "WORK", "NAME"].into_iter().any(|w| word_at(&chars, after, w));
+                        (script, block) = (!transaction, !transaction);
+                    } else {
+                        defines = ["CREATE", "WITH", "EXECUTE"].into_iter().any(|w| word_at(&chars, i, w));
+                    }
+                    has_code = true;
+                    // Re-read this character as code (it starts BEGIN / DECLARE).
+                    continue;
+                }
+                ';' if depth == 0 && !declarations && !package => {
+                    push(&mut out, start, if block { i + 1 } else { i }, has_code);
                     start = i + 1;
                     has_code = false;
+                    block = false;
+                    script = false;
+                    defines = false;
                 }
+                ';' => has_code = true,
                 '\'' => {
                     state = State::Single;
                     has_code = true;
@@ -86,16 +133,38 @@ pub fn split(text: &str, driver: DbDriver) -> Vec<SqlStatement> {
                     state = State::Backtick;
                     has_code = true;
                 }
+                '/' if next == Some('*') => {
+                    state = State::BlockComment;
+                    i += 1;
+                }
+                '/' if plsql && ends_line(&chars, i) && starts_line(&chars, i) => {
+                    // SQL*Plus block terminator: `/` alone on its line ends the statement.
+                    push(&mut out, start, i, has_code);
+                    while chars.get(i).is_some_and(|&(_, c)| c != '\n') {
+                        i += 1;
+                    }
+                    start = i + 1;
+                    has_code = false;
+                    depth = 0;
+                    declarations = false;
+                    block = false;
+                    package = false;
+                }
                 '-' if next == Some('-') => {
                     state = State::LineComment;
                     i += 1;
                 }
                 '#' if mysql => state = State::LineComment,
-                '/' if next == Some('*') => {
-                    state = State::BlockComment;
+                // The `//` of `file://…` (PUT, GET) or another URL is not a comment.
+                '/' if snowflake && next == Some('/') && chars[..i].last().is_some_and(|&(_, c)| c == ':') => {
+                    has_code = true;
                     i += 1;
                 }
-                '$' if driver == DbDriver::Postgres => {
+                '/' if snowflake && next == Some('/') => {
+                    state = State::LineComment;
+                    i += 1;
+                }
+                '$' if driver == DbDriver::Postgres || snowflake => {
                     // `$tag$ … $tag$` (tag may be empty); `$1` parameters are not quotes.
                     let rest = &text[byte_at(i)..];
                     let tag_len = rest[1..].find('$').filter(|&n| {
@@ -114,11 +183,64 @@ pub fn split(text: &str, driver: DbDriver) -> Vec<SqlStatement> {
                         continue;
                     }
                 }
+                // An unquoted body: `… AS BEGIN … END`, `… AS DECLARE … BEGIN … END`, an alert's
+                // `THEN BEGIN … END`. A column named `begin` is followed by `,`, `)`, `;` or FROM.
+                _ if defines && !script && depth == 0 && scripting_body(&chars, i) => {
+                    script = true;
+                    let body = skip_ws(&chars, i + if word_at(&chars, i, "AS") { 2 } else { 4 });
+                    declarations = word_at(&chars, body, "DECLARE");
+                    i = body - 1;
+                }
+                _ if script && word_at(&chars, i, "BEGIN") => {
+                    depth += 1;
+                    declarations = false;
+                }
+                _ if script && word_at(&chars, i, "CASE") => depth += 1,
+                _ if script && word_at(&chars, i, "END") => {
+                    // `END IF` / `FOR` / `WHILE` / `LOOP` / `REPEAT` close statements that opened no
+                    // block; `END` and `END CASE` close what BEGIN and CASE opened.
+                    let after = skip_ws(&chars, i + 3);
+                    let closing = ["IF", "FOR", "WHILE", "LOOP", "REPEAT", "CASE"]
+                        .into_iter()
+                        .find(|w| word_at(&chars, after, w));
+                    if matches!(closing, None | Some("CASE")) && depth > 0 {
+                        depth -= 1;
+                    }
+                    i = closing.map_or(i + 3, |w| after + w.len()) - 1;
+                }
+                _ if plsql && word_at(&chars, i, "BEGIN") => {
+                    depth += 1;
+                    declarations = false;
+                    has_code = true;
+                }
+                _ if plsql && word_at(&chars, i, "CASE") || plsql && word_at(&chars, i, "LOOP") => {
+                    depth += 1;
+                    has_code = true;
+                }
+                // `DECLARE … BEGIN … END;` is one block: the declarations of a top-level block
+                // end at BEGIN, so their `;` must not split it.
+                _ if plsql && word_at(&chars, i, "DECLARE") => {
+                    if depth == 0 {
+                        declarations = true;
+                    }
+                    has_code = true;
+                }
+                _ if plsql && word_at(&chars, i, "END") => {
+                    // `END IF` closes an IF (which never opened a block); END LOOP / END CASE
+                    // close the block their keyword opened. Other ENDs close a block.
+                    let after = skip_ws(&chars, i + 3);
+                    let closing = ["LOOP", "CASE", "IF"].into_iter().find(|w| word_at(&chars, after, w));
+                    if closing != Some("IF") && depth > 0 {
+                        depth -= 1;
+                    }
+                    i = closing.map_or(i + 3, |w| after + w.len()) - 1;
+                    has_code = true;
+                }
                 c if !c.is_whitespace() => has_code = true,
                 _ => {}
             },
             State::Single => {
-                if (mysql || clickhouse) && c == '\\' {
+                if (mysql || clickhouse || snowflake) && c == '\\' {
                     i += 1;
                 } else if c == '\'' {
                     if next == Some('\'') {
@@ -162,6 +284,87 @@ pub fn split(text: &str, driver: DbDriver) -> Vec<SqlStatement> {
     }
     push(&mut out, start, chars.len(), has_code);
     out
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Unit {
+    Sql,
+    /// `DECLARE` / `BEGIN`: an anonymous block.
+    Block,
+    /// `CREATE PROCEDURE` / `FUNCTION` / `TRIGGER`: declarations up to the body's BEGIN.
+    Subprogram,
+    /// `CREATE PACKAGE [BODY]` / `TYPE BODY`.
+    Package,
+}
+
+/// What kind of PL/SQL unit, if any, a statement starting at `i` is.
+fn plsql_unit(chars: &[(usize, char)], mut i: usize) -> Unit {
+    let mut words: Vec<String> = Vec::new();
+    while words.len() < 6 {
+        let word: String = chars[i.min(chars.len())..]
+            .iter()
+            .map(|&(_, c)| c)
+            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+            .collect();
+        if word.is_empty() {
+            break;
+        }
+        i = skip_ws(chars, i + word.chars().count());
+        words.push(word.to_ascii_uppercase());
+    }
+    let w = |n: usize| words.get(n).map_or("", String::as_str);
+    match w(0) {
+        "DECLARE" | "BEGIN" => return Unit::Block,
+        "CREATE" => {}
+        _ => return Unit::Sql,
+    }
+    let mut n = if (w(1), w(2)) == ("OR", "REPLACE") { 3 } else { 1 };
+    if matches!(w(n), "EDITIONABLE" | "NONEDITIONABLE") {
+        n += 1;
+    }
+    match (w(n), w(n + 1)) {
+        ("PROCEDURE" | "FUNCTION" | "TRIGGER", _) => Unit::Subprogram,
+        ("PACKAGE", _) | ("TYPE", "BODY") => Unit::Package,
+        _ => Unit::Sql,
+    }
+}
+
+/// Whether the characters at `i` are the keyword `word` (identifier bounds respected).
+fn word_at(chars: &[(usize, char)], i: usize, word: &str) -> bool {
+    let (before, after) = (chars[..i].last().map(|&(_, c)| c), chars.get(i).map(|&(_, c)| c));
+    before.is_none_or(|c| !c.is_alphanumeric() && c != '_' && c != '$')
+        && after.is_some_and(|c| c.is_ascii_alphabetic())
+        && chars[i..].iter().take(word.len()).map(|&(_, c)| c.to_ascii_uppercase()).eq(word.chars())
+        && chars.get(i + word.len()).is_none_or(|&(_, c)| !c.is_alphanumeric() && c != '_' && c != '$')
+}
+
+/// Whether `AS` or `THEN` at `i` is followed by a Snowflake Scripting block.
+fn scripting_body(chars: &[(usize, char)], i: usize) -> bool {
+    let Some(word) = ["AS", "THEN"].into_iter().find(|w| word_at(chars, i, w)) else { return false };
+    let body = skip_ws(chars, i + word.len());
+    if word_at(chars, body, "DECLARE") {
+        return true;
+    }
+    if !word_at(chars, body, "BEGIN") {
+        return false;
+    }
+    let after = skip_ws(chars, body + 5);
+    chars.get(after).is_some_and(|&(_, c)| !matches!(c, ',' | ')' | ';')) && !word_at(chars, after, "FROM")
+}
+
+/// Whether only whitespace follows `i` until the end of its line.
+fn ends_line(chars: &[(usize, char)], i: usize) -> bool {
+    chars[i + 1..].iter().take_while(|&&(_, c)| c != '\n').all(|&(_, c)| c.is_whitespace())
+}
+
+/// Whether only whitespace precedes `i` since the start of its line.
+fn starts_line(chars: &[(usize, char)], i: usize) -> bool {
+    chars[..i].iter().rev().take_while(|&&(_, c)| c != '\n').all(|&(_, c)| c.is_whitespace())
+}
+
+/// The index of the first non-whitespace character at or after `i`.
+fn skip_ws(chars: &[(usize, char)], i: usize) -> usize {
+    chars[i..].iter().position(|&(_, c)| !c.is_whitespace()).map_or(chars.len(), |n| i + n)
 }
 
 /// The statement to run for a caret at `offset` (UTF-16): the one containing
@@ -276,5 +479,127 @@ mod tests {
         let s = statements_in(sql, 3, 21, DbDriver::Sqlite);
         assert_eq!(s.iter().map(|s| s.text.as_str()).collect::<Vec<_>>(), vec!["select 1", "select 2"]);
         assert_eq!((s[1].from, s[1].to), (13, 21));
+    }
+
+    #[test]
+    fn oracle_keeps_plsql_blocks_as_one_statement() {
+        let block = "begin\n  for r in (select 1 from dual) loop\n    null; -- ;\n  end loop;\nend";
+        assert_eq!(
+            texts(&format!("{block};\nselect 2;"), DbDriver::Oracle),
+            vec![format!("{block};"), "select 2".into()]
+        );
+        let nested = "declare\n  x number;\nbegin\n  if x = 1 then\n    case when x = 2 then\n      null;\n    end case;\n    begin\n      null;\n    end;\n  end if;\nend";
+        assert_eq!(
+            texts(&format!("{nested};\nselect 3;"), DbDriver::Oracle),
+            vec![format!("{nested};"), "select 3".into()]
+        );
+        // Plain SQL with CASE is unaffected; END IF does not close a block twice.
+        assert_eq!(
+            texts("select case when a = 1 then 2 end from t; select 2", DbDriver::Oracle),
+            vec!["select case when a = 1 then 2 end from t", "select 2"]
+        );
+    }
+
+    #[test]
+    fn oracle_slash_terminator_and_other_drivers_unaffected() {
+        // `END;` ends the block; a following `/` (SQL*Plus's own terminator) adds nothing.
+        assert_eq!(
+            texts("begin\n  null;\nend;\n/\nselect 2", DbDriver::Oracle),
+            vec!["begin\n  null;\nend;", "select 2"]
+        );
+        // A division is not a terminator.
+        assert_eq!(texts("select 1 /\n 2 from dual", DbDriver::Oracle), vec!["select 1 /\n 2 from dual"]);
+        assert_eq!(texts("select 'a;b' from t; select 2", DbDriver::Oracle), vec!["select 'a;b' from t", "select 2"]);
+    }
+
+    #[test]
+    fn oracle_create_units_keep_their_declarations_and_end() {
+        let proc = "create or replace procedure p(a number) is\n  x number := 1;\nbegin\n  null;\nend p;";
+        assert_eq!(texts(&format!("{proc}\nselect 1 from dual;"), DbDriver::Oracle), vec![proc, "select 1 from dual"]);
+        let trigger =
+            "CREATE TRIGGER t BEFORE INSERT ON x FOR EACH ROW\nDECLARE n NUMBER;\nBEGIN\n  :new.id := 1;\nEND;";
+        assert_eq!(
+            texts(&format!("{trigger}\nselect 2 from dual"), DbDriver::Oracle),
+            vec![trigger, "select 2 from dual"]
+        );
+        // Packages end at `/` (or the end of the script), like in SQL*Plus.
+        let spec = "create package k as\n  procedure a;\n  function f return number;\nend k;";
+        let body = "create package body k as\n  procedure a is begin null; end;\n  function f return number is begin return 1; end;\nbegin\n  null;\nend k;";
+        assert_eq!(
+            texts(&format!("{spec}\n/\n{body}\n/\nselect 3 from dual;"), DbDriver::Oracle),
+            vec![spec, body, "select 3 from dual"]
+        );
+        // Other CREATE statements and object types stay plain SQL.
+        assert_eq!(
+            texts(
+                "create view v as select 1 x from dual; create type t as object (a number); select 4",
+                DbDriver::Oracle
+            ),
+            vec!["create view v as select 1 x from dual", "create type t as object (a number)", "select 4"]
+        );
+    }
+
+    #[test]
+    fn snowflake_bodies_comments_and_escapes_keep_statements_intact() {
+        let procedure = "create procedure p() returns string language javascript as $$ var a = 1; return 'x;y'; $$";
+        assert_eq!(
+            texts(
+                &format!("{procedure};\nselect 2; // done; really\nselect $1, 'it\\'s;here' from @stage;"),
+                DbDriver::Snowflake
+            ),
+            vec![procedure, "select 2", "// done; really\nselect $1, 'it\\'s;here' from @stage"]
+        );
+        assert_eq!(texts("select 1 / 2; select 3", DbDriver::Snowflake), vec!["select 1 / 2", "select 3"]);
+    }
+
+    #[test]
+    fn snowflake_unquoted_bodies_and_urls_keep_statements_intact() {
+        let task = "create task t warehouse = w as\nbegin\n  insert into a values (1);\n  delete from b;\nend";
+        assert_eq!(texts(&format!("{task};\nselect 2;"), DbDriver::Snowflake), vec![task, "select 2"]);
+        let procedure = "create procedure p() returns number language sql as\ndeclare\n  n number default 1;\nbegin\n  return n;\nend";
+        assert_eq!(texts(&format!("{procedure};\nselect 2"), DbDriver::Snowflake), vec![procedure, "select 2"]);
+        let alert =
+            "create alert a schedule = '1 minute' if (exists (select 1)) then begin insert into h values (1); end";
+        assert_eq!(texts(&format!("{alert}; select 2"), DbDriver::Snowflake), vec![alert, "select 2"]);
+        // A column or alias named `begin` opens nothing.
+        for plain in [
+            "create view v as select 1 as begin, 2 as n",
+            "create view v as select a as begin from t",
+            "with x as (select 1 as begin) select * from x",
+        ] {
+            assert_eq!(texts(&format!("{plain}; select 2"), DbDriver::Snowflake), vec![plain, "select 2"]);
+        }
+        assert_eq!(
+            texts(
+                "put file:///tmp/a.csv @s; get @s/a.csv file:///tmp/; select 1 // note; here\n; select 2",
+                DbDriver::Snowflake
+            ),
+            vec!["put file:///tmp/a.csv @s", "get @s/a.csv file:///tmp/", "select 1 // note; here", "select 2"]
+        );
+    }
+
+    #[test]
+    fn snowflake_scripting_blocks_are_one_statement_and_transactions_are_not() {
+        let block = "DECLARE\n  total NUMBER DEFAULT 0;\n  c CURSOR FOR SELECT n FROM t;\nBEGIN\n  FOR r IN c DO\n    \
+                     IF (r.n > 1) THEN total := total + r.n; END IF;\n  END FOR;\n  \
+                     LET label := CASE WHEN total > 9 THEN 'big' ELSE 'small' END;\n  \
+                     BEGIN\n    INSERT INTO log VALUES (:label);\n  EXCEPTION WHEN OTHER THEN RETURN 'failed';\n  END;\n  \
+                     RETURN total;\nEND;";
+        assert_eq!(texts(&format!("{block}\nselect 2;"), DbDriver::Snowflake), vec![block, "select 2"]);
+        let plain = "BEGIN\n  LET x := 1;\n  WHILE (x < 3) DO x := x + 1; END WHILE;\n  RETURN x;\nEND;";
+        assert_eq!(
+            texts(&format!("select 1;\n{plain}\nselect 3"), DbDriver::Snowflake),
+            vec!["select 1", plain, "select 3"]
+        );
+        for begin in ["begin", "BEGIN TRANSACTION", "begin work", "BEGIN NAME t1"] {
+            assert_eq!(
+                texts(&format!("{begin};\ninsert into t values (1);\ncommit;"), DbDriver::Snowflake),
+                vec![begin, "insert into t values (1)", "commit"]
+            );
+        }
+        assert_eq!(
+            texts("select case when a then 1 end, b from t; select 2", DbDriver::Snowflake),
+            vec!["select case when a then 1 end, b from t", "select 2"]
+        );
     }
 }

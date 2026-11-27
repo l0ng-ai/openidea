@@ -1,9 +1,11 @@
 /**
  * Icon set: JetBrains new-UI ("expui") icons from intellij-community / intellij-plugins
  * (Apache-2.0 / MIT, see THIRD_PARTY_LICENSES.md), vendored as-is under
- * `./expui/<group>/<name>.svg` with their `_dark` and `@20x20` variants. File types
+ * `./expui/<group>/<name>.svg` with their `_dark` and `@20x20` variants; `./expui/flutter/`
+ * holds the Flutter plugin's tool window icons (BSD-3-Clause). File types
  * whose JetBrains icons are not open source use OpenIDEA's own icons drawn in the same
- * style, under `./openidea/<group>/<name>.svg` (paths prefixed `openidea/`). Names are the
+ * style, under `./openidea/<group>/<name>.svg` (paths prefixed `openidea/`). Project type
+ * logos under `./brands/` come from Simple Icons (CC0-1.0; see THIRD_PARTY_LICENSES.md). Names are the
  * contract used by actions (`Action.icon`) and contributions (`ToolWindowContribution.icon`).
  *
  * Rendering: the SVG markup is bundled as raw strings and inlined, so there are no
@@ -19,18 +21,54 @@
  * - Element ids (clip paths) are made unique per instance: WebKit can't resolve
  *   references into `display: none` subtrees, so ids must never be shared.
  */
-import { useId, useMemo, type CSSProperties } from "react";
+import { useId, useLayoutEffect, useMemo, useRef, type CSSProperties } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
 import styles from "./icons.module.css";
 
-const RAW = import.meta.glob<string>(["./expui/**/*.svg", "./openidea/**/*.svg"], {
+const RAW = import.meta.glob<string>(["./expui/**/*.svg", "./openidea/**/*.svg", "./brands/*.svg"], {
   query: "?raw",
   import: "default",
   eager: true,
 });
 
 const ICONS = {
+  "project-flutter": "brands/flutter",
+  "project-vite": "brands/vite",
+  "project-angular": "brands/angular",
+  "project-astro": "brands/astro",
+  "project-cpp": "brands/cpp",
+  "project-dart": "brands/dart",
+  "project-django": "brands/django",
+  "project-dotnet": "brands/dotnet",
+  "project-elixir": "brands/elixir",
+  "project-express": "brands/express",
+  "project-fastapi": "brands/fastapi",
+  "project-flask": "brands/flask",
+  "project-go": "brands/go",
+  "project-haskell": "brands/haskell",
+  "project-html": "brands/html",
+  "project-java": "brands/java",
+  "project-kotlin": "brands/kotlin",
+  "project-ktor": "brands/ktor",
+  "project-laravel": "brands/laravel",
+  "project-nestjs": "brands/nestjs",
+  "project-nextjs": "brands/nextjs",
+  "project-node": "brands/node",
+  "project-nuxt": "brands/nuxt",
+  "project-phoenix": "brands/phoenix",
+  "project-php": "brands/php",
+  "project-python": "brands/python",
+  "project-quarkus": "brands/quarkus",
+  "project-rails": "brands/rails",
+  "project-ruby": "brands/ruby",
+  "project-rust": "brands/rust",
+  "project-scala": "brands/scala",
+  "project-spring-boot": "brands/spring-boot",
+  "project-sveltekit": "brands/sveltekit",
+  "project-swift": "brands/swift",
+  "project-symfony": "brands/symfony",
+  "project-zig": "brands/zig",
   // Files & folders
   folder: "nodes/folder",
   "folder-open": "nodes/folder",
@@ -52,18 +90,26 @@ const ICONS = {
   exception: "nodes/exception",
   "jvm-test": "nodes/test",
   "runnable-mark": "nodes/runnableMark",
+  "symlink-mark": "nodes/symlink",
   "kotlin-object": "kotlin/objectKotlin",
   "spring-config": "openidea/runConfigurations/springBoot",
   "gradle-project": "gradle/gradle",
   "gradle-module": "gradle/gradleSubproject",
   "spring-boot": "openidea/runConfigurations/springBoot",
+  tomcat: "openidea/runConfigurations/tomcat",
+  server: "openidea/runConfigurations/tomcat",
+  visualgc: "openidea/runConfigurations/visualgc",
   file: "fileTypes/text",
   "file-unknown": "fileTypes/unknown",
   "file-code": "fileTypes/anyType",
   "file-text": "fileTypes/text",
   "file-json": "fileTypes/json",
   "file-md": "fileTypes/markdown",
+  "file-word": "openidea/fileTypes/word",
+  "file-pdf": "openidea/fileTypes/pdf",
   "file-image": "fileTypes/image",
+  paperclip: "openidea/general/paperclip",
+  image: "openidea/general/image",
   "file-config": "fileTypes/config",
   "file-python": "fileTypes/python",
   "file-jupyter": "fileTypes/jupyter",
@@ -75,9 +121,12 @@ const ICONS = {
   "file-ts": "fileTypes/typeScript",
   "file-tsx": "openidea/fileTypes/tsx",
   "file-npm": "openidea/fileTypes/npm",
+  "file-bun": "openidea/fileTypes/bun",
   "file-vue": "fileTypes/vue",
   "file-svelte": "openidea/fileTypes/svelte",
   "file-jsp": "openidea/fileTypes/jsp",
+  "file-freemarker": "openidea/fileTypes/freemarker",
+  "file-astro": "fileTypes/astro",
   "file-yaml": "fileTypes/yaml",
   "file-toml": "fileTypes/toml",
   "file-html": "fileTypes/html",
@@ -121,6 +170,7 @@ const ICONS = {
   "file-fsharp": "openidea/fileTypes/fsharp",
   "file-swift": "fileTypes/swiftLang",
   "file-go": "openidea/fileTypes/go",
+  "file-go-test": "openidea/fileTypes/goTest",
   "file-gomod": "openidea/fileTypes/goMod",
   "file-gowork": "openidea/fileTypes/goWork",
   "file-rust": "fileTypes/rust",
@@ -133,7 +183,11 @@ const ICONS = {
   "file-godot": "openidea/fileTypes/godot",
   "file-gdshader": "openidea/fileTypes/gdshader",
   "file-asciidoc": "openidea/fileTypes/asciidoc",
+  "file-typst": "openidea/fileTypes/typst",
   "file-d": "openidea/fileTypes/d",
+  "file-gherkin": "openidea/fileTypes/gherkin",
+  "file-prisma": "openidea/fileTypes/prisma",
+  "file-slint": "openidea/fileTypes/slint",
   "file-dart": "openidea/fileTypes/dart",
   "file-elixir": "openidea/fileTypes/elixir",
   "file-erlang": "openidea/fileTypes/erlang",
@@ -146,6 +200,22 @@ const ICONS = {
   "file-latex": "openidea/fileTypes/latex",
   "file-rst": "fileTypes/rst",
   "file-docker": "fileTypes/docker",
+  "docker-connected": "docker/dockerConnected",
+  "docker-compose-running": "docker/containersRunning",
+  "docker-compose-stopped": "docker/composeProjectStopped",
+  "docker-compose-service-running": "docker/dockerComposeServiceUp",
+  "docker-compose-service-stopped": "docker/dockerComposeServiceStopped",
+  "docker-devcontainer": "docker/devContainers",
+  "docker-containers": "docker/containersList",
+  "docker-images": "docker/imagesList",
+  "docker-networks": "docker/network",
+  "docker-volumes": "docker/volume",
+  "docker-container-running": "docker/singleRunningContainer",
+  "docker-container-stopped": "docker/singleStoppedContainer",
+  "docker-image": "docker/singleImage",
+  "docker-registry": "docker/dockerRegistry",
+  "docker-pull": "docker/pullImage",
+  "docker-push": "docker/pushImage",
   "file-makefile": "fileTypes/makefile",
   "file-cmake": "openidea/fileTypes/cmake",
   "file-bazel": "fileTypes/bazel",
@@ -184,6 +254,7 @@ const ICONS = {
   "toolwindow-database": "openidea/toolwindows/database",
   "toolwindow-agents": "openidea/toolwindows/agents",
   "toolwindow-graphql": "openidea/toolwindows/graphql",
+  "toolwindow-sbt": "openidea/toolwindows/sbt",
   // Coding agents (logos via Paseo)
   "agent-claude": "openidea/agents/claude",
   "agent-codex": "openidea/agents/codex",
@@ -192,20 +263,66 @@ const ICONS = {
   "agent-cursor": "openidea/agents/cursor",
   "agent-opencode": "openidea/agents/opencode",
   "agent-qwen": "openidea/agents/qwen",
+  "agent-qoder": "openidea/agents/qoder",
+  "agent-qodercn": "openidea/agents/qoder",
   "agent-kimi": "openidea/agents/kimi",
   "agent-goose": "openidea/agents/goose",
   "agent-auggie": "openidea/agents/auggie",
   "agent-kiro": "openidea/agents/kiro",
   "agent-vibe": "openidea/agents/vibe",
+  "agent-omp": "openidea/agents/omp",
+  "agent-hermes": "openidea/agents/hermes",
+  "agent-deepseek-harness": "brands/deepseek",
+  "agent-agoragentic-acp": "openidea/agents/agoragentic-acp",
+  "agent-amp-acp": "openidea/agents/amp-acp",
+  "agent-antigravity-acp": "openidea/agents/antigravity-acp",
+  "agent-autohand": "openidea/agents/autohand",
+  "agent-bob": "openidea/agents/bob",
+  "agent-cline": "openidea/agents/cline",
+  "agent-codebuddy-code": "openidea/agents/codebuddy-code",
+  "agent-cortex-code": "openidea/agents/cortex-code",
+  "agent-corust-agent": "openidea/agents/corust-agent",
+  "agent-crow-cli": "openidea/agents/crow-cli",
+  "agent-deepagents": "openidea/agents/deepagents",
+  "agent-devin": "openidea/agents/devin",
+  "agent-dimcode": "openidea/agents/dimcode",
+  "agent-dirac": "openidea/agents/dirac",
+  "agent-factory-droid": "openidea/agents/factory-droid",
+  "agent-fast-agent": "openidea/agents/fast-agent",
+  "agent-glm-acp-agent": "openidea/agents/glm-acp-agent",
+  "agent-grok-build": "openidea/agents/grok-build",
+  "agent-harn": "openidea/agents/harn",
+  "agent-junie": "openidea/agents/junie",
+  "agent-kilo": "openidea/agents/kilo",
+  "agent-kimchi": "openidea/agents/kimchi",
+  "agent-minimax-code": "openidea/agents/minimax-code",
+  "agent-minion-code": "openidea/agents/minion-code",
+  "agent-muse-code": "openidea/agents/muse-code",
+  "agent-nova": "openidea/agents/nova",
+  "agent-pi-acp": "openidea/agents/pi-acp",
+  "agent-poolside": "openidea/agents/poolside",
+  "agent-sigit": "openidea/agents/sigit",
+  "agent-stakpak": "openidea/agents/stakpak",
+  "agent-vtcode": "openidea/agents/vtcode",
   "toolwindow-maven": "toolwindows/maven",
   "toolwindow-gradle": "toolwindows/gradle",
   "toolwindow-build": "toolwindows/build",
+  // Python environment sources: virtualenv / conda / uv / Poetry / Hatch, and version managers (pyenv, mise, asdf).
+  "python-venv": "openidea/python/venv",
+  "python-conda": "openidea/python/conda",
+  "python-uv": "openidea/python/uv",
+  "python-poetry": "openidea/python/poetry",
+  "python-hatch": "openidea/python/hatch",
+  "python-versions": "openidea/python/versions",
   // General UI
   "chevron-right": "general/chevronRight",
   "chevron-down": "general/chevronDown",
+  "toolbar-expand": "general/chevronDownLarge",
   "chevron-up": "general/chevronUp",
   "chevron-left": "general/chevronLeft",
   close: "general/close",
+  "project-tab-close": "general/windowClose",
+  "project-tab-close-hovered": "general/windowCloseHovered",
   plus: "general/add",
   minus: "general/remove",
   check: "actions/checked",
@@ -223,23 +340,32 @@ const ICONS = {
   "search-history": "inline/searchHistory",
   filter: "general/filter",
   refresh: "general/refresh",
+  quote: "openidea/general/quote",
   settings: "general/settings",
   help: "openidea/general/help",
   "page-first": "openidea/general/pageFirst",
   "page-last": "openidea/general/pageLast",
   sliders: "openidea/general/sliders",
+  layers: "openidea/general/layers",
   "graphql-variables": "openidea/general/graphqlVariables",
   layout: "general/layout",
   split: "general/splitVertically",
   "split-horizontal": "general/splitHorizontally",
   "editor-only": "general/editorOnly",
+  "swap-panels": "actions/swapPanels",
+  "external-tools": "general/externalTools",
   "editor-preview": "general/editorPreview",
+  "preview-details": "general/previewHorizontally",
   "preview-only": "general/previewOnly",
   maximize: "image/fitContent",
+  fullscreen: "openidea/general/fullscreen",
+  download: "openidea/general/download",
   "zoom-in": "openidea/general/zoomIn",
   "zoom-out": "openidea/general/zoomOut",
   "actual-size": "openidea/general/actualZoom",
   chessboard: "openidea/general/chessboard",
+  eyedropper: "openidea/general/eyedropper",
+  archive: "openidea/general/archive",
   minimize: "general/openInToolWindow",
   "main-menu": "openidea/general/mainMenu",
   "window-minimize": "openidea/general/windowMinimize",
@@ -270,6 +396,7 @@ const ICONS = {
   "arrow-right": "general/right",
   "arrow-up": "general/up",
   "arrow-down": "general/down",
+  "scroll-to-end": "general/scrollDown",
   undo: "general/undo",
   redo: "general/redo",
   sun: "meetNewUi/lightTheme",
@@ -295,6 +422,7 @@ const ICONS = {
   "db-foreign-key": "openidea/database/foreignKey",
   "db-index": "openidea/database/index",
   "db-schema": "openidea/database/schema",
+  "db-database": "openidea/database/database",
   "db-console": "openidea/database/console",
   "db-matview": "openidea/database/matview",
   "db-routine": "openidea/database/routine",
@@ -302,6 +430,7 @@ const ICONS = {
   "db-sequence": "openidea/database/sequence",
   "db-plan": "openidea/database/plan",
   "db-chart": "openidea/database/chart",
+  "db-in-editor-results": "openidea/database/inEditorResults",
   "db-sort": "openidea/database/sort",
   "db-folder": "openidea/database/folder",
   "db-add": "openidea/database/addDropdown",
@@ -310,8 +439,11 @@ const ICONS = {
   "db-sqlite": "openidea/database/sqlite",
   "db-postgres": "openidea/database/postgres",
   "db-clickhouse": "openidea/database/clickhouse",
+  "db-duckdb": "openidea/database/duckdb",
   "db-mysql": "openidea/database/mysql",
   "db-sqlserver": "openidea/database/sqlserver",
+  "db-oracle": "openidea/database/oracle",
+  "db-snowflake": "openidea/database/snowflake",
   "db-mariadb": "openidea/database/mariadb",
   "db-aurora": "openidea/database/aurora",
   "db-redshift": "openidea/database/redshift",
@@ -325,7 +457,10 @@ const ICONS = {
   "db-timescale": "openidea/database/timescale",
   "db-yugabyte": "openidea/database/yugabyte",
   export: "openidea/general/export",
+  artifact: "openidea/general/artifact",
   web: "openidea/general/web",
+  remote: "openidea/general/remote",
+  "file-new": "openidea/general/newFile",
   "browser-chrome": "openidea/browsers/chrome",
   "browser-chromium": "openidea/browsers/chromium",
   "browser-firefox": "openidea/browsers/firefox",
@@ -346,12 +481,26 @@ const ICONS = {
   success: "status/success",
   // Run / debug
   run: "run/run",
+  "test-passed": "run/testPassed",
+  "test-failed": "run/testFailed",
+  "test-ignored": "run/testIgnored",
+  "test-pending": "run/testNotRunYet",
+  "test-show-passed": "run/showPassed",
+  "test-show-ignored": "run/showIgnored",
+  "test-sort": "runConfigurations/sortByDuration",
   debug: "run/debug",
   "run-coverage": "run/runWithCoverage",
   profile: "run/profile",
   "toolwindow-coverage": "toolwindows/coverage",
   "toolwindow-profiler": "toolwindows/profiler",
   "toolwindow-logcat": "openidea/fileTypes/log",
+  "toolwindow-flutter-inspector": "flutter/inspector",
+  "toolwindow-flutter-devtools": "flutter/devTools",
+  "toolwindow-flutter-deep-links": "flutter/deepLinks",
+  "toolwindow-flutter-extensions": "flutter/extensions",
+  "toolwindow-flutter-property-editor": "flutter/propertyEditor",
+  "toolwindow-flutter-widget-preview": "flutter/widgetPreview",
+  "gutter-navigate": "general/autoscrollToSource",
   "gutter-run": "gutter/run",
   "gutter-run-all": "actions/runAll",
   "gutter-run-passed": "gutter/runSuccess",
@@ -360,8 +509,11 @@ const ICONS = {
   "gutter-implementing": "gutter/implementingMethod",
   "gutter-overridden": "gutter/overridenMethod",
   "gutter-overriding": "gutter/overridingMethod",
+  "gutter-javadoc-read": "gutter/javadocRead",
+  "gutter-javadoc-edit": "gutter/javadocEdit",
   stop: "run/stop",
   rerun: "run/rerun",
+  "rerun-automatically": "actions/rerunAutomatically",
   "hot-reload": "openidea/general/hotReload",
   "rerun-filled": "run/rerun_stroke",
   "restart-debug": "run/restartDebug",
@@ -369,6 +521,10 @@ const ICONS = {
   "stop-filled": "run/stop_stroke",
   resume: "run/resume",
   pause: "run/pause",
+  "thread-running": "openidea/debugger/threadRunning",
+  "thread-suspended": "openidea/debugger/threadSuspended",
+  "thread-breakpoint": "openidea/debugger/threadBreakpoint",
+  "thread-dump": "openidea/debugger/threadDump",
   "step-over": "run/stepOver",
   "step-into": "run/stepInto",
   "step-out": "run/stepOut",
@@ -389,6 +545,8 @@ const ICONS = {
   "breakpoint-exception": "breakpoints/breakpointException",
   "mute-breakpoint": "run/muteBreakpoints",
   "view-breakpoints": "run/viewBreakpoints",
+  "heap-snapshot": "actions/profileMemory",
+  "stream-trace": "openidea/general/streamTrace",
   // Build tools (Maven / Gradle tool windows)
   "maven-project": "maven/mavenProject",
   "maven-module": "maven/mavenModule",
@@ -421,7 +579,11 @@ const ICONS = {
   "vcs-outgoing": "vcs/changesPush@12x12",
   diff: "vcs/diff",
   revert: "vcs/revert",
+  patch: "vcs/patch",
+  "cherry-pick": "vcs/cherryPick",
   // The merge tool's own controls (IntelliJ's AllIcons.Diff)
+  "diff-side-by-side": "diff/sideBySide",
+  "diff-unified": "diff/unified",
   "diff-apply-left": "diff/applyNotConflictsLeft",
   "diff-apply-all": "diff/applyNotConflicts",
   "diff-apply-right": "diff/applyNotConflictsRight",
@@ -455,6 +617,8 @@ const ICONS = {
   "github-timeline": "github/timeline",
   "github-issue-open": "github/issueOpened",
   "github-issue-closed": "github/issueClosed",
+  "issue-open": "openidea/vcs/issueOpen",
+  "issue-closed": "openidea/vcs/issueClosed",
   "github-local-branch": "github/localBranch",
   "github-warning": "github/githubWarning",
   "add-emoji": "github/addEmoji",
@@ -558,8 +722,11 @@ function iconPath(name: string): string | undefined {
   const themed = fileIconTheme?.icon?.(name);
   if (themed && EXTERNAL.has(themed)) return themed;
   if (name.startsWith(EXTERNAL_PREFIX)) return EXTERNAL.has(name) ? name : undefined;
-  if (name.startsWith("symbol-")) return SYMBOL_ICONS[name.slice(7) as SymbolKind];
-  return (ICONS as Record<string, string>)[name];
+  if (name.startsWith("symbol-")) {
+    const kind = name.slice(7);
+    return Object.hasOwn(SYMBOL_ICONS, kind) ? SYMBOL_ICONS[kind as SymbolKind] : undefined;
+  }
+  return Object.hasOwn(ICONS, name) ? (ICONS as Record<string, string>)[name] : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -611,13 +778,20 @@ export function setFileIconTheme(theme: FileIconTheme | null) {
   useFileIconRevision.setState((n) => n + 1, true);
 }
 
-/** The icon theme's icon for a plain folder, or null to keep the built-in one. */
+/** The icon theme's (or plugin path provider's) icon for a plain folder, or null to keep the built-in one. */
 export function themedFolderIconName(
   folderName: string,
   expanded = false,
   holdsOpenFile = false,
   path: string | null = null,
 ): IconName | null {
+  if (path) {
+    const normalized = path.replace(/\\/g, "/");
+    for (const provide of pathIconProviders) {
+      const icon = provide(normalized);
+      if (icon && iconPath(icon)) return icon as IconName;
+    }
+  }
   return (fileIconTheme?.folder(folderName, expanded, holdsOpenFile, path) ?? null) as IconName | null;
 }
 
@@ -643,7 +817,7 @@ interface Prepared {
 
 function raw(path: string): string | undefined {
   if (path.startsWith(EXTERNAL_PREFIX)) return EXTERNAL.get(path);
-  return RAW[path.startsWith("openidea/") ? `./${path}.svg` : `./expui/${path}.svg`];
+  return RAW[path.startsWith("openidea/") || path.startsWith("brands/") ? `./${path}.svg` : `./expui/${path}.svg`];
 }
 
 function parse(svg: string): Variant {
@@ -686,6 +860,14 @@ function build(lightSrc: string, darkSrc: string | undefined, keepColours: boole
 }
 
 function prepare(path: string, large: boolean): Prepared | null {
+  if (path === ICONS.quote) {
+    return {
+      viewBox: "0 0 16 16",
+      html: '<path d="M3 3v10M6.5 4.5H13M6.5 8H13M6.5 11.5H11" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>',
+      hasIds: false,
+      mono: true,
+    };
+  }
   const key = `${path}|${large ? 20 : 16}`;
   let out = prepared.get(key);
   if (out !== undefined) return out;
@@ -704,10 +886,35 @@ const EMPTY: Prepared = { viewBox: "0 0 16 16", html: "", hasIds: false, mono: t
 
 const withIds = (p: Prepared, prefix: string) => (p.hasIds ? p.html.replace(/__ID__/g, prefix) : p.html);
 
+/** Parsed markup by source, cloned into each icon: a tree or list mounts dozens of the same icon
+ *  per frame, and parsing `innerHTML` for each one costs more than the rest of the row. */
+const parsed = new Map<string, SVGSVGElement>();
+
+function fillIcon(svg: SVGSVGElement, html: string, shared: boolean) {
+  let source = shared ? parsed.get(html) : undefined;
+  if (!source) {
+    source = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    source.innerHTML = html;
+    if (shared) parsed.set(html, source);
+  }
+  svg.replaceChildren(...Array.from(source.childNodes, (n) => n.cloneNode(true)));
+}
+
 // ---------------------------------------------------------------------------
 
+/** Largest `data:` image accepted as an icon (an avatar or a status badge a plugin fetched). */
+const MAX_IMAGE_ICON = 64 * 1024;
+
+/** A small raster image given as a `data:` URI (PNG, JPEG, GIF, WebP), shown in place of an icon. */
+function isImageIcon(name: string): boolean {
+  return name.length <= MAX_IMAGE_ICON && /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+=*$/.test(name);
+}
+
 export interface IconProps {
-  /** Icon name; unknown names render the generic file icon. `symbol-<kind>` renders a symbol node icon. */
+  /**
+   * Icon name; unknown names render the generic file icon. `symbol-<kind>` renders a symbol node icon,
+   * and a raster `data:` image URI (see `isImageIcon`) renders that image.
+   */
   name: IconName | (string & {});
   size?: number;
   className?: string;
@@ -716,17 +923,42 @@ export interface IconProps {
   label?: string;
 }
 
-export function Icon({ name, size = 16, className, style, label }: IconProps) {
+export function Icon(props: IconProps) {
+  return isImageIcon(props.name) ? <ImageIcon {...props} /> : <SvgIcon {...props} />;
+}
+
+function ImageIcon({ name, size = 16, className, style, label }: IconProps) {
+  return (
+    <img
+      className={clsx(styles.icon, styles.image, className)}
+      style={style}
+      src={name}
+      width={size}
+      height={size}
+      alt={label ?? ""}
+      aria-hidden={label ? undefined : true}
+      draggable={false}
+    />
+  );
+}
+
+function SvgIcon({ name, size = 16, className, style, label }: IconProps) {
   useFileIconRevision();
   const uid = useId();
   const path = iconPath(name);
   const p = (path && prepare(path, size >= 18)) || prepare(ICONS.file, size >= 18) || EMPTY;
   const html = useMemo(() => withIds(p, `i${uid.replace(/[^a-zA-Z0-9_-]/g, "")}-`), [p, uid]);
+  const ref = useRef<SVGSVGElement>(null);
+  useLayoutEffect(() => {
+    // Markup with per-instance ids is unique to this icon: nothing to share.
+    if (ref.current) fillIcon(ref.current, html, !p.hasIds);
+  }, [html, p.hasIds]);
   if (!path && name.startsWith("symbol-")) {
     return <SymbolBadge kind={name.slice(7)} className={className} style={style} />;
   }
   return (
     <svg
+      ref={ref}
       className={clsx(styles.icon, p.mono && styles.mono, className)}
       style={style}
       width={size}
@@ -737,7 +969,6 @@ export function Icon({ name, size = 16, className, style, label }: IconProps) {
       role={label ? "img" : undefined}
       aria-label={label}
       focusable="false"
-      dangerouslySetInnerHTML={{ __html: html }}
     />
   );
 }
@@ -880,7 +1111,7 @@ const FILE_NAMES = table({
   "file-makefile": "makefile gnumakefile bsdmakefile makefile.am makefile.in kbuild",
   "file-cmake": "cmakelists.txt cmakecache.txt",
   "file-perl": "makefile.pl build.pl cpanfile",
-  "file-git": ".gitattributes .gitmodules .gitconfig .git-blame-ignore-revs .mailmap",
+  "file-git": ".gitattributes .gitmodules .gitconfig .git-blame-ignore-revs .mailmap .worktreeinclude",
   "file-ignored":
     ".gitignore .gitignore_global .dockerignore .npmignore .prettierignore .eslintignore .stylelintignore .hgignore .ignore .rgignore " +
     ".fdignore .helmignore .vscodeignore .gcloudignore .slugignore .cfignore .bzrignore .containerignore",
@@ -923,7 +1154,7 @@ const FILE_NAMES = table({
 /** Name patterns, tried in order (lower-case names). */
 const NAME_PATTERNS: readonly (readonly [RegExp, IconName])[] = [
   [/^(dockerfile|containerfile)[.-]/, "file-docker"],
-  [/^(docker-)?compose([.-][\w-]+)?\.ya?ml$/, "file-docker"],
+  [/^.*compose.*\.ya?ml$/, "file-docker"],
   [/^\.env(\.|$)/, "file-dotenv"],
   [/^(licen[cs]e|copying)(-[\w.-]+|\.(md|txt|rst))?$/, "file-license"],
   [/^requirements([.-][\w.-]*)?\.(txt|in)$/, "file-requirements"],
@@ -943,15 +1174,20 @@ const EXT_ICONS = table({
   "file-vue": "vue",
   "file-svelte": "svelte",
   "file-jsp": "jsp jspx jspf jsph tag tagf tagx",
-  "file-json": "json jsonc json5 jsonl ndjson geojson topojson webmanifest har avsc code-workspace code-snippets map",
+  "file-freemarker": "ftl ftlh ftlx",
+  "file-astro": "astro",
+  "file-json":
+    "json jsonc json5 jsonl ndjson geojson topojson webmanifest har avsc code-workspace code-snippets map uproject uplugin",
   "file-md": "md mdx markdown mdown mkd mkdn mdwn ronn workbook",
+  "file-word": "doc docx rtf odt",
+  "file-pdf": "pdf",
   "file-rst": "rst",
   "file-yaml": "yaml yml",
   "file-toml": "toml",
   "file-text": "txt text",
   "file-log": "log",
   "file-csv": "csv tsv",
-  "file-html": "html htm shtml html.tmpl",
+  "file-html": "html htm shtml html.tmpl djhtml",
   "file-xhtml": "xhtml",
   "file-css": "css pcss postcss",
   "file-less": "less",
@@ -987,13 +1223,13 @@ const EXT_ICONS = table({
   "file-perl": "pl pm pod psgi cgi",
   "file-c": "c",
   "file-h": "h hpp hh hxx h++",
-  "file-cpp": "cpp cc cxx c++ ipp tpp inl ixx cppm",
+  "file-cpp": "cpp cc cxx c++ ipp tpp inl ixx cppm ino",
   "file-objc": "m",
   "file-objcpp": "mm",
   "file-csharp": "cs csx",
   "file-fsharp": "fs fsi fsx",
   "file-swift": "swift swiftinterface",
-  "file-go": "go",
+  "file-go": "go gotmpl tmpl",
   "file-rust": "rs",
   "file-ruby": "rb rake gemspec ru rbi jbuilder podspec erb rhtml",
   "file-lua": "lua luau rockspec",
@@ -1002,7 +1238,11 @@ const EXT_ICONS = table({
   "file-godot": "tscn tres godot import",
   "file-gdshader": "gdshader gdshaderinc",
   "file-asciidoc": "adoc asciidoc",
+  "file-typst": "typ",
   "file-d": "d di",
+  "file-gherkin": "feature",
+  "file-prisma": "prisma",
+  "file-slint": "slint",
   "file-dart": "dart",
   "file-elixir": "ex exs",
   "file-erlang": "erl hrl escript app.src",
@@ -1026,7 +1266,7 @@ const EXT_ICONS = table({
 });
 
 /** Source files for languages without a file-type icon. */
-const CODE_EXT = new Set(["astro", "nim", "wit", "wat", "sol", "v", "sv"]);
+const CODE_EXT = new Set(["nim", "wit", "wat", "sol", "v", "sv"]);
 
 let iconOverride: ((fileName: string) => IconName | null) | null = null;
 
@@ -1035,16 +1275,34 @@ export function setFileIconOverride(resolve: ((fileName: string) => IconName | n
   iconOverride = resolve;
 }
 
-/** Icons for particular files (plugin `fileIcons`), newest first: after the user's, before the icon theme's. */
-let fileIconProviders: ReadonlyArray<(fileName: string) => string | null> = [];
+/** Icons for exact project paths (plugin `decorations.set-file-icon`), newest first: before filename globs. */
+let pathIconProviders: ReadonlyArray<(path: string) => string | null> = [];
 
-/** Adds a file icon provider (an `ext:` icon name or null); the returned function removes it. */
-export function addFileIconProvider(resolve: (fileName: string) => string | null): () => void {
-  fileIconProviders = [resolve, ...fileIconProviders];
+/** Icons for particular files (plugin `fileIcons`), newest first: after path providers, before the icon theme's. */
+let fileIconProviders: ReadonlyArray<(fileName: string, path: string | null) => string | null> = [];
+
+/** Bumps the file-icon revision so mounted trees and editor tabs re-resolve icons. */
+export function bumpFileIconRevision() {
   useFileIconRevision.setState((n) => n + 1, true);
+}
+
+/** Adds an exact-path icon provider for files and plain folders; the returned function removes it. */
+export function addPathIconProvider(resolve: (path: string) => string | null): () => void {
+  pathIconProviders = [resolve, ...pathIconProviders];
+  bumpFileIconRevision();
+  return () => {
+    pathIconProviders = pathIconProviders.filter((p) => p !== resolve);
+    bumpFileIconRevision();
+  };
+}
+
+/** Adds a file icon provider (an `ext:` or built-in icon name or null); the returned function removes it. */
+export function addFileIconProvider(resolve: (fileName: string, path: string | null) => string | null): () => void {
+  fileIconProviders = [resolve, ...fileIconProviders];
+  bumpFileIconRevision();
   return () => {
     fileIconProviders = fileIconProviders.filter((p) => p !== resolve);
-    useFileIconRevision.setState((n) => n + 1, true);
+    bumpFileIconRevision();
   };
 }
 
@@ -1052,12 +1310,21 @@ export function addFileIconProvider(resolve: (fileName: string) => string | null
 export function fileIconName(fileName: string, path: string | null = null): IconName {
   const custom = iconOverride?.(fileName);
   if (custom) return custom;
+  if (path) {
+    const normalized = path.replace(/\\/g, "/");
+    for (const provide of pathIconProviders) {
+      const icon = provide(normalized);
+      if (icon && iconPath(icon)) return icon as IconName;
+    }
+  }
   for (const provide of fileIconProviders) {
-    const icon = provide(fileName);
+    const icon = provide(fileName, path);
     if (icon && iconPath(icon)) return icon as IconName;
   }
   const themed = fileIconTheme?.file(fileName, path);
   if (themed) return themed as IconName;
+  // A file `go test` builds as a test: the name is case-sensitive, and `_…` / `.…` files are ignored.
+  if (/^[^._].*_test\.go$/.test(fileName)) return "file-go-test";
   const lower = fileName.toLowerCase();
   const named = FILE_NAMES[lower] ?? NAME_PATTERNS.find(([re]) => re.test(lower))?.[1];
   if (named) return named;
@@ -1120,4 +1387,9 @@ export function folderIconName(kind: FolderKind = "plain"): IconName {
     default:
       return "folder";
   }
+}
+
+/** Validated built-in and registered, sanitized plugin icons. */
+export function isIconName(name: string): name is IconName {
+  return iconPath(name) !== undefined;
 }

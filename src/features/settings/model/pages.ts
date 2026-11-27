@@ -70,10 +70,15 @@ export function flatten(nodes: readonly PageNode[]): PageNode[] {
 
 /** Breadcrumb titles from the root to `key`. */
 export function breadcrumb(nodes: readonly PageNode[], key: string): string[] {
+  return breadcrumbNodes(nodes, key).map((n) => n.title);
+}
+
+/** Breadcrumb nodes from the root to `key` (parents are links in the page header). */
+export function breadcrumbNodes(nodes: readonly PageNode[], key: string): PageNode[] {
   for (const n of nodes) {
-    if (n.key === key) return [n.title];
-    const sub = breadcrumb(n.children, key);
-    if (sub.length) return [n.title, ...sub];
+    if (n.key === key) return [n];
+    const sub = breadcrumbNodes(n.children, key);
+    if (sub.length) return [n, ...sub];
   }
   return [];
 }
@@ -92,6 +97,33 @@ export function matchesTerms(texts: readonly string[], terms: readonly string[])
   // Translated texts are searched alongside the English ones.
   const hay = texts.flatMap((t) => [t.toLowerCase(), tx(t).toLowerCase()]);
   return terms.every((term) => hay.some((h) => h.includes(term)));
+}
+
+/**
+ * How well a page's title answers the query: 0 when it is the query, 1 when it starts with
+ * it, null otherwise (English or translated title).
+ */
+export function titleRank(node: PageNode, query: string): number | null {
+  const q = query.trim().toLowerCase();
+  if (!q || !node.page) return null;
+  const titles = [node.title.toLowerCase(), tx(node.title).toLowerCase()];
+  if (titles.includes(q)) return 0;
+  if (titles.some((title) => title.startsWith(q))) return 1;
+  return null;
+}
+
+/** The matching page whose title answers the query best (see {@link titleRank}), if any. */
+export function titledPage(nodes: readonly PageNode[], query: string): PageNode | null {
+  let best: PageNode | null = null;
+  let bestRank = Infinity;
+  for (const n of flatten(nodes)) {
+    const rank = n.matched ? titleRank(n, query) : null;
+    if (rank !== null && rank < bestRank) {
+      best = n;
+      bestRank = rank;
+    }
+  }
+  return best;
 }
 
 /** Indices of `text` covered by any term (for highlighting option labels), or null. */

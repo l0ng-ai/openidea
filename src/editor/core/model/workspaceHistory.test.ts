@@ -1,9 +1,14 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { redo, redoDepth, undo, undoDepth, history } from "@codemirror/commands";
 import { EditorView } from "@codemirror/view";
-import { workspaceEditHistory } from "@/editor/api";
+import { _provideOpenEditorPaths, workspaceEditHistory } from "@/editor/api";
 import { installWorkspaceEditUndo } from "@/features/code-insight/workspaceUndo";
-import { provideNotificationService, type NotificationService } from "@/workbench/contributions";
+import {
+  provideEditorService,
+  provideNotificationService,
+  type EditorService,
+  type NotificationService,
+} from "@/workbench/contributions";
 import { emitLocalIdeEvent } from "@/platform/ipc";
 import { createMemoryBackend, type MemoryBackend } from "../backend";
 import { _resetLanguages } from "../cm/languages";
@@ -49,22 +54,28 @@ async function open(path: string, from?: EditorSlot) {
   return slot;
 }
 async function replace(text: string) {
-  for (const d of backend.docs.values()) {
-    backend.patch(d.id, [{ from: 0, to: 3, insert: text }], true);
-    await backend.save(d.id);
-  }
+  await Promise.all(
+    [...backend.docs.values()].map(async (d) => {
+      backend.patch(d.id, [{ from: 0, to: 3, insert: text }], true);
+      await backend.save(d.id);
+    }),
+  );
   backend.files.set("/p/closed.java", text);
 }
 async function rename() {
   await replace("new");
-  emitLocalIdeEvent({ type: "workspaceEditApplied", id: 9, paths: ["/p/A.java", "/p/B.java", "/p/closed.java"] });
+  emitLocalIdeEvent({
+    type: "workspaceEditApplied",
+    id: 9,
+    paths: ["/p/A.java", "/p/B.java", "/p/closed.java"],
+    moves: [],
+    byAgent: false,
+  });
 }
 function historyStep(slot: EditorSlot, forward = false) {
   return (forward ? redo : undo)({
     state: slot.currentState(),
-    dispatch: (tr) => {
-      slot.state = tr.state;
-    },
+    dispatch: (tr) => slot.dispatchLocal(tr),
   });
 }
 
@@ -185,7 +196,13 @@ it("rebuilds multiple redo markers in order when a closed file opens", async () 
   const a = await open("/p/A.java");
   await rename();
   await replace("alt");
-  emitLocalIdeEvent({ type: "workspaceEditApplied", id: 10, paths: ["/p/A.java", "/p/B.java"] });
+  emitLocalIdeEvent({
+    type: "workspaceEditApplied",
+    id: 10,
+    paths: ["/p/A.java", "/p/B.java"],
+    moves: [],
+    byAgent: true,
+  });
   commands.undoWorkspaceEdit.mockImplementation(async (id: number) => {
     await replace(id === 10 ? "new" : "old");
     return { status: "ok", data: null };
@@ -214,4 +231,96 @@ it("refuses redo when a newly opened affected editor has newer typing", async ()
   await expect(workspaceEditHistory(9, true)).rejects.toThrow("Undo newer editor changes");
   expect(commands.redoWorkspaceEdit).not.toHaveBeenCalled();
   expect(b.currentState().doc.toString()).toBe("old own");
+});
+
+it("keeps one refactoring history step when a secondary view hands its history to a tab", async () => {
+  const att = await attachDocument(manager, "/p/A.java", { sharedHistory: true });
+  attached = new EditorView({
+    doc: att.text(),
+    extensions: [att.extension],
+    dispatchTransactions: att.dispatchTransactions,
+  });
+  await Promise.resolve();
+  await rename();
+  const tab = await open("/p/A.java");
+  expect(undoDepth(tab.currentState())).toBe(1);
+  historyStep(tab);
+  await vi.waitFor(() => expect(attached!.state.doc.toString()).toBe("old"));
+  expect(undoDepth(tab.currentState())).toBe(0);
+  expect(commands.undoWorkspaceEdit).toHaveBeenCalledOnce();
+  attached.destroy();
+  attached = null;
+  att.release();
+});
+
+it("keeps refactoring markers current while a secondary view is unmounted", async () => {
+  const att = await attachDocument(manager, "/p/A.java", { sharedHistory: true });
+  attached = new EditorView({
+    doc: att.text(),
+    extensions: att.extension,
+    dispatchTransactions: att.dispatchTransactions,
+  });
+  await Promise.resolve();
+  attached.destroy();
+  attached = null;
+  await rename();
+  const tab = await open("/p/A.java");
+  expect(undoDepth(tab.currentState())).toBe(1);
+  historyStep(tab);
+  await vi.waitFor(() => expect(tab.currentState().doc.toString()).toBe("old"));
+  expect(commands.undoWorkspaceEdit).toHaveBeenCalledOnce();
+  att.release();
+});
+
+it("editors on a file the edit renamed reopen at its new path, through Undo and Redo", async () => {
+  const live = () => slots.filter((s) => !closed.has(s));
+  const closed = new Set<EditorSlot>();
+  const openFile = vi.fn(async (path: string) => {
+    if (!live().some((s) => s.model.path === path)) await open(path);
+  });
+  const closePath = vi.fn(async (path: string) => {
+    for (const s of live())
+      if (s.model.path === path) {
+        closed.add(s);
+        s.dispose();
+      }
+    return true;
+  });
+  provideEditorService({
+    openFile,
+    closePath,
+    activePath: () => live().at(-1)?.model.path ?? null,
+    saveAll: vi.fn(),
+  } as unknown as EditorService);
+  _provideOpenEditorPaths(() => live().map((s) => s.model.path));
+  backend.files.set("/p/Renamed.java", "old");
+  const moved = async (from: string, to: string, run: () => Promise<unknown>) => {
+    openFile.mockClear();
+    await run();
+    await vi.waitFor(() => expect(openFile).toHaveBeenCalledExactlyOnceWith(to, { focus: false }));
+    expect(closePath).toHaveBeenCalledWith(from);
+    expect(live().map((s) => s.model.path)).toEqual(["/p/B.java", to]);
+  };
+  try {
+    await open("/p/B.java");
+    await open("/p/A.java");
+    await moved("/p/A.java", "/p/Renamed.java", async () => {
+      await replace("new");
+      emitLocalIdeEvent({
+        type: "workspaceEditApplied",
+        id: 11,
+        paths: ["/p/A.java", "/p/Renamed.java", "/p/B.java"],
+        moves: [{ from: "/p/A.java", to: "/p/Renamed.java" }],
+        byAgent: false,
+      });
+    });
+    // Reopened editors take part in the refactoring's history like the ones they replace.
+    await moved("/p/Renamed.java", "/p/A.java", () => workspaceEditHistory(11));
+    await moved("/p/A.java", "/p/Renamed.java", () => workspaceEditHistory(11, true));
+    await moved("/p/Renamed.java", "/p/A.java", () => workspaceEditHistory(11));
+    expect(notify).not.toHaveBeenCalled();
+  } finally {
+    provideEditorService(undefined as unknown as EditorService);
+    _provideOpenEditorPaths(() => []);
+  }
 });

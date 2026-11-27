@@ -6,12 +6,20 @@
   display: flex;
   flex-direction: column;
 }
+.compactListPopup {
+  min-width: 0;
+}
+.listDivider {
+  width: 100%;
+  height: 1px;
+  background: var(--border-popup);
+}
 .listHeader {
   height: 28px;
   flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 0 12px;
   font-size: var(--fs-ui);
   font-weight: 600;
@@ -30,14 +38,18 @@
 }
 .withPreview {
   flex-direction: row;
-  width: auto;
-  max-width: min(1160px, 94vw);
+  min-width: 0;
 }
 .listMain {
   display: flex;
   flex-direction: column;
   min-width: 0;
   flex: none;
+}
+.withPreview .listMain {
+  flex: 1 1 320px;
+  min-width: 300px;
+  min-height: 0;
 }
 .mnemonic {
   width: 10px;
@@ -48,13 +60,38 @@
   text-align: right;
 }
 .previewPanel {
-  width: 420px;
-  flex: none;
+  flex: 0 1 var(--list-preview-width);
+  min-width: 300px;
   min-height: 60px;
-  max-height: 340px;
+  max-height: 300px;
   overflow: auto;
   border-left: 1px solid var(--border-popup);
   background: var(--bg-popup-inline, var(--bg-elev));
+}
+.previewLeft {
+  flex-direction: row-reverse;
+}
+.previewLeft .previewPanel {
+  border-left: 0;
+  border-right: 1px solid var(--border-popup);
+}
+.previewBelow {
+  flex-direction: column;
+}
+.previewBelow .listMain {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.previewBelow .previewPanel {
+  flex: 0 1 auto;
+  min-width: 0;
+  min-height: 0;
+  max-height: min(300px, 40vh);
+  border-left: 0;
+  border-top: 1px solid var(--border-popup);
+}
+.previewBelow .previewPanel[aria-busy] {
+  height: 60px;
 }
 .previewText {
   padding: 8px 10px;
@@ -66,12 +103,13 @@
   padding: 6px 0;
   font-family: var(--openidea-editor-font, var(--font-mono));
   font-weight: var(--fw-code);
-  font-size: var(--fs-small);
+  font-size: var(--openidea-editor-font-size, var(--fs-code));
   color: var(--fg-editor);
 }
 .diffLine {
   padding: 0 10px;
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   min-height: 1.4em;
 }
 .diff-added {
@@ -86,17 +124,28 @@
 .listBody {
   display: flex;
   flex-direction: column;
-  min-height: 24px;
+  min-height: var(--h-list-row);
   padding: 0 0 4px;
   box-sizing: content-box;
 }
 .listBody > * {
   flex: 1;
 }
+.centeredList,
+.targetPopup {
+  min-width: min(360px, 90vw);
+}
+.centeredList .listMain,
+.centeredList .listBody,
+.targetPopup .listMain,
+.targetPopup .listBody {
+  flex-shrink: 1;
+  min-height: 0;
+}
 .item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
   width: 100%;
   font-size: var(--fs-ui);
@@ -152,6 +201,12 @@
   min-width: 200px;
   max-width: 420px;
 }
+.leadingDetail {
+  flex: 0 0 min(var(--list-leading-detail-width), 42%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
 .detail {
   flex: 0 1 auto;
   min-width: 0;
@@ -160,6 +215,28 @@
   font-size: var(--fs-small);
   color: var(--fg-subtle);
 }
+.targetIdentity {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  min-width: 0;
+  flex: 1;
+}
+.targetIdentity .label {
+  flex: none;
+  max-width: 100%;
+}
+.targetContainer,
+.targetPath {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-subtle);
+}
+.targetPath {
+  max-width: 44%;
+  direction: rtl;
+}
 .shortcut {
   flex: none;
   font-size: var(--fs-small);
@@ -167,6 +244,28 @@
 }
 .shortcut {
   font-family: var(--font-keys);
+}
+.copyPathPopup {
+  width: 500px;
+  min-width: 0;
+  max-width: calc(100vw - 12px);
+}
+.copyPathPopup .listMain,
+.copyPathPopup .listBody {
+  flex-shrink: 1;
+  min-height: 0;
+}
+.copyPathPopup .label {
+  flex: 0 1 auto;
+  max-width: 60%;
+}
+.copyPathPopup .preview {
+  flex: 1;
+  min-width: 0;
+  direction: rtl;
+  text-align: start;
+  font: inherit;
+  color: var(--fg-subtle);
 }
 .itemIcon {
   flex: none;
@@ -231,17 +330,76 @@
   font-size: var(--fs-tiny);
   color: var(--fg-faint);
 }
+.symbolRename {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-3);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+}
+.renameContext,
+.symbolRenameNote {
+  grid-column: 1 / -1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.renameContext {
+  color: var(--fg-emphasis);
+}
+.symbolRename .renameField {
+  width: 100%;
+  height: max(var(--h-field), calc(var(--openidea-editor-font-size, var(--fs-code)) + var(--space-2)));
+  font-family: var(--openidea-editor-font, var(--font-mono));
+  font-size: var(--openidea-editor-font-size, var(--fs-code));
+}
+.symbolRenameNote {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
 
+/* Fits its content up to a cap; resized (`data-resized`), it keeps that size and the body scrolls. */
 .docPopup {
-  max-width: min(600px, 90vw);
-  max-height: 420px;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.docPopup:not([data-resized]) {
+  width: max-content;
+  min-width: min(300px, 90vw);
 }
 .docScope {
   display: contents;
 }
 .docFrame {
   outline: none;
+}
+.docPopup .docFrame {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.docPopup:not([data-resized]) .docFrame {
+  max-width: min(500px, 90vw);
+  max-height: 500px;
+}
+.docPopup .docBody {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-2) var(--space-4) var(--space-1);
+}
+.docPopup .docToolbar {
+  position: static;
+  flex: none;
+  align-self: flex-end;
+  margin: 0 var(--space-2) var(--space-1);
+  padding: 0;
+  border: 0;
 }
 .docWindowFrame {
   height: 100%;
@@ -263,7 +421,7 @@
   bottom: 0;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 2px 6px;
   border-top: 1px solid var(--border-popup);
   background: var(--bg-popup);
@@ -271,55 +429,114 @@
 .docBody {
   padding: 10px 14px;
 }
+/* Signatures: a type name opens its documentation (`linkSignatureTypes` in docs.ts); other
+   languages' names look like links once they are found to lead somewhere. */
+.docBody :global(.cm-lsp-markdown > pre:first-of-type > code.language-go .tok-typeName),
+.docBody :global(.cm-lsp-markdown [data-doc-ref]) {
+  cursor: pointer;
+}
+.docBody :global(.cm-lsp-markdown > pre:first-of-type > code.language-go .tok-typeName:hover),
+.docBody :global(.cm-lsp-markdown [data-doc-ref]:hover) {
+  text-decoration: underline;
+}
 .defPopup {
-  width: min(640px, 90vw);
-  max-height: 460px;
+  width: 600px;
+  height: 400px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 .defHeader {
-  height: 28px;
+  min-height: var(--h-field);
   flex: none;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 6px 0 12px;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
   background: var(--bg-popup-inline, var(--bg-elev));
   border-bottom: 1px solid var(--border-popup);
   font-size: var(--fs-ui);
   color: var(--fg-muted);
 }
-.defFile {
+.defTarget {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
   color: var(--fg-emphasis);
 }
+.defTarget > svg {
+  flex: none;
+}
+.defName,
 .defPath {
-  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.defPath {
+  max-width: 45%;
+  min-width: 0;
   color: var(--fg-subtle);
 }
 .defFrame {
+  flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
   outline: none;
 }
-.defCount {
+.defActions {
+  margin-inline-start: auto;
+  display: flex;
+  align-items: center;
   flex: none;
+  gap: var(--space-0-5);
+}
+.defCount {
   font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
   color: var(--fg-subtle);
 }
 .defBody {
+  flex: 1;
+  min-height: 0;
   overflow: auto;
-  padding: 4px 12px;
+  padding: var(--space-3) var(--space-2);
+  color: var(--fg-emphasis);
 }
-.defBody pre {
+.defCode {
+  margin: 0;
+  font: inherit;
   white-space: pre;
 }
+.defCode code {
+  font: inherit;
+}
 
+.previewDialog [data-dialog-body] {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.renamePreview [data-dialog-body] {
+  display: block;
+  overflow: auto;
+}
+.previewContext {
+  padding: var(--space-2) 14px 0;
+  overflow-wrap: anywhere;
+  color: var(--fg-emphasis);
+  font-size: var(--fs-ui);
+}
+.renamePreview .previewList {
+  overflow: visible;
+}
+.renamePreview .previewWarning {
+  overflow-wrap: anywhere;
+}
 .previewSummary {
+  flex: none;
   padding: 10px 14px 6px;
   font-size: var(--fs-ui);
   color: var(--fg-muted);
@@ -328,39 +545,64 @@
   list-style: none;
   margin: 0;
   padding: 0 0 8px;
-  max-height: 320px;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
 }
 .previewRow {
   height: var(--h-row);
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 0 14px;
   font-size: var(--fs-ui);
 }
-.previewName {
-  color: var(--fg-emphasis);
+.previewFile {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
 }
-.previewPath {
+.previewName,
+.previewDirectory,
+.previewOp {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.previewName {
+  flex: none;
+  max-inline-size: 100%;
+  color: var(--fg-emphasis);
+}
+.previewFile:has(.previewDirectory) .previewName {
+  max-inline-size: 70%;
+}
+.previewDirectory {
   color: var(--fg-subtle);
   font-size: var(--fs-small);
+  direction: rtl;
 }
 .previewOp,
 .previewCount {
-  flex: none;
   font-size: var(--fs-small);
   color: var(--fg-muted);
 }
+.previewOp {
+  max-inline-size: 55%;
+}
+.previewCount {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
 
 .previewWarning {
+  flex: none;
   display: flex;
   align-items: flex-start;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 10px 14px 0;
   font-size: var(--fs-ui);
   color: var(--fg-muted);
@@ -387,6 +629,18 @@
   font-size: var(--fs-small);
   color: var(--fg-editor);
 }
+.renamePreview .previewOccurrences .previewRow {
+  min-height: var(--h-row);
+  height: auto;
+  align-items: baseline;
+  padding-block: var(--space-1);
+}
+.renamePreview .previewCode {
+  font-family: var(--openidea-editor-font, var(--font-mono));
+  font-size: var(--openidea-editor-font-size, var(--fs-code));
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .previewMatch {
   background: var(--bg-search-match);
   color: var(--fg-search-match, inherit);
@@ -400,23 +654,19 @@
   text-overflow: ellipsis;
 }
 
-.reformatGroup {
-  margin: 0 0 10px;
-  padding: 0;
-  border: 0;
+/* Dialog bodies get no padding of their own; wrap the groups like Analysis dialogs' .form. */
+.pasteImports {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-}
-.reformatLegend {
-  margin-bottom: 6px;
-  padding: 0;
-  font-size: var(--fs-small);
-  color: var(--fg-subtle);
-}
-.reformatOption {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  gap: var(--space-3);
+  padding: 14px;
   font-size: var(--fs-ui);
+}
+.pasteImportList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: 280px;
+  overflow: auto;
+  overflow-wrap: anywhere;
 }

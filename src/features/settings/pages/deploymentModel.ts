@@ -2,6 +2,7 @@
 import {
   DEFAULT_DEPLOYMENT_SERVER,
   newRemoteId,
+  type DeploymentGroupValid,
   type DeploymentMappingValid,
   type DeploymentServerValid,
 } from "@/platform/remoteSettings";
@@ -67,9 +68,45 @@ export function newServer(
   };
 }
 
+/** A new, empty group named "Group <n>" (the first free number). */
+export function newGroup(groups: readonly DeploymentGroupValid[]): DeploymentGroupValid {
+  const names = new Set(groups.map((g) => g.name));
+  let n = groups.length + 1;
+  while (names.has(`Group ${n}`)) n++;
+  return { id: newRemoteId("group"), name: `Group ${n}`, servers: [] };
+}
+
+/** Adds or removes `server` in `group`, keeping the members in the server list's order. */
+export function toggleGroupServer(
+  group: DeploymentGroupValid,
+  server: string,
+  servers: readonly DeploymentServerValid[],
+): DeploymentGroupValid {
+  const members = new Set(group.servers);
+  if (members.has(server)) members.delete(server);
+  else members.add(server);
+  return { ...group, servers: servers.map((s) => s.id).filter((id) => members.has(id)) };
+}
+
+/** `groups` without members that are no longer in `servers`. */
+export function pruneGroups(
+  groups: readonly DeploymentGroupValid[],
+  servers: readonly DeploymentServerValid[],
+): DeploymentGroupValid[] {
+  const ids = new Set(servers.map((s) => s.id));
+  return groups.map((g) =>
+    g.servers.every((id) => ids.has(id)) ? g : { ...g, servers: g.servers.filter((id) => ids.has(id)) },
+  );
+}
+
 /** The default server after `servers` changed: kept when still present, else the first one (or none). */
-export function fixDefaultServer(servers: readonly DeploymentServerValid[], defaultServer: string): string {
-  if (servers.some((s) => s.id === defaultServer)) return defaultServer;
+/** The default target kept valid: an existing server or server group, else the first server. */
+export function fixDefaultServer(
+  servers: readonly DeploymentServerValid[],
+  defaultServer: string,
+  groups: readonly { id: string }[] = [],
+): string {
+  if (servers.some((s) => s.id === defaultServer) || groups.some((g) => g.id === defaultServer)) return defaultServer;
   return servers[0]?.id ?? "";
 }
 

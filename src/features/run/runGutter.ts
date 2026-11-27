@@ -5,16 +5,19 @@
  * edits and mapped through changes in between.
  */
 import { RangeSet, StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
-import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
-import type { EditorDocContext } from "@/editor/api";
+import { EditorView, GutterMarker, ViewPlugin, type ViewUpdate } from "@codemirror/view";
+import { iconAreaSource, mapLineStart, type EditorDocContext } from "@/editor/api";
+import { editorPrefs } from "@/platform/editorSettings";
 import { useProject } from "@/platform/project";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { shortcutLabel } from "@/platform/keymap";
 import { gutterIconMarkup, showContextMenu, type MenuItem } from "@/ui";
 import { notifications, runExecutors } from "@/workbench/contributions";
 import {
+  canDebugProduced,
   choiceItems,
   executeContext,
+  fuzzItems,
   launchProduced,
   modifyContext,
   produceResolved,
@@ -24,12 +27,12 @@ import { loadGoModules } from "./goModules";
 import { onServerSettled } from "@/editor/lsp/availability";
 import { resolveCandidates, retryNegativeInheritedMain, unresolvedCandidates } from "./inheritedMain";
 import { fileTargets, OPTIMISTIC, produceContextChoices, type ContextInput } from "./producers";
-import { loadConfigs, useRun } from "./store";
+import { loadConfigs, snapshotFailuresAt, updateSnapshots, useRun } from "./store";
 import { targetLanguage, type RunTarget } from "./targets";
-import { onTestStatesChanged, testState, testStatesVersion, type TestState } from "./testing/states";
+import { onTestStatesChanged, testState, testStatesVersion, type StateQuery, type TestState } from "./testing/states";
 
 /** Languages with gutter run targets (C / C++ `main` included). */
-const hasGutterTargets = (path: string) => !!targetLanguage(path) || /\.(c|cpp|cc|cxx)$/.test(path);
+const hasGutterTargets = (path: string) => !!targetLanguage(path) || /\.(c|cpp|cc|cxx|zig)$/.test(path);
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -51,8 +54,7 @@ const targetsField = StateField.define<PlacedTarget[]>({
     if (!tr.docChanged || !value.length) return value;
     const out: PlacedTarget[] = [];
     for (const t of value) {
-      const pos = tr.changes.mapPos(t.pos, -1);
-      const line = tr.state.doc.lineAt(pos);
+      const line = tr.state.doc.lineAt(mapLineStart(tr, t.pos));
       if (out.some((o) => o.pos === line.from)) continue;
       out.push({ ...t, pos: line.from, line: line.number - 1 });
     }
@@ -105,14 +107,21 @@ export function targetMenuItems(target: RunTarget, path: string, content: string
     choices.length > 1
       ? { submenu: choiceItems(choices, debug).filter((i) => i.kind !== "header") }
       : { run: () => void launch(target, path, debug, content) };
-  // Like IDEA, Debug only where a debugger can run it.
-  const debuggable = !p || !!(p.debug || p.config?.debugAdapter || p.missing);
+  const debuggable = !p || canDebugProduced(p);
+  const snapshots = gutterTestState(target, path) === "failed" ? snapshotFailuresAt(stateQuery(target, path)) : null;
   return [
-    { label: tx`Run '${name}'`, icon: "run", shortcut: shortcutLabel("run.runContext"), ...pick(false) } as MenuItem,
+    {
+      label: tx`Run '${name}'`,
+      preserveLabelEnd: true,
+      icon: "run",
+      shortcut: shortcutLabel("run.runContext"),
+      ...pick(false),
+    } as MenuItem,
     ...(debuggable
       ? [
           {
             label: tx`Debug '${name}'`,
+            preserveLabelEnd: true,
             icon: "debug",
             shortcut: shortcutLabel("run.debugContext"),
             ...pick(true),
@@ -122,6 +131,16 @@ export function targetMenuItems(target: RunTarget, path: string, content: string
     ...runExecutors()
       .filter((e) => !!p?.config && e.supports(p.config))
       .map((e) => ({ label: e.label(name), icon: e.icon, run: () => void executeContext(e.id, context) })),
+    ...fuzzItems(input, context),
+    ...(snapshots
+      ? [
+          {
+            label: "Update Snapshot",
+            icon: "rerun",
+            run: () => void updateSnapshots(snapshots.sessionId, snapshots.nodeIds),
+          },
+        ]
+      : []),
     { kind: "separator" },
     { label: "Modify Run Configuration…", icon: "edit", run: () => void modifyContext(context) },
   ];
@@ -131,13 +150,18 @@ function showTargetMenu(view: EditorView, target: RunTarget, path: string, at: {
   showContextMenu(at, targetMenuItems(target, path, view.state.doc.toString()));
 }
 
-/** Results of frameworks that root their test tree at the file (jest/vitest, pytest) also match by file. */
-const fileRootedResults = (path: string) => /\.(py|[cm]?[jt]sx?)$/.test(path);
+/** Results of frameworks that root their test tree at the file (jest/vitest, pytest, Zig's module) also match by file. */
+const fileRootedResults = (path: string) => /\.(py|[cm]?[jt]sx?|zig)$/.test(path);
 
 /** Last test result of a gutter target (IDEA: green / red run icons after a test run). */
+const stateQuery = (target: RunTarget, path: string): StateQuery => ({
+  path: target.path,
+  file: fileRootedResults(path) ? path : undefined,
+});
+
 export function gutterTestState(target: RunTarget, path: string): TestState | null {
   if (target.kind === "main" || target.kind === "generate") return null;
-  return testState({ path: target.path, file: fileRootedResults(path) ? path : undefined });
+  return testState(stateQuery(target, path));
 }
 
 export function markerIcon(kind: RunTarget["kind"], state: TestState | null): string {
@@ -172,6 +196,12 @@ class RunMarker extends GutterMarker {
     el.innerHTML = gutterIconMarkup(markerIcon(this.target.kind, this.state)) ?? "";
     return el;
   }
+}
+
+/** Settings › Editor › General › Gutter Icons › Run icons (on with the gutter icons). */
+export function runIconsShown(): boolean {
+  const prefs = editorPrefs();
+  return prefs.showGutterIcons && !prefs.gutterIconsDisabled.includes("run");
 }
 
 /** The gutter asks for markers on every update: rebuild only when targets or test results changed. */
@@ -260,20 +290,21 @@ export function runGutter(ctx: EditorDocContext): Extension {
   return [
     targetsField,
     detector,
-    gutter({
-      class: `${styles.runGutter} cm-openidea-gutter-run`,
-      markers: (view) => markers(view.state, path),
-      initialSpacer: () => new RunMarker({ line: 0, pos: 0, kind: "test", name: "", path: [] }, path),
-      domEventHandlers: {
-        mousedown: (view, block, event) => {
-          const target = view.state.field(targetsField).find((t) => t.pos === block.from);
-          if (!target || (event as MouseEvent).button !== 0) return false;
-          const el = (event.target as HTMLElement).closest?.(`.${styles.runMarker}`) as HTMLElement | null;
-          const rect = (el ?? (event.target as HTMLElement)).getBoundingClientRect();
-          event.preventDefault();
-          showTargetMenu(view, target, path, { x: rect.left, y: rect.bottom + 2 });
-          return true;
-        },
+    // In the shared icon area, beside the inheritance icons and the rendered-doc toggle.
+    iconAreaSource.of({
+      order: 10,
+      markers: (view) => (runIconsShown() ? markers(view.state, path) : RangeSet.empty),
+      // One icon of width while the file has run targets, so icons don't shift the text as they load.
+      reserve: (state) => runIconsShown() && state.field(targetsField).length > 0,
+      mousedown: (view, block, event) => {
+        if (event.button !== 0 || !runIconsShown()) return false;
+        const el = (event.target as HTMLElement).closest?.(`.${styles.runMarker}`) as HTMLElement | null;
+        const target = el && view.state.field(targetsField).find((t) => t.pos === block.from);
+        if (!el || !target) return false;
+        const rect = el.getBoundingClientRect();
+        event.preventDefault();
+        showTargetMenu(view, target, path, { x: rect.left, y: rect.bottom + 2 });
+        return true;
       },
     }),
   ];

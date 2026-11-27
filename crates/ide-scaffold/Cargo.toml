@@ -1,0 +1,20 @@
+[package]
+name = "ide-scaffold"
+description = "New Project generators: the generator catalog (`generators/*.toml`), project templates, official framework CLIs and initializr-style project services"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ide-core.workspace = true
+ide-tools = { path = "../ide-tools" }
+ide-vcs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+specta.workspace = true
+toml.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+tempfile.workspace = true

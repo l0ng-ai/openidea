@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { executeAction, registerActions } from "@/platform/actions";
-import { call, commands, onIdeEvent, type TrustDecisions, type TrustStatus } from "@/platform/ipc";
+import { call, callDesktop, commands, onIdeEvent, type TrustDecisions, type TrustStatus } from "@/platform/ipc";
 import { dirname, useProject } from "@/platform/project";
-import { initializeRemoteTrustMigration } from "@/platform/remote";
+import { initializeRemoteTrustMigration, isRemoteRoot } from "@/platform/remote";
 import { provideProjectTrustPrompt, type ProjectTrustScope } from "@/platform/projectTrust";
-import { invokeLocal } from "@/platform/tauriCore";
+import { askOverSplash } from "@/platform/splash";
 import { registerOverlay, registerSettingsPage, registerWorkbenchBanner } from "@/workbench/contributions";
 import { Button, Checkbox, Dialog, T } from "@/ui";
 import styles from "./trust.module.css";
@@ -38,8 +38,10 @@ function TrustDialog() {
   return (
     <Dialog
       open={!!path}
-      icon="app"
-      width={560}
+      icon="warning"
+      width={600}
+      className={styles.trustDialog}
+      blockWorkbenchShortcuts
       title="Trust and Open Project?"
       onClose={() => void executeAction("project.dontOpen")}
       buttons={[
@@ -48,8 +50,12 @@ function TrustDialog() {
           autoFocus: true,
           onClick: () => void executeAction("project.previewRestricted"),
         },
-        { label: "Don't Open", onClick: () => void executeAction("project.dontOpen") },
-        { label: "Trust Project", role: "default", onClick: () => void executeAction("project.trust") },
+        { label: "Don't Open", role: "cancel" },
+        {
+          label: folder ? "Trust Folder" : "Trust Project",
+          role: "default",
+          onClick: () => void executeAction("project.trust"),
+        },
       ]}
       footerStart={
         <Checkbox
@@ -67,29 +73,54 @@ function TrustDialog() {
         />
       }
     >
-      <div className={styles.content}>
+      <div className={styles.promptContent}>
         <PathLine path={path ?? ""} />
         <p>
+          <T>Loading, running or building a project may execute potentially malicious code from its build scripts.</T>
+        </p>
+        <p className={styles.restrictedPreview}>
           <T>
             If you don't trust the source, preview the project in Restricted Mode, where project commands and tools
             can't run.
           </T>
-        </p>
-        <p>
-          <T>Loading, running or building a project may execute potentially malicious code from its build scripts.</T>
         </p>
       </div>
     </Dialog>
   );
 }
 
+async function untrustedAttachment() {
+  const project = useProject.getState().project;
+  if (!project?.workspace || project.workspace.projects[0] !== project.root) return null;
+  for (const path of project.workspace.projects) {
+    // oxlint-disable-next-line no-await-in-loop -- returns the first untrusted project in workspace order; later paths are intentionally not queried after a hit.
+    const status = await call(commands.projectTrustStatus(path)).catch(() => null);
+    if (status && !status.trusted) return status;
+  }
+  return null;
+}
+
 function RestrictedBanner() {
-  const restricted = useProject((s) => s.project?.trusted === false);
+  const project = useProject((s) => s.project);
+  const restricted = project?.trusted === false;
+  const [blocker, setBlocker] = useState<{ project: typeof project; path: string | null } | null>(null);
+  const path = blocker?.project === project ? blocker.path : null;
+  useEffect(() => {
+    let active = true;
+    if (restricted)
+      void untrustedAttachment().then((status) => {
+        if (active) setBlocker({ project, path: status?.root ?? null });
+      });
+    return () => {
+      active = false;
+    };
+  }, [project, restricted]);
   return restricted ? (
     <div className={styles.banner} role="status">
       <span>
         <T>Restricted Mode: project commands and tools are disabled.</T>
       </span>
+      {path && <PathLine path={path} />}
       <Button onClick={() => void executeAction("project.trust")}>
         <T>Trust Project</T>
       </Button>
@@ -115,6 +146,26 @@ function TrustSettings() {
       setError(String(e));
     }
   };
+  const trust = async (path: string) => {
+    try {
+      await call(commands.projectTrustSet(path, true, false));
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+  const addLocation = async () => {
+    try {
+      const { open } = await import("@/platform/dialog");
+      const picked = await open({ directory: true, multiple: false, title: "Add Trusted Location" });
+      const path = Array.isArray(picked) ? picked[0] : picked;
+      if (!path) return;
+      await call(commands.projectTrustAddLocation(path));
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
   return (
     <div className={styles.content}>
       <p>
@@ -132,9 +183,35 @@ function TrustSettings() {
           </Button>
         </div>
       ))}
-      <h3>
-        <T>Trusted locations</T>
-      </h3>
+      {decisions?.restricted.length ? (
+        <>
+          <h3>
+            <T>Restricted projects</T>
+          </h3>
+          <p className={styles.hint}>
+            <T>These projects open in Restricted Mode, even inside a trusted location.</T>
+          </p>
+          {decisions.restricted.map((path) => (
+            <div className={styles.row} key={path}>
+              <span className={styles.path}>{path}</span>
+              <Button onClick={() => void trust(path)}>
+                <T>Trust</T>
+              </Button>
+            </div>
+          ))}
+        </>
+      ) : null}
+      <div className={styles.sectionHead}>
+        <h3>
+          <T>Trusted locations</T>
+        </h3>
+        <Button onClick={() => void addLocation()}>
+          <T>Add folder…</T>
+        </Button>
+      </div>
+      <p className={styles.hint}>
+        <T>Every project inside a trusted location is trusted without asking, unless it is a restricted project.</T>
+      </p>
       {decisions?.locations.map((path) => (
         <div className={styles.row} key={path}>
           <span className={styles.path}>{path}</span>
@@ -153,13 +230,42 @@ async function decide(trusted: boolean) {
   if (!path) return;
   const folder = trusted && pending.folder;
   if (pending.scope === "local") {
-    await invokeLocal("project_trust_set", { path, trusted, folder });
+    await callDesktop("project_trust_set", { path, trusted, folder });
   } else {
     await call(commands.projectTrustSet(path, trusted, folder));
+    if (isRemoteRoot(path)) await call(commands.remoteTrustSet(trusted));
     const project = await commands.projectCurrent();
     if (project) useProject.setState({ project, settings: project.settings });
   }
   pending.finish?.(true);
+}
+
+function promptForTrust(status: TrustStatus, scope: ProjectTrustScope): Promise<boolean> {
+  usePrompt.getState().finish?.(false);
+  const answer = new Promise<boolean>((resolve) =>
+    usePrompt.setState({
+      path: status.root,
+      scope,
+      folder: false,
+      finish: (open) => {
+        usePrompt.setState({ path: null, scope: "current", finish: null, folder: false });
+        resolve(open);
+      },
+    }),
+  );
+  askOverSplash(answer);
+  return answer;
+}
+
+async function trustProject() {
+  if (!usePrompt.getState().path) {
+    const status = await untrustedAttachment();
+    if (status) {
+      await promptForTrust(status, "current");
+      return;
+    }
+  }
+  await decide(true);
 }
 
 export function activate(): () => void {
@@ -167,27 +273,22 @@ export function activate(): () => void {
   const disposers = [
     provideProjectTrustPrompt(async (path, scope) => {
       const status = await (scope === "local"
-        ? invokeLocal<TrustStatus>("project_trust_status", { path })
+        ? callDesktop<TrustStatus>("project_trust_status", { path })
         : call(commands.projectTrustStatus(path)));
+      if (scope === "current" && isRemoteRoot(path)) {
+        // The server's answer covers what runs there; commands run here need this machine's own.
+        const desktop = await call(commands.remoteTrustStatus());
+        if (status.decided && desktop.decided && status.trusted === desktop.trusted) return true;
+        return promptForTrust(status, scope);
+      }
       if (status.decided) return true;
-      usePrompt.getState().finish?.(false);
-      return new Promise<boolean>((resolve) =>
-        usePrompt.setState({
-          path: status.root,
-          scope,
-          folder: false,
-          finish: (open) => {
-            usePrompt.setState({ path: null, scope: "current", finish: null, folder: false });
-            resolve(open);
-          },
-        }),
-      );
+      return promptForTrust(status, scope);
     }),
     registerOverlay({ id: "project.trustDialog", component: TrustDialog }),
     registerWorkbenchBanner({ id: "project.restrictedMode", component: RestrictedBanner }),
     registerSettingsPage({ id: "projectTrust", title: "Project Trust", group: "Security", component: TrustSettings }),
     registerActions([
-      { id: "project.trust", title: "Trust Project", category: "Project", run: () => decide(true) },
+      { id: "project.trust", title: "Trust Project", category: "Project", run: trustProject },
       {
         id: "project.previewRestricted",
         title: "Preview in Restricted Mode",
@@ -208,7 +309,9 @@ export function activate(): () => void {
         category: "Project",
         run: async ({ arg }) => {
           const path = typeof arg === "string" ? arg : useProject.getState().project?.root;
-          if (path) await call(commands.projectTrustSet(path, false, false));
+          if (!path) return;
+          await call(commands.projectTrustSet(path, false, false));
+          if (isRemoteRoot(path)) await call(commands.remoteTrustSet(false));
         },
       },
       {

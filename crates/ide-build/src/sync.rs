@@ -73,6 +73,9 @@ struct GradleCache {
     /// The projects as Gradle evaluated them; empty in caches from before they were read.
     #[serde(default)]
     projects: Vec<ReportedProject>,
+    /// The projects report how their resources are processed; older caches are stale.
+    #[serde(default)]
+    resources: bool,
 }
 
 /// Init script printing every project, its source sets and Java version once configured.
@@ -83,20 +86,59 @@ const MAVEN_CACHE_VERSION: u32 = 1;
 
 /// `dependency:tree` of a plugin version whose `-Dverbose` lists the occurrences Maven
 /// omitted (conflicts, duplicates): verbose output was dropped in 3.0 and is back since 3.2.
-/// Offline, the project's own plugin version is used instead, since this one may not be cached.
+/// Offline, it is used only when an earlier sync downloaded it; otherwise the newest version
+/// in the local repository is.
 const DEPENDENCY_TREE: &str = "org.apache.maven.plugins:maven-dependency-plugin:3.8.1:tree";
+const DEPENDENCY_TREE_JAR: &str =
+    "org/apache/maven/plugins/maven-dependency-plugin/3.8.1/maven-dependency-plugin-3.8.1.jar";
 
-/// The goals that read the effective POM into `effective` and the verbose dependency trees.
-fn maven_sync_goals(effective: &Path, offline: bool) -> Vec<String> {
-    vec![
-        "help:effective-pom".into(),
-        format!("-Doutput={}", effective.to_string_lossy()),
-        if offline { "dependency:tree".into() } else { DEPENDENCY_TREE.into() },
-        "-Dverbose".into(),
-    ]
+/// The goals that read the effective POM into `effective` and the verbose dependency trees;
+/// `repo` is the local repository the build resolves from. Both goals name their plugin by
+/// coordinates: offline, a prefix resolves only from group metadata the repository may lack.
+/// Offline without a cached 3.x `maven-help-plugin`, `effective-pom` is skipped so `mvn -o`
+/// still resolves the dependency tree instead of failing to download the help plugin.
+fn maven_sync_goals(effective: &Path, offline: bool, repo: Option<&Path>) -> Vec<String> {
+    let pinned = !offline || repo.is_some_and(|repo| repo.join(DEPENDENCY_TREE_JAR).is_file());
+    let tree = if pinned {
+        DEPENDENCY_TREE.to_owned()
+    } else {
+        repo.and_then(|repo| maven::newest_local_plugin(repo, "maven-dependency-plugin", 2)).map_or_else(
+            || "dependency:tree".to_owned(),
+            |v| format!("org.apache.maven.plugins:maven-dependency-plugin:{v}:tree"),
+        )
+    };
+    let has_help =
+        !offline || repo.is_some_and(|repo| maven::newest_local_plugin(repo, "maven-help-plugin", 3).is_some());
+    let mut goals = Vec::with_capacity(4);
+    if has_help {
+        goals.push(maven::plugin_goal("help:effective-pom", repo));
+        goals.push(format!("-Doutput={}", effective.to_string_lossy()));
+    }
+    goals.push(tree);
+    goals.push("-Dverbose".into());
+    goals
+}
+
+/// The settings' Maven options for the sync runs: the thread count (`-T`, also
+/// `--threads`) is left out, because the sync pins its own `-T1` — its console
+/// output is parsed as one stream, which a parallel build interleaves.
+fn sync_maven_options(options: &[String]) -> Vec<String> {
+    let mut out = Vec::with_capacity(options.len());
+    let mut args = options.iter();
+    while let Some(arg) = args.next() {
+        if arg == "-T" || arg == "--threads" {
+            args.next(); // the count itself
+        } else if (arg.starts_with("-T") && arg.len() > 2) || arg.starts_with("--threads=") {
+            // `--threads=4` / `-T4`: the count is part of the argument.
+        } else {
+            out.push(arg.clone());
+        }
+    }
+    out
 }
 const GRADLE_CACHE: &str = "gradle.json";
 const MAVEN_PROFILES: &str = "maven-profiles.json";
+const MAVEN_OFFLINE: &str = "maven-offline.json";
 
 /// The Maven profiles (`-P` entries, `!id` deactivates) the project was last synced
 /// with: what the IDE resolves it with besides `mvn` (the Java language server, Build Project).
@@ -106,20 +148,39 @@ pub fn maven_profiles(cache_dir: &Path) -> Vec<String> {
 
 /// Records the profiles of a sync for [`maven_profiles`]; `true` when they changed.
 pub fn save_maven_profiles(cache_dir: &Path, profiles: &[String]) -> IdeResult<bool> {
-    if maven_profiles(cache_dir) == profiles {
+    save_if_changed(cache_dir, MAVEN_PROFILES, &profiles.to_vec())
+}
+
+/// Whether the project was last synced offline (`-o`): the Java language server then
+/// resolves it offline too.
+pub fn maven_offline(cache_dir: &Path) -> bool {
+    read_cache(cache_dir, MAVEN_OFFLINE).unwrap_or(false)
+}
+
+/// Records the offline mode of a sync for [`maven_offline`]; `true` when it changed.
+pub fn save_maven_offline(cache_dir: &Path, offline: bool) -> IdeResult<bool> {
+    save_if_changed(cache_dir, MAVEN_OFFLINE, &offline)
+}
+
+fn save_if_changed<T: Serialize + DeserializeOwned + PartialEq + Default>(
+    dir: &Path,
+    name: &str,
+    value: &T,
+) -> IdeResult<bool> {
+    if read_cache::<T>(dir, name).unwrap_or_default() == *value {
         return Ok(false);
     }
-    std::fs::create_dir_all(cache_dir)?;
-    let json = serde_json::to_vec(profiles).map_err(|e| IdeError::internal(e.to_string()))?;
-    std::fs::write(cache_dir.join(MAVEN_PROFILES), json)?;
+    std::fs::create_dir_all(dir)?;
+    let json = serde_json::to_vec(value).map_err(|e| IdeError::internal(e.to_string()))?;
+    std::fs::write(dir.join(name), json)?;
     Ok(true)
 }
 
-fn read_cache<T: DeserializeOwned>(dir: &Path, name: &str) -> Option<T> {
+pub(crate) fn read_cache<T: DeserializeOwned>(dir: &Path, name: &str) -> Option<T> {
     serde_json::from_slice(&std::fs::read(dir.join(name)).ok()?).ok()
 }
 
-fn write_cache<T: Serialize>(dir: &Path, name: &str, value: &T) -> IdeResult<()> {
+pub(crate) fn write_cache<T: Serialize>(dir: &Path, name: &str, value: &T) -> IdeResult<()> {
     std::fs::create_dir_all(dir)?;
     let json = serde_json::to_vec(value).map_err(|e| IdeError::internal(e.to_string()))?;
     let tmp = dir.join(format!("{name}.tmp"));
@@ -135,7 +196,7 @@ fn hash_files(files: &[PathBuf]) -> String {
 
 /// Like IDEA's auto-import CRC: editing a comment or reformatting a build script
 /// does not make the last sync stale.
-fn hash_gradle_files(files: &[PathBuf]) -> String {
+pub(crate) fn hash_gradle_files(files: &[PathBuf]) -> String {
     hash_contents(files, |f| {
         let text = std::fs::read_to_string(f).unwrap_or_default();
         let script = f.extension().is_some_and(|e| e == "gradle" || e == "kts");
@@ -226,11 +287,12 @@ pub fn apply_gradle_cache(root: &Path, cache_dir: &Path, model: &mut GradleModel
             }
         }
     }
-    // A successful sync from before projects were cached has not seen computed includes.
-    let without_projects = cache.error.is_none() && cache.projects.is_empty();
+    // A successful sync from before projects were cached has not seen computed includes,
+    // nor, before resources were read, which launches need Gradle to process them.
+    let outdated = cache.error.is_none() && (cache.projects.is_empty() || !cache.resources);
     model.synced_at = Some(cache.at_ms);
     model.sync_error = cache.error;
-    model.stale = without_projects || cache.hash != hash_gradle_files(&gradle::build_files(root, model));
+    model.stale = outdated || cache.hash != hash_gradle_files(&gradle::build_files(root, model));
 }
 
 // ---------------------------------------------------------------- processes
@@ -246,8 +308,27 @@ fn run(
     process::run(program, args, cwd, env, cancel, |_, line| on_line(line))
 }
 
+/// What a sync records when a *successful* child run's output was truncated: parsing a
+/// truncated listing would silently produce an incomplete model, so it is surfaced, not hidden.
+pub(crate) fn truncation_note(out: &Output) -> Option<String> {
+    out.truncated.then(|| {
+        format!(
+            "the build printed more than the retained {} MiB of output; the model may be incomplete",
+            crate::process::MAX_TEXT_BYTES / (1024 * 1024)
+        )
+    })
+}
+
 /// The first error lines of a failed build, for the tool window.
-pub(crate) fn error_summary(text: &str) -> String {
+pub(crate) fn error_summary(output: &Output) -> String {
+    let text = &output.text;
+    // The JVM's "could not find or load main class" (localized) when `gradlew` has no jar.
+    if text.contains("org.gradle.wrapper.GradleWrapperMain") {
+        return "gradle/wrapper/gradle-wrapper.jar is missing (often excluded by a `*.jar` rule in .gitignore). \
+                Restore it, run `gradle wrapper` with an installed Gradle, or choose Distribution: Local installation \
+                in Settings › Build, Execution, Deployment › Gradle."
+            .to_owned();
+    }
     let lines: Vec<&str> = text
         .lines()
         .filter(|l| {
@@ -260,11 +341,15 @@ pub(crate) fn error_summary(text: &str) -> String {
         .filter(|l| !l.is_empty() && !l.starts_with("Re-run Maven") && !l.starts_with("To see the full stack trace"))
         .take(4)
         .collect();
-    if lines.is_empty() {
+    let mut summary = if lines.is_empty() {
         text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("the build failed").trim().to_owned()
     } else {
         lines.join("\n")
+    };
+    if output.truncated {
+        summary.push_str("\n[the build printed more than the retained output; this summary may miss lines]");
     }
+    summary
 }
 
 /// `[INFO] Building core 1.0-SNAPSHOT   [2/3]` → ("core 1.0-SNAPSHOT", 2, 3).
@@ -286,7 +371,7 @@ pub fn sync_maven(
     let mut model = maven::load_with_linked(
         root,
         maven::default_local_repo(),
-        &options.profiles,
+        &options.maven_settings.profiles(&options.profiles),
         &options.maven_settings.linked_projects,
     );
     maven::UnlinkedProjects::from_model(&model, &options.maven_settings).filter(&mut model);
@@ -297,25 +382,8 @@ pub fn sync_maven(
         verbose: true,
         ..MavenCache::default()
     };
-    // Where the build resolves its jars, and therefore where the plugin goals are read
-    // from: `-Dmaven.repo.local=` first, then `<localRepository>` of the `-s` settings,
-    // then the user's default repository (which `plugin()` resolves itself).
-    let local_repo: Option<PathBuf> =
-        options.maven_options.iter().find_map(|a| a.strip_prefix("-Dmaven.repo.local=")).map(PathBuf::from).or_else(
-            || {
-                let mut args = options.maven_options.iter();
-                while let Some(arg) = args.next() {
-                    let path = match arg.as_str() {
-                        "-s" | "--settings" => args.next().map(String::as_str),
-                        _ => arg.strip_prefix("-s=").or_else(|| arg.strip_prefix("--settings=")),
-                    };
-                    if let Some(path) = path {
-                        return maven::local_repository_of(Path::new(path));
-                    }
-                }
-                None
-            },
-        );
+    // Where the build resolves its jars, and therefore where the plugin goals are read from.
+    let repo = maven::local_repository_for(&options.maven_options);
     let mut errors: Vec<String> = Vec::new();
     for (n, top) in model.projects.iter().filter(|p| !p.aggregated).enumerate() {
         let effective = cache_dir.join(format!("effective-pom-{n}.xml"));
@@ -323,15 +391,21 @@ pub fn sync_maven(
         // `-T1` keeps mvnd serial: its default parallel build interleaves the
         // `dependency:tree` output of concurrent modules, which the sync parses
         // as one stream. mvn is serial anyway, so this only pins the daemon.
-        let mut args: Vec<String> = vec!["-B".into(), "-fae".into(), "-Dstyle.color=never".into(), "-T1".into()];
-        args.extend(options.maven_options.iter().cloned());
+        let mut args: Vec<String> = vec![
+            "-B".into(),
+            "-fae".into(),
+            "-Dstyle.color=never".into(),
+            "-T1".into(),
+            maven::LOCAL_REPO_TRACKING_ARG.into(),
+        ];
+        args.extend(sync_maven_options(&options.maven_options));
         if options.offline {
             args.push("-o".into());
         }
         if !options.profiles.is_empty() {
             args.push(format!("-P{}", options.profiles.join(",")));
         }
-        args.extend(maven_sync_goals(&effective, options.offline));
+        args.extend(maven_sync_goals(&effective, options.offline, repo.as_deref()));
         progress(SyncProgress { message: format!("Reading {}", top.display_name), fraction: None });
         let command = options.maven_command.as_deref().unwrap_or(&top.command);
         let out = run(command, &args, &root.join(&top.dir), &options.env, cancel, |line| {
@@ -348,7 +422,7 @@ pub fn sync_maven(
             }
         })?;
         let effective_projects = std::fs::read_to_string(&effective)
-            .map(|t| maven::parse_effective_pom_in(&t, local_repo.as_deref()))
+            .map(|t| maven::parse_effective_pom_in(&t, repo.as_deref()))
             .unwrap_or_default();
         let trees = maven::parse_dependency_tree(&out.text);
         for (key, plugins, deps) in effective_projects {
@@ -362,7 +436,9 @@ pub fn sync_maven(
             }
         }
         if !out.success {
-            errors.push(error_summary(&out.text));
+            errors.push(error_summary(&out));
+        } else if let Some(note) = truncation_note(&out) {
+            errors.push(note);
         }
     }
     cache.at_ms = now_ms();
@@ -402,6 +478,8 @@ pub fn sync_gradle_model(
     let mut args: Vec<String> = vec![
         "--console=plain".into(),
         "-q".into(),
+        // The init script reports the evaluated projects, even when a build enables the configuration cache.
+        "-Dorg.gradle.configuration-cache=false".into(),
         "--init-script".into(),
         init_script.to_string_lossy().into_owned(),
         "tasks".into(),
@@ -422,7 +500,7 @@ pub fn sync_gradle_model(
         Ok(out) => out,
         Err(_) if cancel.is_cancelled() => return Err(IdeError::cancelled()),
         Err(error) if error.kind == ide_core::error::ErrorKind::Unavailable => {
-            Output { success: false, text: error.message }
+            Output { success: false, text: error.message, truncated: false }
         }
         Err(error) => return Err(error),
     };
@@ -435,9 +513,10 @@ pub fn sync_gradle_model(
     let cache = GradleCache {
         hash: hash_gradle_files(&gradle::build_files(root, &model)),
         at_ms: now_ms(),
-        error: (!out.success).then(|| error_summary(&out.text)),
+        error: if !out.success { Some(error_summary(&out)) } else { truncation_note(&out) },
         tasks: if out.success { gradle::parse_tasks(&out.text) } else { Vec::new() },
         projects,
+        resources: true,
     };
     write_cache(&cache_dir, GRADLE_CACHE, &cache)
 }
@@ -476,14 +555,18 @@ mod tests {
         assert!(loaded.gradle[0].sync_error.as_deref().unwrap().contains("cannot start"));
         assert!(loaded.gradle[1].sync_error.is_none());
         assert_eq!(loaded.gradle[1].projects[0].tasks[0].name, "healthy");
-        let bad_wrapper = root.join("a/gradlew");
-        std::fs::write(&bad_wrapper, "#!/bin/sh\nexit 0\n").unwrap();
-        std::fs::set_permissions(&bad_wrapper, std::fs::Permissions::from_mode(0o644)).unwrap();
-        models[0].command = bad_wrapper.to_string_lossy().into_owned();
+        // A wrapper without the execute bit (committed from Windows, unpacked from a zip)
+        // runs through `sh`, and its mode is left alone.
+        let plain_wrapper = root.join("a/gradlew");
+        std::fs::write(&plain_wrapper, "#!/bin/sh\nprintf '%s\\n' 'Build tasks' '-----------' 'plain - ok'\n").unwrap();
+        std::fs::set_permissions(&plain_wrapper, std::fs::Permissions::from_mode(0o644)).unwrap();
+        models[0].command = plain_wrapper.to_string_lossy().into_owned();
         run(&models[0]).unwrap();
         let loaded = crate::load_linked(root, &cache, None, &Default::default(), &settings);
-        assert!(loaded.gradle[0].sync_error.as_deref().unwrap().contains("cannot start"));
+        assert!(loaded.gradle[0].sync_error.is_none());
+        assert_eq!(loaded.gradle[0].projects[0].tasks[0].name, "plain");
         assert!(loaded.gradle[1].sync_error.is_none());
+        assert_eq!(std::fs::metadata(&plain_wrapper).unwrap().permissions().mode() & 0o777, 0o644);
         let blocked_cache = root.join("blocked-cache");
         std::fs::write(&blocked_cache, "a file cannot contain sync caches").unwrap();
         assert!(
@@ -689,6 +772,7 @@ mod tests {
             test,
             src: src.iter().map(|p| core_src(p)).collect(),
             res: res.iter().map(|p| core_src(p)).collect(),
+            processed: None,
         };
         // A settings script's own println comes first; task listing lines follow.
         let out = format!(
@@ -713,13 +797,23 @@ mod tests {
         );
         let projects = parse_reported_projects(&out);
         assert_eq!(projects.len(), 3, "the malformed line is skipped");
+        // As the init script prints a set whose resources Gradle filters or renames.
+        let processed = parse_reported_projects(&format!(
+            "@openidea-model\t{}",
+            r#"{"path":":","dir":"/p","sourceSets":[{"name":"main","test":false,"src":[],"res":[],"processed":{"task":"processResources","dir":"/p/build/resources/main"}}]}"#
+        ));
+        assert_eq!(
+            processed[0].source_sets[0].processed,
+            Some(gradle::ProcessedResources { task: "processResources".into(), dir: "/p/build/resources/main".into() })
+        );
         let src = |p: &str| PathBuf::from(core_src(p));
+        let core = PathBuf::from(format!("{b}/modules/core"));
         assert_eq!(
             gradle::reported_source_roots(&projects),
             [
-                (src("main/java"), gradle::ReportedRoot::Source),
-                (src("main/resources"), gradle::ReportedRoot::Resources),
-                (src("test/java"), gradle::ReportedRoot::Test),
+                (src("main/java"), gradle::ReportedRoot::Source, core.clone()),
+                (src("main/resources"), gradle::ReportedRoot::Resources, core.clone()),
+                (src("test/java"), gradle::ReportedRoot::Test, core),
             ]
         );
         let mut model = gradle::load(&root).unwrap();
@@ -778,12 +872,18 @@ mod tests {
                     ..Default::default()
                 })
                 .collect(),
+            resources: true,
         };
         write_cache(&cache_dir, GRADLE_CACHE, &cache).unwrap();
         apply_gradle_cache(&root, &cache_dir, &mut model);
         assert_eq!(model.projects[1].tasks.len(), 1);
         assert!(model.projects[0].tasks.iter().any(|t| t.name == "wrapper"), "root keeps its defaults");
         assert!(!model.stale);
+        write_cache(&cache_dir, GRADLE_CACHE, &GradleCache { resources: false, ..cache.clone() }).unwrap();
+        let mut m = gradle::load(&root).unwrap();
+        apply_gradle_cache(&root, &cache_dir, &mut m);
+        assert!(m.stale, "synced before resource processing was read");
+        write_cache(&cache_dir, GRADLE_CACHE, &cache).unwrap();
 
         let stale_after = |script: &str| {
             std::fs::write(root.join("app/build.gradle"), script).unwrap();
@@ -801,12 +901,87 @@ mod tests {
     }
 
     #[test]
-    fn sync_reads_verbose_trees_with_a_pinned_plugin_unless_offline() {
-        let online = maven_sync_goals(Path::new("e.xml"), false);
-        assert_eq!(online, ["help:effective-pom", "-Doutput=e.xml", DEPENDENCY_TREE, "-Dverbose"]);
-        let offline = maven_sync_goals(Path::new("e.xml"), true);
-        assert_eq!(offline[2], "dependency:tree");
-        assert!(offline.contains(&"-Dverbose".to_owned()));
+    fn applied_script_edits_invalidate_the_cached_gradle_model() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let cache_dir = tmp.path().join("cache");
+        std::fs::create_dir_all(root.join("gradle")).unwrap();
+        std::fs::write(root.join("build.gradle"), "apply from: 'gradle/dependencies.gradle'").unwrap();
+        let applied = root.join("gradle/dependencies.gradle");
+        std::fs::write(&applied, "implementation 'g:a:1'").unwrap();
+        let model = gradle::load(&root).unwrap();
+        let cache = GradleCache {
+            hash: hash_gradle_files(&gradle::build_files(&root, &model)),
+            projects: vec![ReportedProject {
+                path: ":".into(),
+                dir: root.to_string_lossy().into_owned(),
+                ..Default::default()
+            }],
+            resources: true,
+            ..Default::default()
+        };
+        write_cache(&cache_dir, GRADLE_CACHE, &cache).unwrap();
+        let stale = || {
+            let mut model = gradle::load(&root).unwrap();
+            apply_gradle_cache(&root, &cache_dir, &mut model);
+            model.stale
+        };
+        assert!(!stale());
+        std::fs::write(&applied, "// comment\nimplementation   'g:a:1'\n").unwrap();
+        assert!(!stale());
+        std::fs::write(&applied, "implementation 'g:a:2'").unwrap();
+        assert!(stale());
+        std::fs::remove_file(&applied).unwrap();
+        assert!(stale());
+    }
+
+    #[test]
+    fn the_offline_mode_of_the_last_sync_is_kept_for_the_language_server() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        assert!(!maven_offline(&cache), "never synced: online");
+        assert!(save_maven_offline(&cache, true).unwrap());
+        assert!(maven_offline(&cache));
+        assert!(!save_maven_offline(&cache, true).unwrap(), "unchanged");
+        assert!(save_maven_offline(&cache, false).unwrap());
+        assert!(!maven_offline(&cache));
+        assert!(!save_maven_offline(&tmp.path().join("other"), false).unwrap(), "online is the default");
+    }
+
+    #[test]
+    fn sync_reads_verbose_trees_with_a_pinned_plugin_unless_offline_without_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let help = "org.apache.maven.plugins:maven-help-plugin:3.5.1:effective-pom";
+        let online = maven_sync_goals(Path::new("e.xml"), false, Some(tmp.path()));
+        assert_eq!(online, [help, "-Doutput=e.xml", DEPENDENCY_TREE, "-Dverbose"]);
+        // Offline with neither plugin cached: `effective-pom` is skipped so `mvn -o` does not fail
+        // on an uncached `maven-help-plugin`, and the tree falls back to the project's own version.
+        let offline = maven_sync_goals(Path::new("e.xml"), true, Some(tmp.path()));
+        assert_eq!(offline, ["dependency:tree", "-Dverbose"]);
+        // #5757 / #5844: offline, plugins in the local repository are named by their coordinates,
+        // since the prefix needs group metadata a repository filled from a private mirror may lack;
+        // a repository with `maven-dependency-plugin` but no 3.x `maven-help-plugin` runs only the tree.
+        for (artifact, version) in [("maven-help-plugin", "2.2"), ("maven-dependency-plugin", "3.6.1")] {
+            let jar =
+                tmp.path().join(format!("org/apache/maven/plugins/{artifact}/{version}/{artifact}-{version}.jar"));
+            std::fs::create_dir_all(jar.parent().unwrap()).unwrap();
+            std::fs::write(&jar, "").unwrap();
+        }
+        let offline = maven_sync_goals(Path::new("e.xml"), true, Some(tmp.path()));
+        assert_eq!(offline, ["org.apache.maven.plugins:maven-dependency-plugin:3.6.1:tree", "-Dverbose"]);
+        let help_jar = tmp.path().join("org/apache/maven/plugins/maven-help-plugin/3.4.0/maven-help-plugin-3.4.0.jar");
+        std::fs::create_dir_all(help_jar.parent().unwrap()).unwrap();
+        std::fs::write(&help_jar, "").unwrap();
+        // A version folder without its jar (only the POM was fetched) doesn't count.
+        std::fs::create_dir_all(tmp.path().join("org/apache/maven/plugins/maven-help-plugin/3.10.0")).unwrap();
+        let offline = maven_sync_goals(Path::new("e.xml"), true, Some(tmp.path()));
+        assert_eq!(offline[0], "org.apache.maven.plugins:maven-help-plugin:3.4.0:effective-pom");
+        assert_eq!(offline[2], "org.apache.maven.plugins:maven-dependency-plugin:3.6.1:tree");
+        // Downloaded by an online sync: offline keeps using it, the project's version may be missing.
+        let jar = tmp.path().join(DEPENDENCY_TREE_JAR);
+        std::fs::create_dir_all(jar.parent().unwrap()).unwrap();
+        std::fs::write(&jar, "").unwrap();
+        assert_eq!(maven_sync_goals(Path::new("e.xml"), true, Some(tmp.path()))[2], DEPENDENCY_TREE);
     }
 
     #[test]
@@ -827,8 +1002,57 @@ mod tests {
         );
         assert_eq!(maven_building("[INFO] Building jar: x.jar"), None);
         let text = "[INFO] x\n[ERROR] Failed to execute goal\n[ERROR] \n[ERROR] Re-run Maven using -X\n";
-        assert_eq!(error_summary(text), "Failed to execute goal");
-        assert_eq!(error_summary("one\nlast line\n\n"), "last line");
+        let out = |text: &str, truncated| crate::process::Output { success: false, text: text.to_owned(), truncated };
+        assert_eq!(error_summary(&out(text, false)), "Failed to execute goal");
+        assert_eq!(error_summary(&out("one\nlast line\n\n", false)), "last line");
+        let missing_jar = "错误: 找不到或无法加载主类 org.gradle.wrapper.GradleWrapperMain\n";
+        assert!(error_summary(&out(missing_jar, false)).starts_with("gradle/wrapper/gradle-wrapper.jar is missing"));
+        // A truncated capture says so instead of hiding that lines are missing.
+        assert!(error_summary(&out(text, true)).ends_with("this summary may miss lines]"));
+    }
+
+    #[test]
+    fn a_truncated_successful_run_is_surfaced_not_silent() {
+        let out = |truncated| crate::process::Output { success: true, text: String::new(), truncated };
+        assert!(truncation_note(&out(false)).is_none());
+        let note = truncation_note(&out(true)).unwrap();
+        assert!(note.starts_with("the build printed more than the retained 32 MiB"), "{note}");
+        assert!(note.ends_with("the model may be incomplete"));
+    }
+
+    #[test]
+    fn maven_sync_leaves_out_the_settings_thread_count() {
+        // The sync pins its own `-T1`; the user's `-T` (Settings › Maven) would win
+        // over it on the mvnd command line and interleave the parsed output.
+        let options = ["-s".to_owned(), "settings.xml".to_owned(), "-T".to_owned(), "4".to_owned()];
+        assert_eq!(sync_maven_options(&options), ["-s", "settings.xml"]);
+        let options = ["--threads".to_owned(), "2C".to_owned(), "-Dmaven.repo.local=/m2".to_owned()];
+        assert_eq!(sync_maven_options(&options), ["-Dmaven.repo.local=/m2"]);
+        assert_eq!(sync_maven_options(&["-T4".to_owned()]), Vec::<String>::new());
+        assert_eq!(sync_maven_options(&["--threads=4".to_owned()]), Vec::<String>::new());
+        assert!(sync_maven_options(&[]).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn maven_sync_runs_a_wrapper_without_the_execute_bit() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("p");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("pom.xml"), "<project><groupId>g</groupId><artifactId>a</artifactId></project>")
+            .unwrap();
+        let mvnw = root.join("mvnw");
+        std::fs::write(&mvnw, "#!/bin/sh\nprintf '%s\\n' \"$@\" > mvnw-args\n").unwrap();
+        std::fs::set_permissions(&mvnw, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let cache = tmp.path().join("cache");
+        sync_maven(&root, &cache, &SyncOptions::default(), &CancellationToken::new(), &|_| {}).unwrap();
+        let args = std::fs::read_to_string(root.join("mvnw-args")).unwrap();
+        assert!(args.contains("maven-help-plugin:"), "args: {args}");
+        let loaded = crate::load_linked(&root, &cache, None, &Default::default(), &Default::default());
+        let maven = loaded.maven.unwrap();
+        assert!(maven.synced_at.is_some() && maven.sync_error.is_none(), "{:?}", maven.sync_error);
+        assert_eq!(std::fs::metadata(&mvnw).unwrap().permissions().mode() & 0o777, 0o644);
     }
 
     #[cfg(unix)]
@@ -849,6 +1073,6 @@ mod tests {
         let args = std::fs::read_to_string(root.join("mvnd-args")).unwrap();
         // `-T1` pins the daemon serial so the dependency trees stay parseable.
         assert!(args.contains("-T1"), "args: {args}");
-        assert!(args.contains("help:effective-pom"), "args: {args}");
+        assert!(args.contains("maven-help-plugin:"), "args: {args}");
     }
 }

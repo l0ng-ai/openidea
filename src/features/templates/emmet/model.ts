@@ -1,10 +1,25 @@
 /**
  * Emmet, as in IDEA's Settings › Editor › Emmet: abbreviation expansion
- * (`ul>li.item*3` + Tab) in HTML-like and stylesheet files, and "Update Tag
+ * (`ul>li.item*3` + Tab) in HTML-like, JSX and stylesheet files, and "Update Tag
  * with Emmet" on the enclosing tag. Pure functions over document text; the
  * editor glue lives in `./editor`.
  */
-import expand, { extract, type UserConfig } from "emmet";
+import type { UserConfig } from "emmet";
+
+type Emmet = typeof import("emmet");
+let emmet: Emmet | null = null;
+let loading: Promise<Emmet> | null = null;
+
+/** Loads the Emmet engine, kept out of start-up; expansion finds nothing until it has. */
+export function loadEmmet(): Promise<Emmet> {
+  return (loading ??= import("emmet").then(
+    (m) => (emmet = m),
+    (e: unknown) => {
+      loading = null;
+      throw e;
+    },
+  ));
+}
 
 export interface EmmetSyntax {
   type: "markup" | "stylesheet";
@@ -12,8 +27,14 @@ export interface EmmetSyntax {
 }
 
 /** Languages with markup expansion; `<style>` / `<script>` regions are handled. */
-const MARKUP_LANGUAGES = new Set(["html", "vue", "svelte"]);
+const MARKUP_LANGUAGES = new Set(["html", "vue", "svelte", "django-html"]);
 const STYLESHEET_LANGUAGES: Record<string, string> = { css: "css", scss: "scss", less: "less", sass: "sass" };
+/** Languages with JSX expansion (`.card` → `<div className="card">`); the context comes from the syntax tree. */
+export const JSX_LANGUAGES = new Set(["typescriptreact", "javascriptreact"]);
+
+/** Whether `language` files expand Emmet abbreviations. */
+export const hasEmmet = (language: string) =>
+  MARKUP_LANGUAGES.has(language) || JSX_LANGUAGES.has(language) || language in STYLESHEET_LANGUAGES;
 
 /** Text before the caret that is scanned for context. */
 const CONTEXT_LIMIT = 200_000;
@@ -50,6 +71,8 @@ export function syntaxAt(language: string, before: string): EmmetSyntax | null {
   if (css) return stylesheetContext(text) ? { type: "stylesheet", syntax: css } : null;
   if (!MARKUP_LANGUAGES.has(language)) return null;
   if (lastMatch(text, /<!--/g) > lastMatch(text, /-->/g)) return null;
+  // Not inside a Django tag, variable or comment (`{% if user|`).
+  if (language === "django-html" && lastMatch(text, /\{[%{#]/g) > lastMatch(text, /[%}#]\}/g)) return null;
   if (openRegion(text, "script")) return null;
   const style = openRegion(text, "style");
   if (style) {
@@ -82,6 +105,8 @@ function config(syntax: EmmetSyntax, fields: boolean): UserConfig {
       "output.text": fields ? escapeSnippet : (t: string) => t,
       // Snippets turn leading tabs into the editor's indent unit.
       "output.indent": "\t",
+      // JSX has no void elements: `<img />`.
+      ...(syntax.syntax === "jsx" ? { "output.selfClosingStyle": "xhtml" as const } : {}),
     },
   };
 }
@@ -96,14 +121,18 @@ export interface Expansion {
 
 /** The abbreviation ending at `col` of `line` expanded, or null when there is none. */
 export function expandAt(line: string, col: number, syntax: EmmetSyntax): Expansion | null {
-  const found = extract(line, col, { type: syntax.type, lookAhead: true });
+  if (!emmet) {
+    void loadEmmet().catch(() => {});
+    return null;
+  }
+  const found = emmet.extract(line, col, { type: syntax.type, lookAhead: true });
   if (!found || !found.abbreviation.trim()) return null;
   const abbr = found.abbreviation;
   // A bare number or a closing-tag fragment is never meant as an abbreviation.
   if (/^\d/.test(abbr) || abbr.startsWith("/")) return null;
   let snippet: string;
   try {
-    snippet = expand(abbr, config(syntax, true));
+    snippet = emmet.default(abbr, config(syntax, true));
   } catch {
     return null;
   }
@@ -194,9 +223,10 @@ export interface TextEdit {
 export function updateTagEdits(tag: TagRange, abbreviation: string): TextEdit[] | null {
   const abbr = abbreviation.trim();
   if (!abbr || /[>+^*{]/.test(abbr.replace(/\[[^\]]*\]/g, ""))) return null;
+  if (!emmet) return null;
   let html: string;
   try {
-    html = expand(abbr, config({ type: "markup", syntax: "html" }, false));
+    html = emmet.default(abbr, config({ type: "markup", syntax: "html" }, false));
   } catch {
     return null;
   }

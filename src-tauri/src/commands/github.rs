@@ -1,6 +1,7 @@
 //! GitHub pull requests (`ide-github`, through the gh CLI) for the project of the window.
 
 use crate::state::AppState;
+use ide_command::desktop_command;
 use ide_core::{IdeError, IdeResult, RequestId};
 use ide_github::{
     CreatePullRequest, GhAccountRepos, GhApiRequest, GhAvailability, PrDiffRevisions, PrListQuery, PrReviewComment,
@@ -36,12 +37,14 @@ fn vcs_changed(state: &AppState, window: &Window, root: &std::path::Path) {
 }
 
 /// The repositories of the account gh is signed in to ("Get from Version Control" › GitHub); needs no project.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn gh_account_repos() -> IdeResult<GhAccountRepos> {
     blocking(|| Ok(ide_github::account_repositories())).await
 }
 
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn gh_availability(
@@ -49,10 +52,16 @@ pub async fn gh_availability(
     state: State<'_, AppState>,
     repo: Option<PathBuf>,
 ) -> IdeResult<GhAvailability> {
+    let project = state.project(window.label())?;
     let root = root(&window, &state, repo)?;
-    blocking(move || Ok(ide_github::availability(&root))).await
+    blocking(move || {
+        ide_host::github_auth::apply_to_project(&project);
+        Ok(ide_github::availability(&root))
+    })
+    .await
 }
 
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn gh_pr_list(
@@ -65,6 +74,7 @@ pub async fn gh_pr_list(
     blocking(move || ide_github::list(&root, &query)).await
 }
 
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn gh_pr_view(
@@ -77,6 +87,7 @@ pub async fn gh_pr_view(
     blocking(move || ide_github::view(&root, number)).await
 }
 
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn gh_pr_review_comments(
@@ -89,6 +100,7 @@ pub async fn gh_pr_review_comments(
     blocking(move || ide_github::review_comments(&root, number)).await
 }
 
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn gh_pr_checkout(
@@ -114,6 +126,7 @@ pub async fn gh_pr_checkout(
 }
 
 /// Creates a pull request from the current branch (pushing it first when asked); returns its URL.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn gh_pr_create(
@@ -125,11 +138,14 @@ pub async fn gh_pr_create(
     on_output: Channel<String>,
 ) -> IdeResult<String> {
     let root = root(&window, &state, repo)?;
+    let git = state.project(window.label())?.git_executable();
     let cancel = state.begin_request(request);
     let dir = root.clone();
     let result = blocking(move || {
-        ide_github::create(&dir, &pr, &cancel, &|line| {
-            let _ = on_output.send(line);
+        ide_vcs::with_git_executable(git.as_deref(), || {
+            ide_github::create(&dir, &pr, &cancel, &|line| {
+                let _ = on_output.send(line);
+            })
         })
     })
     .await;
@@ -138,6 +154,7 @@ pub async fn gh_pr_create(
     result
 }
 
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn gh_pr_review(
@@ -152,6 +169,7 @@ pub async fn gh_pr_review(
     blocking(move || ide_github::submit_review(&root, number, event, &body)).await
 }
 
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn gh_pr_comment(
@@ -166,6 +184,7 @@ pub async fn gh_pr_comment(
 }
 
 /// A GitHub GraphQL / REST call through `gh api`; returns the response body.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn gh_api(
@@ -179,6 +198,7 @@ pub async fn gh_api(
 }
 
 /// Fetches what is missing to diff a pull request locally; returns the revisions to compare.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 #[allow(clippy::too_many_arguments)]
@@ -195,13 +215,31 @@ pub async fn gh_pr_prepare_diff(
     on_output: Channel<String>,
 ) -> IdeResult<PrDiffRevisions> {
     let root = root(&window, &state, repo)?;
+    let git = state.project(window.label())?.git_executable();
     let cancel = state.begin_request(request);
     let result = blocking(move || {
-        ide_github::prepare_diff(&root, number, &head_oid, &base_oid, &base_ref, &name_with_owner, &cancel, &|line| {
+        let output = |line: String| {
             let _ = on_output.send(line);
+        };
+        ide_vcs::with_git_executable(git.as_deref(), || {
+            ide_github::prepare_diff(&root, number, &head_oid, &base_oid, &base_ref, &name_with_owner, &cancel, &output)
         })
     })
     .await;
     state.end_request(request);
     result
 }
+
+ide_command::desktop_domain!(
+    gh_account_repos,
+    gh_api,
+    gh_availability,
+    gh_pr_checkout,
+    gh_pr_comment,
+    gh_pr_create,
+    gh_pr_list,
+    gh_pr_prepare_diff,
+    gh_pr_review,
+    gh_pr_review_comments,
+    gh_pr_view,
+);

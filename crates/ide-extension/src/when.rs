@@ -98,7 +98,15 @@ fn parse_unary(t: &[Tok], p: &mut usize, src: &str) -> Result<(), String> {
             *p += 1;
             Ok(())
         }
-        Some(Tok::Id(_)) => {
+        Some(Tok::Id(id)) => {
+            if let Some(path) = id.strip_prefix("workspaceContains:")
+                && (path.is_empty()
+                    || path.starts_with('/')
+                    || path.contains('\\')
+                    || path.split('/').any(|s| s == ".."))
+            {
+                return Err(format!("workspaceContains: needs a relative path inside the project: {src}"));
+            }
             *p += 1;
             if matches!(t.get(*p), Some(Tok::Op("==" | "!="))) {
                 *p += 1;
@@ -131,6 +139,25 @@ mod tests {
         }
         for bad in ["a &&", "(a", "a == ", "== a", "a b", "a $ b", "'x", "!()"] {
             assert!(validate_when(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn workspace_contains_paths_stay_in_the_project() {
+        for ok in [
+            "workspaceContains:pom.xml",
+            "workspaceContains:.devcontainer/devcontainer.json",
+            "!workspaceContains:a/b && editorFocus",
+        ] {
+            assert!(validate_when(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "workspaceContains:",
+            "workspaceContains:/etc/passwd",
+            "workspaceContains:../x",
+            "workspaceContains:a/../../x",
+        ] {
+            assert!(validate_when(bad).unwrap_err().contains("workspaceContains"), "{bad}");
         }
     }
 }

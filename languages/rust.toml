@@ -12,6 +12,10 @@ fn main() {
 }
 '''
 
+# Rainbow brackets › angle: editor syntax nodes whose `<` `>` pair up (never comparisons).
+[rainbow-brackets]
+angle = ["TypeArgList", "TypeParamList"]
+
 [[language-servers]]
 name = "rust-analyzer"
 command = "rust-analyzer"
@@ -23,4 +27,4 @@ adapter = "codelldb"
 command = "codelldb"
 args = ["--port", "${port}"]
 transport = "tcp"
-install-hint = "Install the CodeLLDB adapter (https://github.com/vadimcn/codelldb/releases) and put `codelldb` on PATH"
+install-hint = "Install CodeLLDB in Settings › Languages & Frameworks › Language Servers"

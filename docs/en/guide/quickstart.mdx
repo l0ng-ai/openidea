@@ -1,0 +1,74 @@
+---
+title: "Quickstart"
+description: "Open a project, let it index, find your way around, then run and debug it."
+---
+
+This page takes you from a fresh install to running and debugging a project. Shortcuts are for the default keymap: macOS first, then Windows and Linux.
+
+## Open a project
+
+OpenIDEA opens a folder as a project. Any of these works:
+
+- On the Welcome screen, click **Open** and choose the folder, or drop the folder onto the window.
+- Use **File › Open…** (`⌥⇧⌘O` on macOS).
+- From a terminal, run `openidea .` in the folder. See [Command line](/en/reference/cli).
+- Clone a repository with **Clone Repository** on the Welcome screen or **Git › Clone…**.
+
+A single file opened outside any project opens on its own, without a project. Use **Open as Project** in its window to open the containing folder as a project.
+
+## Trust the project
+
+The first time you open a folder, OpenIDEA asks **Trust and Open Project?** Opening, building or running a project can execute code from its build scripts, so only trust sources you know.
+
+- **Trust Project** opens it with everything enabled. Check **Trust projects in** to trust every project in the parent folder too.
+- **Preview in Restricted Mode** opens it read-only for tools: you can browse, edit and search files, but language servers, builds, run configurations and other project commands don't start. A banner shows **Restricted Mode**; click **Trust Project** there when you're ready.
+- **Don't Open** cancels.
+
+Manage trusted projects and trusted folders later in **Settings › Security › Project Trust**.
+
+## Let it index
+
+After the project opens, the status bar shows an **Indexing** task with the number of files and symbols. Navigation by symbol and code insight need the index, so it can't be cancelled; on most projects it takes a few seconds.
+
+When a language needs a language server that isn't installed, a notification names it and offers **Install**. Manage servers in **Settings › Languages & Frameworks › Language Servers**. See [Languages](/en/languages/index) for what each language uses.
+
+## Find things
+
+| To                                                            | macOS | Windows / Linux    |
+| ------------------------------------------------------------- | ----- | ------------------ |
+| Search everything: files, classes, symbols, actions, settings | `⇧⇧`  | `Shift Shift`      |
+| Run any action by name                                        | `⇧⌘A` | `Ctrl+Shift+A`     |
+| Go to a class                                                 | `⌘O`  | `Ctrl+N`           |
+| Go to a file                                                  | `⇧⌘O` | `Ctrl+Shift+N`     |
+| Go to a symbol                                                | `⌥⌘O` | `Ctrl+Alt+Shift+N` |
+| Find text in the project                                      | `⇧⌘F` | `Ctrl+Shift+F`     |
+| Reopen a recent file                                          | `⌘E`  | `Ctrl+E`           |
+| Go to the declaration under the caret                         | `⌘B`  | `Ctrl+B`           |
+| Show the project tree                                         | `⌘1`  | `Alt+1`            |
+
+`⇧⇧` means pressing Shift twice. **Find Action** is the fastest way to discover a feature: type a few words of what you want. For more, see [Search and navigation](/en/guide/search) and the full [shortcut reference](/en/reference/shortcuts).
+
+## Run
+
+OpenIDEA detects what can run in your project and shows a run icon in the gutter next to entry points and tests.
+
+- Click the gutter icon and choose **Run '…'**, or put the caret in the code and press `⌃⇧R` / `Ctrl+Shift+F10` (**Run Context Configuration**).
+- Choose a configuration in the toolbar and press `⌃R` / `Shift+F10` to run it again.
+- Press `⌃⌃` / `Ctrl Ctrl` (**Run Anything…**) to run a command, script or task by name.
+- **Run › Edit Configurations…** creates and edits run configurations.
+
+Output appears in the **Run** tool window (`⌘4` / `Alt+4`); `⌘F2` / `Ctrl+F2` stops the process. See [Run configurations](/en/guide/run).
+
+## Debug
+
+1. Click in the gutter next to a line, or press `⌘F8` / `Ctrl+F8`, to set a breakpoint.
+2. Start the configuration with **Debug** (`⌃D` / `Shift+F9`) or the gutter icon's **Debug '…'**.
+3. When the breakpoint hits, the **Debug** tool window shows frames and variables. Step with `F8` (Step Over), `F7` (Step Into) and `⇧F8` / `Shift+F8` (Step Out); resume with `F9` (on macOS also `⌥⌘R`).
+4. Evaluate an expression with `⌥F8` / `Alt+F8`.
+
+If the language's debugger isn't installed yet, OpenIDEA offers to install it and then starts the session. See [Debugging](/en/guide/debugging).
+
+## Next steps
+
+- Coming from another IDE: [Migrate](/en/guide/migrate).
+- Change the theme, fonts or keymap: [Settings](/en/guide/settings), [Themes and fonts](/en/guide/themes), [Keymaps](/en/guide/keymap).

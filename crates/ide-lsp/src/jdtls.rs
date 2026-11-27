@@ -7,21 +7,33 @@
 
 use crate::LspManager;
 use crate::server::{Running, Server};
-use ide_core::error::ErrorKind;
+use ide_core::error::{ErrorData, ErrorKind};
+use ide_core::event::LspRefreshKind;
 use ide_core::{CancellationToken, IdeError, IdeResult, LanguageId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use specta::Type;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const SERVER: &str = "jdtls";
+pub(crate) const SERVER: &str = "jdtls";
+const GENERATED_SOURCES: &str = "openidea.java.generatedSources";
 
 pub(crate) mod configuration;
+pub(crate) mod exception_breakpoints;
+mod exception_type;
+mod extract_interface;
 mod formatter;
+mod generated;
+pub(crate) use generated::is_processor_output;
 mod hierarchy;
+pub(crate) mod jvm_inspect;
+mod move_refactoring;
 pub(crate) mod reserved_names;
+mod signature;
+pub(crate) mod stream_trace;
 pub use formatter::configure_formatter;
 /// First start imports the Maven / Gradle model, which can take minutes.
 const READY_TIMEOUT: Duration = Duration::from_secs(240);
@@ -41,6 +53,12 @@ const ACCESS_OPTIONS: [&str; 2] = [
     "org.eclipse.jdt.core.compiler.problem.discouragedReference",
 ];
 
+const LEVEL_OPTIONS: [&str; 3] = [
+    "org.eclipse.jdt.core.compiler.source",
+    "org.eclipse.jdt.core.compiler.compliance",
+    "org.eclipse.jdt.core.compiler.codegen.targetPlatform",
+];
+
 /// Keep the source model in protocol settings so jdtls's invisible-project
 /// initialization and configuration use the same roots as workspace builds.
 pub fn configure_source_paths(cfg: &mut ide_language::LanguageServerConfig, paths: Option<Vec<String>>) {
@@ -52,6 +70,115 @@ pub fn configure_source_paths(cfg: &mut ide_language::LanguageServerConfig, path
         settings["java"]["project"]["sourcePaths"] = json!(paths);
         cfg.settings = Some(settings);
     }
+}
+
+/// Applies Project Structure compiler output path, project libraries (and source attachments),
+/// and Web facet `WEB-INF/lib` directories to jdtls `java.project.*` settings.
+pub fn configure_project_structure(
+    cfg: &mut ide_language::LanguageServerConfig,
+    root: &Path,
+    server_root: &Path,
+    structure: &ide_core::settings::ProjectStructureSettings,
+) {
+    if cfg.name != SERVER {
+        return;
+    }
+    let module_cfg = structure.module_settings(root, server_root);
+    let module_output = module_cfg.map(|m| m.compiler_output.trim()).filter(|s| !s.is_empty());
+    let output_path = if let Some(output) = module_output {
+        // The dialog stores paths relative to the project, JDT expects the server root.
+        let path = root.join(output);
+        match path.strip_prefix(server_root) {
+            Ok(relative) => Some(relative.to_string_lossy().replace('\\', "/")),
+            Err(_) => {
+                cfg.launch_error = Some(format!("Java compiler output must be inside its module: {}", path.display()));
+                None
+            }
+        }
+    } else {
+        let output = structure.compiler_output.trim();
+        if output.is_empty() {
+            None
+        } else if Path::new(output).is_absolute() {
+            match Path::new(output).strip_prefix(server_root) {
+                Ok(relative) => Some(relative.to_string_lossy().replace('\\', "/")),
+                Err(_) => {
+                    cfg.launch_error = Some(format!("Java compiler output must be inside its module: {output}"));
+                    None
+                }
+            }
+        } else {
+            Some(output.replace('\\', "/"))
+        }
+    };
+
+    let normalize = |entry: &str| -> Option<String> {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        // JDT resolves relative library globs against its own root, which may be a submodule.
+        Some(root.join(trimmed).to_string_lossy().replace('\\', "/"))
+    };
+    let mut include: Vec<String> = Vec::new();
+    let mut sources = serde_json::Map::new();
+    for lib in &structure.libraries {
+        let class_entries: Vec<String> = lib.classes.iter().filter_map(|c| normalize(c)).collect();
+        let source_entries: Vec<String> = lib.sources.iter().filter_map(|s| normalize(s)).collect();
+        for c in &class_entries {
+            if !include.contains(c) {
+                include.push(c.clone());
+            }
+        }
+        for (class, source) in class_entries.iter().zip(&source_entries) {
+            sources.insert(class.clone(), json!(source));
+        }
+    }
+    for facet in &structure.facets {
+        if facet.kind == "web" && root.join(&facet.module) == server_root {
+            let web_root = facet.web_root.trim();
+            let web_root = if web_root.is_empty() { "src/main/webapp" } else { web_root };
+            if let Some(path) = normalize(web_root) {
+                let glob = format!("{}/WEB-INF/lib/**/*.jar", path.trim_end_matches('/'));
+                if !include.contains(&glob) {
+                    include.push(glob);
+                }
+            }
+        }
+    }
+
+    if output_path.is_none() && include.is_empty() {
+        return;
+    }
+    let mut settings = cfg.settings.take().unwrap_or_else(|| json!({}));
+    if let Some(output) = output_path {
+        settings["java"]["project"]["outputPath"] = json!(output);
+    }
+    if !include.is_empty() {
+        let existing = &settings["java"]["project"]["referencedLibraries"];
+        let mut libraries = if existing.is_object() {
+            existing.clone()
+        } else if existing.is_array() {
+            json!({ "include": existing })
+        } else {
+            json!({ "include": ["lib/**/*.jar"] })
+        };
+        let mut entries = libraries["include"].as_array().cloned().unwrap_or_default();
+        for path in include {
+            let path = json!(path);
+            if !entries.contains(&path) {
+                entries.push(path);
+            }
+        }
+        libraries["include"] = json!(entries);
+        if !sources.is_empty() {
+            let mut attachments = libraries["sources"].as_object().cloned().unwrap_or_default();
+            attachments.extend(sources);
+            libraries["sources"] = json!(attachments);
+        }
+        settings["java"]["project"]["referencedLibraries"] = libraries;
+    }
+    cfg.settings = Some(settings);
 }
 
 pub(crate) fn source_paths_removed(
@@ -104,11 +231,13 @@ fn compiler_defaults(cfg: &ide_language::LanguageServerConfig) -> Value {
     let Ok(prefs) = std::fs::read_to_string(path) else { return json!({}) };
     let mut options = serde_json::Map::new();
     for line in prefs.lines() {
-        if let Some((key, value)) = line.split_once('=')
-            && ACCESS_OPTIONS.contains(&key.trim())
-            && ["error", "warning", "info", "ignore"].contains(&value.trim())
-        {
-            options.insert(key.trim().into(), json!(value.trim()));
+        if let Some((key, value)) = line.split_once('=') {
+            let (k, v) = (key.trim(), value.trim());
+            if (ACCESS_OPTIONS.contains(&k) && ["error", "warning", "info", "ignore"].contains(&v))
+                || (LEVEL_OPTIONS.contains(&k) && ["1.8", "11", "17", "21", "25"].contains(&v))
+            {
+                options.insert(k.into(), json!(v));
+            }
         }
     }
     Value::Object(options)
@@ -213,6 +342,27 @@ impl Drop for JavaExternalBuild {
     }
 }
 
+/// The Gradle tooling API's own messages for a build that failed, ahead of its cause.
+const GRADLE_TOOLING_FAILURES: [&str; 4] = [
+    "The supplied phased action failed with an exception",
+    "Could not run phased build action",
+    "Could not run build action",
+    "Could not fetch model of type",
+];
+
+/// A diagnostic's message on one line. Buildship marks a Gradle project whose sync failed with
+/// the tooling API's message on the first line and the build's own error last ("… failed with
+/// an exception.\nA problem occurred evaluating root project 'app'.\n<the error>"); that error is
+/// kept as the cause.
+fn launch_message(message: &str) -> String {
+    let mut lines = message.lines().map(str::trim).filter(|l| !l.is_empty());
+    let first = lines.next().unwrap_or_default();
+    match lines.next_back() {
+        Some(cause) if GRADLE_TOOLING_FAILURES.iter().any(|m| first.contains(m)) => format!("{first} Cause: {cause}"),
+        _ => first.to_owned(),
+    }
+}
+
 /// Error diagnostics sorted by file and position, capped at `limit`, and their total.
 pub fn compile_errors(
     diagnostics: Vec<(PathBuf, lsp_types::Diagnostic)>,
@@ -225,13 +375,122 @@ pub fn compile_errors(
             path: path.into(),
             line: d.range.start.line + 1,
             column: d.range.start.character + 1,
-            message: d.message.lines().next().unwrap_or_default().to_owned(),
+            message: launch_message(&d.message),
         })
         .collect();
     errors.sort_by(|a, b| (&a.path, a.line, a.column).cmp(&(&b.path, b.line, b.column)));
     let count = u32::try_from(errors.len()).unwrap_or(u32::MAX);
     errors.truncate(limit);
     (errors, count)
+}
+
+fn launch_path(path: &Path) -> PathBuf {
+    // Resolve existing ancestors too: diagnostics may name a file that was just deleted.
+    let resolved = path.ancestors().find_map(|ancestor| {
+        dunce::canonicalize(ancestor).ok().map(|root| root.join(path.strip_prefix(ancestor).unwrap()))
+    });
+    let mut path = resolved.as_deref().unwrap_or(path).to_string_lossy().replace('\\', "/");
+    if path.as_bytes().get(1) == Some(&b':') {
+        path[..1].make_ascii_lowercase();
+    }
+    PathBuf::from(path)
+}
+
+/// The runtime classpath identifies the launched module's dependencies: a directory
+/// filter alone either drops their errors or includes unrelated reactor modules.
+struct LaunchScope {
+    module: PathBuf,
+    /// None means the dependency scope could not be resolved; retain all errors.
+    roots: Option<Vec<PathBuf>>,
+    test: bool,
+}
+
+impl LaunchScope {
+    fn new(module: &Path, test: bool, cp: Option<&JavaClasspath>) -> Self {
+        let started = Instant::now();
+        let module = launch_path(module);
+        let roots = cp.and_then(|cp| {
+            let mut roots = vec![module.clone()];
+            let mut has_output = false;
+            let mut projects = std::collections::HashMap::<PathBuf, Option<PathBuf>>::new();
+            for entry in cp.class_paths.iter().chain(&cp.module_paths) {
+                let path = project_path(entry).unwrap_or_else(|| PathBuf::from(entry));
+                if path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("zip"))
+                {
+                    continue;
+                }
+                let path = launch_path(&path);
+                let root = path
+                    .ancestors()
+                    .find_map(|ancestor| {
+                        let relative = path.strip_prefix(ancestor).ok()?;
+                        let output = match ancestor.file_name()?.to_str()? {
+                            "target" => relative == Path::new("classes") || relative == Path::new("test-classes"),
+                            "build" => relative.starts_with("classes") || relative.starts_with("resources"),
+                            _ => false,
+                        };
+                        output.then(|| ancestor.parent().map(Path::to_path_buf)).flatten()
+                    })
+                    .or_else(|| {
+                        let mut visited = Vec::new();
+                        let mut project = None;
+                        for ancestor in path.ancestors() {
+                            if let Some(cached) = projects.get(ancestor) {
+                                project = cached.clone();
+                                break;
+                            }
+                            visited.push(ancestor.to_path_buf());
+                            if ["pom.xml", "build.gradle", "build.gradle.kts", ".project"]
+                                .iter()
+                                .any(|name| ancestor.join(name).is_file())
+                            {
+                                project = Some(ancestor.to_path_buf());
+                                break;
+                            }
+                        }
+                        for ancestor in visited {
+                            projects.insert(ancestor, project.clone());
+                        }
+                        project
+                    })?;
+                has_output = true;
+                if !roots.contains(&root) {
+                    roots.push(root);
+                }
+            }
+            has_output.then_some(roots)
+        });
+        tracing::debug!(
+            elapsed_us = started.elapsed().as_micros(),
+            scoped = roots.is_some(),
+            "Java launch diagnostic scope"
+        );
+        Self { module, roots, test }
+    }
+
+    fn includes(&self, path: &Path) -> bool {
+        let Some(roots) = &self.roots else { return true };
+        let path = launch_path(path);
+        let Some(root) =
+            roots.iter().filter(|root| path.starts_with(root)).max_by_key(|root| root.components().count())
+        else {
+            return false;
+        };
+        let relative = path.strip_prefix(root).unwrap();
+        let parts: Vec<_> = relative.components().collect();
+        let test_source = parts.windows(2).any(|pair| pair[0].as_os_str() == "src" && pair[1].as_os_str() == "test");
+        !test_source || (self.test && *root == self.module)
+    }
+}
+
+/// JDTLS reports all imported projects; report errors for the launch and its dependencies.
+fn launch_compile_errors(
+    scope: &LaunchScope,
+    diagnostics: Vec<(PathBuf, lsp_types::Diagnostic)>,
+) -> (Vec<JavaCompileError>, u32) {
+    compile_errors(diagnostics.into_iter().filter(|(path, _)| scope.includes(path)).collect(), MAX_LAUNCH_ERRORS)
 }
 
 /// `java.project.getClasspaths` result.
@@ -250,6 +509,17 @@ pub fn parse_classpaths(v: &Value) -> JavaClasspath {
         class_paths: strings("classpaths"),
         module_paths: strings("modulepaths"),
     }
+}
+
+/// Folders of `cp` inside the project that don't exist: build outputs deleted outside
+/// the IDE. Archives and folders outside the project (dependencies) are left out.
+fn missing_outputs(cp: &JavaClasspath, project_root: &Path) -> Vec<PathBuf> {
+    cp.class_paths
+        .iter()
+        .chain(&cp.module_paths)
+        .map(PathBuf::from)
+        .filter(|p| p.starts_with(project_root) && p.extension().is_none() && !p.exists())
+        .collect()
 }
 
 /// `vscode.java.startDebugSession` answers the port as a number (or numeric string).
@@ -271,6 +541,31 @@ fn not_imported(e: &IdeError) -> bool {
         || m.contains("cannot find")
 }
 
+const BUILD_FILES: [&str; 5] =
+    ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"];
+
+/// Errors on the build files of `module` and the builds enclosing it, nearest first, as
+/// `path: message` (relative to `root`). When m2e or Buildship can't configure a module (a build
+/// plugin or parent that doesn't resolve), it stays out of the Java model and these say why.
+fn build_file_errors(diagnostics: &[(PathBuf, lsp_types::Diagnostic)], root: &Path, module: &Path) -> Vec<String> {
+    let mut errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|(path, d)| {
+            d.severity == Some(lsp_types::DiagnosticSeverity::ERROR)
+                && path.file_name().and_then(|n| n.to_str()).is_some_and(|n| BUILD_FILES.contains(&n))
+                && path.parent().is_some_and(|dir| module.starts_with(dir))
+        })
+        .map(|(path, d)| {
+            let message = launch_message(&d.message);
+            let message = message.trim().trim_end_matches(':');
+            (path.components().count(), format!("{}: {message}", path.strip_prefix(root).unwrap_or(path).display()))
+        })
+        .collect();
+    errors.sort_by_key(|(depth, _)| std::cmp::Reverse(*depth));
+    let mut seen = HashSet::new();
+    errors.into_iter().map(|(_, e)| e).filter(|e| seen.insert(e.clone())).collect()
+}
+
 /// The java-debug bundle is not loaded into jdtls.
 fn missing_bundle(e: &IdeError) -> bool {
     let m = e.message.to_ascii_lowercase();
@@ -278,7 +573,10 @@ fn missing_bundle(e: &IdeError) -> bool {
 }
 
 /// Cancel local waits without interrupting a shared server's startup or import.
-async fn cancellable_wait<T>(cancel: &CancellationToken, wait: impl std::future::Future<Output = T>) -> IdeResult<T> {
+pub(crate) async fn cancellable_wait<T>(
+    cancel: &CancellationToken,
+    wait: impl std::future::Future<Output = T>,
+) -> IdeResult<T> {
     tokio::select! {
         biased;
         _ = cancel.cancelled() => Err(IdeError::cancelled()),
@@ -327,6 +625,36 @@ impl LspManager {
         Ok(changed)
     }
 
+    /// Start Java in trusted build-root projects during idle startup, so configuration
+    /// navigation can warm after import even when no Java editor has been opened.
+    pub fn prewarm_java_configuration(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        self.runtime.spawn(async move {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let Some(mgr) = weak.upgrade() else { return };
+            if mgr.shutting_down.load(std::sync::atomic::Ordering::Acquire)
+                || !mgr.execution_allowed.load(std::sync::atomic::Ordering::Acquire)
+            {
+                return;
+            }
+            let root = mgr.project_root.clone();
+            let java_project = tokio::task::spawn_blocking(move || {
+                ["pom.xml", "build.gradle", "build.gradle.kts", ".classpath"]
+                    .iter()
+                    .any(|name| root.join(name).is_file())
+            })
+            .await
+            .unwrap_or(false);
+            if java_project {
+                for server in mgr.servers_for(&LanguageId::new("java"), &mgr.project_root) {
+                    if server.name == SERVER {
+                        mgr.ensure_started(&server);
+                    }
+                }
+            }
+        });
+    }
+
     pub(crate) fn java_import_ready(self: &Arc<Self>, server: Arc<Server>, generation: u64) {
         let mgr = self.clone();
         self.runtime.spawn(async move {
@@ -334,25 +662,59 @@ impl LspManager {
             if let Err(e) = mgr.java_configure_compiler(&server, &run).await {
                 tracing::warn!("jdtls: cannot apply compiler defaults: {e}");
             }
+            // The extension only queues bounded, low-priority work; this request
+            // never waits for the configuration index itself to be built.
+            const WARMUP: &str = "openidea.java.configuration.warmup";
+            if server.running_gen(generation).is_some()
+                && run.caps.read().commands().iter().any(|command| command == WARMUP)
+            {
+                let preferred: Vec<_> = mgr
+                    .docs
+                    .lock()
+                    .values()
+                    .filter(|doc| matches!(doc.language.as_str(), "yaml" | "properties"))
+                    .map(|doc| doc.uri.to_string())
+                    .collect();
+                let result = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    run.peer.request::<_, Value>(
+                        "workspace/executeCommand",
+                        json!({"command": WARMUP, "arguments": ["start", preferred]}),
+                        None,
+                    ),
+                )
+                .await;
+                if !matches!(result, Ok(Ok(_))) {
+                    tracing::debug!("jdtls: configuration warmup unavailable; retaining on-demand navigation");
+                }
+            }
         });
     }
 
     /// jdtls reports `ProjectStatus` when an import or project update ends (a POM
     /// change, a Maven sync, other Maven profiles), but does not check open documents
     /// again against the new classpath: their errors would stay until the next edit.
+    /// Open editors may have cached empty tokens or inheritance results during the import.
+    /// Attach generated Maven sources before refreshing either, so both see the new classpath.
     pub(crate) fn java_projects_updated(self: &Arc<Self>, server: Arc<Server>, generation: u64) {
         let uris: Vec<String> = self
             .docs
             .lock()
             .values()
-            .filter(|d| d.language.as_str() == "java" && d.path.starts_with(&server.root))
+            .filter(|d| {
+                d.language.as_str() == "java"
+                    && d.path.is_absolute()
+                    && d.servers.iter().any(|a| a.server.id == server.id)
+            })
             .map(|d| crate::uri::path_to_uri_string(&d.path))
             .collect();
-        if uris.is_empty() {
-            return;
-        }
+        let mgr = self.clone();
         self.runtime.spawn(async move {
             let Some(run) = server.running_gen(generation) else { return };
+            mgr.sync_generated_sources(&server, &run).await;
+            for kind in [LspRefreshKind::SemanticTokens, LspRefreshKind::Inheritance] {
+                mgr.sink().emit(ide_core::IdeEvent::LspRefresh { server: server.id, kind });
+            }
             for uri in uris {
                 let params =
                     json!({ "command": "java.project.refreshDiagnostics", "arguments": [uri, "thisFile", false] });
@@ -366,30 +728,97 @@ impl LspManager {
         });
     }
 
+    /// Puts Maven plugin output that already exists on disk (`target/generated-sources/...`)
+    /// onto the jdtls classpath. Best-effort: only a jdtls that is already running is
+    /// touched, so a Maven build does not start the language server by itself.
+    pub async fn sync_maven_generated_sources(&self, root: &Path) {
+        let servers: Vec<_> = self
+            .servers
+            .lock()
+            .iter()
+            .filter(|server| server.name == SERVER && server.running().is_some())
+            .filter(|server| server.root == root || root.starts_with(&server.root) || server.root.starts_with(root))
+            .cloned()
+            .collect();
+        for server in servers {
+            let Some(run) = server.running() else { continue };
+            self.sync_generated_sources(&server, &run).await;
+        }
+    }
+
+    async fn sync_generated_sources(&self, server: &Arc<Server>, run: &Running) {
+        if !run.caps.read().commands().iter().any(|command| command == GENERATED_SOURCES) {
+            return;
+        }
+        let root = server.root.clone();
+        let scan = tokio::task::spawn_blocking(move || generated::scan(&root))
+            .await
+            .unwrap_or(generated::GeneratedScan { maven: false, roots: Vec::new() });
+        if !scan.maven {
+            return;
+        }
+        let arguments: Vec<Value> = scan
+            .roots
+            .into_iter()
+            .map(|root| json!({ "path": root.path.to_string_lossy(), "test": root.test }))
+            .collect();
+        let params = json!({ "command": GENERATED_SOURCES, "arguments": arguments });
+        let request = run.peer.request::<_, Value>("workspace/executeCommand", params, None);
+        if let Ok(Err(e)) | Err(e) =
+            tokio::time::timeout(COMMAND_TIMEOUT, request).await.map_err(|_| ide_jsonrpc::RpcError::Timeout)
+        {
+            tracing::debug!("jdtls: {GENERATED_SOURCES}: {e}");
+        }
+    }
+
     /// The jdtls instance serving `path` (a module directory or source file),
     /// started if needed and waited for.
     async fn jdtls(&self, path: &Path, cancel: &CancellationToken) -> IdeResult<(Arc<Server>, Running)> {
         let java = LanguageId::new("java");
-        let server = self
-            .servers_for(&java, path)
-            .into_iter()
-            .find(|s| s.name == SERVER)
-            .ok_or_else(|| IdeError::unavailable("no Java language server (jdtls) is configured"))?;
-        self.ensure_started(&server);
-        match cancellable_wait(cancel, server.wait_ready(READY_TIMEOUT)).await? {
-            Some(run) => Ok((server, run)),
-            None => {
-                let status = server.status();
-                Err(IdeError::unavailable(match status {
-                    ide_core::event::ServerStatus::Missing => {
-                        "jdtls is not installed (Settings › Languages & Frameworks › Language Servers)".to_owned()
-                    }
-                    ide_core::event::ServerStatus::Misconfigured | ide_core::event::ServerStatus::Crashed => {
-                        server.status_message().unwrap_or_else(|| "jdtls cannot start".to_owned())
-                    }
-                    _ => format!("jdtls is not ready ({status:?})"),
-                }))
+        let deadline = tokio::time::Instant::now() + READY_TIMEOUT;
+        loop {
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
             }
+            let server = self
+                .servers_for(&java, path)
+                .into_iter()
+                .find(|s| s.name == SERVER)
+                .ok_or_else(|| IdeError::unavailable("no Java language server (jdtls) is configured"))?;
+            self.ensure_started(&server);
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if let Some(run) = cancellable_wait(cancel, server.wait_ready(remaining)).await? {
+                return Ok((server, run));
+            }
+            let status = server.status();
+            if !matches!(
+                status,
+                ide_core::event::ServerStatus::Missing
+                    | ide_core::event::ServerStatus::Misconfigured
+                    | ide_core::event::ServerStatus::Crashed
+            ) && tokio::time::Instant::now() < deadline
+                && let Ok(_restart) =
+                    cancellable_wait(cancel, tokio::time::timeout_at(deadline, self.reconfigure_lock.lock())).await?
+            {
+                // A restart publishes Down while reaping its old JVM. Its successor may
+                // also have a new identity after changing the shared workspace.
+                if let Some(current) = self.servers_for(&java, path).into_iter().find(|s| s.name == SERVER)
+                    && current.root.is_dir()
+                    && (current.id != server.id || current.is_starting() || current.running().is_some())
+                {
+                    continue;
+                }
+            }
+            let status = server.status();
+            return Err(IdeError::unavailable(match status {
+                ide_core::event::ServerStatus::Missing => {
+                    "jdtls is not installed (Settings › Languages & Frameworks › Language Servers)".to_owned()
+                }
+                ide_core::event::ServerStatus::Misconfigured | ide_core::event::ServerStatus::Crashed => {
+                    server.status_message().unwrap_or_else(|| "jdtls cannot start".to_owned())
+                }
+                _ => format!("jdtls is not ready ({status:?})"),
+            }));
         }
     }
 
@@ -461,6 +890,10 @@ impl LspManager {
         loop {
             match self.jdtls_command_cancellable(path, command, arguments.clone(), cancel).await {
                 Err(e) if not_imported(&e) && Instant::now() < deadline => {
+                    // An import that failed on the build file won't finish by waiting.
+                    if let Some(unconfigured) = self.unconfigured_module(path, cancel).await? {
+                        return Err(unconfigured);
+                    }
                     tracing::debug!("{command}: {e}; waiting for the project import");
                     cancellable_wait(cancel, tokio::time::sleep(Duration::from_millis(1500))).await?;
                 }
@@ -469,22 +902,76 @@ impl LspManager {
         }
     }
 
-    /// Tells jdtls the build files of `uris` changed (`java/projectConfigurationsUpdate`),
-    /// so it re-imports their projects (e.g. after `~/.m2` gained an artifact it could
-    /// not resolve). Best-effort: skipped while jdtls is not already running.
-    pub async fn java_update_project_configs(&self, path: &Path, uris: Vec<String>) -> IdeResult<()> {
-        if uris.is_empty() {
-            return Ok(());
-        }
+    /// Why jdtls has no Java project for the module at `path`, when its build files say so.
+    async fn unconfigured_module(&self, path: &Path, cancel: &CancellationToken) -> IdeResult<Option<IdeError>> {
+        let (server, _) = self.jdtls(path, cancel).await?;
+        let problems = build_file_errors(&server.diagnostics_snapshot(), &self.project_root, path);
+        Ok((!problems.is_empty()).then(|| IdeError {
+            kind: ErrorKind::InvalidInput,
+            message: format!("{SERVER}: {} is not a Java project: {}", path.display(), problems.join("; ")),
+            data: Some(ErrorData::JavaBuildProblems { problems }),
+        }))
+    }
+
+    fn running_java_projects<'a>(&self, files: &'a [PathBuf]) -> Vec<(Running, Vec<&'a Path>)> {
         let java = LanguageId::new("java");
-        let Some(server) = self.servers_for(&java, path).into_iter().find(|s| s.name == SERVER) else {
-            return Ok(());
-        };
-        let Some(run) = server.running() else { return Ok(()) };
-        let identifiers: Vec<Value> = uris.iter().map(|u| json!({ "uri": u })).collect();
-        run.peer
-            .notify("java/projectConfigurationsUpdate", json!({ "identifiers": identifiers }))
-            .map_err(|e| crate::rpc_err(&server.name, "java/projectConfigurationsUpdate", e))
+        let mut targets = HashMap::new();
+        for file in files {
+            if let Some(server) = self.servers_for(&java, file).into_iter().find(|s| s.name == SERVER)
+                && let Some(run) = server.running()
+            {
+                let (_, paths) = targets.entry(server.id).or_insert_with(|| (run, Vec::new()));
+                paths.push(file.as_path());
+            }
+        }
+        targets.into_values().collect()
+    }
+
+    /// Re-imports projects even when their build files did not change. Wait for
+    /// the Maven configuration job when a source refresh depends on its binaries.
+    pub async fn java_update_project_configs(
+        &self,
+        files: &[PathBuf],
+        wait: Option<&CancellationToken>,
+    ) -> IdeResult<()> {
+        const UPDATE: &str = "openidea.java.updateProjectConfigurations";
+        let mut result = Ok(());
+        for (run, paths) in self.running_java_projects(files) {
+            let uris: Vec<_> = paths.iter().map(|path| crate::path_to_uri_string(path)).collect();
+            let supports_wait = run.caps.read().commands().iter().any(|command| command == UPDATE);
+            let updated = match wait.filter(|_| supports_wait) {
+                Some(cancel) => self
+                    .jdtls_request(
+                        paths[0],
+                        "workspace/executeCommand",
+                        json!({ "command": UPDATE, "arguments": uris }),
+                        BUILD_TIMEOUT,
+                        cancel,
+                    )
+                    .await
+                    .map(|_| ()),
+                None => {
+                    let identifiers: Vec<_> = uris.into_iter().map(|uri| json!({ "uri": uri })).collect();
+                    run.peer
+                        .notify("java/projectConfigurationsUpdate", json!({ "identifiers": identifiers }))
+                        .map_err(|e| crate::rpc_err(SERVER, "java/projectConfigurationsUpdate", e))
+                }
+            };
+            result = result.and(updated);
+        }
+        result
+    }
+
+    /// Asks jdtls to re-read library archives replaced in place.
+    pub async fn java_refresh_archives(&self, files: &[PathBuf], archives: &HashSet<PathBuf>) -> IdeResult<()> {
+        let mut archives: Vec<_> = archives.iter().map(|a| Value::String(a.to_string_lossy().into_owned())).collect();
+        archives.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
+        let mut result = Ok(());
+        for (_, paths) in self.running_java_projects(files) {
+            let refreshed = self.jdtls_command(paths[0], "openidea.java.refreshArchives", archives.clone()).await;
+            result = result.and(refreshed.map(|_| ()));
+        }
+        result
     }
 
     /// Pause autobuild before resolving the launch classpath. That query takes the
@@ -506,10 +993,11 @@ impl LspManager {
 
     /// Incremental build of the jdtls workspace (`java/buildWorkspace`), so
     /// class files are up to date before a launch.
-    pub async fn java_build(&self, path: &Path, cancel: &CancellationToken) -> IdeResult<JavaBuildStatus> {
+    /// `full` asks jdtls for a clean build (`java/buildWorkspace(true)`, IDEA's Rebuild).
+    pub async fn java_build(&self, path: &Path, full: bool, cancel: &CancellationToken) -> IdeResult<JavaBuildStatus> {
         let (server, _) = self.jdtls(path, cancel).await?;
         let _lock = cancellable_wait(cancel, server.java_build_lock.lock()).await?;
-        let mut v = self.jdtls_request(path, "java/buildWorkspace", json!(false), BUILD_TIMEOUT, cancel).await?;
+        let mut v = self.jdtls_request(path, "java/buildWorkspace", json!(full), BUILD_TIMEOUT, cancel).await?;
         // The first build can finish the Maven import before ServiceReady is handled.
         let (server, run) = self.jdtls(path, cancel).await?;
         let changed = cancellable_wait(cancel, self.java_configure_compiler(&server, &run)).await??;
@@ -517,7 +1005,7 @@ impl LspManager {
         let recheck = v.as_i64() == Some(2)
             && compiler_defaults(&server.effective_config()).as_object().is_some_and(|o| !o.is_empty());
         if changed || recheck {
-            v = self.jdtls_request(path, "java/buildWorkspace", json!(false), BUILD_TIMEOUT, cancel).await?;
+            v = self.jdtls_request(path, "java/buildWorkspace", json!(full), BUILD_TIMEOUT, cancel).await?;
         }
         Ok(JavaBuildStatus::from_code(v.as_i64().unwrap_or(0)))
     }
@@ -560,19 +1048,14 @@ impl LspManager {
         module: &Path,
         test: bool,
         build: bool,
+        full_build: bool,
         build_lock_held: bool,
         cancel: &CancellationToken,
     ) -> IdeResult<JavaLaunchInfo> {
-        let build = if build { Some(self.java_build(module, cancel).await?) } else { None };
+        let build = if build { Some(self.java_build(module, full_build, cancel).await?) } else { None };
         if build == Some(JavaBuildStatus::Cancelled) {
             return Err(IdeError::cancelled());
         }
-        let (errors, error_count) = match build {
-            Some(JavaBuildStatus::WithErrors | JavaBuildStatus::Failed) => {
-                cancellable_wait(cancel, self.java_compile_errors(module)).await?
-            }
-            _ => (Vec::new(), 0),
-        };
         let (cp, java_home) = {
             let (server, _) = self.jdtls(module, cancel).await?;
             let _lock = if build_lock_held {
@@ -580,7 +1063,24 @@ impl LspManager {
             } else {
                 Some(cancellable_wait(cancel, server.java_build_lock.lock()).await?)
             };
-            let cp = self.java_classpath(module, test, cancel).await?;
+            let cp = match self.java_classpath(module, test, cancel).await {
+                Ok(cp) => Some(cp),
+                Err(e)
+                    if e.kind == ErrorKind::Cancelled
+                        || matches!(e.data, Some(ErrorData::JavaBuildProblems { .. })) =>
+                {
+                    return Err(e);
+                }
+                Err(e) => match self.unconfigured_module(module, cancel).await? {
+                    // The build "fails" on the build file's errors alone, with no compile errors to show.
+                    Some(unconfigured) => return Err(unconfigured),
+                    None if matches!(build, Some(JavaBuildStatus::WithErrors | JavaBuildStatus::Failed)) => {
+                        tracing::debug!("java.project.getClasspaths: {e}; retaining all compile errors");
+                        None
+                    }
+                    None => return Err(e),
+                },
+            };
             let java_home = match self.java_vm_location(module, cancel).await {
                 Ok(home) => home,
                 Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
@@ -591,6 +1091,64 @@ impl LspManager {
             };
             (cp, java_home)
         };
+        // An output folder deleted outside the IDE (`mvn clean` in a terminal) leaves JDT's
+        // incremental state current: the build compiles nothing and the launch fails with
+        // NoClassDefFoundError. Rebuild fully, once per folder that stays missing.
+        let missing = match (build, &cp) {
+            (Some(_), Some(found)) if !full_build && !build_lock_held => {
+                let (server, _) = self.jdtls(module, cancel).await?;
+                let absent = server.java_absent_outputs.lock();
+                missing_outputs(found, &self.project_root).into_iter().filter(|p| !absent.contains(p)).collect()
+            }
+            _ => Vec::new(),
+        };
+        let (build, cp) = if missing.is_empty() {
+            (build, cp)
+        } else {
+            tracing::info!(?missing, "Java output folders are missing; rebuilding the workspace");
+            let rebuilt = self.java_build(module, true, cancel).await?;
+            if rebuilt == JavaBuildStatus::Cancelled {
+                return Err(IdeError::cancelled());
+            }
+            let (server, _) = self.jdtls(module, cancel).await?;
+            let fresh = {
+                let _lock = cancellable_wait(cancel, server.java_build_lock.lock()).await?;
+                self.java_classpath(module, test, cancel).await
+            };
+            let cp = match fresh {
+                Ok(fresh) => Some(fresh),
+                Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
+                Err(e) => {
+                    tracing::debug!("java.project.getClasspaths after rebuild: {e}");
+                    cp
+                }
+            };
+            if let Some(cp) = &cp {
+                server.java_absent_outputs.lock().extend(missing_outputs(cp, &self.project_root));
+            }
+            (Some(rebuilt), cp)
+        };
+        let (errors, error_count, scoped) = match (build, build_lock_held) {
+            (Some(JavaBuildStatus::WithErrors | JavaBuildStatus::Failed), _) | (None, true) => {
+                let scope_module = module.to_path_buf();
+                let cp = cp.clone();
+                let scope = tokio::task::spawn_blocking(move || LaunchScope::new(&scope_module, test, cp.as_ref()))
+                    .await
+                    .map_err(|e| IdeError::internal(e.to_string()))?;
+                let scoped = scope.roots.is_some();
+                let (errors, count) = cancellable_wait(cancel, self.java_compile_errors(module, scope)).await??;
+                (errors, count, scoped)
+            }
+            _ => (Vec::new(), 0, false),
+        };
+        let build = if build.is_none() && build_lock_held && error_count > 0 {
+            Some(JavaBuildStatus::WithErrors)
+        } else if build == Some(JavaBuildStatus::WithErrors) && error_count == 0 && scoped {
+            Some(JavaBuildStatus::Succeeded)
+        } else {
+            build
+        };
+        let cp = cp.unwrap_or_default();
         Ok(JavaLaunchInfo {
             build,
             project_root: cp.project_root,
@@ -606,48 +1164,54 @@ impl LspManager {
         })
     }
 
-    /// Compile errors jdtls reports for its workspace (all modules it imported).
-    async fn java_compile_errors(&self, module: &Path) -> (Vec<JavaCompileError>, u32) {
-        let Ok((server, _)) = self.jdtls(module, &CancellationToken::new()).await else { return (Vec::new(), 0) };
-        let collect = || compile_errors(server.diagnostics_snapshot(), MAX_LAUNCH_ERRORS);
-        let found = collect();
-        if found.1 > 0 {
-            return found;
-        }
-        let _ = tokio::time::timeout(ERRORS_WAIT, server.published_notify.notified()).await;
-        collect()
+    /// Wait for late build markers only when no error diagnostics have arrived yet.
+    async fn java_compile_errors(&self, module: &Path, scope: LaunchScope) -> IdeResult<(Vec<JavaCompileError>, u32)> {
+        let (server, _) = self.jdtls(module, &CancellationToken::new()).await?;
+        let diagnostics = server.diagnostics_snapshot();
+        let has_errors = diagnostics.iter().any(|(_, d)| d.severity == Some(lsp_types::DiagnosticSeverity::ERROR));
+        let diagnostics = if has_errors {
+            diagnostics
+        } else {
+            let _ = tokio::time::timeout(ERRORS_WAIT, server.published_notify.notified()).await;
+            server.diagnostics_snapshot()
+        };
+        tokio::task::spawn_blocking(move || launch_compile_errors(&scope, diagnostics))
+            .await
+            .map_err(|e| IdeError::internal(e.to_string()))
+    }
+
+    /// jdtls' document for class file `entry` of archive `jar`, from its Java model. With
+    /// `any_archive`, the one class of that name the model has when it knows `jar` by another path.
+    pub(crate) async fn archive_class(&self, jar: PathBuf, entry: String, any_archive: bool) -> IdeResult<String> {
+        let cancel = CancellationToken::new();
+        self.jdtls(&self.project_root, &cancel).await?;
+        let entry =
+            entry.strip_prefix("META-INF/versions/").and_then(|s| s.split_once('/').map(|(_, s)| s)).unwrap_or(&entry);
+        let class = entry.strip_suffix(".class").ok_or_else(|| IdeError::not_found("expected a class file"))?;
+        let outer = class.split('$').next().unwrap_or(class);
+        let (package, name) = outer.rsplit_once('/').unwrap_or(("", outer));
+        let query = outer.replace('/', ".");
+        let symbols = self.workspace_symbols(&query, cancel).await?;
+        let package = package.replace('/', ".");
+        let name = name.to_owned();
+        let outer = outer.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let uris = symbols.into_iter().filter_map(|s| s.location.uri);
+            crate::virtual_doc::pick_class(uris, &jar, &package, &name, any_archive)
+                .ok_or_else(|| IdeError::not_found(format!("jdtls could not resolve {} in {}", outer, jar.display())))
+        })
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
     }
 
     /// Resolve a disk/archive class to project source or the server's binary document.
     /// Archive URIs must come from JDT's Java model: fabricated handles cannot map debug lines.
     pub async fn java_class_file(&self, path: &Path, archive: Option<(PathBuf, String)>) -> IdeResult<String> {
+        if let Some((jar, entry)) = archive {
+            return self.archive_class(jar, entry, false).await;
+        }
         let cancel = CancellationToken::new();
         self.jdtls(&self.project_root, &cancel).await?;
-        if let Some((jar, entry)) = archive {
-            let entry = entry
-                .strip_prefix("META-INF/versions/")
-                .and_then(|s| s.split_once('/').map(|(_, s)| s))
-                .unwrap_or(&entry);
-            let class = entry.strip_suffix(".class").ok_or_else(|| IdeError::not_found("expected a class file"))?;
-            let outer = class.split('$').next().unwrap_or(class);
-            let (package, name) = outer.rsplit_once('/').unwrap_or(("", outer));
-            let query = outer.replace('/', ".");
-            let symbols = self.workspace_symbols(&query, cancel).await?;
-            let package = package.replace('/', ".");
-            let name = name.to_owned();
-            let outer = outer.to_owned();
-            return tokio::task::spawn_blocking(move || {
-                symbols
-                    .into_iter()
-                    .filter_map(|s| s.location.uri)
-                    .find(|uri| crate::virtual_doc::matches_class(uri, &jar, &package, &name))
-                    .ok_or_else(|| {
-                        IdeError::not_found(format!("jdtls could not resolve {} in {}", outer, jar.display()))
-                    })
-            })
-            .await
-            .map_err(|e| IdeError::internal(e.to_string()))?;
-        }
         let uri = crate::uri::path_to_uri_string(path);
         // classFileContents accepts file URIs, but java-debug's line mapping only accepts JDT handles.
         let doc = self.virtual_document(&uri).await?;
@@ -691,11 +1255,126 @@ impl LspManager {
         {
             tracing::debug!("vscode.java.updateDebugSettings: {e}");
         }
-        parse_port(&v).ok_or_else(|| IdeError::new(ErrorKind::Protocol, format!("unexpected debug server port: {v}")))
+        let port = parse_port(&v)
+            .ok_or_else(|| IdeError::new(ErrorKind::Protocol, format!("unexpected debug server port: {v}")))?;
+        self.debug_servers.lock().insert(port, path.to_path_buf());
+        Ok(port)
+    }
+
+    /// The module path whose jdtls started the debug server on `port`.
+    pub fn java_debug_server_module(&self, port: u16) -> Option<PathBuf> {
+        self.debug_servers.lock().get(&port).cloned()
     }
 }
 
+/// m2e couldn't compute a build plan because a build plugin (or one of its dependencies) doesn't
+/// resolve, e.g. a default version a company mirror lacks: "Plugin g:a:v or one of its dependencies
+/// could not be resolved", without the repository details that follow.
+fn unresolved_build_plugin(message: &str) -> Option<&str> {
+    let (_, message) = message.split_once("Could not calculate build plan:")?;
+    const UNRESOLVED: &str = "could not be resolved";
+    let reason = match message.find(UNRESOLVED) {
+        Some(end) => &message[..end + UNRESOLVED.len()],
+        None => message.lines().next().unwrap_or(message),
+    };
+    Some(reason.trim().trim_end_matches(':'))
+}
+
+const BUILD_PLAN_FIX: &str =
+    "make it available in your Maven repository or mirror, or set a version the repository has in pom.xml.";
+
+/// The error m2e puts on a `pom.xml` whose build plan can't be computed, as (plugin, notification
+/// body). A plugin the Java configuration needs (`maven-compiler-plugin`) leaves the module without
+/// it, so navigation finds nothing, with only this marker to tell.
+pub(crate) fn build_plan_failure(
+    path: &Path,
+    root: &Path,
+    diagnostics: &[lsp_types::Diagnostic],
+) -> Option<(String, String)> {
+    if path.file_name()? != "pom.xml" {
+        return None;
+    }
+    let reason = diagnostics
+        .iter()
+        .filter(|d| d.severity == Some(lsp_types::DiagnosticSeverity::ERROR))
+        .find_map(|d| unresolved_build_plugin(&d.message))?;
+    let body = format!(
+        "{}: {reason}. Java navigation and completion may not work in this module until Maven resolves it: {BUILD_PLAN_FIX}",
+        path.strip_prefix(root).unwrap_or(path).display(),
+    );
+    Some((reason.to_owned(), body))
+}
+
+/// The same failure when m2e only logs it: an unresolved plugin of the build itself (such as
+/// `maven-resources-plugin`) fails the import's last step and every build, but marks no file.
+pub(crate) fn logged_build_plan_failure(message: &str) -> Option<(String, String)> {
+    let reason = unresolved_build_plugin(message.lines().take(2).collect::<Vec<_>>().join("\n").as_str())?.to_owned();
+    let body = format!(
+        "{reason}. Maven can't build this project in the IDE, and Java navigation and completion may be incomplete until it resolves: {BUILD_PLAN_FIX}"
+    );
+    Some((reason, body))
+}
+
+/// How long a failed Gradle sync waits for jdtls' incompatible-JDK message (sent a few ms later).
+const GRADLE_JDK_MESSAGE_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Buildship's log when a Gradle sync fails ("Synchronize project app failed due to an error
+/// connecting to the Gradle build.", then the stack trace), as (project, notification body).
+/// jdtls logs it below error level, so without this the import fails silently: every Java file
+/// shows unresolved types and nothing says why. The deepest `Caused by` is the build's own error.
+pub(crate) fn gradle_sync_failure(message: &str) -> Option<(String, String)> {
+    let first = message.lines().next()?;
+    let (_, rest) = first.split_once("Synchronize project ")?;
+    let (project, _) = rest.split_once(" failed due to ")?;
+    let cause = message
+        .lines()
+        .rev()
+        .find_map(|l| l.trim_start().strip_prefix("Caused by: "))
+        .or_else(|| message.lines().nth(1))
+        .map(|l| match l.split_once(": ") {
+            // `org.gradle.Some.Exception: what happened` → what happened
+            Some((class, text)) if class.contains('.') && !class.contains(char::is_whitespace) => text,
+            _ => l,
+        })
+        .map(str::trim)
+        .filter(|c| !c.is_empty() && !c.starts_with("at "));
+    const MAX: usize = 500;
+    let cause = cause.map(|c| match c.char_indices().nth(MAX) {
+        Some((end, _)) => format!("{}…", &c[..end]),
+        None => c.to_owned(),
+    });
+    let body = match cause {
+        Some(cause) => format!(
+            "Gradle could not sync {project}. Java code insight may not work until the build syncs. Fix the build, then reload the Gradle project. Cause: {cause}"
+        ),
+        None => format!(
+            "Gradle could not sync {project}. Java code insight may not work until the build syncs. Fix the build, then reload the Gradle project."
+        ),
+    };
+    Some((project.to_owned(), body))
+}
+
 impl LspManager {
+    /// A failed Gradle sync of `project` (see [`gradle_sync_failure`]), shown once. jdtls follows
+    /// a sync that failed on an incompatible JDK with "Can't use Java … to import Gradle project
+    /// …", which has its own notification with the fix; wait for it so that one is the only one.
+    pub(crate) fn report_gradle_sync_failure(&self, (project, body): (String, String)) {
+        let Some(me) = self.me.upgrade() else { return };
+        self.runtime.spawn(async move {
+            tokio::time::sleep(GRADLE_JDK_MESSAGE_WAIT).await;
+            if me.shown_message_containing(SERVER, &format!(" to import Gradle project {project}")) {
+                return;
+            }
+            if me.first_message(SERVER, &body) {
+                me.sink().emit(ide_core::IdeEvent::Notify {
+                    level: ide_core::event::NotifyLevel::Error,
+                    title: "Gradle project sync failed".into(),
+                    body: Some(body),
+                });
+            }
+        });
+    }
+
     /// JDT LS aborted its import with `message`: when reserved Windows device names
     /// below `root` are the cause, say which (once). The walk runs off the RPC thread.
     pub(crate) fn report_import_failure(&self, root: PathBuf, message: String) {
@@ -721,6 +1400,124 @@ mod tests {
         let language: ide_language::LanguageConfig =
             toml::from_str(include_str!("../../../languages/java.toml")).unwrap();
         language.language_servers.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn a_module_without_java_configuration_reports_its_build_file_errors() {
+        let at = |path: &str, severity, message: &str| {
+            let d = lsp_types::Diagnostic { severity: Some(severity), message: message.into(), ..Default::default() };
+            (PathBuf::from(path), d)
+        };
+        use lsp_types::DiagnosticSeverity as S;
+        let diagnostics = [
+            at("/w/pom.xml", S::ERROR, "Non-resolvable import POM"),
+            at(
+                "/w/app-server/pom.xml",
+                S::ERROR,
+                "Could not calculate build plan: Plugin x:y:9.9.9 could not be resolved:\nFailure to find…",
+            ),
+            at("/w/app-server/pom.xml", S::WARNING, "Overriding managed version"),
+            at("/w/app-server/src/main/java/Main.java", S::ERROR, "Main cannot be resolved"),
+            at("/w/app-system/pom.xml", S::ERROR, "Another module's error"),
+            at("/w/app-server/build.gradle", S::ERROR, "Could not run phased build action"),
+        ];
+        assert_eq!(
+            build_file_errors(&diagnostics, Path::new("/w"), Path::new("/w/app-server")),
+            [
+                "app-server/pom.xml: Could not calculate build plan: Plugin x:y:9.9.9 could not be resolved",
+                "app-server/build.gradle: Could not run phased build action",
+                "pom.xml: Non-resolvable import POM",
+            ]
+        );
+        assert!(build_file_errors(&diagnostics, Path::new("/w"), Path::new("/w/app-module")).len() == 1);
+    }
+
+    #[test]
+    fn an_unresolvable_build_plugin_is_explained() {
+        let diagnostic = |severity, message: &str| lsp_types::Diagnostic {
+            severity: Some(severity),
+            message: message.into(),
+            ..Default::default()
+        };
+        let error = diagnostic(
+            lsp_types::DiagnosticSeverity::ERROR,
+            "CoreException: Could not calculate build plan: Plugin org.apache.maven.plugins:maven-compiler-plugin:3.13.0 or one of its dependencies could not be resolved: Failure to find org.apache.maven.plugins:maven-compiler-plugin:jar:3.13.0 in https://nexus.corp/repository/public",
+        );
+        let info = diagnostic(
+            lsp_types::DiagnosticSeverity::INFORMATION,
+            "Plugin execution not covered by lifecycle configuration",
+        );
+        let (root, pom) = (Path::new("/w"), Path::new("/w/app/pom.xml"));
+        let (plugin, body) = build_plan_failure(pom, root, &[info.clone(), error.clone()]).unwrap();
+        assert_eq!(
+            plugin,
+            "Plugin org.apache.maven.plugins:maven-compiler-plugin:3.13.0 or one of its dependencies could not be resolved"
+        );
+        assert!(body.starts_with(&format!("app/pom.xml: {plugin}. Java navigation")), "{body}");
+        assert!(!body.contains("nexus.corp"));
+        assert_eq!(build_plan_failure(pom, root, &[info]), None);
+        assert_eq!(build_plan_failure(Path::new("/w/app/src/Main.java"), root, &[error]), None);
+    }
+
+    #[test]
+    fn a_build_plan_failure_only_logged_is_explained() {
+        // m2e's log when `maven-resources-plugin` is missing: no marker on pom.xml.
+        let log = "Nov 11, 2026, 9:29:04 PM Failed to configure some Maven project(s)\n\
+            org.eclipse.core.runtime.CoreException: Could not calculate build plan: Plugin org.apache.maven.plugins:maven-resources-plugin:3.4.0 or one of its dependencies could not be resolved:\n\
+            \tThe following artifacts could not be resolved: org.apache.maven.plugins:maven-resources-plugin:pom:3.4.0 (absent): Could not transfer artifact from/to central (https://nexus.corp/repository/public)\n\
+            \tat org.eclipse.m2e.core.internal.project.registry.MavenProjectFacade.lambda$5(MavenProjectFacade.java:550)\n\
+            Caused by: org.apache.maven.plugin.PluginResolutionException: Could not calculate build plan: elsewhere";
+        let (plugin, body) = logged_build_plan_failure(log).unwrap();
+        assert_eq!(
+            plugin,
+            "Plugin org.apache.maven.plugins:maven-resources-plugin:3.4.0 or one of its dependencies could not be resolved"
+        );
+        assert!(body.starts_with(&format!("{plugin}. Maven can't build this project")), "{body}");
+        assert!(!body.contains("nexus.corp"));
+        // Only the message itself counts, not a cause deep in a stack trace.
+        assert_eq!(
+            logged_build_plan_failure(
+                "Errors occurred during the build.\n\tat x\n\tat y\nCaused by: Could not calculate build plan: z"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_failed_gradle_sync_is_explained_with_its_root_cause() {
+        let log = "Nov 25, 2026, 2:00:14 PM Synchronize project repro failed due to an error connecting to the Gradle build.\n\
+            org.gradle.tooling.BuildActionFailureException: The supplied phased action failed with an exception.\n\
+            \tat org.gradle.tooling.internal.consumer.connection.PhasedActionAwareConsumerConnection.doRun(PhasedActionAwareConsumerConnection.java:58)\n\
+            Caused by: org.gradle.api.plugins.InvalidPluginException: An exception occurred applying plugin request [id: 'war']\n\
+            \tat x\n\
+            Caused by: java.lang.IllegalArgumentException: Unable to determine constructor argument #2: missing parameter of type IdeArtifactRegistry, or no service of type IdeArtifactRegistry.\n\
+            \tat org.gradle.groovy.scripts.DefaultScript.apply(DefaultScript.java:133)\n\
+            \t... 12 more";
+        let (project, body) = gradle_sync_failure(log).unwrap();
+        assert_eq!(project, "repro");
+        assert_eq!(
+            body,
+            "Gradle could not sync repro. Java code insight may not work until the build syncs. Fix the build, then reload the Gradle project. \
+            Cause: Unable to determine constructor argument #2: missing parameter of type IdeArtifactRegistry, or no service of type IdeArtifactRegistry."
+        );
+
+        // Without a `Caused by`, the logged exception's own message.
+        let (_, body) = gradle_sync_failure(
+            "Synchronize project app failed due to an error in the referenced Gradle build.\n\
+            org.gradle.tooling.BuildException: Could not run build action.\n\tat y",
+        )
+        .unwrap();
+        assert!(body.ends_with(" Cause: Could not run build action."), "{body}");
+
+        // A cause that is a plain sentence keeps its colons.
+        let (_, body) = gradle_sync_failure(
+            "Synchronize project app failed due to an error connecting to the Gradle build.\nx\nCaused by: Build failed: see above",
+        )
+        .unwrap();
+        assert!(body.ends_with(" Cause: Build failed: see above"), "{body}");
+
+        assert_eq!(gradle_sync_failure("Synchronizing projects\nCaused by: x.Y: z"), None);
+        assert_eq!(gradle_sync_failure("Failed to configure some Maven project(s)"), None);
     }
 
     #[test]
@@ -758,7 +1555,7 @@ mod tests {
         for wrapped in [false, true] {
             let mut cfg = java_config();
             let settings = json!({"java": {"project": {"referencedLibraries": ["vendor/*.jar"]}}});
-            cfg.settings = Some(if wrapped { json!({"settings": settings}) } else { settings });
+            cfg.settings = Some(if wrapped { json!({ "settings": settings }) } else { settings });
             configure_source_paths(&mut cfg, Some(vec!["custom".into()]));
             let settings = crate::handler::all_settings(&cfg);
             assert_eq!(settings["java"]["project"]["referencedLibraries"], json!(["vendor/*.jar"]));
@@ -819,15 +1616,22 @@ mod tests {
         std::fs::write(&file, format!("{}=warning\n{}=ignore\nother=error\n", ACCESS_OPTIONS[0], ACCESS_OPTIONS[1]))
             .unwrap();
         let mut cfg: ide_language::LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
-        cfg.initialization_options = Some(
-            toml::Value::try_from(json!({"settings": {"java": {"settings": {"url": file.to_string_lossy()}}}}))
-                .unwrap(),
-        );
+        let with_url = |cfg: &mut ide_language::LanguageServerConfig, url: String| {
+            cfg.initialization_options =
+                Some(toml::Value::try_from(json!({"settings": {"java": {"settings": {"url": url}}}})).unwrap());
+        };
+        with_url(&mut cfg, crate::uri::path_to_uri_string(&file));
         assert_eq!(compiler_defaults(&cfg), json!({}));
         for prefix in ["", "--jvm-arg="] {
             cfg.args = vec![format!("{prefix}-Djava.import.generatesMetadataFilesAtProjectRoot=false")];
             assert_eq!(compiler_defaults(&cfg), json!({ACCESS_OPTIONS[0]: "warning", ACCESS_OPTIONS[1]: "ignore"}));
         }
+        with_url(&mut cfg, file.to_string_lossy().into_owned());
+        assert_eq!(
+            compiler_defaults(&cfg),
+            json!({ACCESS_OPTIONS[0]: "warning", ACCESS_OPTIONS[1]: "ignore"}),
+            "a path"
+        );
         cfg.args.push("--jvm-arg=-Djava.import.generatesMetadataFilesAtProjectRoot=true".into());
         assert_eq!(compiler_defaults(&cfg), json!({}), "the final JVM property wins");
         cfg.args.pop();
@@ -854,6 +1658,24 @@ mod tests {
         std::fs::write(&prefs, format!("{}=error\n", ACCESS_OPTIONS[0])).unwrap();
         assert!(!cache_owned_maven_settings(root));
         assert_eq!(std::fs::read_to_string(prefs).unwrap(), format!("{}=error\n", ACCESS_OPTIONS[0]));
+    }
+
+    #[test]
+    fn a_failed_gradle_sync_keeps_its_cause_on_one_line() {
+        let marker = "The supplied phased action failed with an exception.\n\
+            A problem occurred configuring root project 'app'.\n\
+            A problem occurred evaluating root project 'app'.\n\
+            missing generated schema";
+        assert_eq!(
+            launch_message(marker),
+            "The supplied phased action failed with an exception. Cause: missing generated schema"
+        );
+        assert_eq!(
+            launch_message("The supplied phased action failed with an exception."),
+            "The supplied phased action failed with an exception."
+        );
+        // Other messages keep their first line only.
+        assert_eq!(launch_message("x cannot be resolved\nmore detail"), "x cannot be resolved");
     }
 
     #[test]
@@ -885,6 +1707,95 @@ mod tests {
         assert_eq!(count, 1);
     }
 
+    fn error_at(path: impl Into<PathBuf>) -> (PathBuf, lsp_types::Diagnostic) {
+        (
+            path.into(),
+            lsp_types::Diagnostic {
+                severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+                message: "boom".into(),
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn launch_errors_include_dependencies_but_only_the_launched_modules_tests() {
+        for output in ["target/classes", "build/classes/java/main", "build/classes/kotlin/main"] {
+            let cp = JavaClasspath {
+                class_paths: vec!["/p/web/target/classes".into(), format!("/p/service/{output}"), "/m2/lib.jar".into()],
+                module_paths: vec!["/p/api/target/classes".into()],
+                ..Default::default()
+            };
+            let paths = [
+                "/p/web/src/main/java/Main.java",
+                "/p/web/src/test/java/MainTest.java",
+                "/p/service/src/main/java/Service.java",
+                "/p/service/src/test/java/ServiceTest.java",
+                "/p/other/src/main/java/Other.java",
+                "/p/web-other/src/main/java/Other.java",
+                "/p/api/src/main/java/Api.java",
+                "/p/web/src/testing/Real.java",
+            ];
+            for (test, expected) in [(false, 4), (true, 5)] {
+                let scope = LaunchScope::new(Path::new("/p/web"), test, Some(&cp));
+                assert_eq!(launch_compile_errors(&scope, paths.iter().map(|p| error_at(*p)).collect()).1, expected);
+                assert!(scope.includes(Path::new("/p/service/src/main/java/Service.java")));
+                assert!(!scope.includes(Path::new("/p/service/src/test/java/ServiceTest.java")));
+            }
+        }
+    }
+
+    #[test]
+    fn unresolved_classpaths_retain_all_errors() {
+        for cp in [
+            None,
+            Some(JavaClasspath::default()),
+            Some(JavaClasspath { class_paths: vec!["/unknown/output".into()], ..Default::default() }),
+            Some(JavaClasspath { class_paths: vec!["/m2/lib.jar".into()], ..Default::default() }),
+            Some(JavaClasspath {
+                class_paths: vec!["/p/web/target/classes".into(), "/unknown/output".into()],
+                ..Default::default()
+            }),
+        ] {
+            let scope = LaunchScope::new(Path::new("/p/web"), false, cp.as_ref());
+            let diagnostics = ["/p/service/src/main/java/Service.java", "/p/other/src/test/java/Test.java"];
+            assert_eq!(launch_compile_errors(&scope, diagnostics.into_iter().map(error_at).collect()).1, 2);
+        }
+    }
+
+    #[test]
+    fn launch_scope_normalizes_windows_drive_letters_and_separators() {
+        let cp = JavaClasspath { class_paths: vec![r"C:\p\web\target\classes".into()], ..Default::default() };
+        let scope = LaunchScope::new(Path::new(r"c:\p\web"), false, Some(&cp));
+        assert!(scope.includes(Path::new("C:/p/web/src/main/java/Main.java")));
+        assert!(!scope.includes(Path::new(r"C:\p\web\src\test\java\MainTest.java")));
+        assert!(!scope.includes(Path::new("C:/p/web-other/src/main/java/Main.java")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn launch_scope_resolves_symlinks_and_project_reference_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let module = tmp.path().join("web");
+        let dependency = tmp.path().join("service");
+        std::fs::create_dir_all(module.join("src/main/java")).unwrap();
+        std::fs::create_dir_all(&dependency).unwrap();
+        std::fs::write(dependency.join(".project"), "").unwrap();
+        let alias = tmp.path().join("alias");
+        std::os::unix::fs::symlink(&module, &alias).unwrap();
+        let cp = JavaClasspath {
+            class_paths: vec![
+                alias.join("target/classes").to_string_lossy().into_owned(),
+                crate::uri::path_to_uri_string(&dependency),
+            ],
+            ..Default::default()
+        };
+        let scope = LaunchScope::new(&alias, false, Some(&cp));
+        assert!(scope.includes(&dunce::canonicalize(&module).unwrap().join("src/main/java/Deleted.java")));
+        assert!(scope.includes(&dependency.join("src/main/java/Service.java")));
+        assert!(!scope.includes(&dependency.join("src/test/java/ServiceTest.java")));
+    }
+
     #[test]
     fn classpaths() {
         let v = json!({
@@ -899,6 +1810,22 @@ mod tests {
         assert_eq!(parse_classpaths(&Value::Null), JavaClasspath::default());
         let java_style = parse_classpaths(&json!({ "projectRoot": "file:/p/my%20demo" }));
         assert_eq!(java_style.project_root, Some("/p/my demo".into()));
+    }
+
+    #[test]
+    fn missing_outputs_are_project_folders_that_no_longer_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("demo");
+        let kept = root.join("app/target/classes");
+        std::fs::create_dir_all(&kept).unwrap();
+        let deleted = root.join("core/target/classes");
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        let cp = JavaClasspath {
+            project_root: None,
+            class_paths: vec![s(&kept), s(&deleted), s(&root.join("lib/absent.jar")), s(&dir.path().join("elsewhere"))],
+            module_paths: vec![s(&root.join("api/target/classes"))],
+        };
+        assert_eq!(missing_outputs(&cp, &root), [deleted, root.join("api/target/classes")]);
     }
 
     #[test]
@@ -921,5 +1848,111 @@ mod tests {
         assert!(not_imported(&e));
         assert!(missing_bundle(&IdeError::invalid("No delegateCommandHandler for vscode.java.startDebugSession")));
         assert!(!missing_bundle(&e));
+    }
+
+    #[test]
+    fn configure_project_structure_sets_output_referenced_libraries_and_web_facets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let lib_dir = root.join("lib");
+        std::fs::create_dir_all(&lib_dir).unwrap();
+        let jar_path = lib_dir.join("helper.jar");
+        let src_path = lib_dir.join("helper-sources.jar");
+        std::fs::write(&jar_path, b"").unwrap();
+        std::fs::write(&src_path, b"").unwrap();
+
+        let mut structure = ide_core::settings::ProjectStructureSettings {
+            compiler_output: "out/production".into(),
+            libraries: vec![ide_core::settings::ProjectLibrary {
+                name: "helper".into(),
+                classes: vec!["lib/helper.jar".into()],
+                sources: vec!["lib/helper-sources.jar".into()],
+                javadocs: vec![],
+                scope: ide_core::settings::DependencyScope::Compile,
+            }],
+            facets: vec![ide_core::settings::FacetConfig {
+                kind: "web".into(),
+                module: ".".into(),
+                descriptor: "src/main/webapp/WEB-INF/web.xml".into(),
+                web_root: "src/main/webapp".into(),
+            }],
+            ..Default::default()
+        };
+        structure.modules.insert(
+            "submod".into(),
+            ide_core::settings::ModuleStructureSettings {
+                compiler_output: "submod/classes".into(),
+                ..Default::default()
+            },
+        );
+
+        let mut cfg: ide_language::LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+        configure_project_structure(&mut cfg, root, root, &structure);
+
+        let settings = cfg.settings.as_ref().unwrap();
+        assert_eq!(settings.pointer("/java/project/outputPath").and_then(Value::as_str), Some("out/production"));
+        let include = settings
+            .pointer("/java/project/referencedLibraries/include")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        assert!(include.iter().any(|p| p.ends_with("lib/helper.jar")));
+        assert!(include.iter().any(|p| p.ends_with("src/main/webapp/WEB-INF/lib/**/*.jar")));
+        let sources = settings.pointer("/java/project/referencedLibraries/sources").and_then(Value::as_object).unwrap();
+        assert!(sources.values().any(|v| v.as_str().is_some_and(|s| s.ends_with("lib/helper-sources.jar"))));
+
+        // Module-specific compiler output overrides project-wide compiler output.
+        let mut sub_cfg: ide_language::LanguageServerConfig =
+            toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+        configure_project_structure(&mut sub_cfg, root, &root.join("submod"), &structure);
+        assert_eq!(
+            sub_cfg.settings.as_ref().unwrap().pointer("/java/project/outputPath").and_then(Value::as_str),
+            Some("classes")
+        );
+        let sub_settings = sub_cfg.settings.as_ref().unwrap();
+        let libs = sub_settings.pointer("/java/project/referencedLibraries/include").unwrap().as_array().unwrap();
+        assert!(libs.contains(&json!(root.join("lib/helper.jar").to_string_lossy().replace('\\', "/"))));
+        assert!(!libs.iter().any(|v| v.as_str().is_some_and(|p| p.contains("WEB-INF"))));
+    }
+
+    #[test]
+    fn project_libraries_preserve_existing_globs_exclusions_and_source_attachments() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg: ide_language::LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+        cfg.settings = Some(json!({"java": {"project": {"referencedLibraries": {
+            "include": ["vendor/**/*.jar"], "exclude": ["vendor/old.jar"],
+            "sources": {"vendor/base.jar": "vendor/base-sources.jar"}
+        }}}}));
+        let structure = ide_core::settings::ProjectStructureSettings {
+            libraries: vec![ide_core::settings::ProjectLibrary {
+                classes: vec!["lib/new.jar".into()],
+                sources: vec!["lib/new-sources.jar".into()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        configure_project_structure(&mut cfg, tmp.path(), tmp.path(), &structure);
+        let libraries = cfg.settings.as_ref().unwrap().pointer("/java/project/referencedLibraries").unwrap();
+        assert_eq!(libraries["include"][0], "vendor/**/*.jar");
+        assert_eq!(libraries["exclude"], json!(["vendor/old.jar"]));
+        assert_eq!(libraries["sources"]["vendor/base.jar"], "vendor/base-sources.jar");
+        assert_eq!(libraries["sources"].as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn absolute_output_inside_the_module_becomes_relative() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg: ide_language::LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+        let mut structure = ide_core::settings::ProjectStructureSettings {
+            compiler_output: tmp.path().join("out").to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        configure_project_structure(&mut cfg, tmp.path(), tmp.path(), &structure);
+        assert_eq!(cfg.settings.as_ref().unwrap().pointer("/java/project/outputPath"), Some(&json!("out")));
+        structure.compiler_output = tmp.path().parent().unwrap().join("elsewhere").to_string_lossy().into_owned();
+        configure_project_structure(&mut cfg, tmp.path(), tmp.path(), &structure);
+        assert!(cfg.launch_error.as_deref().unwrap().contains("inside its module"));
     }
 }

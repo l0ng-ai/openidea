@@ -97,8 +97,80 @@ pub fn image_mime(path: &Path) -> Option<&'static str> {
     })
 }
 
-/// The whole image as a `data:` URL (allowed by the webview's CSP, unlike file URLs).
-pub fn read_data_url(path: &Path) -> IdeResult<String> {
+/// The server and share of a Windows network path (`\\server\share\…`, also written with `/`
+/// or as `\\?\UNC\…`).
+#[cfg(windows)]
+fn share(path: &Path) -> Option<(&std::ffi::OsStr, &std::ffi::OsStr)> {
+    use std::path::{Component, Prefix};
+    let mut components = path.components();
+    let Component::Prefix(prefix) = components.next()? else { return None };
+    match prefix.kind() {
+        // `//?/UNC/server/share`, the spelling a canonical share path crosses the IPC boundary
+        // in (`ide_core::ipc_path`): with `/`, `std` reads the share `UNC` of a server `?`.
+        Prefix::UNC(device, unc) if device == "?" => {
+            let names = (components.next()?, components.next()?, components.next()?);
+            match names {
+                (Component::RootDir, Component::Normal(server), Component::Normal(share))
+                    if unc.eq_ignore_ascii_case("UNC") =>
+                {
+                    Some((server, share))
+                }
+                _ => None,
+            }
+        }
+        Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => Some((server, share)),
+        _ => None,
+    }
+}
+
+/// Whether `path` names a file on one of this machine's drives. On Windows that is an absolute
+/// path starting at a drive letter. Every other spelling can lead to a server, and opening a
+/// share signs in to its server with the user's credentials: `\\server\share`, `\\?\UNC\…`,
+/// device paths, and `\??\UNC\…`, which carries no prefix `std` knows and which Windows opens
+/// as written.
+pub fn on_local_drive(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        path.is_absolute()
+            && matches!(
+                path.components().next(),
+                Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+            )
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        true
+    }
+}
+
+/// Whether two network paths are on the same share of the same server.
+pub fn same_share(a: &Path, b: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let same = |x: &std::ffi::OsStr, y: &std::ffi::OsStr| x.eq_ignore_ascii_case(y);
+        matches!((share(a), share(b)), (Some(a), Some(b)) if same(a.0, b.0) && same(a.1, b.1))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (a, b);
+        false
+    }
+}
+
+/// Whether a path written in content (Markdown, a page, an agent's reply) may be opened: one
+/// on a local drive, or on the share one of `opened` (what the user opened) is on.
+pub fn content_path_allowed<P: AsRef<Path>>(path: &Path, opened: &[P]) -> bool {
+    on_local_drive(path) || opened.iter().any(|o| same_share(o.as_ref(), path))
+}
+
+/// The whole image as a `data:` URL (allowed by the webview's CSP, unlike file URLs). The path
+/// often comes from text someone else wrote (Markdown): see [`content_path_allowed`].
+pub fn read_data_url(path: &Path, opened: &[std::path::PathBuf]) -> IdeResult<String> {
+    if !content_path_allowed(path, opened) {
+        return Err(IdeError::invalid(format!("{} is not on a local drive or an opened share", path.display())));
+    }
     let mime =
         image_mime(path).ok_or_else(|| IdeError::invalid(format!("{} is not a supported image", path.display())))?;
     if let Some(bytes) = archive_bytes(path, MAX_IMAGE_SIZE)? {
@@ -137,6 +209,114 @@ pub fn base64(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Security audit lead 3: an image path from agent markdown must not make the host open a
+    /// network share (on Windows that authenticates to the named host with the user's credentials).
+    #[cfg(windows)]
+    #[test]
+    fn read_data_url_refuses_network_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("dummy.png");
+        std::fs::write(&local, b"\x89PNG dummy").unwrap();
+        // The same file reached over SMB through the loopback admin share.
+        let s = local.to_str().unwrap();
+        let back = format!(r"\\127.0.0.1\{}${}", &s[..1], &s[2..]);
+        // The webview hands the host the forward-slash form (`file://host/share` -> `//host/share`).
+        let forward = back.replace('\\', "/");
+        // The NT spelling: no `\\` in front, and Windows opens it all the same.
+        let nt = format!(r"\??\UNC{}", &back[1..]);
+        for unc in [forward, back, nt].map(std::path::PathBuf::from) {
+            assert!(
+                std::fs::read(&unc).is_ok(),
+                "control: {} is not reachable over SMB, fixture not live",
+                unc.display()
+            );
+            let read = read_data_url(&unc, &[]);
+            assert!(read.is_err(), "read_data_url opened {} over SMB: {:?}", unc.display(), read.map(|s| s.len()));
+        }
+    }
+
+    /// The exception to the above: an image on the share a project is open on, and only there.
+    #[cfg(windows)]
+    #[test]
+    fn read_data_url_reads_the_share_a_project_is_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("dummy.png");
+        std::fs::write(&local, b"\x89PNG dummy").unwrap();
+        let s = local.to_str().unwrap();
+        let on = |server: &str| std::path::PathBuf::from(format!(r"\\{server}\{}${}", &s[..1], &s[2..]));
+        let image = on("127.0.0.1");
+        let wanted = read_data_url(&local, &[]).unwrap();
+        // A project root as typed, and as `canonicalize` returns it.
+        for root in [r"\\127.0.0.1\C$\work", r"\\?\UNC\127.0.0.1\c$\work"].map(std::path::PathBuf::from) {
+            let opened = [std::path::PathBuf::from(r"D:\other"), root];
+            assert_eq!(read_data_url(&image, &opened).unwrap(), wanted);
+            assert_eq!(read_data_url(Path::new(&image.to_str().unwrap().replace('\\', "/")), &opened).unwrap(), wanted);
+            // The spelling paths of a project on a share cross the IPC boundary in.
+            let wire = |path: &Path| std::path::PathBuf::from(format!("//?/UNC/{}", &path.to_str().unwrap()[2..]));
+            assert_eq!(read_data_url(&wire(&image), &opened).unwrap(), wanted);
+            assert_eq!(read_data_url(&image, &[wire(Path::new(r"\\127.0.0.1\C$\work"))]).unwrap(), wanted);
+            // The same file through another name of this machine: a server the user did not open.
+            let other = on("localhost");
+            assert!(std::fs::read(&other).is_ok(), "control: {} is not reachable over SMB", other.display());
+            for other in [wire(&other), other] {
+                let read = read_data_url(&other, &opened);
+                assert!(
+                    read.is_err(),
+                    "read_data_url opened {} over SMB: {:?}",
+                    other.display(),
+                    read.map(|s| s.len())
+                );
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn only_absolute_paths_starting_at_a_drive_letter_are_local() {
+        for path in [r"C:\a.png", "C:/a.png", r"\\?\C:\a.png", r"z:\share\a.png"] {
+            assert!(on_local_drive(Path::new(path)), "{path}");
+        }
+        for path in [
+            r"\\server\share\a.png",
+            "//server/share/a.png",
+            r"/\server/share/a.png",
+            r"\\?\UNC\server\share\a.png",
+            "//?/UNC/server/share/a.png",
+            r"\\.\UNC\server\share\a.png",
+            r"\\?\GLOBALROOT\Device\Mup\server\share\a.png",
+            r"\??\UNC\server\share\a.png",
+            r"\??\C:\a.png",
+            r"\a.png",
+            r"C:a.png",
+            "a.png",
+            r"..\a.png",
+        ] {
+            assert!(!on_local_drive(Path::new(path)), "{path}");
+        }
+        let project = Path::new(r"\\nas\work\app");
+        assert!(same_share(project, Path::new("//NAS/Work/app/docs/a.png")));
+        assert!(same_share(project, Path::new(r"\\?\UNC\nas\work\other\a.png")));
+        assert!(!same_share(project, Path::new(r"\\nas\private\a.png")));
+        assert!(!same_share(project, Path::new(r"\\evil\work\app\a.png")));
+        assert!(!same_share(project, Path::new(r"\??\UNC\nas\work\app\a.png")));
+        assert!(!same_share(Path::new(r"C:\app"), Path::new(r"C:\app\a.png")));
+        // Read by `std` as the share `UNC` of a server named `?`: the spelling a share's paths
+        // cross the IPC boundary in.
+        assert!(!same_share(Path::new("//?/UNC/nas/work/app"), Path::new("//?/UNC/evil/share/a.png")));
+        assert!(same_share(Path::new("//?/UNC/nas/work/app"), Path::new("//?/unc/NAS/Work/docs/a.png")));
+        assert!(same_share(project, Path::new("//?/UNC/nas/work/docs/a.png")));
+        assert!(same_share(Path::new(r"\\?\UNC\nas\work\app"), Path::new("//?/UNC/nas/work/docs/a.png")));
+        for device in ["//?/UNC/nas", "//?/UNC/../nas/work/a.png", "//?/C:/a.png", "//?/nas/work/a.png"] {
+            assert!(!same_share(Path::new(device), Path::new(device)), "{device}");
+        }
+
+        assert!(content_path_allowed(Path::new(r"C:\app\a.png"), &[project]));
+        assert!(content_path_allowed(Path::new(r"\\nas\work\docs\a.png"), &[Path::new(r"C:\app"), project]));
+        assert!(!content_path_allowed(Path::new(r"\\nas\private\a.png"), &[project]));
+        assert!(!content_path_allowed(Path::new(r"\\nas\work\docs\a.png"), &[Path::new(r"C:\app")]));
+        assert!(!content_path_allowed(Path::new(r"\\nas\work\docs\a.png"), &[] as &[&Path]));
+    }
 
     #[test]
     fn base64_matches_rfc4648_vectors() {
@@ -190,12 +370,12 @@ mod tests {
         let png = dir.path().join("x.PNG");
         fs::write(&png, [0x89, b'P', b'N', b'G']).unwrap();
         assert_eq!(
-            read_data_url(&png).unwrap(),
+            read_data_url(&png, &[]).unwrap(),
             format!("data:image/png;base64,{}", base64(&[0x89, b'P', b'N', b'G']))
         );
         let txt = dir.path().join("x.txt");
         fs::write(&txt, "x").unwrap();
-        assert!(read_data_url(&txt).is_err());
+        assert!(read_data_url(&txt, &[]).is_err());
         assert_eq!(image_mime(Path::new("a/b.svg")), Some("image/svg+xml"));
     }
 }

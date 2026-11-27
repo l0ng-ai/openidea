@@ -5,7 +5,7 @@ use ide_core::proxy_settings::{ProxyMode, ProxyRoute, ProxySettings};
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use parking_lot::Mutex;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// `builder` routed as `proxy` says: direct, the environment's proxy (reqwest's
 /// default), or the manual proxy except for the "No proxy for" hosts.
@@ -26,15 +26,26 @@ pub fn with_proxy(builder: reqwest::ClientBuilder, proxy: &ProxySettings) -> req
 
 /// A client for `proxy`.
 pub fn build(proxy: &ProxySettings) -> IdeResult<reqwest::Client> {
+    build_with_redirect(proxy, reqwest::redirect::Policy::default())
+}
+
+/// The backend's TLS configuration: ring with the operating system's trust store.
+pub fn tls_config() -> IdeResult<rustls::ClientConfig> {
     use rustls_platform_verifier::BuilderVerifierExt;
-    let fail = |e: String| IdeError::internal(format!("HTTP client: {e}"));
+    let fail = |e: String| IdeError::internal(format!("TLS client: {e}"));
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let tls = rustls::ClientConfig::builder_with_provider(provider)
+    rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(|e| fail(e.to_string()))?
         .with_platform_verifier()
-        .map_err(|e| fail(e.to_string()))?
-        .with_no_client_auth();
+        .map_err(|e| fail(e.to_string()))
+        .map(|builder| builder.with_no_client_auth())
+}
+
+/// A client with an explicit redirect policy, for callers enforcing network grants.
+pub fn build_with_redirect(proxy: &ProxySettings, redirect: reqwest::redirect::Policy) -> IdeResult<reqwest::Client> {
+    let fail = |e: String| IdeError::internal(format!("HTTP client: {e}"));
+    let tls = tls_config()?;
     // `localhost` is tried on IPv4 first: local servers (Ollama, dev servers)
     // usually listen there, and on Windows a refused `::1` costs ~2 s before
     // the system resolver's order falls back. Ports come from the URL.
@@ -44,24 +55,68 @@ pub fn build(proxy: &ProxySettings) -> IdeResult<reqwest::Client> {
     ];
     let builder = reqwest::Client::builder()
         .tls_backend_preconfigured(tls)
+        .redirect(redirect)
         .resolve_to_addrs("localhost", &loopback)
         .connect_timeout(Duration::from_secs(30))
         .user_agent(concat!("OpenIDEA-HttpClient/", env!("CARGO_PKG_VERSION")));
     with_proxy(builder, proxy).build().map_err(|e| fail(e.to_string()))
 }
 
+/// A client built for these proxy settings and, in Auto mode, this system proxy.
+struct Cached {
+    settings: Arc<ProxySettings>,
+    system: Option<String>,
+    client: reqwest::Client,
+}
+
 /// The client for the current proxy settings, rebuilt when they change.
 pub fn shared() -> IdeResult<reqwest::Client> {
-    static CLIENT: Mutex<Option<(Arc<ProxySettings>, reqwest::Client)>> = Mutex::new(None);
-    let proxy = ide_core::proxy_settings::proxy();
-    let mut cached = CLIENT.lock();
-    if let Some((settings, client)) = cached.as_ref()
-        && **settings == *proxy
+    static CLIENT: Mutex<Option<Cached>> = Mutex::new(None);
+    cached_client(&CLIENT, build, system_proxy)
+}
+
+/// The client the HTTP Client executes requests with: redirects off, `exec`
+/// follows them by hand — that is what lets a `POST` stay a `POST` on a
+/// 301/302 and puts the redirect chain into the response.
+pub fn shared_without_redirects() -> IdeResult<reqwest::Client> {
+    static CLIENT: Mutex<Option<Cached>> = Mutex::new(None);
+    cached_client(&CLIENT, |proxy| build_with_redirect(proxy, reqwest::redirect::Policy::none()), system_proxy)
+}
+
+/// The system proxy (the environment's, then macOS / Windows settings) as reqwest reads
+/// it when a client is built, re-read at most every few seconds. A client in Auto mode
+/// keeps the proxy it was built with, so a proxy app that switches the system proxy on
+/// after launch would otherwise leave downloads going direct until a restart.
+fn system_proxy() -> String {
+    static LAST: Mutex<Option<(Instant, String)>> = Mutex::new(None);
+    let mut last = LAST.lock();
+    if let Some((at, seen)) = last.as_ref()
+        && at.elapsed() < Duration::from_secs(3)
     {
-        return Ok(client.clone());
+        return seen.clone();
+    }
+    // Credentials are left out of the matcher's `Debug`.
+    let seen = format!("{:?}", hyper_util::client::proxy::matcher::Matcher::from_system());
+    *last = Some((Instant::now(), seen.clone()));
+    seen
+}
+
+fn cached_client(
+    slot: &Mutex<Option<Cached>>,
+    build: impl Fn(&ProxySettings) -> IdeResult<reqwest::Client>,
+    system: fn() -> String,
+) -> IdeResult<reqwest::Client> {
+    let proxy = ide_core::proxy_settings::proxy();
+    let system = (proxy.mode == ProxyMode::Auto).then(system);
+    let mut cached = slot.lock();
+    if let Some(c) = cached.as_ref()
+        && *c.settings == *proxy
+        && c.system == system
+    {
+        return Ok(c.client.clone());
     }
     let client = build(&proxy)?;
-    *cached = Some((proxy, client.clone()));
+    *cached = Some(Cached { settings: proxy, system, client: client.clone() });
     Ok(client)
 }
 
@@ -97,7 +152,7 @@ pub async fn check_connection(proxy: &ProxySettings, url: &str, cancel: &Cancell
 }
 
 /// reqwest errors with their causes ("error sending request: … connection refused").
-pub(crate) fn describe(e: &reqwest::Error) -> String {
+pub fn describe(e: &reqwest::Error) -> String {
     use std::error::Error;
     let mut msg = e.to_string();
     let mut source = e.source();
@@ -115,6 +170,36 @@ pub(crate) fn describe(e: &reqwest::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_mode_rebuilds_the_shared_client_when_the_system_proxy_changes() {
+        static SYSTEM: Mutex<String> = Mutex::new(String::new());
+        static BUILDS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        fn system() -> String {
+            SYSTEM.lock().clone()
+        }
+        let slot = Mutex::new(None);
+        let get = || {
+            cached_client(
+                &slot,
+                |proxy| {
+                    BUILDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    build(proxy)
+                },
+                system,
+            )
+            .unwrap()
+        };
+        assert_eq!(ide_core::proxy_settings::proxy().mode, ProxyMode::Auto);
+        get();
+        get();
+        assert_eq!(BUILDS.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // A proxy app switches the system proxy on after launch.
+        *SYSTEM.lock() = "Matcher { https: 127.0.0.1:7890 }".into();
+        get();
+        get();
+        assert_eq!(BUILDS.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
     use ide_core::proxy_settings::ProxyKind;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;

@@ -6,7 +6,7 @@
 import { useState } from "react";
 import { create } from "zustand";
 import type { CapabilityInfo, Consent } from "@/bindings";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import { Badge, Checkbox, Dialog, T } from "@/ui";
 import { setConsentPrompt, type ConsentRequest } from "./store";
 import styles from "./PluginsPage.module.css";
@@ -30,6 +30,44 @@ export function sortByRisk(caps: readonly CapabilityInfo[]): CapabilityInfo[] {
   return [...caps].sort((a, b) => RISK_ORDER[a.risk] - RISK_ORDER[b.risk] || a.id.localeCompare(b.id));
 }
 
+const JVM_OPTIONS = "; JVM options: ";
+
+/** Parameterised permission text, translated independently of the granted host/path. */
+export function capabilityDescription(cap: CapabilityInfo): string {
+  // The host appends the agent's contributed JVM flags (`…; JVM options: -XX:…`).
+  const flagsAt = cap.id === "java.agent" ? cap.description.indexOf(JVM_OPTIONS) : -1;
+  if (flagsAt >= 0) {
+    const description = txPart(cap.description.slice(0, flagsAt));
+    const flags = cap.description.slice(flagsAt + JVM_OPTIONS.length);
+    return tx`${description}; JVM options: ${flags}`;
+  }
+  if (cap.id === "database.sources")
+    return tx("Manage its own database sources and store their passwords in trusted projects");
+  if (cap.id === "ide.commands") {
+    return tx(
+      "Run any IDE action or other plugins' commands as if you chose them, including running programs, committing and pushing",
+    );
+  }
+  if (cap.id === "net:ask") {
+    return tx(
+      "Ask to connect to a host that is not on the list the first time it tries; you allow or refuse each host, and can revoke the allowed ones",
+    );
+  }
+  if (cap.id.startsWith("net.http:")) {
+    const host = cap.id.slice(9);
+    return tx`Connect to ${host} over unencrypted HTTP (from the machine the project is on)`;
+  }
+  if (cap.id.startsWith("ipc:")) {
+    const path = cap.id.slice(4);
+    return tx`Connect to local socket ${path} — equivalent to running arbitrary code on the project machine`;
+  }
+  if (cap.id.startsWith("lsp:")) {
+    const server = cap.id.slice(4);
+    return tx`Send requests to the ${server} language server, which reads and changes the project's files`;
+  }
+  return tx(cap.description);
+}
+
 function ask(req: ConsentRequest): Promise<Consent | null> {
   return new Promise((resolve) => usePending.setState((s) => ({ queue: [...s.queue, { req, resolve }] })));
 }
@@ -41,6 +79,8 @@ function ConsentDialog({ pending, onDone }: { pending: Pending; onDone: () => vo
   const [accepted, setAccepted] = useState<Set<string>>(
     () => new Set(optional.filter((c) => c.granted || c.risk === "low").map((c) => c.id)),
   );
+  const allOptionalAccepted = optional.length > 0 && accepted.size === optional.length;
+  const someOptionalAccepted = accepted.size > 0 && !allOptionalAccepted;
   const high = caps.some((c) => c.risk === "high" && (!c.optional || accepted.has(c.id)));
   const finish = (consent: Consent | null) => {
     pending.resolve(consent);
@@ -82,33 +122,50 @@ function ConsentDialog({ pending, onDone }: { pending: Pending; onDone: () => vo
             <T>This plugin needs no special permissions.</T>
           </p>
         ) : (
-          <ul className={styles.items} aria-label={tx("Requested permissions")}>
-            {caps.map((c) => (
-              <li key={c.id} className={styles.item}>
-                {c.optional ? (
-                  <Checkbox
-                    checked={accepted.has(c.id)}
-                    onChange={(on) =>
-                      setAccepted((s) => {
-                        const next = new Set(s);
-                        if (on) next.add(c.id);
-                        else next.delete(c.id);
-                        return next;
-                      })
-                    }
-                    aria-label={tx`Allow ${c.id}`}
-                  />
-                ) : (
-                  <span className={styles.consentRequired} title={tx("Required")}>
-                    •
-                  </span>
-                )}
-                <span className={styles.itemMain}>{c.description}</span>
-                <span className={styles.mono}>{c.id}</span>
-                <Badge tone={RISK_LABEL[c.risk].tone}>{RISK_LABEL[c.risk].label}</Badge>
-              </li>
-            ))}
-          </ul>
+          <div className={styles.consentList}>
+            {optional.length > 1 && (
+              <div className={styles.consentSelectAll}>
+                <Checkbox
+                  checked={allOptionalAccepted}
+                  indeterminate={someOptionalAccepted}
+                  onChange={() => setAccepted(allOptionalAccepted ? new Set() : new Set(optional.map((c) => c.id)))}
+                  label="Allow all optional permissions"
+                />
+                <span className={styles.consentCount}>
+                  {accepted.size}/{optional.length}
+                </span>
+              </div>
+            )}
+            <ul className={styles.items} aria-label={tx("Requested permissions")}>
+              {caps.map((c) => (
+                <li key={c.id} className={styles.capabilityItem}>
+                  <div className={styles.capabilityHeader}>
+                    {c.optional ? (
+                      <Checkbox
+                        checked={accepted.has(c.id)}
+                        onChange={(on) =>
+                          setAccepted((s) => {
+                            const next = new Set(s);
+                            if (on) next.add(c.id);
+                            else next.delete(c.id);
+                            return next;
+                          })
+                        }
+                        aria-label={tx`Allow ${c.id}`}
+                      />
+                    ) : (
+                      <span className={styles.consentRequired} title={tx("Required")}>
+                        •
+                      </span>
+                    )}
+                    <span className={styles.mono}>{c.id}</span>
+                    <Badge tone={RISK_LABEL[c.risk].tone}>{RISK_LABEL[c.risk].label}</Badge>
+                  </div>
+                  <p className={styles.capabilityDescription}>{capabilityDescription(c)}</p>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
         {high && (
           <p className={styles.consentWarning} role="alert">

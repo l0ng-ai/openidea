@@ -5,7 +5,9 @@ import {
   buildRows,
   fileItem,
   matchActions,
+  matchOutsideFiles,
   mergeSymbols,
+  splitSymbolQuery,
   parseCommand,
   sectionsFor,
   stableIndex,
@@ -33,10 +35,16 @@ const sym = (
   score: 0,
   indices: [0],
 });
-const ws = (name: string, kind: WorkspaceSymbol["kind"], path: string, line: number): WorkspaceSymbol => ({
+const ws = (
+  name: string,
+  kind: WorkspaceSymbol["kind"],
+  path: string,
+  line: number,
+  container: string | null = null,
+): WorkspaceSymbol => ({
   name,
   kind,
-  container: null,
+  container,
   location: { path, range: range(line) },
 });
 const opts = { root: "/p", includeNonProject: false, typesOnly: false, excludeTypes: false, limit: 10 };
@@ -50,6 +58,38 @@ describe("mergeSymbols", () => {
     expect(r.items[2]!.lsp).toBe(true);
     expect(r.items[2]!.indices).toEqual([0, 1, 2]);
     expect(r.items[2]!.rel).toBe("C.kt");
+  });
+
+  it("matches qualified queries against the LSP symbol's container", () => {
+    const lsp = [
+      ws("getTypeList", "method", "/p/Category.php", 3, "App\\Models\\Category"),
+      ws("getTypeList", "method", "/p/Product.php", 8, "App\\Models\\Product"),
+      ws("getTypes", "function", "/p/helpers.php", 1),
+    ];
+    for (const query of ["Category::getTypeList", "Category.getTypeList", "Category#getTypeList", "Cat::getType"]) {
+      expect(
+        mergeSymbols([], lsp, query, opts).items.map((i) => i.path),
+        query,
+      ).toEqual(["/p/Category.php"]);
+    }
+    // The exact name still ranks as exact once the qualifier is taken off.
+    const exact = mergeSymbols(
+      [],
+      [...lsp, ws("getTypeListFor", "method", "/p/Category.php", 9, "Category")],
+      "Category::getTypeList",
+      opts,
+    );
+    expect(exact.items.map((i) => i.line)).toEqual([3, 9]);
+    expect(mergeSymbols([], lsp, "getTypeList", opts).items).toHaveLength(2);
+  });
+
+  it("splits a qualified symbol query like the symbol index", () => {
+    expect(splitSymbolQuery("Category::getTypeList")).toEqual({ container: "Category", name: "getTypeList" });
+    expect(splitSymbolQuery("app.Category.getTypeList")).toEqual({ container: "Category", name: "getTypeList" });
+    expect(splitSymbolQuery("Foo#bar")).toEqual({ container: "Foo", name: "bar" });
+    expect(splitSymbolQuery("Category::")).toEqual({ container: "Category", name: "" });
+    expect(splitSymbolQuery("order")).toEqual({ container: null, name: "order" });
+    expect(splitSymbolQuery(".env")).toEqual({ container: null, name: ".env" });
   });
 
   it("puts exact LSP hits before fuzzy index hits", () => {
@@ -144,6 +184,18 @@ describe("matchActions", () => {
 });
 
 describe("items and rows", () => {
+  it("matchOutsideFiles takes - and _ for each other, the exact spelling scoring higher", () => {
+    const files = [
+      { path: "/s/bit-matcher.txt", relPath: "bit-matcher.txt" },
+      { path: "/s/bit_matcher.txt", relPath: "bit_matcher.txt" },
+    ];
+    const hits = matchOutsideFiles(files, "bit_matcher");
+    expect(hits.map((h) => h.relPath)).toEqual(["bit-matcher.txt", "bit_matcher.txt"]);
+    expect(hits[1]!.score).toBeGreaterThan(hits[0]!.score);
+    expect(hits[0]!.indices).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(matchOutsideFiles(files, "bit.matcher")).toEqual([]);
+  });
+
   it("fileItem splits name and directory highlights", () => {
     const f = fileItem(
       { path: "/p/src/orders/OrderController.kt", relPath: "src/orders/OrderController.kt", indices: [4, 11, 12, 16] },
@@ -163,6 +215,15 @@ describe("items and rows", () => {
     expect(t!.text).toBe("  val order = 1");
     expect(t!.indices).toEqual([6, 7, 8, 9, 10]);
     expect([t!.col, t!.endCol]).toEqual([8, 13]);
+  });
+
+  it("textItems keeps each window of a long line as its own item", () => {
+    const items = textItems("/p/min.js", "min.js", [
+      { line: 0, text: "x foo x", ranges: [[2, 5]], textOffset: 0 },
+      { line: 0, text: "x foo x", ranges: [[2, 5]], textOffset: 2000 },
+    ]);
+    expect(new Set(items.map((i) => i.key)).size).toBe(2);
+    expect(items.map((i) => i.col)).toEqual([2, 2002]);
   });
 
   it("buildRows orders sections, adds headers and more rows", () => {

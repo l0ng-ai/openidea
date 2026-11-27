@@ -1,0 +1,98 @@
+.scheme {
+  flex-wrap: wrap;
+}
+
+.tabPanel {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+.split {
+  flex: 1;
+  min-height: 280px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-small);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+}
+
+.item {
+  padding-inline: var(--space-2);
+}
+
+.itemIcon {
+  flex: none;
+}
+
+.itemName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.editor {
+  container: file-template-editor / inline-size;
+  overflow-wrap: anywhere;
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.field > span:first-child {
+  width: min(92px, 34%);
+}
+
+.identity {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: var(--space-2) var(--space-4);
+}
+
+.extension > span:first-child {
+  width: auto;
+  max-width: 58%;
+}
+
+.kind {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.text {
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  color: var(--fg-muted);
+}
+
+.text textarea {
+  flex: 1;
+  field-sizing: fixed;
+}
+
+.notes {
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+
+@container file-template-editor (width < 400px) {
+  .identity {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .extension > span:first-child {
+    width: min(92px, 34%);
+  }
+}

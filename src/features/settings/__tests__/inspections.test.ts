@@ -62,6 +62,42 @@ describe("plugin inspections", () => {
   });
 });
 
+describe("PHPStan inspections", () => {
+  it("list each identifier below PHPStan, from seen codes and stored overrides", () => {
+    const tree = buildInspectionTree(
+      [{ name: "PHP", servers: ["intelephense"] }],
+      [
+        {
+          producer: "phpstan",
+          code: "return.type",
+          source: "PHPStan",
+          sample: "Should return int but returns string.",
+        },
+        { producer: "build", code: "E0308", source: "rustc", sample: "" },
+      ],
+      [{ "builtin:phpstan:constant.notFound": { enabled: false }, "builtin:build:E1": { enabled: false } }],
+    );
+    const php = find(tree, "group:PHP")!;
+    expect(php.children.map((n) => n.id)).toEqual(["lsp:intelephense", "builtin:phpstan"]);
+    const phpstan = find(tree, "PHP/builtin:phpstan")!;
+    expect(phpstan.children.map((n) => [n.id, n.name])).toEqual([
+      ["builtin:phpstan:constant.notFound", "constant.notFound"],
+      ["builtin:phpstan:return.type", "return.type"],
+    ]);
+    expect(phpstan.children[1]!.description).toBe(
+      "PHPStan problems with code return.type.\n\nExample: Should return int but returns string.",
+    );
+    expect(pathToInspection(tree, "builtin:phpstan:return.type")).toEqual([
+      "group:PHP",
+      "PHP/builtin:phpstan",
+      "PHP/builtin:phpstan:return.type",
+    ]);
+    // Other built-in checks stay single inspections.
+    expect(find(tree, "General/builtin:build")!.children).toEqual([]);
+    expect(checkState({ "builtin:phpstan:constant.notFound": { enabled: false } }, phpstan)).toBe("mixed");
+  });
+});
+
 describe("inspections tree", () => {
   const tree = buildInspectionTree(languages, seen, [{ "lsp:ruff:E501": { severity: "typo" } }]);
 
@@ -69,9 +105,11 @@ describe("inspections tree", () => {
     expect(tree.map((g) => g.name)).toEqual([
       "Cargo",
       "General",
+      "Gherkin",
       "Java",
       "JavaScript",
       "Other",
+      "PHP",
       "Proofreading",
       "Python",
       "SQL",
@@ -79,7 +117,17 @@ describe("inspections tree", () => {
       "Version control",
     ]);
     const python = find(tree, "group:Python")!;
-    expect(python.children.map((n) => n.id)).toEqual(["lsp:basedpyright", "lsp:ruff"]);
+    expect(python.children.map((n) => n.id)).toEqual([
+      "lsp:basedpyright",
+      "lsp:ruff",
+      // The Python built-ins the IDE decides itself (no server checks class rules or installs).
+      "builtin:python-requirements",
+      "builtin:python-circular-bases",
+      "builtin:python-override",
+      "builtin:python-abstract-method",
+      "builtin:python-redundant-override",
+      "builtin:python-method-may-be-static",
+    ]);
     expect(python.children[1]!.children.map((n) => n.id)).toEqual(["lsp:ruff:E501", "lsp:ruff:F401"]);
     expect(find(tree, "Python/lsp:ruff:F401")!.description).toContain("imported but unused");
     expect(find(tree, "group:Other")!.children.map((n) => n.id)).toEqual(["lsp:custom-ls"]);

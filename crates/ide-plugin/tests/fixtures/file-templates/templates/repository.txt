@@ -1,0 +1,7 @@
+package $PACKAGE$;
+
+// Table: $TABLE$
+public interface $NAME$ {
+    $ENTITY$ find();
+    $END$
+}

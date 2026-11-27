@@ -4,15 +4,15 @@
  * path through `@codemirror/lint` (wavy underlines, no gutter, no lint
  * tooltip — `hover.ts` renders diagnostics together with documentation).
  */
-import type { Text } from "@codemirror/state";
-import { EditorSelection, StateEffect, StateField } from "@codemirror/state";
-import { EditorView, ViewPlugin } from "@codemirror/view";
+import type { EditorState, Text } from "@codemirror/state";
+import { ChangeSet, EditorSelection, StateEffect, StateField } from "@codemirror/state";
+import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { forEachDiagnostic, linter, setDiagnostics, type Diagnostic as LintDiagnostic } from "@codemirror/lint";
 import type { Diagnostic, Severity } from "@/bindings";
 import { commands, ideEventsReady, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { publishLocalDiagnostics } from "@/platform/localDiagnostics";
-import { intentionsChanged, scrollbarMarks, type ScrollbarMark } from "@/editor/api";
+import { intentionsChanged, scrollbarMarks, shownAgain, type ScrollbarMark } from "@/editor/api";
 import { rangeToOffsets } from "./positions";
 import { lspDoc } from "./lsp";
 import { showHint } from "./hint";
@@ -27,10 +27,18 @@ import {
   type InspectionRef,
 } from "@/platform/inspections";
 
-type Listener = () => void;
+export interface DiagnosticPublication {
+  source: string;
+  items: Diagnostic[];
+}
+
+type Listener = (publication?: DiagnosticPublication) => void;
 
 const byPath = new Map<string, Map<string, Diagnostic[]>>();
 const listeners = new Map<string, Set<Listener>>();
+/** Per path and source: a number that changes with each replacement of the source's list. */
+const stamps = new Map<string, Map<string, number>>();
+let lastStamp = 0;
 
 /** Diagnostics a UI-side inspection computed for `path` (shown in the editor and Problems). */
 export function setFileDiagnostics(path: string, source: string, items: Diagnostic[]) {
@@ -45,12 +53,16 @@ export function setFileDiagnostics(path: string, source: string, items: Diagnost
     );
 }
 
-function storeDiagnostics(path: string, source: string, items: Diagnostic[]) {
+function storeDiagnostics(path: string, source: string, items: Diagnostic[], published = false) {
   let sources = byPath.get(path);
   if (!items.length) {
-    if (!sources?.delete(source)) return;
-    if (!sources.size) byPath.delete(path);
+    if (!sources?.delete(source) && !published) return;
+    if (!sources?.size) byPath.delete(path);
+    stamps.get(path)?.delete(source);
   } else {
+    let pathStamps = stamps.get(path);
+    if (!pathStamps) stamps.set(path, (pathStamps = new Map()));
+    pathStamps.set(source, ++lastStamp);
     if (!sources) byPath.set(path, (sources = new Map()));
     sources.set(
       source,
@@ -58,7 +70,7 @@ function storeDiagnostics(path: string, source: string, items: Diagnostic[]) {
     );
     noteDiagnosticCodes(source, items);
   }
-  listeners.get(path)?.forEach((l) => l());
+  listeners.get(path)?.forEach((l) => l(published ? { source, items } : undefined));
 }
 
 /** Diagnostics of `path` under the inspection profile in effect. */
@@ -97,7 +109,7 @@ export function subscribeDiagnostics(path: string, l: Listener): () => void {
 }
 
 export function installDiagnosticsEvents(): () => void {
-  const off = onIdeEvent("diagnostics", (e) => storeDiagnostics(e.path, e.source, e.items));
+  const off = onIdeEvent("diagnostics", (e) => storeDiagnostics(e.path, e.source, e.items, true));
   // Diagnostics published before this window (re)loaded were missed: ask for them again.
   const resend = () => {
     if (isTauri())
@@ -120,10 +132,21 @@ export function installDiagnosticsEvents(): () => void {
 
 const SEVERITY_RANK: Record<Severity, number> = { error: 0, warning: 1, info: 2, hint: 3 };
 
-/** Backend diagnostics → lint diagnostics for `doc` (empty ranges widened to one character). */
-export function toLintDiagnostics(doc: Text, items: readonly Diagnostic[]): LintDiagnostic[] {
-  const out: LintDiagnostic[] = items.map((d) => {
-    let { from, to } = rangeToOffsets(doc, d.range);
+export interface EditorDiagnostic extends LintDiagnostic {
+  problem?: Diagnostic;
+}
+
+/**
+ * Backend diagnostics → lint diagnostics for `doc` (empty ranges widened to one character).
+ * `place` gives an item's offsets in `doc` when its range refers to an earlier text.
+ */
+export function toLintDiagnostics(
+  doc: Text,
+  items: readonly Diagnostic[],
+  place: (d: Diagnostic) => { from: number; to: number } = (d) => rangeToOffsets(doc, d.range),
+): EditorDiagnostic[] {
+  const out: EditorDiagnostic[] = items.map((d) => {
+    let { from, to } = place(d);
     if (from === to) {
       const line = doc.lineAt(from);
       if (to < line.to) to++;
@@ -137,6 +160,7 @@ export function toLintDiagnostics(doc: Text, items: readonly Diagnostic[]): Lint
     return {
       from,
       to,
+      problem: d,
       severity: d.severity,
       message: d.message,
       source: [d.source, isInternalCode(d.code) ? null : d.code].filter(Boolean).join(" ") || undefined,
@@ -155,40 +179,94 @@ const MARK_COLOR: Partial<Record<Severity, string>> = {
   info: "var(--info)",
 };
 
+/** A diagnostic's mark on the overview lane (the marker bar). */
+export interface ProblemMark extends ScrollbarMark {
+  to: number;
+  severity: Severity;
+}
+
 /** Overview-lane (scrollbar) marks for diagnostics, errors on top. */
-export function diagnosticMarks(diags: readonly LintDiagnostic[]): ScrollbarMark[] {
-  const out: ScrollbarMark[] = [];
+export function diagnosticMarks(diags: readonly LintDiagnostic[]): ProblemMark[] {
+  const out: ProblemMark[] = [];
   for (const d of diags) {
     const color = MARK_COLOR[d.severity];
     if (!color || d.markClass?.includes("cm-lsp-unnecessary") || d.markClass?.includes("cm-lsp-typo")) continue;
-    out.push({ from: d.from, to: d.to, color, tooltip: d.message, priority: 3 - SEVERITY_RANK[d.severity] });
+    out.push({
+      from: d.from,
+      to: d.to,
+      color,
+      tooltip: d.message,
+      priority: 3 - SEVERITY_RANK[d.severity],
+      severity: d.severity,
+    });
   }
   return out;
 }
 
-const setMarks = StateEffect.define<readonly ScrollbarMark[]>();
+const setMarks = StateEffect.define<readonly ProblemMark[]>();
 
-const marksField = StateField.define<readonly ScrollbarMark[]>({
+const marksField = StateField.define<readonly ProblemMark[]>({
   create: () => [],
   update(marks, tr) {
     for (const e of tr.effects) if (e.is(setMarks)) return e.value;
     if (!tr.docChanged || !marks.length) return marks;
     return marks.map((m) => {
       const from = tr.changes.mapPos(m.from);
-      return { ...m, from, to: Math.max(from, tr.changes.mapPos(m.to ?? m.from)) };
+      return { ...m, from, to: Math.max(from, tr.changes.mapPos(m.to)) };
     });
   },
   provide: (f) => scrollbarMarks.from(f),
 });
 
+const NO_MARKS: readonly ProblemMark[] = [];
+
+/** The problems the marker bar shows for `state`'s document, in document order; positions follow edits. */
+export function markerBarProblems(state: EditorState): readonly ProblemMark[] {
+  return state.field(marksField, false) ?? NO_MARKS;
+}
+
 const diagnosticsSync = ViewPlugin.fromClass(
   class {
     private unsubscribe: () => void;
     private pending = false;
+    private skipped = false;
+    /**
+     * Per source: the text its list arrived for and the edits made since. A list's ranges
+     * refer to the text it was published for (a saved file, for a build or PHPStan), so
+     * when another source updates, each list is placed through the edits since its own
+     * arrival instead of being read against the current text again.
+     */
+    private anchors = new Map<string, { stamp: number; doc: Text; changes: ChangeSet }>();
     constructor(private view: EditorView) {
       const path = view.state.facet(lspDoc)?.path;
-      this.unsubscribe = path ? subscribeDiagnostics(path, () => this.schedule()) : () => {};
-      if (path && diagnosticsFor(path).length) this.schedule();
+      this.unsubscribe = path
+        ? subscribeDiagnostics(path, () => {
+            this.anchor(path);
+            this.schedule();
+          })
+        : () => {};
+      if (path && diagnosticsFor(path).length) {
+        this.anchor(path);
+        this.schedule();
+      }
+    }
+    /** Lists that changed are anchored at the current text. */
+    anchor(path: string) {
+      const current = stamps.get(path);
+      for (const source of this.anchors.keys()) if (!current?.has(source)) this.anchors.delete(source);
+      const doc = this.view.state.doc;
+      for (const [source, stamp] of current ?? []) {
+        if (this.anchors.get(source)?.stamp !== stamp)
+          this.anchors.set(source, { stamp, doc, changes: ChangeSet.empty(doc.length) });
+      }
+    }
+    /** Offsets in the current text of `d`, an item of `source`. */
+    place(source: string, d: Diagnostic): { from: number; to: number } {
+      const anchor = this.anchors.get(source);
+      if (!anchor) return rangeToOffsets(this.view.state.doc, d.range);
+      const { from, to } = rangeToOffsets(anchor.doc, d.range);
+      const start = anchor.changes.mapPos(from, 1);
+      return { from: start, to: Math.max(start, anchor.changes.mapPos(to, -1)) };
     }
     schedule() {
       if (this.pending) return;
@@ -196,14 +274,29 @@ const diagnosticsSync = ViewPlugin.fromClass(
       queueMicrotask(() => {
         this.pending = false;
         const path = this.view.state.facet(lspDoc)?.path;
-        if (!path || !this.view.dom.isConnected) return;
-        const lint = toLintDiagnostics(this.view.state.doc, diagnosticsFor(path));
+        this.skipped = !this.view.dom.isConnected;
+        if (!path || this.skipped) return;
+        const profile = inspectionProfile();
+        const sources = [...(byPath.get(path) ?? [])];
+        const items = sources.flatMap(([source, list]) =>
+          applyProfile(profile, source, list).map((d) => ({ source, d })),
+        );
+        const sourceOf = new Map(items.map(({ source, d }) => [d, source]));
+        const lint = toLintDiagnostics(
+          this.view.state.doc,
+          items.map(({ d }) => d),
+          (d) => this.place(sourceOf.get(d)!, d),
+        );
         const tr = setDiagnostics(this.view.state, lint);
         this.view.dispatch({
           ...tr,
           effects: [...[tr.effects ?? []].flat(), setMarks.of(diagnosticMarks(lint)), intentionsChanged.of(null)],
         });
       });
+    }
+    update(u: ViewUpdate) {
+      if (u.docChanged) for (const anchor of this.anchors.values()) anchor.changes = anchor.changes.compose(u.changes);
+      if (this.skipped && shownAgain(u)) this.schedule();
     }
     destroy() {
       this.unsubscribe();
@@ -220,12 +313,16 @@ const lintTheme = EditorView.theme({
   ".cm-lintRange-error": {
     textDecoration: "var(--editor-error-decoration, underline wavy var(--danger))",
     WebkitTextDecoration: "var(--editor-error-decoration, underline wavy var(--danger))",
+    fontWeight: "var(--wave-error-bold, inherit)",
+    fontStyle: "var(--wave-error-italic, inherit)",
     textDecorationSkipInk: "none",
     textUnderlineOffset: "3px",
   },
   ".cm-lintRange-warning": {
     textDecoration: "var(--editor-warning-decoration, underline wavy var(--warning))",
     WebkitTextDecoration: "var(--editor-warning-decoration, underline wavy var(--warning))",
+    fontWeight: "var(--wave-warning-bold, inherit)",
+    fontStyle: "var(--wave-warning-italic, inherit)",
     backgroundColor: "var(--editor-warning-background, transparent)",
     textDecorationSkipInk: "none",
     textUnderlineOffset: "3px",
@@ -239,8 +336,10 @@ const lintTheme = EditorView.theme({
   ".cm-lintRange-hint": { textDecoration: "none" },
   // Typo level: IDEA's green wavy underline.
   ".cm-lintRange.cm-lsp-typo": {
-    textDecoration: "underline wavy color-mix(in srgb, var(--success) 85%, transparent)",
-    WebkitTextDecoration: "underline wavy color-mix(in srgb, var(--success) 85%, transparent)",
+    textDecoration: "var(--wave-typo-effect, underline wavy var(--wave-typo, var(--success)))",
+    WebkitTextDecoration: "var(--wave-typo-effect, underline wavy var(--wave-typo, var(--success)))",
+    fontWeight: "var(--wave-typo-bold, inherit)",
+    fontStyle: "var(--wave-typo-italic, inherit)",
     textDecorationSkipInk: "none",
     textUnderlineOffset: "3px",
   },
@@ -248,9 +347,16 @@ const lintTheme = EditorView.theme({
     textDecoration: "none",
     backgroundColor: "transparent",
     color: "var(--fg-unused, var(--fg-faint))",
+    fontWeight: "var(--fg-unused-bold, inherit)",
+    fontStyle: "var(--fg-unused-italic, inherit)",
   },
   ".cm-lintRange.cm-lsp-unnecessary *": { color: "var(--fg-unused, var(--fg-faint))" },
-  ".cm-lintRange.cm-lsp-deprecated": { textDecoration: "line-through", textDecorationColor: "var(--fg-muted)" },
+  ".cm-lintRange.cm-lsp-deprecated": {
+    textDecoration: "var(--fg-deprecated-effect, line-through var(--fg-deprecated, var(--fg-muted)))",
+    WebkitTextDecoration: "var(--fg-deprecated-effect, line-through var(--fg-deprecated, var(--fg-muted)))",
+    fontWeight: "var(--fg-deprecated-bold, inherit)",
+    fontStyle: "var(--fg-deprecated-italic, inherit)",
+  },
   // An error or warning on the same range (merged into one mark) keeps its underline.
   ".cm-lintRange-error.cm-lsp-typo, .cm-lintRange-error.cm-lsp-unnecessary": {
     textDecoration: "var(--editor-error-decoration, underline wavy var(--danger))",
@@ -272,7 +378,7 @@ export function diagnosticsExtension() {
 export interface PlacedDiagnostic {
   from: number;
   to: number;
-  diagnostic: LintDiagnostic;
+  diagnostic: EditorDiagnostic;
 }
 
 export function diagnosticsAt(view: EditorView, pos: number): PlacedDiagnostic[] {

@@ -9,6 +9,7 @@ const RUN_RE = /^=== (?:RUN|CONT|PAUSE)\s+(\S+)/;
 const RESULT_RE = /^\s*--- (PASS|FAIL|SKIP): (\S+) \(([\d.]+s)\)/;
 const PKG_RE = /^(ok|FAIL|---)\s+(\S+)\s+(?:\(cached\)|([\d.]+s)|\[[^\]]+\])/;
 const LOCATION_RE = /^\s+([\w.-]+\.go):(\d+):/;
+const BENCHMARK_RE = /^(Benchmark\S*) *\t[ \t]*\d+ *(?:\t|$)/m;
 
 function plainGoParser(): TestOutputParser {
   let buffer: TestEvent[] = [];
@@ -85,6 +86,19 @@ interface GoEvent {
   Elapsed?: number;
 }
 
+interface GoPackage {
+  tests: boolean;
+  failed: boolean;
+  /** Benchmark names, with whether Go reported a successful measurement or bench event. */
+  benchmarks: Map<string, boolean>;
+}
+
+function benchmarkName(pkg: GoPackage, name: string): string {
+  if (pkg.benchmarks.has(name)) return name;
+  const withoutCpu = name.replace(/-\d+$/, "");
+  return pkg.benchmarks.has(withoutCpu) ? withoutCpu : name;
+}
+
 export function goJsonEvent(line: string): GoEvent | null {
   if (!line.startsWith("{")) return null;
   try {
@@ -94,9 +108,19 @@ export function goJsonEvent(line: string): GoEvent | null {
     if (
       typeof pkg !== "string" ||
       !pkg ||
-      !["start", "run", "pause", "cont", "output", "pass", "fail", "skip", "build-output", "build-fail"].includes(
-        event.Action,
-      )
+      ![
+        "start",
+        "run",
+        "pause",
+        "cont",
+        "output",
+        "pass",
+        "bench",
+        "fail",
+        "skip",
+        "build-output",
+        "build-fail",
+      ].includes(event.Action)
     )
       return null;
     if (event.Test !== undefined && typeof event.Test !== "string") return null;
@@ -111,19 +135,48 @@ export function goParser(): TestOutputParser {
   const plain = plainGoParser();
   const located = new Set<string>();
   const finished = new Set<string>();
-  const packages = new Map<string, { tests: boolean; failed: boolean }>();
+  const packages = new Map<string, GoPackage>();
   const totals = { passed: 0, failed: 0, skipped: 0 };
+
+  function finish(pkg: GoPackage, path: string[], status: keyof typeof totals, durationMs?: number): TestEvent[] {
+    const key = path.join("\0");
+    if (finished.has(key)) return [];
+    finished.add(key);
+    if (path.length === 2) {
+      totals[status]++;
+      if (status === "failed") pkg.failed = true;
+    } else if (path.length === 1 && (!pkg.tests || (status === "failed" && !pkg.failed))) totals[status]++;
+    return [{ type: "result", path, status, durationMs }];
+  }
+
   return {
     feed(line) {
       const e = goJsonEvent(line);
       if (!e) return plain.feed(line);
-      const pkg = packages.get(e.Package) ?? { tests: false, failed: false };
+      const pkg = packages.get(e.Package) ?? { tests: false, failed: false, benchmarks: new Map() };
       packages.set(e.Package, pkg);
-      const path = [e.Package, ...(e.Test ? e.Test.split("/") : [])];
-      if (e.Test) pkg.tests = true;
-      if (e.Action === "run") return [{ type: "start", path }];
+      const benchmark = e.Test?.startsWith("Benchmark") ? e.Test : undefined;
+      const name = benchmark && e.Action !== "run" ? benchmarkName(pkg, benchmark) : e.Test;
+      const path = [e.Package, ...(name ? name.split("/") : [])];
+      if (name) pkg.tests = true;
+      if (e.Action === "run") {
+        finished.delete(path.join("\0"));
+        if (benchmark) pkg.benchmarks.set(benchmark, false);
+        return [{ type: "start", path }];
+      }
+      if (e.Action === "bench") {
+        if (name) pkg.benchmarks.set(name, true);
+        return [];
+      }
       if (e.Action === "output" || e.Action === "build-output") {
         if (!e.Output) return [];
+        if (e.Action === "output" && (!name || benchmark)) {
+          const measurement = BENCHMARK_RE.exec(e.Output)?.[1];
+          if (measurement) {
+            const measured = benchmarkName(pkg, measurement);
+            if (pkg.benchmarks.has(measured) && (!name || name === measured)) pkg.benchmarks.set(measured, true);
+          }
+        }
         const lines = e.Output.replace(/\n$/, "").split("\n");
         const events: TestEvent[] = lines.map((line) => ({ type: "output", path, line }));
         const key = path.join("\0");
@@ -144,20 +197,21 @@ export function goParser(): TestOutputParser {
         return events;
       }
       if (!["pass", "fail", "skip", "build-fail"].includes(e.Action)) return [];
-      const key = path.join("\0");
-      if (finished.has(key)) return [];
-      finished.add(key);
       const status = e.Action === "pass" ? "passed" : e.Action === "skip" ? "skipped" : "failed";
-      if (e.Test && path.length === 2) {
-        totals[status]++;
-        if (status === "failed") pkg.failed = true;
-      } else if (!e.Test && (!pkg.tests || (status === "failed" && !pkg.failed))) totals[status]++;
       const durationMs =
         typeof e.Elapsed === "number" && Number.isFinite(e.Elapsed) && e.Elapsed >= 0 ? e.Elapsed * 1000 : undefined;
-      return [
-        { type: "result", path, status, durationMs },
-        { type: "summary", ...totals },
-      ];
+      const events: TestEvent[] = [];
+      if (!name) {
+        // Quiet benchmarks can emit measurements without a terminal event. Wait for the
+        // package result so a failure from a later CPU setting can take precedence.
+        for (const [test, measured] of pkg.benchmarks) {
+          if (measured) events.push(...finish(pkg, [e.Package, ...test.split("/")], "passed"));
+        }
+        pkg.benchmarks.clear();
+      }
+      events.push(...finish(pkg, path, status, durationMs));
+      if (events.length) events.push({ type: "summary", ...totals });
+      return events;
     },
     end: () => plain.end?.() ?? [],
   };

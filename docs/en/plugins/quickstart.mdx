@@ -1,0 +1,148 @@
+---
+title: "Quickstart"
+description: "Install the plugin tool, scaffold a Rust plugin, build it, link it into OpenIDEA and run its commands."
+---
+
+This walkthrough creates a code plugin with two commands, tests it, builds it to WebAssembly and loads it into the IDE without installing it.
+
+## Prerequisites
+
+- OpenIDEA installed.
+- Rust through [rustup](https://rustup.rs). `openidea-plugin build` adds the `wasm32-wasip2` target through rustup if it is missing; you can also add it yourself with `rustup target add wasm32-wasip2`.
+
+<Steps>
+  <Step title="Install the openidea-plugin tool">
+    ```sh
+    cargo install --locked --git https://github.com/l0ng-ai/openidea ide-host --bin openidea-plugin
+    ```
+
+    This builds the tool from the `main` branch. To match a released IDE, add `--tag v<version>` (for example `--tag v0.1.40`). Each release also attaches a Linux x64 binary, `openidea-plugin-linux-x86_64.gz`.
+
+    `openidea-plugin --version` prints the tool version and the plugin API it checks against.
+
+  </Step>
+
+  <Step title="Scaffold a plugin">
+    ```sh
+    openidea-plugin new hello --id acme.hello
+    cd hello
+    ```
+
+    The `command` template (the default) writes:
+
+    | File | What it is |
+    | --- | --- |
+    | `plugin.toml` | The manifest: id `acme.hello`, name `Hello`, two commands, the `editor.read` capability |
+    | `Cargo.toml` | A `cdylib` crate that depends on the SDK |
+    | `src/lib.rs` | The commands, plus unit tests against the SDK's mock host |
+    | `README.md`, `.gitignore` | |
+
+    The id is `<publisher>.<name>`. The publisher part (`acme`) is what you sign with when you publish; without `--id` the id is derived from the folder name. `--name` sets the display name.
+
+    The SDK dependency points at this repository at the tool's release tag (`{ git = "https://github.com/l0ng-ai/openidea", tag = "v…" }`). Pass `--sdk <path to sdk/rust/openidea-plugin>` to use a local checkout instead.
+
+    Other templates: `--template theme`, `--template icon-theme`, `--template language`. They need no code.
+
+  </Step>
+
+  <Step title="Run the unit tests">
+    ```sh
+    cargo test
+    ```
+
+    On your machine the SDK talks to a mock host, so the command logic is tested without the IDE. See [Testing and debugging](/en/plugins/testing).
+
+  </Step>
+
+  <Step title="Build the component">
+    ```sh
+    openidea-plugin build
+    ```
+
+    This runs `cargo build --release --target wasm32-wasip2`, copies the result to `dist/plugin.wasm` (the manifest's `wasm` path) and then runs `openidea-plugin check`, which validates the package exactly as installing would and prints what the user will be asked to grant:
+
+    ```text
+    acme.hello 0.1.0 — Hello
+      code: dist/plugin.wasm (…, plugin API 1.4)
+      categories: tools
+      contributes 2 × commands
+      capability editor.read (required, Low risk): Read the focused editor's file and selection
+    ok
+    ```
+
+    Use `openidea-plugin build --debug` for a debug build.
+
+  </Step>
+
+  <Step title="Link the folder into the IDE">
+    ```sh
+    openidea-plugin link
+    ```
+
+    `link` adds the folder to `links.json` in the IDE's plugins directory. Linked plugins are read from the folder itself, so you never reinstall while developing. `openidea-plugin links` lists linked folders and `openidea-plugin unlink` removes one.
+
+    <Note>
+    The plugins directory is `$OPENIDEA_PLUGINS_DIR`, or `ai.l0ng.openidea/plugins` in your system's app data directory. A development build of OpenIDEA from source uses its own data directory: point `OPENIDEA_PLUGINS_DIR` at its `plugins` folder when you link. See [Data directories](/en/reference/data-directories).
+    </Note>
+
+  </Step>
+
+  <Step title="Allow it and run a command">
+    1. Open **Settings › Plugins** (`⌘,` on macOS, `Ctrl+Alt+S` on Windows/Linux). The plugin is listed under **Linked for development** with the status **Needs permission**.
+    2. Select it and click **Review Permissions…**, then **Allow** in the *Allow Hello to run?* dialog.
+    3. Open Find Action (`⌘⇧A` / `Ctrl+Shift+A`) and run **Hello: Say Hello**. A notification says *Hello #1 from Hello!*.
+    4. Open any file and run **Hello: Line Count of Active File**. The command returns text, which the IDE shows to you.
+  </Step>
+</Steps>
+
+## The edit loop
+
+1. Change `src/lib.rs` (or `plugin.toml`).
+2. Run `openidea-plugin build`.
+3. In **Settings › Plugins**, select the plugin and click the **Reload from disk** button in its details, or run the **Reload Plugins** action from Find Action.
+
+If something goes wrong, the plugin's details in **Settings › Plugins** show its status and why it failed. See [Testing and debugging](/en/plugins/testing) for logs.
+
+## What is in the code
+
+```rust
+use openidea_plugin::{Error, Invocation, NotificationLevel, Plugin, host, register_plugin};
+
+#[derive(Default)]
+pub struct Main {
+    greetings: u32,
+}
+
+impl Plugin for Main {
+    fn run_command(&mut self, id: &str, ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
+        match id {
+            "say-hello" => {
+                self.greetings += 1;
+                let body = format!("Hello #{} from Hello!", self.greetings);
+                host::notify(NotificationLevel::Info, "Hello", &body);
+                Ok(None)
+            }
+            "line-count" => {
+                let editor = ctx.editor().ok_or("no file is open")?;
+                let text = editor.document()?.text;
+                Ok(Some(format!("{} lines in {}", text.lines().count(), editor.path())))
+            }
+            _ => Err(format!("unknown command {id}").into()),
+        }
+    }
+}
+
+register_plugin!(Main);
+```
+
+- `plugin.toml` declares the commands (`[[contributes.commands]]`), so they appear in Find Action before the code is loaded.
+- `run_command` receives the command id and the invocation context (the window's project and focused editor).
+- `greetings` lives in the instance and resets when the plugin is unloaded after being idle. Keep what must survive in `host::storage` (see [Lifecycle and events](/en/plugins/lifecycle)).
+- Reading the editor needs the `editor.read` capability. Without it, `editor.document()` returns `Error::Denied`.
+
+## Next steps
+
+- [Manifest](/en/plugins/manifest): every field of `plugin.toml`.
+- [Commands and actions](/en/plugins/guides/commands): menus, shortcuts, `when` clauses and command arguments.
+- [Example plugins](/en/plugins/examples): working plugins to copy from.
+- [Packaging and signing](/en/plugins/publishing/packaging): turn the folder into an `.oiplugin`.

@@ -137,19 +137,16 @@ pub fn build(root: &Path, model: &BuildModel, id: &str, cache: &Path) -> IdeResu
         // POM's effective identity first; profiles and -D options can change its GAV.
         let output = cache.join("artifact-project.txt");
         let mut probe = top.options.clone();
+        let evaluate =
+            crate::maven::plugin_goal("help:evaluate", crate::maven::local_repository_for(&top.options).as_deref());
         probe.extend([
             "-f".into(),
             root.join(&p.pom).to_string_lossy().into_owned(),
-            "help:evaluate".into(),
+            evaluate.clone(),
             "-Dexpression=project.id".into(),
             format!("-Doutput={}", output.display()),
         ]);
-        args.extend([
-            "-DskipTests".into(),
-            "package".into(),
-            "help:evaluate".into(),
-            format!("-Doutput={}", manifest.display()),
-        ]);
+        args.extend(["-DskipTests".into(), "package".into(), evaluate, format!("-Doutput={}", manifest.display())]);
         return Ok(WebBuild {
             command: top.command.clone(),
             args,
@@ -172,13 +169,25 @@ pub fn build(root: &Path, model: &BuildModel, id: &str, cache: &Path) -> IdeResu
         fs::write(
             &script,
             format!(
-                r#"gradle.projectsEvaluated {{
+                r#"import org.gradle.util.GradleVersion
+
+gradle.projectsEvaluated {{
     def p = gradle.rootProject.project({})
-    def warTask = p.tasks.named('war')
-    p.tasks.register('openideaTomcatArtifact') {{
-        dependsOn warTask
-        doLast {{ new File({}).setText(warTask.get().archiveFile.get().asFile.absolutePath, 'UTF-8') }}
+    def artifact = {{ t ->
+        t.dependsOn 'war'
+        // Resolved here so the action holds no task or project (configuration cache).
+        def war = p.tasks.getByName('war')
+        // `archiveFile` is Gradle 5.1+, `archivePath` is gone in 8.0.
+        def archive = war.hasProperty('archiveFile') ? war.archiveFile : war.archivePath
+        def manifest = new File({})
+        t.doLast {{
+            def file = archive instanceof File ? archive : archive.get().asFile
+            manifest.setText(file.absolutePath, 'UTF-8')
+        }}
     }}
+    // `register` is Gradle 4.9+.
+    if (GradleVersion.current() >= GradleVersion.version('4.9')) p.tasks.register('openideaTomcatArtifact', artifact)
+    else p.tasks.create('openideaTomcatArtifact', artifact)
 }}
 "#,
                 groovy_literal(path),
@@ -270,7 +279,7 @@ mod tests {
         assert_eq!(a.len(), 1);
         let plan = build(tmp.path(), &model, &a[0].id, &tmp.path().join("base")).unwrap();
         assert!(plan.args.contains(&":openideaTomcatArtifact".into()));
-        assert!(fs::read_to_string(tmp.path().join("base/war.init.gradle")).unwrap().contains("archiveFile.get()"));
+        assert!(fs::read_to_string(tmp.path().join("base/war.init.gradle")).unwrap().contains("? war.archiveFile :"));
         assert!(!crate::gradle::has_war_plugin("// plugins { war }"));
     }
 
@@ -297,7 +306,14 @@ mod tests {
             assert!(plan.args.contains(&format!("{}:openideaTomcatArtifact", module.trim_end_matches(':'))));
             let script = fs::read_to_string(cache.join("war.init.gradle")).unwrap();
             assert!(script.contains(&format!("rootProject.project('{}')", module)));
-            assert!(script.contains("archiveFile.get().asFile.absolutePath, 'UTF-8'"));
+            assert!(script.contains("manifest.setText(file.absolutePath, 'UTF-8')"));
+            // `archiveFile` is Gradle 5.1+, `register` 4.9+ (#3864).
+            assert!(
+                script.contains(": war.archivePath") && script.contains("else p.tasks.create('openideaTomcatArtifact'")
+            );
+            // The configuration cache can't serialize a task or project the action refers to.
+            let action = &script[script.find("doLast").unwrap()..script.find("// `register`").unwrap()];
+            assert!(!action.contains("p.") && !action.contains("war."), "{action}");
         }
     }
 }

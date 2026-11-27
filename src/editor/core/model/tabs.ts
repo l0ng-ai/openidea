@@ -93,6 +93,57 @@ export function openKeys(s: TabsState): Set<string> {
   return keys;
 }
 
+/** Replays live tabs into the saved layout, retaining their slots and the launch target. */
+export function mergeSessionTabs(current: TabsState, restored: TabsState): TabsState {
+  const live = new Map<string, Tab>();
+  for (const pane of Object.values(current.panes)) for (const tab of pane.tabs) live.set(tab.input.key, tab);
+  if (!live.size) return restored;
+  const active = current.panes[current.activePane]?.tabs.find(
+    (t) => t.id === current.panes[current.activePane]?.active,
+  );
+  if (active) live.set(active.input.key, active);
+  let next = restored;
+  for (const tab of live.values()) {
+    let found = findTab(next, tab.input.key, restored.activePane);
+    let opening = tab;
+    // Put the launch target in the saved active pane without collapsing its saved source pane.
+    if (tab === active && found && found.paneId !== restored.activePane) {
+      const source = paneOf(next, found.paneId);
+      const savedId = found.tab.id;
+      const tabs = source.tabs.filter((t) => t.id !== savedId);
+      const mru = source.mru.filter((id) => id !== savedId);
+      next = withPane(next, {
+        ...source,
+        tabs,
+        mru,
+        active: source.active === savedId ? (mru[0] ?? tabs[0]?.id ?? null) : source.active,
+      });
+      opening = { ...found.tab, input: tab.input };
+      found = null;
+    }
+    if (!found) {
+      const pane = paneOf(next, restored.activePane);
+      const opened = openTab(next, pane.id, tab.input, {
+        pinned: opening.pinned,
+        preview: opening.preview && !pane.tabs.some((t) => t.preview),
+        preservePreview: true,
+        activate: false,
+      });
+      next = opened.state;
+      found = { paneId: pane.id, tab: paneOf(next, pane.id).tabs.find((t) => t.id === opened.tabId)! };
+    }
+    const pane = paneOf(next, found.paneId);
+    const savedId = found.tab.id;
+    next = withPane(next, {
+      ...pane,
+      tabs: pane.tabs.map((t) => (t.id === savedId ? { ...t, id: tab.id, input: tab.input } : t)),
+      active: pane.active === savedId ? tab.id : pane.active,
+      mru: pane.mru.map((id) => (id === savedId ? tab.id : id)),
+    });
+  }
+  return active ? activateTab(next, restored.activePane, active.id) : next;
+}
+
 function withPane(s: TabsState, pane: Pane): TabsState {
   return { ...s, panes: { ...s.panes, [pane.id]: pane } };
 }
@@ -114,6 +165,8 @@ export interface OpenTabOptions {
   index?: number;
   activate?: boolean;
   preservePreview?: boolean;
+  /** Previews the new regular tab leaves open (a diff, which a file opened from it must not close). */
+  keepPreview?: (tab: Tab) => boolean;
 }
 
 export function openTab(
@@ -144,7 +197,7 @@ export function openTab(
   } else {
     const pins = pinnedCount(pane);
     let index: number;
-    if (tab.pinned) index = pins;
+    if (tab.pinned) index = opts.index !== undefined ? Math.max(0, Math.min(opts.index, pins)) : pins;
     else if (opts.index !== undefined) index = Math.max(pins, Math.min(opts.index, tabs.length));
     else {
       const activeIdx = tabs.findIndex((t) => t.id === pane.active);
@@ -153,9 +206,9 @@ export function openTab(
     tabs.splice(index, 0, tab);
   }
   let active = pane.active;
-  if (!tab.preview && !opts.preservePreview && tabs.some((t) => t.preview)) {
+  if (!tab.preview && !opts.preservePreview && tabs.some((t) => t.preview && !opts.keepPreview?.(t))) {
     // A new regular editor closes the preview tab (IDEA trims previews on every open).
-    const previews = new Set(tabs.filter((t) => t.preview).map((t) => t.id));
+    const previews = new Set(tabs.filter((t) => t.preview && !opts.keepPreview?.(t)).map((t) => t.id));
     tabs.splice(0, tabs.length, ...tabs.filter((t) => !previews.has(t.id)));
     mru = mru.filter((id) => !previews.has(id));
     if (active && previews.has(active)) active = null;

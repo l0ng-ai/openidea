@@ -1,0 +1,12 @@
+{
+  "properties": {
+    "templates": {
+      "type": "array", "title": "Commit templates", "group": "Templates",
+      "items": { "type": "string" }, "default": ["{type}: {summary}"]
+    },
+    "types": {
+      "type": "array", "title": "Allowed commit types", "group": "Templates",
+      "items": { "type": "string" }, "default": ["feat", "fix", "docs"]
+    }
+  }
+}

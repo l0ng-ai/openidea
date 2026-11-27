@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { useProject } from "@/platform/project";
 import { activateWorkbench } from "./activate";
-import { notify, useNotifications } from "./notificationStore";
+import { expireNotification, notify, useNotifications } from "./notificationStore";
 
 afterEach(() => {
   useNotifications.setState({ items: [] });
@@ -22,5 +22,18 @@ describe("notifications across project changes", () => {
     } finally {
       dispose();
     }
+  });
+});
+
+describe("expiring a notification", () => {
+  it("hides its balloon, keeps it in the log, and leaves the state alone when nothing is shown", () => {
+    notify({ level: "error", title: "Cannot reload Maven projects", key: "build-sync-maven" });
+    expireNotification("build-sync-maven");
+    const [item] = useNotifications.getState().items;
+    expect(item).toMatchObject({ title: "Cannot reload Maven projects", balloon: false });
+    const before = useNotifications.getState();
+    expireNotification("build-sync-maven");
+    expireNotification("unknown");
+    expect(useNotifications.getState()).toBe(before);
   });
 });

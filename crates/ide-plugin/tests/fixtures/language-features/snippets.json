@@ -1,0 +1,1 @@
+{"Select":{"prefix":["sel","select"],"body":["SELECT ${1:column}","FROM ${2:table}$0"],"description":"Select rows"}}

@@ -18,4 +18,4 @@ initialization-options = { AutomaticWorkspaceInit = true }
 adapter = "netcoredbg"
 command = "netcoredbg"
 args = ["--interpreter=vscode"]
-install-hint = "Install Samsung netcoredbg (https://github.com/Samsung/netcoredbg/releases)"
+install-hint = "Install netcoredbg (.NET debugger) in Settings › Languages & Frameworks › Language Servers"

@@ -30,21 +30,25 @@ import {
   javaTypeFromHover,
   literalType,
   replacesBareStatement,
+  trailingName,
   variableDeclaration,
   type DeclContext,
   type DeclResult,
   type Declaration,
 } from "./templates";
 import { tx } from "@/platform/i18n";
+import { showExpressionChooser } from "./expressionChooser";
 
 /** Why the language server could not do it (see `withFallback`). */
-export type FallbackReason = "notReady" | "error" | "empty";
+/** `otherKind`: the server offers another extraction there (gopls: only Extract constant), not this one. */
+export type FallbackReason = "notReady" | "error" | "empty" | "otherKind";
 export type IntroduceKind = "variable" | "constant";
 
 const NOTES: Record<FallbackReason, string> = {
   notReady: "Based on syntax (language server not ready)",
   error: "Based on syntax (language server failed)",
   empty: "Based on syntax (the code has errors)",
+  otherKind: "Based on syntax",
 };
 
 /** At most this many other occurrences are checked and offered. */
@@ -152,12 +156,6 @@ function isCallee(doc: Text, node: SyntaxNode, outer: SyntaxNode | undefined): b
   return /^\s*(\(|<|::<)/.test(doc.sliceString(end, end + 4));
 }
 
-/** Chooser label of an expression: one line, shortened. */
-export function expressionPreview(text: string): string {
-  const one = text.replace(/\s+/g, " ").trim();
-  return one.length > 80 ? `${one.slice(0, 77)}…` : one;
-}
-
 /**
  * Entry point from the action: true when it handled the request (refactored,
  * asked, or explained why not); false to let the caller report the server's
@@ -207,18 +205,7 @@ async function introduce(view: EditorView, kind: IntroduceKind, reason: Fallback
     await perform(p, candidates[0]!);
     return true;
   }
-  openPopup({
-    kind: "list",
-    anchor: caretAnchor(view, sel.head),
-    title: "Expressions",
-    items: candidates.map((c, i) => ({
-      id: `${i}`,
-      label: expressionPreview(nodeText(doc, c)),
-      onActive: () => highlightRanges(view, [rangeToOffsets(doc, c.range)]),
-      run: () => perform(p, c),
-    })),
-    onClose: () => clearTemporaryHighlight(view),
-  });
+  showExpressionChooser(view, doc, sel.head, candidates, (candidate) => perform(p, candidate));
   return true;
 }
 
@@ -378,17 +365,17 @@ function usesSemicolons(doc: Text, statement: SyntaxNode): boolean {
 
 /** Return / declared type of a Java call or name from the server's hover, if it answers. */
 async function javaHoverType(p: Prepared, expr: SyntaxNode, text: string): Promise<string | null> {
-  const m = /([A-Za-z_$][\w$]*)\s*(\([\s\S]*\))?\s*$/.exec(text);
-  if (!m || !/method_invocation|identifier|field_access/.test(expr.kind)) return null;
+  const last = trailingName(text);
+  if (!last || !/method_invocation|identifier|field_access/.test(expr.kind)) return null;
   const { from } = rangeToOffsets(p.doc, expr.range);
-  const pos = p.doc.lineAt(from + m.index);
-  const at = { line: pos.number - 1, col: from + m.index - pos.from };
+  const pos = p.doc.lineAt(from + last.index);
+  const at = { line: pos.number - 1, col: from + last.index - pos.from };
   try {
     const hover = await Promise.race([
       call(commands.lspHover(nextRequestId(), p.ctx.doc, at)),
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
     ]);
-    return hover ? javaTypeFromHover(hover.contents.value, m[1]!) : null;
+    return hover ? javaTypeFromHover(hover.contents.value, last.name) : null;
   } catch {
     return null;
   }
@@ -429,7 +416,9 @@ async function sameResolution(
   if (wa.length !== wb.length) return false;
   for (let i = 0; i < Math.min(wa.length, 8); i++) {
     if (wa[i]!.word !== wb[i]!.word) return false;
-    if ((await resolve(a.from + wa[i]!.offset)) !== (await resolve(b.from + wb[i]!.offset))) return false;
+    // oxlint-disable-next-line no-await-in-loop -- word checks short-circuit; the two resolves per word are parallel
+    const [ra, rb] = await Promise.all([resolve(a.from + wa[i]!.offset), resolve(b.from + wb[i]!.offset)]);
+    if (ra !== rb) return false;
   }
   return true;
 }
@@ -562,15 +551,23 @@ async function verifiedOccurrences(
   const found = findTextOccurrences(doc.toString(), from, to, exprText, MAX_OCCURRENCES + 1).filter(
     (o) => o.to <= exprFrom || o.from >= exprTo,
   );
+  const candidates = found.slice(0, MAX_OCCURRENCES);
+  const nodes = await Promise.all(
+    candidates.map((o) => structure.nodeAt(p.ctx.doc, offsetsToRange(doc, o.from, o.to))),
+  );
+  const accepted: Array<[Occurrence, { chain: SyntaxNode[]; self: number }]> = [];
+  candidates.forEach((o, i) => {
+    const s = chainOf(nodes[i]!, offsetsToRange(doc, o.from, o.to), expr.kind);
+    if (!s || s.chain[s.self]!.hasError) return;
+    if (literal && doc.sliceString(o.from, o.to) !== exprText) return;
+    if (normalizeExpression(doc.sliceString(o.from, o.to)) !== normalizeExpression(exprText)) return;
+    accepted.push([o, s]);
+  });
+  const answers = await Promise.all(accepted.map(([o, s]) => accept(o, s)));
   const out: Occurrence[] = [];
-  for (const o of found.slice(0, MAX_OCCURRENCES)) {
-    const range = offsetsToRange(doc, o.from, o.to);
-    const s = chainOf(await structure.nodeAt(p.ctx.doc, range), range, expr.kind);
-    if (!s || s.chain[s.self]!.hasError) continue;
-    if (literal && doc.sliceString(o.from, o.to) !== exprText) continue;
-    if (normalizeExpression(doc.sliceString(o.from, o.to)) !== normalizeExpression(exprText)) continue;
-    if (await accept(o, s)) out.push(o);
-  }
+  accepted.forEach(([o], i) => {
+    if (answers[i]) out.push(o);
+  });
   return out;
 }
 

@@ -2,6 +2,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { FontPicker } from "./FontPicker";
+import * as systemFonts from "@/platform/systemFonts";
 import { bundledFonts, useSystemFontStore } from "@/platform/systemFonts";
 
 beforeEach(() =>
@@ -84,4 +85,26 @@ it("quietly keeps selections and manual input through fallback and native retry"
   expect(input).toHaveValue("Manual CJK Family");
   fireEvent.focus(input);
   expect(screen.getByRole("option", { name: /New Native Family/ })).toBeInTheDocument();
+});
+
+it("skips font enumeration while disabled, defers on mount when enabled, and loads immediately on focus", () => {
+  vi.useFakeTimers();
+  const spy = vi.spyOn(systemFonts, "loadSystemFonts").mockResolvedValue();
+  useSystemFontStore.setState({ status: "idle", source: "bundled", fonts: bundledFonts });
+  try {
+    const view = render(<FontPicker label="UI font" value="Inter" onChange={() => {}} disabled />);
+    vi.advanceTimersByTime(2000);
+    expect(spy).not.toHaveBeenCalled();
+
+    view.rerender(<FontPicker label="UI font" value="Inter" onChange={() => {}} />);
+    // Not called synchronously during initial render/mount commit.
+    expect(spy).not.toHaveBeenCalled();
+
+    // Focusing before the idle timer fires triggers enumeration immediately.
+    fireEvent.focus(screen.getByRole("combobox"));
+    expect(spy).toHaveBeenCalledTimes(1);
+  } finally {
+    spy.mockRestore();
+    vi.useRealTimers();
+  }
 });

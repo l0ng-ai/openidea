@@ -4,6 +4,7 @@
  */
 import type { FileEntry } from "@/bindings";
 import { notifyFileOperation } from "@/platform/fileOps";
+import { toBase64 } from "@/platform/base64";
 import { call, commands, emitLocalIdeEvent, isTauri, IpcError, nextRequestId } from "@/platform/ipc";
 import { isRemoteWindow } from "@/platform/remote";
 import { invokeLocal } from "@/platform/tauriCore";
@@ -14,10 +15,12 @@ import { isInside, joinPath, nameOf, parentOf } from "./paths";
 export interface ProjectFs {
   readDir(path: string): Promise<FileEntry[]>;
   createFile(path: string): Promise<void>;
+  /** Creates `path` with `data`; fails when it exists. */
+  createFileBytes(path: string, data: Uint8Array): Promise<void>;
   createDir(path: string): Promise<void>;
   rename(from: string, to: string): Promise<void>;
-  /** Moves to the trash when possible. */
-  delete(path: string): Promise<void>;
+  /** Moves to the trash when possible and returns a restore function reporting skipped paths. */
+  delete(path: string): Promise<() => Promise<string[]>>;
   copy(from: string, to: string): Promise<void>;
   importLocal(from: string, to: string, upload?: LocalImport): Promise<string[]>;
 }
@@ -28,11 +31,16 @@ export const tauriFs: ProjectFs = {
     await call(commands.fsCreateFile(path));
     notifyFileOperation({ kind: "created", paths: [path] });
   },
+  createFileBytes: async (path, data) => {
+    await call(commands.fsCreateFileBytes(path, toBase64(data)));
+    notifyFileOperation({ kind: "created", paths: [path] });
+  },
   createDir: async (path) => void (await call(commands.fsCreateDir(path))),
   rename: async (from, to) => void (await call(commands.fsRename(from, to))),
   delete: async (path) => {
-    await call(commands.fsDelete(path));
+    const undo = await call(commands.fsDeleteWithUndo(path));
     notifyFileOperation({ kind: "deleted", paths: [path] });
+    return () => call(commands.fsUndoDelete(undo));
   },
   copy: async (from, to) => {
     await call(commands.fsCopy(from, to));
@@ -93,9 +101,18 @@ export function beginLocalImport(): LocalImport {
   };
 }
 
-type MemNode = { kind: "file"; size: number } | { kind: "dir" };
+type MemNode = { kind: "file"; size: number } | { kind: "dir" } | { kind: "symlink"; target: string };
+
+/** What a link resolves to (the loop in `resolve` never stops on a link). */
+type ResolvedNode = Exclude<MemNode, { kind: "symlink" }>;
 
 const err = (kind: "notFound" | "alreadyExists" | "invalidInput", message: string) => new IpcError({ kind, message });
+
+/** Created once: building a collator costs more than sorting a small folder with it. */
+const naturalOrder = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
+/** The tree's own notion (see `isDirEntry`): a folder, or a link to one. */
+const isFolder = (e: FileEntry) => e.kind === "dir" || (e.kind === "symlink" && e.size === 0);
 
 /** Minimal in-memory file system with the backend's semantics (no overwrite, folders first). */
 export class MemoryFs implements ProjectFs {
@@ -104,7 +121,7 @@ export class MemoryFs implements ProjectFs {
   /** Called after every mutation with the changed paths (simulates the watcher). */
   onChange?: (e: { created: string[]; modified: string[]; removed: string[] }) => void;
 
-  constructor(files: Record<string, string | null> = {}, root = "/") {
+  constructor(files: Record<string, string | null> = {}, root = "/", links: Record<string, string> = {}) {
     this.nodes.set(root, { kind: "dir" });
     for (const [path, content] of Object.entries(files)) {
       if (content === null) this.mkdirp(path);
@@ -112,6 +129,10 @@ export class MemoryFs implements ProjectFs {
         this.mkdirp(parentOf(path));
         this.nodes.set(path, { kind: "file", size: content.length });
       }
+    }
+    for (const [path, target] of Object.entries(links)) {
+      this.mkdirp(parentOf(path));
+      this.nodes.set(path, { kind: "symlink", target });
     }
   }
 
@@ -126,28 +147,61 @@ export class MemoryFs implements ProjectFs {
     return [...this.nodes.keys()].filter((p) => p !== dir && parentOf(p) === dir);
   }
 
-  async readDir(path: string): Promise<FileEntry[]> {
-    const n = this.nodes.get(path);
-    if (!n) throw err("notFound", `${path} not found`);
-    if (n.kind !== "dir") throw err("invalidInput", `${path} is not a directory`);
-    const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
-    return this.childrenOf(path)
-      .map((p) => {
-        const c = this.nodes.get(p)!;
-        const name = nameOf(p);
-        const excluded = [...this.ignored].some((i) => p === i || isInside(p, i));
-        return {
-          name,
-          path: p,
-          kind: c.kind,
-          size: c.kind === "file" ? c.size : 0,
-          mtimeMs: 0,
-          ignored: excluded,
-          excluded,
-          hidden: name.startsWith("."),
-        } satisfies FileEntry;
-      })
-      .sort((a, b) => Number(b.kind === "dir") - Number(a.kind === "dir") || collator.compare(a.name, b.name));
+  /** Follows symlinks (bounded, so a link cycle errors instead of hanging). */
+  private resolve(path: string): { path: string; node: ResolvedNode | undefined } {
+    let p = path;
+    let n = this.nodes.get(p);
+    for (let hops = 0; n?.kind === "symlink"; hops++) {
+      if (hops > 16) throw err("invalidInput", `${path} is a symlink loop`);
+      p = n.target;
+      n = this.nodes.get(p);
+    }
+    // The loop only exits on a non-link entry (or a missing one).
+    return { path: p, node: n as ResolvedNode | undefined };
+  }
+
+  async readDir(at: string): Promise<FileEntry[]> {
+    // Like the backend, listing a symlink to a folder lists through the link.
+    const { path, node } = this.resolve(at);
+    if (!node) throw err("notFound", `${path} not found`);
+    if (node.kind !== "dir") throw err("invalidInput", `${at} is not a directory`);
+    // A child is excluded when its folder is, or when it is itself an excluded path.
+    const inExcluded = [...this.ignored].some((i) => path === i || isInside(path, i));
+    return (
+      this.childrenOf(path)
+        .map((p) => {
+          const c = this.nodes.get(p)!;
+          const name = nameOf(p);
+          const excluded = inExcluded || this.ignored.has(p);
+          if (c.kind === "symlink") {
+            const t = this.resolve(p);
+            return {
+              name,
+              path: p,
+              kind: "symlink",
+              // A link to a folder has size 0; a dangling one the link's own length (the backend's `symlink_metadata`).
+              size: t.node ? (t.node.kind === "dir" ? 0 : t.node.size) : c.target.length,
+              ...(t.node && { targetKind: t.node.kind === "dir" ? "dir" : "file" }),
+              mtimeMs: 0,
+              ignored: excluded,
+              excluded,
+              hidden: name.startsWith("."),
+            } satisfies FileEntry;
+          }
+          return {
+            name,
+            path: p,
+            kind: c.kind,
+            size: c.kind === "file" ? c.size : 0,
+            mtimeMs: 0,
+            ignored: excluded,
+            excluded,
+            hidden: name.startsWith("."),
+          } satisfies FileEntry;
+        })
+        // Folders first, counting a link to a folder as a folder (the backend's ordering).
+        .sort((a, b) => Number(isFolder(b)) - Number(isFolder(a)) || naturalOrder.compare(a.name, b.name))
+    );
   }
 
   private emit(e: Partial<{ created: string[]; modified: string[]; removed: string[] }>) {
@@ -158,6 +212,13 @@ export class MemoryFs implements ProjectFs {
     if (this.nodes.has(path)) throw err("alreadyExists", `${path} already exists`);
     this.mkdirp(parentOf(path));
     this.nodes.set(path, { kind: "file", size: 0 });
+    this.emit({ created: [path] });
+  }
+
+  async createFileBytes(path: string, data: Uint8Array) {
+    if (this.nodes.has(path)) throw err("alreadyExists", `${path} already exists`);
+    this.mkdirp(parentOf(path));
+    this.nodes.set(path, { kind: "file", size: data.length });
     this.emit({ created: [path] });
   }
 
@@ -183,8 +244,16 @@ export class MemoryFs implements ProjectFs {
 
   async delete(path: string) {
     if (!this.nodes.has(path)) throw err("notFound", `${path} not found`);
-    for (const p of [...this.nodes.keys()]) if (p === path || isInside(p, path)) this.nodes.delete(p);
+    const deleted = [...this.nodes].filter(([p]) => p === path || isInside(p, path));
+    for (const [p] of deleted) this.nodes.delete(p);
     this.emit({ removed: [path] });
+    return async () => {
+      if (this.nodes.has(path)) return [path];
+      this.mkdirp(parentOf(path));
+      for (const [p, node] of deleted) this.nodes.set(p, node);
+      this.emit({ created: deleted.map(([p]) => p) });
+      return [];
+    };
   }
 
   async copy(from: string, to: string) {
@@ -225,6 +294,17 @@ export function sampleFs(root: string): MemoryFs {
       f("build.gradle.kts"),
       f("settings.gradle.kts"),
       f("README.md"),
+      f(
+        "App.tsx",
+        `export function App() {
+  return (
+    <div>
+      <b>x</b>
+    </div>
+  );
+}
+`,
+      ),
       ...Array.from({ length: 10_000 }, (_, i) => f(`generated/item${i + 1}.json`)),
     ]),
     root,

@@ -228,6 +228,68 @@ pub fn java_args(install: &JdtlsInstall, java_major: u32, script_args: &[String]
     args
 }
 
+/// Whether `script` is a hand-written `jdtls` that starts the Equinox launcher with `java -jar`
+/// itself, like the one opencode puts into a JDK's `bin` (#6062). It knows none of the release
+/// script's options: each `--jvm-arg=` (the Lombok agent, heap, proxy) reaches jdtls as an
+/// application argument instead of a JVM option, and its own `-data` comes before the IDE's.
+fn is_plain_launcher_wrapper(script: &Path) -> bool {
+    if std::fs::metadata(script).map_or(true, |m| m.len() > 64 * 1024) {
+        return false;
+    }
+    let Ok(bytes) = std::fs::read(script) else { return false };
+    let text = String::from_utf8_lossy(&bytes);
+    text.contains("org.eclipse.equinox.launcher") && !text.contains("--jvm-arg")
+}
+
+/// Picks the `jdtls` to start when the first one on `PATH` is a [plain launcher
+/// wrapper](is_plain_launcher_wrapper): the next one there that isn't, else the IDE's own
+/// install (`managed`, `<tools>/jdtls/bin/jdtls`), which is offered for install while missing.
+/// A command naming a path is the user's choice and kept.
+pub fn skip_plain_launcher_wrappers(cfg: &mut LanguageServerConfig, managed: &Path) {
+    if cfg.name != "jdtls" || Path::new(&cfg.command).components().count() != 1 {
+        return;
+    }
+    let search = cfg.env.get("PATH").map(std::ffi::OsString::from).unwrap_or_else(ide_core::tool_path::search_path);
+    let mut candidates = std::env::split_paths(&search)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .filter_map(|dir| ide_core::process::find_executable(&cfg.command, dir.as_os_str()));
+    let Some(first) = candidates.next() else { return };
+    if !is_plain_launcher_wrapper(&first) {
+        return;
+    }
+    let chosen = candidates.find(|c| !is_plain_launcher_wrapper(c)).unwrap_or_else(|| managed.to_path_buf());
+    tracing::warn!(
+        "{} starts jdtls with `java -jar` itself and ignores the IDE's JVM arguments (Lombok agent, \
+         workspace); using {} instead",
+        first.display(),
+        chosen.display()
+    );
+    cfg.command = chosen.to_string_lossy().into_owned();
+}
+
+/// The release script a `jdtls` command on `PATH` resolves to: itself when it
+/// already is one, or the script its Scoop shim launches. `None` for a command
+/// that is neither a release script nor a jdtls Scoop shim.
+///
+/// Shared with [`crate::java::jdtls_min_java`], which needs the same install
+/// root to read the bundles' required Java version.
+pub(crate) fn script_for(cfg: &LanguageServerConfig) -> Option<PathBuf> {
+    if cfg.name != "jdtls" {
+        return None;
+    }
+    let search = cfg.env.get("PATH").map(std::ffi::OsString::from).or_else(|| std::env::var_os("PATH"));
+    let script = search.and_then(|s| ide_core::process::find_executable(&cfg.command, &s))?;
+    let resolved = dunce::canonicalize(script).ok()?;
+    let name = resolved.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase());
+    match name.as_deref() {
+        Some(n) if SCRIPTS.contains(&n) => Some(resolved),
+        // A scoop shim (`shims\jdtls.exe` from PATHEXT) hides the release
+        // layout behind itself (issue #794); follow its `.shim` to the script.
+        Some("jdtls.exe") if cfg!(windows) => shim_target(&resolved),
+        _ => None,
+    }
+}
+
 /// Scoop shims either point at the release script or run Python with the
 /// script in `args`. Paths may be quoted and contain spaces and backslashes.
 fn shim_target(shim_exe: &Path) -> Option<PathBuf> {
@@ -263,23 +325,9 @@ pub fn launch_directly(cfg: &mut LanguageServerConfig) {
     if cfg.name != "jdtls" || cfg.launch_error.is_some() {
         return;
     }
-    let search = cfg.env.get("PATH").map(std::ffi::OsString::from).or_else(|| std::env::var_os("PATH"));
-    let Some(script) = search.and_then(|s| ide_run::which::find_executable(&cfg.command, &s)) else { return };
-    let Ok(resolved) = dunce::canonicalize(&script) else { return };
-    let name = resolved.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase());
-    let script = match name.as_deref() {
-        Some(n) if SCRIPTS.contains(&n) => resolved,
-        // A scoop shim (`shims\jdtls.exe` from PATHEXT) hides the release layout
-        // behind itself, so the launch ran the shim's own command line and the
-        // configured JDK never applied (issue #794).
-        Some("jdtls.exe") if cfg!(windows) => match shim_target(&resolved) {
-            Some(target) => target,
-            None => return,
-        },
-        _ => return,
-    };
-    let Some(install) =
-        jdtls_home(&script).and_then(|h| find_install(&h, std::env::consts::OS, std::env::consts::ARCH))
+    let Some(script) = script_for(cfg) else { return };
+    let home = jdtls_home(&script);
+    let Some(install) = home.as_deref().and_then(|h| find_install(h, std::env::consts::OS, std::env::consts::ARCH))
     else {
         return;
     };
@@ -292,17 +340,65 @@ pub fn launch_directly(cfg: &mut LanguageServerConfig) {
         }),
     };
     let Some((java, jdk)) = jdk.filter(|(java, _)| java.is_file()) else { return };
-    if !ide_core::java_runtime::supports_java_bundles(&jdk.home) {
-        cfg.launch_error = Some(crate::java::server_jdk_incomplete_message(&jdk, crate::java::jdtls_min_java(cfg)));
+    if let Some(error) = crate::java::server_jdk_metadata_error(&jdk, crate::java::jdtls_min_java(cfg))
+        .or_else(|| crate::java::java_execution_error(&java))
+    {
+        cfg.launch_error = Some(error);
         return;
     }
+    let area = home.as_deref().and_then(|home| configuration_area(home, &cfg.args, dirs::cache_dir()));
     cfg.args = java_args(&install, jdk.major, &cfg.args);
+    if let Some(area) = area
+        && let Some(jar) = cfg.args.iter().position(|a| a == "-jar")
+    {
+        cfg.args.insert(jar, format!("-Dosgi.configuration.area={}", area.to_string_lossy()));
+    }
     cfg.command = java.to_string_lossy().into_owned();
+}
+
+/// Equinox extracts bundle files, jdtls's Gradle init scripts among them, into its writable
+/// configuration area, `<home>/configuration` unless the launch names one. jdtls passes those
+/// scripts to every Gradle import as `--init-script` arguments, and Buildship stores a build's
+/// arguments joined by spaces and splits them again. Under a home with spaces (macOS's
+/// `Application Support`) each import that sets a Gradle JDK, user home or argument then fails
+/// with "The specified initialization script '…/Application' does not exist". Such a home
+/// gets an area without spaces in the user's cache directory, one per install.
+fn configuration_area(home: &Path, args: &[String], cache: Option<PathBuf>) -> Option<PathBuf> {
+    let parsed = split_script_args(args);
+    let named = parsed.jvm.iter().any(|a| a.starts_with("-Dosgi.configuration.area="))
+        || parsed.rest.iter().any(|a| a == "-configuration");
+    if named || !home.join("configuration").to_string_lossy().contains(char::is_whitespace) {
+        return None;
+    }
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in home.to_string_lossy().bytes() {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+    }
+    Some(cache?.join("openidea").join("jdtls-configuration").join(format!("{hash:016x}")))
+        .filter(|area| !area.to_string_lossy().contains(char::is_whitespace))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_home_with_spaces_gets_a_configuration_area_without_them() {
+        let cache = Some(PathBuf::from("/cache"));
+        let spaced = Path::new("/Users/me/Library/Application Support/openidea/tools/jdtls");
+        let area = configuration_area(spaced, &[], cache.clone()).unwrap();
+        assert!(area.starts_with("/cache/openidea/jdtls-configuration"));
+        assert_eq!(configuration_area(spaced, &[], cache.clone()), Some(area), "one per install");
+        assert_ne!(
+            configuration_area(Path::new("/opt/My Tools/jdtls"), &[], cache.clone()),
+            configuration_area(spaced, &[], cache.clone())
+        );
+        assert_eq!(configuration_area(Path::new("/opt/jdtls"), &[], cache.clone()), None, "the default is fine");
+        let own = strings(&["--jvm-arg=-Dosgi.configuration.area=/mine"]);
+        assert_eq!(configuration_area(spaced, &own, cache.clone()), None, "the user's area stays");
+        assert_eq!(configuration_area(spaced, &strings(&["-configuration", "/mine"]), cache), None);
+        assert_eq!(configuration_area(spaced, &[], Some(PathBuf::from("/My Cache"))), None);
+    }
 
     fn strings(args: &[&str]) -> Vec<String> {
         args.iter().map(|s| s.to_string()).collect()
@@ -503,6 +599,57 @@ mod tests {
         assert_eq!(find_install(home, "macos", "aarch64").unwrap().config, home.join("config_mac_arm"));
     }
 
+    #[test]
+    fn a_plain_java_jar_wrapper_first_on_path_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = |dir: &Path, text: &str| {
+            std::fs::create_dir_all(dir).unwrap();
+            let name = if cfg!(windows) { "jdtls.cmd" } else { "jdtls" };
+            std::fs::write(dir.join(name), text).unwrap();
+            #[cfg(unix)]
+            std::fs::set_permissions(dir.join(name), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+            dir.join(name)
+        };
+        // opencode's wrapper (#6062), then a release script.
+        let wrapper = exe(
+            &dir.path().join("jdk/bin"),
+            "\"%JAVA_HOME%\\bin\\java\" -jar \"%JDTLS_HOME%\\plugins\\org.eclipse.equinox.launcher_1.7.100.jar\" -data \"%DATA_DIR%\" %*\n",
+        );
+        let release = exe(
+            &dir.path().join("jdtls/bin"),
+            "parser.add_argument('--jvm-arg', action='append')\nlauncher = 'org.eclipse.equinox.launcher_*.jar'\n",
+        );
+        let managed = dir.path().join("tools/jdtls/bin/jdtls");
+        let cfg = |dirs: &[&Path]| -> LanguageServerConfig {
+            let mut cfg: LanguageServerConfig = toml::from_str("name = \"jdtls\"\ncommand = \"jdtls\"").unwrap();
+            let path = std::env::join_paths(dirs.iter().map(|d| d.parent().unwrap())).unwrap();
+            cfg.env.insert("PATH".into(), path.to_string_lossy().into_owned());
+            cfg
+        };
+
+        let mut next = cfg(&[&wrapper, &release]);
+        skip_plain_launcher_wrappers(&mut next, &managed);
+        assert_eq!(Path::new(&next.command), release);
+
+        let mut only = cfg(&[&wrapper]);
+        skip_plain_launcher_wrappers(&mut only, &managed);
+        assert_eq!(Path::new(&only.command), managed, "the IDE's install, offered while missing");
+
+        let mut release_first = cfg(&[&release, &wrapper]);
+        skip_plain_launcher_wrappers(&mut release_first, &managed);
+        assert_eq!(release_first.command, "jdtls");
+
+        // Wrappers that delegate (Homebrew's, a Scoop shim) and named commands are kept.
+        let brew = exe(&dir.path().join("brew/bin"), "#!/bin/bash\nexec \"/opt/jdtls/libexec/bin/jdtls\" \"$@\"\n");
+        let mut delegating = cfg(&[&brew, &release]);
+        skip_plain_launcher_wrappers(&mut delegating, &managed);
+        assert_eq!(delegating.command, "jdtls");
+        let mut named = cfg(&[&wrapper]);
+        named.command = wrapper.to_string_lossy().into_owned();
+        skip_plain_launcher_wrappers(&mut named, &managed);
+        assert_eq!(Path::new(&named.command), wrapper);
+    }
+
     #[cfg(unix)]
     #[test]
     fn rewrites_the_release_script_to_java() {
@@ -526,7 +673,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(jdk.join("bin/javac"), "").unwrap();
-        std::fs::write(jdk.join("bin/java"), "").unwrap();
+        crate::java::write_test_java(&jdk);
 
         let cfg = |command: &str| -> LanguageServerConfig {
             let mut cfg: LanguageServerConfig =
@@ -554,6 +701,25 @@ mod tests {
         overridden.args.push(format!("--java-executable={}", jre.join("bin/java").display()));
         launch_directly(&mut overridden);
         assert!(overridden.launch_error.unwrap().contains("jdk.jdi"));
+
+        let alternate = jdk.join("bin/alternate-java");
+        std::fs::write(&alternate, "#!/bin/sh\nexit 126\n").unwrap();
+        std::fs::set_permissions(&alternate, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let mut overridden = cfg("jdtls");
+        overridden.args.push(format!("--java-executable={}", alternate.display()));
+        launch_directly(&mut overridden);
+        let error = overridden.launch_error.unwrap();
+        assert!(error.contains(alternate.to_string_lossy().as_ref()) && error.contains("cannot run"), "{error}");
+
+        let old = dir.path().join("jdk-17");
+        std::fs::create_dir_all(old.join("bin")).unwrap();
+        std::fs::write(old.join("release"), "JAVA_VERSION=\"17\"\n").unwrap();
+        crate::java::write_test_java(&old);
+        let mut overridden = cfg("jdtls");
+        overridden.args.push(format!("--java-executable={}", old.join("bin/java").display()));
+        launch_directly(&mut overridden);
+        let error = overridden.launch_error.unwrap();
+        assert!(error.contains(old.to_string_lossy().as_ref()) && error.contains("too old"), "{error}");
 
         // Someone's own wrapper, or no usable JDK: the command is kept.
         std::fs::write(home.join("bin/my-jdtls"), "#!/bin/sh\n").unwrap();
@@ -637,7 +803,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(jdk.join("bin").join(crate::exe("javac")), "").unwrap();
-        std::fs::write(jdk.join("bin").join(crate::exe("java")), "").unwrap();
+        crate::java::write_test_java(&jdk);
         let target = format!(
             "path = \"C:\\Python313\\python.exe\"\nargs = {}\n",
             home.join("bin").join("jdtls").to_string_lossy()

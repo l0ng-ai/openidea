@@ -1,0 +1,26 @@
+id = "axaml"
+name = "Avalonia XAML"
+extensions = ["axaml"]
+block-comment = ["<!--", "-->"]
+indent = { tab-size = 4, insert-spaces = true }
+ui-mode = "XML"
+tree-sitter = "xml"
+
+# Rainbow brackets › angle: editor syntax nodes of markup tags, whose `<` `>` pair up.
+[rainbow-brackets]
+tags = ["OpenTag", "CloseTag", "SelfClosingTag"]
+
+# Avalonia-aware completion, diagnostics, navigation and formatting (controls, properties,
+# bindings, resources), from the project's compiled assemblies.
+[[language-servers]]
+name = "axsg-lsp"
+command = "axsg-lsp"
+root-markers = ["*.sln", "*.slnx", "*.csproj", "Directory.Build.props"]
+install-hint = "dotnet tool install --global XamlToCSharpGenerator.LanguageServer.Tool --prerelease (https://github.com/wieslawsoltes/XamlToCSharpGenerator)"
+
+[[language-servers]]
+name = "lemminx"
+# Alternative: plain XML editing support, used only when the server above is not installed.
+fallback = true
+command = "lemminx"
+install-hint = "Install Eclipse LemMinX (https://github.com/redhat-developer/vscode-xml/releases) and put the lemminx binary on PATH"

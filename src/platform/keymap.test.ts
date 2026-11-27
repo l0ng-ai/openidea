@@ -1,5 +1,10 @@
+import { readdirSync, readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  dispatchForwardedKey,
+  bindingsFor,
+  effectiveBindings,
+  FORWARDABLE_ACTIONS,
   formatBinding,
   installKeyboardDispatcher,
   isAltGrTyping,
@@ -7,16 +12,64 @@ import {
   letterOf,
   normalizeBinding,
   parseDoubleModifier,
+  presetBindings,
   strokeOf,
   useKeymap,
+  withBindings,
 } from "./keymap";
 import { executeAction, registerAction } from "./actions";
+import { clearContext, setContext } from "./context";
 import { usePlatform } from "./platformInfo";
+import { TEXT_WHEN } from "@/editor/core/actions";
 
 describe("keymap", () => {
   it("normalizes modifier order and case", () => {
     expect(normalizeBinding("Shift+Meta+o")).toBe("Shift+Meta+O");
     expect(normalizeBinding("meta+K  meta+c")).toBe("Meta+K Meta+C");
+  });
+
+  it("serves the effective pairs from cache until the keymap changes", () => {
+    const initial = useKeymap.getState();
+    useKeymap.setState({ overrides: { "t.cached": ["Meta+K"] } });
+    const first = effectiveBindings();
+    expect(effectiveBindings()).toBe(first);
+    expect(first).toContainEqual(["Meta+K", "t.cached"]);
+    useKeymap.setState({ overrides: { "t.cached": ["Meta+L"] } });
+    const second = effectiveBindings();
+    expect(second).not.toBe(first);
+    expect(second).toContainEqual(["Meta+L", "t.cached"]);
+    useKeymap.setState({ overrides: initial.overrides, extensions: initial.extensions });
+  });
+
+  it("uses platform defaults consistently and preserves explicit Linux middle bindings", () => {
+    const keymap = useKeymap.getState();
+    const platform = usePlatform.getState();
+    const id = "editor.createRectangularSelectionOnMouseDrag";
+    try {
+      useKeymap.setState({ preset: "intellij-windows", overrides: {}, extensions: {} });
+      usePlatform.setState({ os: "windows" });
+      const windows = effectiveBindings();
+      expect(bindingsFor(id)).toEqual(["Alt+Button1", "Button2"]);
+      expect(windows).toContainEqual(["Button2", id]);
+
+      usePlatform.setState({ os: "linux" });
+      expect(effectiveBindings()).not.toBe(windows);
+      expect(effectiveBindings()).not.toContainEqual(["Button2", id]);
+      expect(bindingsFor(id)).toEqual(["Alt+Button1"]);
+      expect(presetBindings("intellij-windows", id)).toEqual(["Alt+Button1"]);
+      const overrides = withBindings({ preset: "intellij-windows", overrides: {} }, id, ["Alt+Button1", "Button2"]);
+      expect(overrides[id]).toEqual(["Alt+Button1", "Button2"]);
+      useKeymap.setState({ overrides });
+      expect(bindingsFor(id)).toEqual(["Alt+Button1", "Button2"]);
+      expect(effectiveBindings()).toContainEqual(["Button2", id]);
+      useKeymap.setState({ overrides: { [id]: [] } });
+      expect(bindingsFor(id)).toEqual([]);
+      useKeymap.setState({ overrides: {} });
+      expect(bindingsFor(id)).toEqual(["Alt+Button1"]);
+    } finally {
+      useKeymap.setState(keymap);
+      usePlatform.setState(platform);
+    }
   });
 
   it("formats macOS style", () => {
@@ -41,6 +94,53 @@ describe("keymap", () => {
     expect(strokeOf({ code: "KeyW", key: "Z", metaKey: false, ctrlKey: true, altKey: false, shiftKey: true })).toBe(
       "Ctrl+Shift+Z",
     );
+  });
+
+  it("names unshifted punctuation by the character typed, so AZERTY's Cmd+Comma is not Cmd+M", () => {
+    // French AZERTY: the comma is on physical KeyM and the colon on physical Comma.
+    expect(strokeOf({ code: "KeyM", key: ",", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false })).toBe(
+      "Meta+,",
+    );
+    expect(strokeOf({ code: "Comma", key: ":", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false })).toBe(
+      "Meta+:",
+    );
+    // QWERTY is unchanged: the physical code and the typed character agree.
+    expect(strokeOf({ code: "Comma", key: ",", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false })).toBe(
+      "Meta+,",
+    );
+    // Shift-held punctuation keeps the physical key, matching presets written `Meta+Shift+]`.
+    expect(
+      strokeOf({ code: "BracketRight", key: "}", metaKey: true, ctrlKey: false, altKey: false, shiftKey: true }),
+    ).toBe("Shift+Meta+]");
+    // Letters and digits keep their names: AZERTY's M sits on physical Semicolon, with or
+    // without Shift, and its unshifted digit row types symbols (`&` on Digit1).
+    expect(
+      strokeOf({ code: "Semicolon", key: "M", metaKey: true, ctrlKey: false, altKey: false, shiftKey: true }),
+    ).toBe("Shift+Meta+M");
+    expect(strokeOf({ code: "Digit1", key: "&", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false })).toBe(
+      "Meta+1",
+    );
+    // Non-Latin layouts keep the physical key: Russian Ctrl+С is still Ctrl+C.
+    expect(strokeOf({ code: "KeyC", key: "с", metaKey: false, ctrlKey: true, altKey: false, shiftKey: false })).toBe(
+      "Ctrl+C",
+    );
+    expect(strokeOf({ code: "Comma", key: "б", metaKey: false, ctrlKey: true, altKey: false, shiftKey: false })).toBe(
+      "Ctrl+,",
+    );
+    // Alt (⌥ on macOS, AltGr) keeps the physical key: it types symbols.
+    expect(strokeOf({ code: "KeyM", key: "µ", metaKey: false, ctrlKey: false, altKey: true, shiftKey: false })).toBe(
+      "Alt+M",
+    );
+    // Space and the keypad keep their names.
+    expect(strokeOf({ code: "Space", key: " ", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false })).toBe(
+      "Meta+Space",
+    );
+    expect(strokeOf({ code: "Numpad3", key: "3", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false })).toBe(
+      "Meta+3",
+    );
+    expect(
+      strokeOf({ code: "NumpadAdd", key: "+", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false }),
+    ).toBe("Meta+NumpadAdd");
   });
 
   it("uses physical key codes", () => {
@@ -73,6 +173,170 @@ describe("keymap", () => {
       expect(chord).toHaveBeenCalledOnce();
     });
 
+    it("dispatches an unshifted punctuation shortcut by the layout character", async () => {
+      const run = vi.fn();
+      registerAction({ id: "t.punct", title: "punct", run });
+      useKeymap.setState({ overrides: { "t.punct": ["Meta+:"] } });
+      uninstall = installKeyboardDispatcher(window);
+      // AZERTY: the colon sits on physical Comma.
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { code: "Comma", key: ":", metaKey: true, bubbles: true, cancelable: true }),
+      );
+      await Promise.resolve();
+      expect(run).toHaveBeenCalledOnce();
+    });
+
+    it("runs only safe actions from keys a plugin frame without ide.commands passes on", async () => {
+      const run = vi.fn();
+      const save = vi.fn();
+      const findAction = vi.fn();
+      registerAction({ id: "run.runSelected", title: "run", run });
+      registerAction({ id: "file.save", title: "save", run: save });
+      registerAction({ id: "navigate.findAction", title: "find action", run: findAction });
+      useKeymap.setState({
+        overrides: {
+          "run.runSelected": ["Shift+F10"],
+          "file.save": ["Meta+S"],
+          "navigate.findAction": ["Meta+Shift+A"],
+        },
+      });
+      uninstall = installKeyboardDispatcher(window);
+      const frame = document.body.appendChild(document.createElement("iframe"));
+      dispatchForwardedKey(frame, { key: "F10", code: "F10", shiftKey: true });
+      dispatchForwardedKey(frame, { key: "s", code: "KeyS", metaKey: true });
+      dispatchForwardedKey(frame, { key: "A", code: "KeyA", metaKey: true, shiftKey: true });
+      await Promise.resolve();
+      expect(run).not.toHaveBeenCalled();
+      expect(save).toHaveBeenCalledOnce();
+      expect(findAction).toHaveBeenCalledOnce();
+      // The same key pressed by the user still runs it.
+      frame.dispatchEvent(new KeyboardEvent("keydown", { key: "F10", code: "F10", shiftKey: true, bubbles: true }));
+      await Promise.resolve();
+      expect(run).toHaveBeenCalledOnce();
+      frame.remove();
+    });
+
+    it("runs any bound action from keys a plugin frame passes on when the plugin may run IDE actions", async () => {
+      const run = vi.fn();
+      registerAction({ id: "run.runSelected", title: "run", run });
+      useKeymap.setState({ overrides: { "run.runSelected": ["Shift+F10"] } });
+      uninstall = installKeyboardDispatcher(window);
+      const frame = document.body.appendChild(document.createElement("iframe"));
+      dispatchForwardedKey(frame, { key: "F10", code: "F10", shiftKey: true }, true);
+      await Promise.resolve();
+      expect(run).toHaveBeenCalledOnce();
+      frame.remove();
+    });
+
+    it.each([
+      "view.toggleTheme",
+      "view.quickSwitchScheme",
+      "view.toggleStatusBarWidget",
+      "view.zoomIn",
+      "window.new",
+      "window.mergeAllWindows",
+      "window.closeOtherTabs",
+      "window.toggleFullScreen",
+      "navigate.toggleBookmark",
+      "navigate.toggleBookmark3",
+      "navigate.toggleBookmarkWithMnemonic",
+      "toolwindow.terminal",
+      "toolwindow.closeContent",
+    ])("does not run %s from a key a plugin frame without ide.commands passes on", async (id) => {
+      expect(FORWARDABLE_ACTIONS.has(id)).toBe(false);
+      const run = vi.fn();
+      const dispose = registerAction({ id, title: id, run });
+      useKeymap.setState({ overrides: { [id]: ["Meta+Alt+Shift+F12"] } });
+      uninstall = installKeyboardDispatcher(window);
+      const frame = document.body.appendChild(document.createElement("iframe"));
+      try {
+        dispatchForwardedKey(frame, { key: "F12", code: "F12", metaKey: true, altKey: true, shiftKey: true });
+        await Promise.resolve();
+        expect(run).not.toHaveBeenCalled();
+      } finally {
+        frame.remove();
+        dispose();
+      }
+    });
+
+    it("lets a plugin frame without ide.commands toggle its enclosing or own plugin tool window, but not another plugin's", async () => {
+      const ownWindow = vi.fn();
+      const ownSibling = vi.fn();
+      const otherPluginWindow = vi.fn();
+      const ownCommand = vi.fn();
+      const disposers = [
+        registerAction({ id: "toolwindow.plugin.acme.k8s.explorer", title: "Kubernetes", run: ownWindow }),
+        registerAction({ id: "toolwindow.plugin.acme.k8s.cluster", title: "Cluster", run: ownSibling }),
+        registerAction({ id: "toolwindow.plugin.other.ext.panel", title: "Other", run: otherPluginWindow }),
+        registerAction({ id: "plugin.acme.k8s.sync", title: "Sync", run: ownCommand }),
+      ];
+      useKeymap.setState({
+        overrides: {
+          "toolwindow.plugin.acme.k8s.explorer": ["Meta+4"],
+          "toolwindow.plugin.acme.k8s.cluster": ["Meta+5"],
+          "toolwindow.plugin.other.ext.panel": ["Meta+6"],
+          "plugin.acme.k8s.sync": ["Meta+7"],
+        },
+      });
+      uninstall = installKeyboardDispatcher(window);
+      const pane = document.body.appendChild(document.createElement("section"));
+      pane.setAttribute("data-toolwindow", "plugin.acme.k8s.explorer");
+      const frame = pane.appendChild(document.createElement("iframe"));
+      frame.setAttribute("data-plugin-webview", "acme.k8s");
+      try {
+        dispatchForwardedKey(frame, { key: "4", code: "Digit4", metaKey: true });
+        dispatchForwardedKey(frame, { key: "5", code: "Digit5", metaKey: true });
+        dispatchForwardedKey(frame, { key: "6", code: "Digit6", metaKey: true });
+        dispatchForwardedKey(frame, { key: "7", code: "Digit7", metaKey: true });
+        await Promise.resolve();
+        expect(ownWindow).toHaveBeenCalledOnce();
+        expect(ownSibling).toHaveBeenCalledOnce();
+        expect(otherPluginWindow).not.toHaveBeenCalled();
+        expect(ownCommand).not.toHaveBeenCalled();
+      } finally {
+        pane.remove();
+        for (const dispose of disposers) dispose();
+      }
+    });
+
+    it("lets passed-on keys run only actions the app registers, by exact id", () => {
+      const root = import.meta.dirname.replace(/[\\/]platform$/, "");
+      const sources: string[] = [];
+      const walk = (dir: string) => {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const path = `${dir}/${entry.name}`;
+          if (entry.isDirectory()) {
+            if (entry.name !== "__tests__" && path !== `${root}/platform/keymaps`) walk(path);
+          } else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) {
+            if (!path.endsWith("/platform/keymap.ts") && !path.endsWith("/bindings.ts")) sources.push(path);
+          }
+        }
+      };
+      walk(root);
+      const text = sources.map((p) => readFileSync(p, "utf8")).join("\n");
+      // Ids registered from a template, e.g. `navigate.gotoBookmark${d}`; a bare `prefix.${…}` proves nothing.
+      const templated = [...text.matchAll(/`([a-z]+\.[A-Za-z]+)\$\{/g)].map((m) => m[1]!);
+      const unregistered = [...FORWARDABLE_ACTIONS].filter(
+        (id) =>
+          !text.includes(`"${id}"`) && !templated.some((prefix) => new RegExp(`^${prefix}[A-Za-z0-9]+$`).test(id)),
+      );
+      expect(sources.length).toBeGreaterThan(100);
+      expect(unregistered).toEqual([]);
+    });
+
+    it("does not let a key a plugin frame passes on start a chord the user then finishes", async () => {
+      const chord = vi.fn();
+      registerAction({ id: "t.chord", title: "chord", run: chord });
+      useKeymap.setState({ overrides: { "t.chord": ["Meta+K Meta+C"] } });
+      uninstall = installKeyboardDispatcher(window);
+      const frame = document.body.appendChild(document.createElement("iframe"));
+      dispatchForwardedKey(frame, { key: "k", code: "KeyK", metaKey: true });
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "c", code: "KeyC", metaKey: true, bubbles: true }));
+      await Promise.resolve();
+      expect(chord).not.toHaveBeenCalled();
+      frame.remove();
+    });
+
     it("respects when clauses", async () => {
       const run = vi.fn();
       registerAction({ id: "t.gated", title: "gated", when: "never", run });
@@ -93,6 +357,169 @@ describe("keymap", () => {
       expect(run).not.toHaveBeenCalled();
       expect(await executeAction("t.keyGated")).toBe(true);
       expect(run).toHaveBeenCalledOnce();
+    });
+
+    it("prefers a matching keyWhen over a keyWhenless action sharing the stroke", async () => {
+      const specific = vi.fn();
+      const general = vi.fn();
+      // Insertion order (later wins) puts the keyWhenless action first.
+      registerAction({ id: "t.keyWhenMatch", title: "specific", keyWhen: "projectViewFocus", run: specific });
+      registerAction({ id: "t.keyWhenless", title: "general", run: general });
+      useKeymap.setState({ overrides: { "t.keyWhenMatch": ["Meta+J"], "t.keyWhenless": ["Meta+J"] } });
+      setContext("projectViewFocus", true);
+      uninstall = installKeyboardDispatcher(window);
+      try {
+        window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyJ", key: "j", metaKey: true }));
+        await Promise.resolve();
+        expect(specific).toHaveBeenCalledOnce();
+        expect(general).not.toHaveBeenCalled();
+      } finally {
+        clearContext("projectViewFocus");
+      }
+    });
+
+    it.each([
+      ["input", "Backspace", { metaKey: true }],
+      ["textarea", "Backspace", { metaKey: true }],
+      ["input", "Backspace", { ctrlKey: true }],
+      ["input", "Delete", { ctrlKey: true }],
+      ["input", "Backspace", { altKey: true }],
+    ] as const)("leaves %s %s deletion with %j to the text field", async (tag, key, modifiers) => {
+      const run = vi.fn();
+      const dispose = registerAction({ id: "t.deleteBehindInput", title: "Delete Line", run });
+      const modifier = "metaKey" in modifiers ? "Meta" : "ctrlKey" in modifiers ? "Ctrl" : "Alt";
+      useKeymap.setState({ overrides: { "t.deleteBehindInput": [`${modifier}+${key}`] } });
+      uninstall = installKeyboardDispatcher(window);
+      const input = document.createElement(tag);
+      document.body.append(input);
+      input.focus();
+      try {
+        const event = new KeyboardEvent("keydown", {
+          code: key,
+          key,
+          ...modifiers,
+          bubbles: true,
+          cancelable: true,
+        });
+        input.dispatchEvent(event);
+        await Promise.resolve();
+        expect(event.defaultPrevented).toBe(false);
+        expect(run).not.toHaveBeenCalled();
+      } finally {
+        input.remove();
+        dispose();
+      }
+    });
+
+    it.each([
+      ["Shift-modified input navigation", true, false],
+      ["terminal textarea bindings", false, true],
+    ] as const)("preserves %s", async (_name, shiftKey, terminal) => {
+      const run = vi.fn();
+      const dispose = registerAction({ id: "t.inputNavigation", title: "Navigate", run });
+      useKeymap.setState({
+        overrides: { "t.inputNavigation": [shiftKey ? "Meta+Shift+Backspace" : "Meta+Backspace"] },
+      });
+      uninstall = installKeyboardDispatcher(window);
+      const wrapper = document.createElement("div");
+      if (terminal) wrapper.className = "xterm";
+      const input = document.createElement(terminal ? "textarea" : "input");
+      wrapper.append(input);
+      document.body.append(wrapper);
+      input.focus();
+      try {
+        input.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Backspace",
+            code: "Backspace",
+            metaKey: true,
+            shiftKey,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+        await Promise.resolve();
+        expect(run).toHaveBeenCalledOnce();
+      } finally {
+        wrapper.remove();
+        dispose();
+      }
+    });
+
+    it("leaves Ctrl+Enter in a dialog or text field to that control, and still splits a line in the editor", async () => {
+      const split = vi.fn();
+      const save = vi.fn();
+      const hidden = vi.fn();
+      const dispose = registerAction({
+        id: "t.splitBehindDialog",
+        title: "Split Line",
+        when: `${TEXT_WHEN} || diffEditorFocus`,
+        run: split,
+      });
+      const disposeSave = registerAction({ id: "t.saveFromField", title: "Save", run: save });
+      const disposeHidden = registerAction({
+        id: "t.hiddenInPopup",
+        title: "Hidden",
+        keyWhen: "!popupOpen",
+        run: hidden,
+      });
+      useKeymap.setState({
+        overrides: {
+          "t.splitBehindDialog": ["Ctrl+Enter"],
+          "t.saveFromField": ["Ctrl+S"],
+          "t.hiddenInPopup": ["Ctrl+S"],
+        },
+      });
+      setContext("textEditorActive", true);
+      setContext("popupOpen", true);
+      setContext("editorTextFocus", true);
+      setContext("diffEditorFocus", true);
+      uninstall = installKeyboardDispatcher(window);
+      const message = document.body.appendChild(document.createElement("textarea"));
+      const list = document.body.appendChild(document.createElement("div"));
+      list.tabIndex = 0;
+      const seen = vi.fn();
+      message.addEventListener("keydown", seen);
+      try {
+        const press = (target: HTMLElement, init: KeyboardEventInit) => {
+          const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
+          target.dispatchEvent(event);
+          return event;
+        };
+        message.focus();
+        const commit = press(message, { key: "Enter", code: "Enter", ctrlKey: true });
+        list.focus();
+        const push = press(list, { key: "Enter", code: "Enter", ctrlKey: true });
+        const saved = press(message, { key: "s", code: "KeyS", ctrlKey: true });
+        await Promise.resolve();
+        expect(split).not.toHaveBeenCalled();
+        expect(hidden).not.toHaveBeenCalled();
+        expect(commit.defaultPrevented).toBe(false);
+        expect(push.defaultPrevented).toBe(false);
+        expect(seen).toHaveBeenCalledOnce();
+        expect(saved.defaultPrevented).toBe(true);
+        expect(save).toHaveBeenCalledOnce();
+
+        const editor = document.body.appendChild(document.createElement("div"));
+        editor.className = "cm-editor";
+        const content = editor.appendChild(document.createElement("div"));
+        content.tabIndex = 0;
+        content.focus();
+        press(content, { key: "Enter", code: "Enter", ctrlKey: true });
+        await Promise.resolve();
+        expect(split).toHaveBeenCalledOnce();
+        editor.remove();
+      } finally {
+        message.remove();
+        list.remove();
+        dispose();
+        disposeSave();
+        disposeHidden();
+        clearContext("textEditorActive");
+        clearContext("popupOpen");
+        clearContext("editorTextFocus");
+        clearContext("diffEditorFocus");
+      }
     });
 
     it("waits 2s for a chord's second stroke and swallows a wrong one", async () => {
@@ -170,6 +597,22 @@ describe("keymap", () => {
       shift("keyup", 2400); // held too long
       tap(2500);
       expect(run).not.toHaveBeenCalled();
+    });
+
+    it("ignores a double Shift whose key presses a plugin frame without ide.commands passes on", async () => {
+      const { run, at, shift } = setup();
+      const frame = document.body.appendChild(document.createElement("iframe"));
+      const press = (ms: number) => {
+        at(ms);
+        dispatchForwardedKey(frame, { key: "Shift", code: "ShiftLeft", shiftKey: true });
+      };
+      press(1000);
+      shift("keyup", 1050);
+      press(1200);
+      shift("keyup", 1250);
+      await Promise.resolve();
+      expect(run).not.toHaveBeenCalled();
+      frame.remove();
     });
 
     it("ignores Shift tapped right after typing", () => {
@@ -255,6 +698,23 @@ describe("keymap", () => {
       expect(up(3100).defaultPrevented).toBe(false);
     });
 
+    it("leaves a single press to a plain binding of the same key", async () => {
+      const { above, mod, up } = setup();
+      const scroll = vi.fn();
+      registerAction({ id: "t.scrollUp", title: "scroll up", run: scroll });
+      useKeymap.setState({ overrides: { ...useKeymap.getState().overrides, "t.scrollUp": ["Alt+Up"] } });
+      mod("keydown", "Alt", 1000);
+      mod("keyup", "Alt", 1100);
+      mod("keydown", "Alt", 1200);
+      up(1500);
+      mod("keyup", "Alt", 1800);
+      mod("keydown", "Alt", 3000);
+      expect(up(3100).defaultPrevented).toBe(true);
+      await Promise.resolve();
+      expect(above).toHaveBeenCalledOnce();
+      expect(scroll).toHaveBeenCalledOnce();
+    });
+
     it("fires a bare double tap of another modifier on its second release", async () => {
       const { anything, mod } = setup();
       mod("keydown", "Control", 1000);
@@ -281,6 +741,7 @@ describe("keymap", () => {
         ctrlKey: true,
         altKey: true,
         bubbles: true,
+        composed: true,
         cancelable: true,
       });
       Object.defineProperty(e, "getModifierState", { value: (k: string) => k === "AltGraph" });
@@ -296,6 +757,8 @@ describe("keymap", () => {
       uninstall = installKeyboardDispatcher(window);
       const input = document.body.appendChild(document.createElement("textarea"));
       expect(altGr("}", "Digit0", input).defaultPrevented).toBe(false);
+      const root = document.body.appendChild(document.createElement("div")).attachShadow({ mode: "open" });
+      expect(altGr("}", "Digit0", root.appendChild(document.createElement("textarea"))).defaultPrevented).toBe(false);
       await Promise.resolve();
       expect(run).not.toHaveBeenCalled();
       // No AltGr character on that key (or not typing): it is the shortcut.

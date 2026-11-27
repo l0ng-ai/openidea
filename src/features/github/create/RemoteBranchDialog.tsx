@@ -1,6 +1,7 @@
 /** "New Remote Branch for Pull Request": the name to push a local head without a push target to. */
 import { useState } from "react";
-import { Dialog, Input, T } from "@/ui";
+import { cleanUpBranchNameOnTyping } from "@/platform/gitRefName";
+import { Dialog, Input, T, useSanitizedField } from "@/ui";
 import { openDialog } from "../ui/dialogs";
 import styles from "./Create.module.css";
 
@@ -11,6 +12,7 @@ export function remoteBranchNameDialog(suggested: string): Promise<string | null
 
 function RemoteBranchDialog(props: { suggested: string; onDone: (name: string | null) => void }) {
   const [name, setName] = useState(props.suggested);
+  const { ref, clean } = useSanitizedField(cleanUpBranchNameOnTyping);
   const valid = !!name.trim();
   return (
     <Dialog
@@ -33,7 +35,13 @@ function RemoteBranchDialog(props: { suggested: string; onDone: (name: string | 
         <label className={styles.dialogLabel}>
           <T>Remote branch name:</T>
         </label>
-        <Input data-autofocus aria-label="Remote branch name" value={name} onChange={(e) => setName(e.target.value)} />
+        <Input
+          ref={ref}
+          data-autofocus
+          aria-label="Remote branch name"
+          value={name}
+          onChange={(e) => setName(clean(e))}
+        />
         <div className={styles.dialogComment}>
           <T>Your changes will be pushed to the remote repository to create the pull request</T>
         </div>

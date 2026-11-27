@@ -15,12 +15,22 @@ import {
 import { tx, txTemplate, useTxTemplate } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
 import { relativePath, useProject } from "@/platform/project";
-import type { AutoUploadValid, DeploymentServerValid } from "@/platform/remoteSettings";
+import {
+  deploymentConnection,
+  deploymentSecretKey,
+  type AutoUploadValid,
+  type DeploymentServerValid,
+} from "@/platform/remoteSettings";
 import { workflowSettings } from "@/platform/workflowSettings";
-import { notifications, projectViewSelection, toolWindowService } from "@/workbench/contributions";
+import {
+  changesViewSelection,
+  notifications,
+  projectViewSelection,
+  toolWindowService,
+} from "@/workbench/contributions";
 import { chooseItem } from "@/workbench/inputDialogs";
 import { confirm } from "@/workbench/messages";
-import { initialSyncChoices, resolveServer, serverLabel, summarizeReport, targetPaths } from "./model";
+import { defaultGroup, initialSyncChoices, resolveServer, serverLabel, summarizeReport, targetPaths } from "./model";
 import { withSsh } from "./ssh";
 import { REMOTE_HOST_WINDOW, patchSync, useDeployment } from "./store";
 import styles from "./Deployment.module.css";
@@ -32,12 +42,13 @@ const errorText = (e: unknown) => txTemplate(e instanceof Error ? e.message : St
 const projectRoot = () => useProject.getState().project?.root ?? null;
 const deployment = () => workflowSettings().deployment;
 
-/** The files an action works on (menu argument, project view selection or the editor's file). */
+/** The files an action works on (menu, Commit selection, Project view or the editor). */
 export function actionTargets(arg: unknown): string[] {
   const editorPath = getContext().editorPath;
   return targetPaths(arg, {
     part: useDeployment.getState().part,
     selection: projectViewSelection(),
+    changesSelection: changesViewSelection(),
     editorPath: typeof editorPath === "string" ? editorPath : null,
     projectRoot: projectRoot(),
   });
@@ -56,7 +67,7 @@ function notifyNoServers() {
 function notifyNoTargets() {
   notifications().notify({
     level: "info",
-    title: "Select files in the Project view or open a file in the editor",
+    title: "Select files in the Project view, Commit tool window, or open a file in the editor",
     group: GROUP,
     key: "deployment.noTarget",
   });
@@ -84,13 +95,13 @@ function notifyNoCoverage(server?: DeploymentServerValid, skipped?: TransferRepo
       : "No deployment server covers the selected paths",
     body: skipped?.length ? <ReportBody report={{ files: 0, skipped: skipped.length, errors: skipped }} /> : undefined,
     group: GROUP,
-    key: "deployment.noCoverage",
+    key: server ? `deployment.noCoverage.${server.id}` : "deployment.noCoverage",
     actions: [{ label: "Configure…", run: () => void executeAction("deployment.configure") }],
   });
 }
 
-/** Keep the chooser visible even when only one server covers the selection. */
-async function pickServer(title: string, paths: string[]): Promise<DeploymentServerValid | null> {
+/** The servers covering `paths`, or null (after saying why) when none does. */
+async function coveringServers(paths: string[]): Promise<DeploymentServerValid[] | null> {
   const configured = deployment().servers;
   if (!configured.length) {
     notifyNoServers();
@@ -114,9 +125,34 @@ async function pickServer(title: string, paths: string[]): Promise<DeploymentSer
     }
     return null;
   }
+  return servers;
+}
+
+/** Keep the chooser visible even when only one server covers the selection. */
+async function pickServer(title: string, paths: string[]): Promise<DeploymentServerValid | null> {
+  const servers = await coveringServers(paths);
+  if (!servers) return null;
   const labels = servers.map(serverLabel);
   const picked = await chooseItem({ title, items: labels });
   return picked === null ? null : (servers[labels.indexOf(picked)] ?? null);
+}
+
+/** Upload to…: a server covering the selection, or a group with such a server (all its servers). */
+async function pickUploadTargets(paths: string[]): Promise<DeploymentServerValid[] | null> {
+  const servers = await coveringServers(paths);
+  if (!servers) return null;
+  const { servers: configured, groups } = deployment();
+  const choices = new Map<string, DeploymentServerValid[]>();
+  for (const server of servers) if (!choices.has(serverLabel(server))) choices.set(serverLabel(server), [server]);
+  for (const group of groups) {
+    const members = group.servers.flatMap((id) => configured.find((s) => s.id === id) ?? []);
+    if (!members.some((m) => servers.includes(m))) continue;
+    const name = group.name.trim() || group.id;
+    const label = tx`${name} (group)`;
+    if (!choices.has(label)) choices.set(label, members);
+  }
+  const picked = await chooseItem({ title: "Upload to", items: [...choices.keys()] });
+  return picked === null ? null : (choices.get(picked) ?? null);
 }
 
 async function defaultServer(title: string, paths: string[]): Promise<DeploymentServerValid | null> {
@@ -133,6 +169,7 @@ function ReportBody({ report }: { report: TransferReport }) {
       {shown.length > 0 && (
         <ul className={styles.reportErrors}>
           {shown.map((e, i) => (
+            // oxlint-disable-next-line react/no-array-index-key -- identical errors can repeat; position is the identity
             <li key={i}>
               <span className={styles.mono}>{root ? relativePath(root, e.path) : e.path}</span>: {txt(e.message)}
             </li>
@@ -155,7 +192,8 @@ export function showReport(
     title: s.title.replace("{n}", String(s.params.n)).replace("{server}", s.params.server),
     body: report.errors.length || report.skipped ? <ReportBody report={report} /> : undefined,
     group: GROUP,
-    key: `deployment.${verb}`,
+    // One per server, so each server of a group reports on its own.
+    key: `deployment.${verb}.${server.id}`,
   });
 }
 
@@ -166,7 +204,7 @@ function showFailure(title: string, server: DeploymentServerValid, e: unknown) {
     title: title.replace("{server}", serverLabel(server)),
     body: errorText(e),
     group: GROUP,
-    key: "deployment.failure",
+    key: `deployment.failure.${server.id}`,
   });
 }
 
@@ -177,7 +215,7 @@ async function transfer(direction: "upload" | "download", server: DeploymentServ
   if (!coverage.paths.length) return notifyNoCoverage(server, coverage.skipped);
   const request = nextRequestId();
   try {
-    const report = await withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
+    const report = await withSsh(deploymentSecretKey(server), () =>
       call(
         direction === "upload"
           ? commands.deployUpload(paths, server.id, request)
@@ -187,6 +225,21 @@ async function transfer(direction: "upload" | "download", server: DeploymentServ
     showReport(report, direction, server);
   } catch (e) {
     showFailure(direction === "upload" ? "Cannot upload to {server}" : "Cannot download from {server}", server, e);
+  }
+}
+
+/** Downloads remote files and folders into local folder `target`, each under its own name
+ *  (Remote Host › Download to…, or a drag onto the Project view). */
+export async function downloadRemoteInto(server: DeploymentServerValid, paths: string[], target: string) {
+  if (!paths.length) return;
+  const request = nextRequestId();
+  try {
+    const report = await withSsh(deploymentSecretKey(server), () =>
+      call(commands.remoteDownloadInto(deploymentConnection(server), paths, target, request)),
+    );
+    showReport(report, "download", server);
+  } catch (e) {
+    showFailure("Cannot download from {server}", server, e);
   }
 }
 
@@ -215,7 +268,7 @@ async function deleteRemote(paths: string[]) {
   });
   if (!ok) return;
   try {
-    const report = await withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
+    const report = await withSsh(deploymentSecretKey(server), () =>
       call(commands.deployDeleteRemote(paths, server.id)),
     );
     showReport(report, "delete", server);
@@ -255,10 +308,11 @@ export async function openSync(server: DeploymentServerValid, paths: string[]) {
     },
   });
   try {
-    const groups = await withSsh(server.kind === "sftp" ? server.sshConfig : "", async () => {
+    const groups = await withSsh(deploymentSecretKey(server), async () => {
       const entries = [];
       for (const path of coverage.paths) {
         if (useDeployment.getState().sync?.request !== request) break;
+        // oxlint-disable-next-line no-await-in-loop -- cancellation is rechecked before each compare and results are appended in path order.
         entries.push(...(await call(commands.deployCompare(path, server.id, request))));
       }
       return entries;
@@ -296,15 +350,17 @@ export async function runSync(steps: SyncStep[], mode: SyncRunMode = "all") {
       if (step.action !== "upload" || !root) continue;
       const path = `${root.replace(/\/$/, "")}/${step.path}`;
       if (!editorsFor(path).length) continue;
+      // oxlint-disable-next-line no-await-in-loop -- attach/save/release must stay paired per path; attached documents are shared editor state.
       const document = await attachDocument(path);
       try {
+        // oxlint-disable-next-line no-await-in-loop -- the document must be saved before release() in the finally block.
         await document.save();
       } finally {
         document.release();
       }
     }
     if (useDeployment.getState().sync?.request !== request) return;
-    const report = await withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
+    const report = await withSsh(deploymentSecretKey(server), () =>
       call(commands.deploySync(steps, server.id, request)),
     );
     if (useDeployment.getState().sync?.request !== request) return;
@@ -315,7 +371,8 @@ export async function runSync(steps: SyncStep[], mode: SyncRunMode = "all") {
       for (const step of steps) {
         if (useDeployment.getState().sync?.request !== request) return;
         try {
-          const entries = await withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
+          // oxlint-disable-next-line no-await-in-loop -- refresh rechecks cancellation per step and updates checked/refreshed/error state in step order.
+          const entries = await withSsh(deploymentSecretKey(server), () =>
             call(commands.deployCompare(`${root.replace(/\/$/, "")}/${step.path}`, server.id, request)),
           );
           checked.add(step.path);
@@ -415,6 +472,40 @@ export function registerDeploymentActions(): () => void {
   const when = "projectOpen";
   return registerActions([
     {
+      id: "deployment.uploadLocalInto",
+      title: "Upload Local Files Into Remote Folder",
+      category: CATEGORY,
+      hidden: true,
+      run: async ({ arg }) => {
+        const value = arg as { server: string; paths: string[]; target: string } | undefined;
+        const server = value && resolveServer(deployment(), value.server);
+        if (server && value?.target && Array.isArray(value.paths))
+          await (await import("./remoteHost")).uploadLocalInto(server, value.paths, value.target);
+      },
+    },
+    {
+      id: "deployment.uploadFiles",
+      title: "Upload Files…",
+      category: CATEGORY,
+      hidden: true,
+      run: async ({ arg }) => {
+        const value = arg as { server: string; target: string } | undefined;
+        const server = value && resolveServer(deployment(), value.server);
+        if (server && value?.target) await (await import("./remoteHost")).chooseUploadFiles(server, value.target);
+      },
+    },
+    {
+      id: "deployment.uploadFolder",
+      title: "Upload Folder…",
+      category: CATEGORY,
+      hidden: true,
+      run: async ({ arg }) => {
+        const value = arg as { server: string; target: string } | undefined;
+        const server = value && resolveServer(deployment(), value.server);
+        if (server && value?.target) await (await import("./remoteHost")).chooseUploadFolder(server, value.target);
+      },
+    },
+    {
       id: "deployment.uploadToDefault",
       title: "Upload to Default Server",
       description: "Upload the selected files and folders to the default deployment server",
@@ -422,7 +513,16 @@ export function registerDeploymentActions(): () => void {
       icon: "export",
       when,
       keywords: ["deploy", "sftp", "upload", "remote"],
-      run: withTargets(async (paths) => transfer("upload", await defaultServer("Upload to", paths), paths)),
+      run: withTargets(async (paths) => {
+        // The default server group: each of its servers in turn, as Upload to… on the group does.
+        const group = defaultGroup(deployment());
+        if (group) {
+          // oxlint-disable-next-line no-await-in-loop -- group servers upload in turn, as Upload to… does; each transfer reports its own result.
+          for (const server of group.servers) await transfer("upload", server, paths);
+          return;
+        }
+        await transfer("upload", await defaultServer("Upload to", paths), paths);
+      }),
     },
     {
       id: "deployment.uploadTo",
@@ -431,7 +531,23 @@ export function registerDeploymentActions(): () => void {
       category: CATEGORY,
       when,
       keywords: ["deploy", "sftp", "upload", "remote"],
-      run: withTargets(async (paths) => transfer("upload", await pickServer("Upload to", paths), paths)),
+      run: withTargets(async (paths) => {
+        // A group uploads to each server in turn; each reports on its own, and a failure doesn't stop the rest.
+        // oxlint-disable-next-line no-await-in-loop -- chosen servers upload in turn so each reports independently; a failure must not stop the rest.
+        for (const server of (await pickUploadTargets(paths)) ?? []) await transfer("upload", server, paths);
+      }),
+    },
+    {
+      id: "deployment.downloadRemoteInto",
+      title: "Download Remote Files Into Folder",
+      category: CATEGORY,
+      hidden: true,
+      description: "Download Remote Host files into a local folder (arg: { server, paths, target })",
+      run: async ({ arg }) => {
+        const a = arg as { server: string; paths: string[]; target: string } | undefined;
+        const server = a && resolveServer(deployment(), a.server);
+        if (server) await downloadRemoteInto(server, a.paths, a.target);
+      },
     },
     {
       id: "deployment.downloadFromDefault",

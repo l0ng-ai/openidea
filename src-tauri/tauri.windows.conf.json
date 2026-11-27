@@ -7,7 +7,8 @@
         "title": "OpenIDEA",
         "width": 1440,
         "height": 900,
-        "minWidth": 800,
+        "center": true,
+        "minWidth": 400,
         "minHeight": 500,
         "decorations": false,
         "backgroundColor": "#E9EAEE",
@@ -18,6 +19,8 @@
   "bundle": {
     "windows": {
       "nsis": {
+        "installMode": "both",
+        "template": "windows/installer.nsi",
         "installerIcon": "icons/icon.ico",
         "uninstallerIcon": "icons/icon.ico"
       }

@@ -1,0 +1,38 @@
+id = "file-templates"
+name = "File Templates"
+version = "0.1.0"
+description = "API 1.3 fixture: exact filenames, variables and inferred packages."
+engines.openidea = "^1.3"
+wasm = "dist/plugin.wasm"
+activation = ["on-command:ping"]
+
+[[contributes.commands]]
+id = "ping"
+title = "File Templates: Ping"
+
+[[contributes.fileTemplates]]
+id = "dockerignore"
+name = "Docker ignore"
+extension = "dockerignore"
+fileName = ".dockerignore"
+path = "templates/dockerignore.txt"
+
+[[contributes.fileTemplates]]
+id = "attributes"
+name = "Git attributes"
+fileName = ".gitattributes"
+path = "templates/attributes.txt"
+variables = [{ name = "PATTERN", prompt = "File pattern" }, { name = "FILTER", prompt = "Attribute filter" }]
+
+[[contributes.fileTemplates]]
+id = "repository"
+name = "Java repository"
+extension = "java"
+path = "templates/repository.txt"
+variables = [{ name = "ENTITY", prompt = "Entity class" }, { name = "TABLE", prompt = "Table name" }]
+
+[[contributes.fileTemplates]]
+id = "kotlin"
+name = "Kotlin entity"
+extension = "kt"
+path = "templates/kotlin.txt"

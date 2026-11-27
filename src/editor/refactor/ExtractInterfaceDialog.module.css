@@ -1,0 +1,113 @@
+.dialog {
+  height: 520px;
+}
+
+.dialog > [data-dialog-body] {
+  display: flex;
+  flex-direction: column;
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--fs-ui);
+  color: var(--fg);
+}
+
+.field {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.source {
+  color: var(--fg-muted);
+}
+
+.memberTitle {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.memberTitle::after {
+  content: "";
+  flex: 1;
+  border-bottom: 1px solid var(--border);
+}
+
+.table {
+  flex: 1;
+  min-height: calc(var(--h-list-row) * 3);
+  overflow: auto;
+  scrollbar-gutter: stable;
+  scroll-padding-top: var(--h-list-row);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+}
+
+.head,
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  padding: 0 var(--space-2);
+  min-height: var(--h-list-row);
+}
+
+.head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-popup);
+  border-bottom: 1px solid var(--border);
+}
+
+.head .member {
+  color: var(--fg-muted);
+}
+
+.row:hover {
+  background: var(--bg-hover);
+}
+
+.member {
+  display: flex;
+  min-width: 0;
+}
+
+.memberLabel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.memberLabel > svg {
+  flex: none;
+}
+
+.label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.error {
+  flex: none;
+  color: var(--danger);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}
+
+.busy {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  color: var(--fg-muted);
+}

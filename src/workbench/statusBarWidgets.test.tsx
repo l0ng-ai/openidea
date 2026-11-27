@@ -16,7 +16,9 @@ import { useProject } from "@/platform/project";
 import { ContextMenuHost } from "@/ui";
 import { registerStatusItem, type StatusItemContribution } from "./contributions";
 import { StatusBar } from "./StatusBar";
-import { isStatusItemVisible, statusBarMenu } from "./statusBarWidgets";
+import { isStatusItemVisible, setStatusWidgetAvailable, statusBarMenu } from "./statusBarWidgets";
+import { executeAction } from "@/platform/actions";
+import { registerShellActions } from "./shellActions";
 
 const item = (id: string, extra: Partial<StatusItemContribution> = {}): StatusItemContribution => ({
   id,
@@ -102,5 +104,48 @@ describe("status bar widgets", () => {
       JSON.stringify({ "w.memory": true }),
     );
     expect(await screen.findByText("w.memory")).toBeTruthy();
+  });
+
+  it("leaves widgets that don't apply to the project out of the bar and the menu", async () => {
+    disposers.push(
+      registerStatusItem(item("w.caret", { title: "Line:Column Number", priority: 1 })),
+      registerStatusItem(item("w.php", { title: "PHP Language Level", priority: 2 })),
+      () => setStatusWidgetAvailable("w.php", true),
+    );
+    render(
+      <>
+        <StatusBar />
+        <ContextMenuHost />
+      </>,
+    );
+    expect(screen.getByText("w.php")).toBeTruthy();
+    act(() => setStatusWidgetAvailable("w.php", false));
+    expect(screen.queryByText("w.php")).toBeNull();
+    fireEvent.contextMenu(screen.getByLabelText("Status bar"), { clientX: 10, clientY: 10 });
+    expect(await screen.findByRole("menuitemcheckbox", { name: /Line:Column Number/ })).toBeTruthy();
+    expect(screen.queryByRole("menuitemcheckbox", { name: /PHP Language Level/ })).toBeNull();
+    act(() => setStatusWidgetAvailable("w.php", true));
+    expect(screen.getByText("w.php")).toBeTruthy();
+  });
+
+  it("toggles one widget by id from View › Appearance › Status Bar Widgets", async () => {
+    disposers.push(
+      registerShellActions(),
+      registerStatusItem(item("w.caret", { title: "Line:Column Number" })),
+      registerStatusItem(item("w.memory", { title: "Memory Indicator", defaultVisible: false })),
+      registerStatusItem(item("w.tasks")),
+    );
+    await act(() => executeAction("view.toggleStatusBarWidget", "w.memory"));
+    expect(settingsSet).toHaveBeenLastCalledWith(
+      "global",
+      "appearance.statusBarWidgets",
+      JSON.stringify({ "w.memory": true }),
+    );
+    await act(() => executeAction("view.toggleStatusBarWidget", "w.caret"));
+    expect(widgets).toEqual({ "w.memory": true, "w.caret": false });
+    // Untitled or unknown widgets cannot be hidden.
+    await act(() => executeAction("view.toggleStatusBarWidget", "w.tasks"));
+    await act(() => executeAction("view.toggleStatusBarWidget", "w.gone"));
+    expect(settingsSet).toHaveBeenCalledTimes(2);
   });
 });

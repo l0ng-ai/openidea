@@ -1,99 +1,28 @@
 use crate::state::AppState;
+use ide_command::desktop_command;
 use ide_core::IdeResult;
 use ide_host::ops::fs;
-use ide_vfs::FileEntry;
 use std::path::PathBuf;
 use tauri::{State, Window};
 
+/// Opens a project file with its default application (Office, PDF readers). The checks run here,
+/// in the backend, instead of widening the webview's opener permissions: the window must be a
+/// trusted local project and the file must lie inside it.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub async fn fs_entry_kind(state: State<'_, AppState>, path: PathBuf) -> IdeResult<ide_vfs::EntryKind> {
-    fs::entry_kind(&state.host, path).await
+pub async fn fs_open_with_system(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<()> {
+    if state.remote_dev.get(window.label()).is_some() {
+        return Err(ide_core::IdeError::unavailable("files of a remote window open on their own machine"));
+    }
+    let target = fs::system_open_target(&state.host, window.label(), path)?;
+    state
+        .host
+        .blocking(move || {
+            tauri_plugin_opener::open_path(&target, None::<&str>)
+                .map_err(|e| ide_core::IdeError::internal(format!("cannot open with the system application: {e}")))
+        })
+        .await
 }
 
-#[tauri::command]
-#[specta::specta]
-pub async fn fs_compare_directories(
-    window: Window,
-    state: State<'_, AppState>,
-    left: PathBuf,
-    right: PathBuf,
-    request: ide_core::RequestId,
-    on_progress: tauri::ipc::Channel<ide_vfs::DirectoryCompareProgress>,
-) -> IdeResult<Vec<ide_vfs::DirectoryCompareEntry>> {
-    fs::compare_directories(&state.host, window.label(), left, right, request, super::sender(on_progress)).await
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn fs_copy_merge(
-    window: Window,
-    state: State<'_, AppState>,
-    source_root: PathBuf,
-    destination_root: PathBuf,
-    path: PathBuf,
-    overwrite: bool,
-) -> IdeResult<()> {
-    fs::copy_merge(&state.host, window.label(), source_root, destination_root, path, overwrite).await
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn fs_read_dir(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<Vec<FileEntry>> {
-    fs::read_dir(&state.host, window.label(), path).await
-}
-
-/// Creates an empty file; inside a project, honours the EditorConfig
-/// `charset` (writes the BOM for `utf-8-bom` / UTF-16).
-#[tauri::command]
-#[specta::specta]
-pub fn fs_create_file(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<()> {
-    fs::create_file(&state.host, window.label(), path)
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn fs_create_file_bytes(state: State<'_, AppState>, path: PathBuf, data: Vec<u8>) -> IdeResult<()> {
-    fs::create_file_bytes(&state.host, path, data).await
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn fs_create_dir(path: PathBuf) -> IdeResult<()> {
-    ide_vfs::create_dir(&path)
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn fs_rename(state: State<'_, AppState>, from: PathBuf, to: PathBuf) -> IdeResult<()> {
-    fs::rename(&state.host, from, to).await
-}
-
-/// Toggle Read-only Attribute: sets the writable bit (and the open document's
-/// state). Returns whether the file is read-only now.
-#[tauri::command]
-#[specta::specta]
-pub fn fs_set_writable(window: Window, state: State<'_, AppState>, path: PathBuf, writable: bool) -> IdeResult<bool> {
-    fs::set_writable(&state.host, window.label(), path, writable)
-}
-
-/// Moving to the trash can take a while (large trees): kept off the main thread.
-#[tauri::command]
-#[specta::specta]
-pub async fn fs_delete(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<()> {
-    fs::delete(&state.host, window.label(), path).await
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn fs_copy(state: State<'_, AppState>, from: PathBuf, to: PathBuf) -> IdeResult<()> {
-    fs::copy(&state.host, from, to).await
-}
-
-/// Reads a text file without opening it as a document (previews, quick
-/// definition). Prefers the unsaved buffer when the file is open.
-#[tauri::command]
-#[specta::specta]
-pub async fn fs_read_text(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<String> {
-    fs::read_text(&state.host, window.label(), path).await
-}
+ide_command::desktop_domain!(fs_open_with_system);

@@ -34,23 +34,29 @@ import { openideaHighlightStyle } from "./highlight";
 import { openideaTheme } from "./theme";
 import { caretRowHighlight } from "./caretRow";
 import { changeLane, overviewLane } from "./lanes";
+import { cornerInset } from "./cornerInset";
 import { foldingExtension } from "./folding";
 import { syntaxHighlightField } from "./syntaxHighlight";
-import { indentGuides } from "./indentGuides";
+import { indentGuides, rainbowIndentGuides } from "./indentGuides";
 import { rainbowBrackets } from "./rainbowBrackets";
+import { scopeContext } from "./scopeContext";
 import { stickyMaxLines, stickyScroll } from "./stickyScroll";
 import { findExtension } from "./find";
 import { codeLensExtension } from "./codeLens";
+import { iconAreaExtension } from "./iconArea";
+import { renderedDocsExtension } from "./renderedDocs";
 import { caretExtension, fontZoom, methodLinesField, prefsExtension, softWrapActive } from "./prefs";
-import { commentTokens } from "./languages";
+import { bracketSyntax, commentTokens } from "./languages";
 import { multiCaretMouse } from "./multiCaret";
 import { columnModeExtension } from "./columnMode";
+import { bracketBlockSelect } from "./bracketBlockSelect";
 import { visibleGoalColumns } from "./verticalMotion";
 import { tabKeymap } from "./smartKeys";
 import { editorBaseKeymap } from "./baseKeymap";
 import { occurrenceSearch } from "./editing";
 import { gutterLineDrag } from "./gutterDrag";
 import { overwriteField } from "./overwrite";
+import { relativeLineNumbers } from "./relativeLineNumbers";
 import { clipboardDocumentPath, clipboardFilesExtension } from "./clipboard";
 import { clipboardHistoryExtension } from "../clipboardHistory";
 import type { LanguageInfo } from "../backend";
@@ -166,36 +172,48 @@ export function indentExtension(indent: EffectiveIndent, format: EffectiveIndent
 /**
  * Indentation explicit reformat requests use: the Code Style without the file's
  * detected indents (detection affects editing, reformatting uses the configured
- * style, as in IDEA). Set only when the language has an explicit Tabs and Indents
- * override — unset, formatting keeps the editor's indent, the status bar choice
- * included.
+ * style, as in IDEA), or the indent chosen for the file in the status bar.
+ * Unset (editors outside a document model), formatting keeps the editor's indent.
  */
 export const formatIndentFacet = Facet.define<EffectiveIndent | null>({
   combine: (values) => [values.find((v) => v !== null) ?? null],
 });
 
+// One theme per set of values: a theme made per call mounts new rules for every editor, and the page restyles.
+const fontThemes = new Map<string, Extension>();
+function fontVarsTheme(vars: Record<string, string>): Extension {
+  const key = JSON.stringify(vars);
+  let theme = fontThemes.get(key);
+  if (!theme) fontThemes.set(key, (theme = EditorView.theme({ "&": vars })));
+  return theme;
+}
+
 export function fontExtension(settings: EditorSettings | undefined): Extension {
-  const vars: string[] = [];
+  const vars: Record<string, string> = {};
   const prefs = prefsOf(settings);
   const family = settings?.fontFamily;
   const fallback = prefs.fallbackFont.trim();
   if ((family && family !== BUNDLED_MONO_FAMILY) || fallback) {
-    vars.push(`--openidea-editor-font: ${monoFontFamily(family, fallback, "var(--font-mono)")}`);
+    vars["--openidea-editor-font"] = monoFontFamily(family, fallback, "var(--font-mono)");
   }
-  if (settings?.fontSize)
-    vars.push(
-      `--openidea-editor-font-size: ${settings.fontSize}px`,
-      `--openidea-editor-base-size: ${settings.fontSize}px`,
-    );
-  if (settings?.lineHeight)
-    vars.push(
-      `--openidea-editor-line-height: ${settings.lineHeight}px`,
-      `--openidea-editor-base-line: ${settings.lineHeight}px`,
-    );
+  if (settings?.fontSize) {
+    vars["--openidea-editor-font-size"] = `${settings.fontSize}px`;
+    vars["--openidea-editor-base-size"] = `${settings.fontSize}px`;
+  }
+  if (settings?.lineHeight) {
+    vars["--openidea-editor-line-height"] = `${settings.lineHeight}px`;
+    vars["--openidea-editor-base-line"] = `${settings.lineHeight}px`;
+  }
   const attrs: Record<string, string> = {};
-  if (vars.length) attrs.style = vars.join("; ");
+  const entries = Object.entries(vars);
+  if (entries.length) attrs.style = entries.map(([k, v]) => `${k}: ${v}`).join("; ");
   if (prefs.ligatures) attrs.class = "cm-openidea-ligatures";
-  return Object.keys(attrs).length ? EditorView.editorAttributes.of(attrs) : [];
+  return [
+    Object.keys(attrs).length ? EditorView.editorAttributes.of(attrs) : [],
+    // The same variables as a theme: tooltips (completion, parameter info, hover docs) render
+    // in a container outside the editor that carries its theme classes, not its attributes.
+    entries.length ? fontVarsTheme(vars) : [],
+  ];
 }
 
 export function readOnlyExtension(readOnly: boolean): Extension {
@@ -211,10 +229,11 @@ export function wrapExtension(
   return (override ?? softWrapActive(settings?.softWrap, prefsOf(settings), path)) ? EditorView.lineWrapping : [];
 }
 
-export function stickyExtension(settings: EditorSettings | undefined): Extension {
-  return settings?.stickyScroll === false || isDistractionFree()
+export function stickyExtension(settings: EditorSettings | undefined, language: string): Extension {
+  const { stickyLinesMax, stickyLinesDisabledLanguages } = prefsOf(settings).codeEditing;
+  return settings?.stickyScroll === false || isDistractionFree() || stickyLinesDisabledLanguages.includes(language)
     ? []
-    : [stickyScroll, stickyMaxLines.of(prefsOf(settings).codeEditing.stickyLinesMax)];
+    : [stickyScroll, stickyMaxLines.of(stickyLinesMax)];
 }
 
 const matchingBracket = Decoration.mark({ class: "cm-matchingBracket" });
@@ -234,15 +253,21 @@ export function heavyExtension(docLength: number, settings?: EditorSettings): Ex
   if (docLength > HEAVY_LIMIT) return [];
   const prefs = prefsOf(settings);
   return [
-    prefs.codeEditing.highlightBraces ? bracketMatching({ renderMatch }) : [],
-    prefs.appearance.indentGuides ? indentGuides : [],
-    prefs.rainbowBrackets ? rainbowBrackets() : [],
+    prefs.codeEditing.highlightBraces ? [bracketMatching({ renderMatch }), scopeContext] : [],
+    prefs.appearance.indentGuides ? (prefs.appearance.rainbowIndentGuides ? rainbowIndentGuides : indentGuides) : [],
+    prefs.rainbowBrackets
+      ? rainbowBrackets({ ...prefs.rainbowBracketKinds, colors: prefs.rainbowBracketColors, syntax: bracketSyntax() })
+      : [],
     prefs.codeEditing.highlightSelection ? highlightSelectionMatches({ minSelectionLength: 2, maxMatches: 500 }) : [],
   ];
 }
 
 export function lineNumbersExtension(settings: EditorSettings | undefined): Extension {
-  return prefsOf(settings).appearance.lineNumbers && !isDistractionFree() ? lineNumbers() : [];
+  const a = prefsOf(settings).appearance;
+  if (!a.lineNumbers || isDistractionFree()) return [];
+  return a.lineNumberMode === "relative" || a.lineNumberMode === "hybrid"
+    ? relativeLineNumbers(a.lineNumberMode === "hybrid")
+    : lineNumbers();
 }
 
 /**
@@ -262,7 +287,8 @@ export function distractionFreeExtension(
 }
 
 export function foldingFor(settings: EditorSettings | undefined): Extension {
-  return foldingExtension(prefsOf(settings).folding.showOutline);
+  const { showOutline, outlineVisibility } = prefsOf(settings).folding;
+  return foldingExtension(showOutline, outlineVisibility);
 }
 
 export function caretFor(settings: EditorSettings | undefined): Extension {
@@ -275,12 +301,14 @@ export function prefsFor(o: {
   info: LanguageInfo | undefined;
   readOnly: boolean;
   wrapOverride?: boolean | null;
+  renderedDocsOverride?: boolean | null;
 }): Extension {
   return prefsExtension({
     prefs: prefsOf(o.settings),
     path: o.path,
     softWrap: o.settings?.softWrap,
     wrapOverride: o.wrapOverride,
+    renderedDocsOverride: o.renderedDocsOverride,
     showWhitespace: o.settings?.showWhitespace,
     hardWrapAt: hardWrapAt(o.settings, o.info),
     readOnly: o.readOnly,
@@ -314,8 +342,12 @@ export interface SetupOptions {
   formatIndent?: EffectiveIndent | null;
   /** Soft wraps toggled for this file (View › Active Editor › Soft-Wrap). */
   wrapOverride?: boolean | null;
+  /** Rendered doc comments toggled for this file (View › Active Editor › Render Documentation Comments). */
+  renderedDocsOverride?: boolean | null;
   /** Extra extensions owned by the slot (update listeners, focus handlers). */
   extra?: Extension;
+  /** Standalone value editors supply their own extensions without file-backed contributions. */
+  contributions?: Extension;
 }
 
 /**
@@ -323,6 +355,13 @@ export interface SetupOptions {
  * below its top edge. WebKit positions them `absolute` within `.cm-editor`, so
  * a window-wide right bound makes CodeMirror skip the shift left and the
  * browser squeezes the box into the space left of the editor's edge.
+ *
+ * They are parented to the body (#2310): tooltips are `position: fixed` but
+ * appended inside the editor by default, whose `.content{isolation:isolate}`
+ * stacking context paints as one unit below the later bottom toolwindow — so
+ * completion popups got covered where they overflowed the editor's bottom
+ * edge. At the body level their z-index (500) sits above panels
+ * (`--z-panel: 10`) while staying below dialogs (`--z-dialog: 900`).
  */
 export function tooltipBounds(view: { scrollDOM: Element; dom: Element }) {
   const { top } = view.scrollDOM.getBoundingClientRect();
@@ -335,7 +374,10 @@ export function tooltipBounds(view: { scrollDOM: Element; dom: Element }) {
   };
 }
 
-const tooltipSpace = tooltips({ tooltipSpace: tooltipBounds });
+const tooltipSpace = tooltips({
+  parent: typeof document === "undefined" ? undefined : document.body,
+  tooltipSpace: tooltipBounds,
+});
 
 export function baseExtensions(o: SetupOptions): Extension {
   return [
@@ -354,6 +396,7 @@ export function baseExtensions(o: SetupOptions): Extension {
     EditorState.allowMultipleSelections.of(true),
     multiCaretMouse,
     columnModeExtension,
+    bracketBlockSelect,
     visibleGoalColumns,
     occurrenceSearch,
     overwriteField,
@@ -362,15 +405,18 @@ export function baseExtensions(o: SetupOptions): Extension {
     clipboardDocumentPath.of(o.ctx.path),
     clipboardFilesExtension,
     indentOnInput(),
-    syntaxHighlighting(openideaHighlightStyle),
     syntaxHighlightField,
+    syntaxHighlighting(openideaHighlightStyle),
     closeBrackets(),
     caretRowHighlight,
     fontZoom,
     methodLinesField,
     findExtension(),
     overviewLane,
+    cornerInset,
     codeLensExtension,
+    iconAreaExtension,
+    renderedDocsExtension,
     EditorView.contentAttributes.of({
       spellcheck: "false",
       autocorrect: "off",
@@ -384,7 +430,7 @@ export function baseExtensions(o: SetupOptions): Extension {
     compartments.indent.of(indentExtension(o.indent ?? effectiveIndent(o.settings, o.info), o.formatIndent)),
     compartments.readOnly.of(readOnlyExtension(o.ctx.readOnly)),
     compartments.wrap.of(wrapExtension(o.settings, o.ctx.path, o.wrapOverride)),
-    compartments.sticky.of(stickyExtension(o.settings)),
+    compartments.sticky.of(stickyExtension(o.settings, o.ctx.language)),
     compartments.heavy.of(heavyExtension(o.docLength, o.settings)),
     compartments.prefs.of(
       prefsFor({
@@ -393,9 +439,10 @@ export function baseExtensions(o: SetupOptions): Extension {
         info: o.info,
         readOnly: o.ctx.readOnly,
         wrapOverride: o.wrapOverride,
+        renderedDocsOverride: o.renderedDocsOverride,
       }),
     ),
-    compartments.contributions.of(contributionExtensions(o.ctx)),
+    compartments.contributions.of(o.contributions ?? contributionExtensions(o.ctx)),
     compartments.distractionFree.of(distractionFreeExtension(o.settings)),
     o.extra ?? [],
   ];

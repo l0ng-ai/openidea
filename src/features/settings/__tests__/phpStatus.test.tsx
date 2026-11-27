@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   notify: vi.fn(),
   level: vi.fn(),
   set: vi.fn(),
+  find: vi.fn(),
   fsChanged: undefined as ((e: FsChange) => void) | undefined,
   component: null as React.ComponentType | null,
 }));
@@ -21,7 +22,7 @@ vi.mock("@/platform/ipc", () => ({
     if (name === "fsChanged") mocks.fsChanged = handler;
     return () => {};
   },
-  commands: { sdkPhpLanguageLevel: mocks.level, settingsSet: mocks.set },
+  commands: { sdkPhpLanguageLevel: mocks.level, settingsSet: mocks.set, findFiles: mocks.find },
 }));
 vi.mock("@/workbench/contributions", () => ({
   notifications: () => ({ notify: mocks.notify }),
@@ -31,6 +32,7 @@ vi.mock("@/workbench/contributions", () => ({
   },
 }));
 import { activatePhpStatus } from "../languages/PhpStatus";
+import { isStatusWidgetAvailable } from "@/workbench/statusBarWidgets";
 
 const fromComposer: PhpLanguageLevels = {
   effective: { version: "7.4.0", source: "require" },
@@ -48,6 +50,7 @@ let dispose: () => void;
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.level.mockResolvedValue(fromComposer);
+  mocks.find.mockResolvedValue([{ path: "/project/index.php" }]);
   mocks.set.mockImplementation((_scope: string, _key: string, value: string) =>
     Promise.resolve({ languages: { php: { languageLevel: JSON.parse(value) } } }),
   );
@@ -74,6 +77,18 @@ const pick = async (label: string) => {
 };
 
 describe("PHP language level status", () => {
+  it("is left out of the status bar menus in a project without PHP", async () => {
+    await waitFor(() => expect(mocks.find).toHaveBeenCalled());
+    expect(isStatusWidgetAvailable("php.languageLevel")).toBe(true);
+    dispose();
+    mocks.find.mockResolvedValue([{ path: "/project/src/php.ts" }]);
+    dispose = activatePhpStatus();
+    await waitFor(() => expect(isStatusWidgetAvailable("php.languageLevel")).toBe(false));
+    dispose();
+    expect(isStatusWidgetAvailable("php.languageLevel")).toBe(true);
+    dispose = activatePhpStatus();
+  });
+
   it("stays hidden for other editors without asking the backend", async () => {
     mount();
     await focus("typescript", "/project/src/app.ts");

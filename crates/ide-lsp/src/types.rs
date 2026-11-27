@@ -2,7 +2,7 @@
 
 use ide_core::event::ServerStatus;
 use ide_core::settings::ExternalFormatter;
-use ide_core::{Location, Range, ServerId, SymbolKind, TextEdit, WorkspaceEdit};
+use ide_core::{Diagnostic, Location, Range, ServerId, SymbolKind, TextEdit, WorkspaceEdit};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
@@ -49,7 +49,11 @@ pub struct CompletionItem {
     pub label: String,
     /// e.g. `(req: CreateOrderRequest)` shown right after the label.
     pub label_detail: Option<String>,
-    /// e.g. return type, shown right-aligned.
+    /// `labelDetails.description`: a return type or module path, shown right-aligned. Servers
+    /// such as JDT.LS also send the whole signature as `detail`, which would repeat the label.
+    pub label_description: Option<String>,
+    /// The signature or type when the server sent no `label_description`; the documentation panel
+    /// shows it either way.
     pub detail: Option<String>,
     pub kind: Option<CompletionKind>,
     pub documentation: Option<Markup>,
@@ -193,6 +197,14 @@ pub struct InlineCompletionItem {
 #[serde(rename_all = "camelCase")]
 pub struct CodeAction {
     pub title: String,
+    /// Diagnostics this action fixes, in IDE coordinates.
+    #[serde(default)]
+    #[specta(optional)]
+    pub diagnostics: Vec<Diagnostic>,
+    /// Original server diagnostics, including encoding and data, for codeAction/resolve.
+    #[serde(default)]
+    #[specta(optional)]
+    pub original_diagnostics: Option<String>,
     /// LSP kind, e.g. `quickfix`, `refactor.extract`, `source.organizeImports`.
     pub kind: Option<String>,
     pub is_preferred: bool,
@@ -235,6 +247,8 @@ pub enum InlayKind {
     Type,
     Parameter,
     Other,
+    /// What a closing bracket ends, at the end of its line (the Dart server's closing labels).
+    ClosingLabel,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -249,6 +263,8 @@ pub struct InlayHint {
     /// The label's parts when the server split it (empty for a plain label);
     /// their values concatenate to `label`.
     pub parts: Vec<InlayLabelPart>,
+    /// The edits that turn the hint into code (an annotation and any import it needs).
+    pub text_edits: Vec<TextEdit>,
 }
 
 /// One part of an inlay hint label, e.g. a type name that navigates to its declaration.
@@ -293,6 +309,27 @@ pub struct DocumentLink {
     pub tooltip: Option<String>,
 }
 
+/// A color a server found in a document (`textDocument/documentColor`); components are 0–1.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentColor {
+    pub range: Range,
+    pub red: f32,
+    pub green: f32,
+    pub blue: f32,
+    pub alpha: f32,
+    pub server: ServerId,
+}
+
+/// One way to write a picked color (`textDocument/colorPresentation`): `edits` replace the
+/// color's range (with `label` unless the server gave its own edit), then any extra edits.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ColorPresentation {
+    pub label: String,
+    pub edits: Vec<TextEdit>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum HierarchyDirection {
@@ -317,6 +354,11 @@ pub struct HierarchyItem {
     pub selection_range: Range,
     /// Call sites, for call hierarchy.
     pub from_ranges: Vec<Range>,
+    /// The file of `from_ranges` when it is not the item's own: for an outgoing call, the
+    /// file of the prepared item that makes it (a path, or the URI of a virtual document).
+    #[serde(default)]
+    #[specta(optional)]
+    pub from_path: Option<ide_core::IpcPath>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -329,6 +371,10 @@ pub struct ServerInfo {
     pub status: ServerStatus,
     /// OS process of the running instance (for memory attribution).
     pub pid: Option<u32>,
+    /// What the user sees as the server when another program serves in its place.
+    #[serde(default)]
+    #[specta(optional)]
+    pub label: Option<String>,
 }
 
 /// Read-only contents a language server provides for a non-`file:` URI
@@ -345,6 +391,14 @@ pub struct VirtualDocument {
     pub description: Option<String>,
     /// Generated Java from a decompiler, rather than real source or a disassembler stub.
     pub decompiled: bool,
+    /// Charset the content was decoded with (a WHATWG label, e.g. `gbk`);
+    /// `utf-8` for text the server decoded itself.
+    pub encoding: String,
+    pub has_bom: bool,
+    /// "Reload with Encoding" can re-decode the origin's bytes (archive
+    /// entries, JDT sources with an editable attachment encoding); false for
+    /// server-generated content such as decompiled code.
+    pub can_reload_encoding: bool,
 }
 
 /// Reference updates for a file / folder move (`workspace/willRenameFiles`).
@@ -369,6 +423,8 @@ pub enum ReferencesIncomplete {
     TooManyFiles,
     /// Files that mention the name were too large or unreadable to check.
     FilesSkipped,
+    /// A native query failed; indexed anchors are still available.
+    ServerFailed,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
@@ -380,11 +436,19 @@ pub struct References {
     pub classified: Vec<ClassifiedReference>,
     pub locations: Vec<Location>,
     pub incomplete: Option<ReferencesIncomplete>,
+    /// The dependencies and the JDK were not searched (asked for without `libraries`).
+    #[serde(default)]
+    #[specta(optional)]
+    pub libraries_skipped: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct Renamed {
+    /// Indexed names always require preview, including a single-file rename.
+    #[serde(default)]
+    #[specta(optional)]
+    pub preview: bool,
     pub edit: WorkspaceEdit,
     pub incomplete: Option<ReferencesIncomplete>,
 }
@@ -426,6 +490,16 @@ pub struct HierarchyMember {
     pub selected: bool,
     /// Can be declared abstract in the destination (pull up) or kept abstract (push down).
     pub abstractable: bool,
+}
+
+/// The exception class a caret names: a reference to it, its declaration, or a throw of it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ExceptionClassRef {
+    /// The binary name (`app.Outer$Failure`), as exception breakpoints take it.
+    pub qualified_name: String,
+    /// The simple name (`Failure`).
+    pub display_name: String,
 }
 
 /// The class at a position and what can move: pull-up destinations, or the subclasses
@@ -470,9 +544,81 @@ pub struct HierarchyRefactored {
     pub edit: Option<WorkspaceEdit>,
 }
 
+/// A parameter in Change Signature: its type, name, the value passed at existing calls when it is
+/// added, and its index in the current signature (-1 for an added one).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SignatureParameter {
+    #[serde(rename = "type")]
+    pub type_name: String,
+    pub name: String,
+    pub default_value: String,
+    pub original_index: i32,
+}
+
+/// A declared exception (`throws`), with the server's handle of its type.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SignatureException {
+    #[serde(rename = "type")]
+    pub type_name: String,
+    pub type_handle_identifier: String,
+}
+
+/// The signature of the method at a position, as Change Signature edits it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MethodSignature {
+    /// The server's handle of the method, passed back unchanged.
+    pub method_identifier: String,
+    /// `public`, `protected`, `private`, or empty for package-private.
+    pub modifier: String,
+    pub return_type: String,
+    pub method_name: String,
+    pub parameters: Vec<SignatureParameter>,
+    pub exceptions: Vec<SignatureException>,
+}
+
+/// A member Extract Interface can declare in the new interface.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct InterfaceMember {
+    pub name: String,
+    /// The method's return type or the field's type.
+    pub type_name: String,
+    /// The method's parameter types; `None` for a field.
+    pub parameters: Option<Vec<String>>,
+    /// The server's handle of the member, passed back unchanged.
+    pub handle_identifier: String,
+}
+
+/// What Extract Interface starts from: the file's class, the members the interface can declare and
+/// the packages it can go to (as JSON, passed back unchanged).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractInterfaceInfo {
+    pub class_name: String,
+    pub members: Vec<InterfaceMember>,
+    pub packages: Vec<String>,
+}
+
+/// A refactoring checked by the server (Change Signature, Move, Extract Interface): problems to show, the edit when
+/// none is fatal, and the token that confirms going on despite warnings.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerRefactored {
+    pub problems: Vec<RefactoringProblem>,
+    pub edit: Option<WorkspaceEdit>,
+    pub confirmation: Option<String>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CallHierarchy {
+    /// The symbol the hierarchy is for: the first item the server prepared at the position.
+    #[serde(default)]
+    #[specta(optional)]
+    pub root: Option<HierarchyItem>,
     pub items: Vec<HierarchyItem>,
     pub incomplete: Option<ReferencesIncomplete>,
 }
@@ -503,4 +649,62 @@ pub struct ClassifiedReference {
     pub access: Option<ReferenceAccess>,
     pub location: Location,
     pub kind: ReferenceKind,
+    /// The usage's line, when the server has it at hand (a library class's).
+    #[serde(default)]
+    #[specta(optional)]
+    pub text: Option<String>,
+}
+
+/// The arguments the Flutter Property Editor edits: those of the widget (or other) call at a
+/// position, as the Dart server's `dart/textDocument/editableArguments` reports them.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EditableArguments {
+    /// The widget's (or callee's) name.
+    pub name: Option<String>,
+    pub documentation: Option<String>,
+    pub arguments: Vec<EditableArgument>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EditableArgument {
+    pub name: String,
+    pub documentation: Option<String>,
+    /// How to edit it: `string`, `int`, `double`, `bool` or `enum`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// The literal value in the code (only while `has_argument`); an expression has `display_value`.
+    pub value: Option<ArgumentValue>,
+    #[serde(default)]
+    pub has_argument: bool,
+    pub default_value: Option<ArgumentValue>,
+    pub display_value: Option<String>,
+    // Absent from older Dart SDKs (`isDeprecated` came later): read as false rather than
+    // failing the whole list.
+    #[serde(default)]
+    pub is_required: bool,
+    #[serde(default)]
+    pub is_nullable: bool,
+    #[serde(default)]
+    pub is_deprecated: bool,
+    #[serde(default = "editable_by_default")]
+    pub is_editable: bool,
+    pub not_editable_reason: Option<String>,
+    /// An enum's values, as `EnumName.value`.
+    pub options: Option<Vec<String>>,
+}
+
+fn editable_by_default() -> bool {
+    true
+}
+
+/// A literal argument value. Ints stay ints: the server rejects `1.0` for an `int` parameter.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(untagged)]
+pub enum ArgumentValue {
+    Bool(bool),
+    Int(i64),
+    Double(f64),
+    Text(String),
 }

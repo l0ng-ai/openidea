@@ -1,0 +1,48 @@
+.popup {
+  width: max-content;
+  max-height: min(480px, 65vh);
+  overflow: auto;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+  line-height: 1.5;
+}
+
+.content {
+  max-inline-size: min(540px, 80vw);
+  padding: 10px var(--space-3);
+}
+
+.header {
+  color: var(--fg);
+  line-height: 1.45;
+}
+
+.hashLink {
+  max-inline-size: 100%;
+  color: var(--link);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.hashLink:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
+}
+
+.subject {
+  margin-block-start: var(--space-3);
+  color: var(--fg-strong);
+  font-weight: 600;
+  white-space: pre-wrap;
+}
+
+.body {
+  margin-block-start: var(--space-2);
+  color: var(--fg);
+  white-space: pre-wrap;
+}

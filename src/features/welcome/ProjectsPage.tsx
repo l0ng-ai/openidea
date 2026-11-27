@@ -1,5 +1,5 @@
-/** Welcome › Projects: search, Open / Clone Repository, and the recent projects list. */
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+/** Welcome › Projects: search, New Project / Open / Clone Repository / Remote Development, and the recent projects list. */
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import clsx from "clsx";
 import { executeAction, useActions } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
@@ -12,6 +12,8 @@ import {
   Icon,
   IconButton,
   Kbd,
+  Menu,
+  type MenuItem,
   SearchField,
   Spinner,
   isPopupOpen,
@@ -19,8 +21,9 @@ import {
   showContextMenu,
   T,
 } from "@/ui";
-import { askRemoveRecent, groupMenu, ProjectBadge, recentMenu } from "./RecentList";
+import { askRemoveRecent, groupMenu, ProjectBadge, recentMenu, unavailableTitle } from "./RecentList";
 import { openRecent, recentRows, setGroupExpanded, useRecent, type RecentMatch, type RecentRow } from "./recent";
+import { projectWindowOverride } from "@/workbench/projectWindow";
 import type { RecentProjectGroup } from "@/platform/ipc";
 import styles from "./Welcome.module.css";
 import { tx } from "@/platform/i18n";
@@ -29,32 +32,69 @@ function HeaderButtons() {
   const canClone = useActions((s) => s.actions.has("vcs.clone"));
   const canRemote = useActions((s) => s.actions.has("remote.connect"));
   const opening = useProject((s) => s.opening);
+  const canCreate = useActions((s) => s.actions.has("file.newProject"));
   const openKey = shortcutLabel("file.openProject");
+  const [moreOpen, setMoreOpen] = useState(false);
+  const more = useRef<HTMLButtonElement>(null);
+  const primary = [
+    { id: "file.newProject", label: "New Project", icon: "plus", available: canCreate, disabled: opening },
+    {
+      id: "file.openProject",
+      label: "Open",
+      icon: "folder-open",
+      title: openKey ? tx`Open (${openKey})` : undefined,
+      available: true,
+      disabled: opening,
+    },
+    { id: "vcs.clone", label: "Clone Repository", icon: "branch", available: canClone },
+    { id: "remote.connect", label: "Remote Development", icon: "remote", available: canRemote, disabled: opening },
+  ];
+  const secondary: MenuItem[] = [
+    { kind: "action", action: "file.newUntitled", label: "New File", disabled: opening },
+    { kind: "action", action: "file.openFile", label: "Open File", disabled: opening },
+  ];
   return (
-    <div className={styles.headerButtons}>
-      <Button
-        disabled={opening}
-        onClick={() => void executeAction("file.openProject")}
-        title={openKey ? tx`Open (${openKey})` : "Open"}
-      >
-        <T>Open</T>
-      </Button>
-      {canClone && (
-        <Button onClick={() => void executeAction("vcs.clone")}>
-          <T>Clone Repository</T>
-        </Button>
+    <div className={styles.headerButtons} role="group" aria-label={tx("Project actions")}>
+      {primary.map(
+        ({ id, label, title, icon, available, disabled }) =>
+          available && (
+            <Button
+              key={id}
+              size="small"
+              icon={icon}
+              className={styles.headerAction}
+              title={title ?? label}
+              aria-label={tx(label)}
+              disabled={disabled}
+              onClick={() => void executeAction(id)}
+            >
+              <span className={styles.headerActionLabel}>{tx(label)}</span>
+            </Button>
+          ),
       )}
-      {canRemote && (
-        <Button disabled={opening} onClick={() => void executeAction("remote.connect")}>
-          <T>Remote Development</T>
-        </Button>
-      )}
+      <IconButton
+        ref={more}
+        icon="more"
+        title="More Actions"
+        aria-haspopup="menu"
+        aria-expanded={moreOpen}
+        onClick={() => setMoreOpen((open) => !open)}
+      />
+      <Menu
+        open={moreOpen}
+        onClose={() => setMoreOpen(false)}
+        anchor={more}
+        items={secondary}
+        placement="bottom-end"
+        aria-label="More Actions"
+      />
     </div>
   );
 }
 
 /** Shown when there are no recent projects (IntelliJ's empty welcome). */
 function Landing() {
+  const canCreate = useActions((s) => s.actions.has("file.newProject"));
   const canClone = useActions((s) => s.actions.has("vcs.clone"));
   const canRemote = useActions((s) => s.actions.has("remote.connect"));
   const opening = useProject((s) => s.opening);
@@ -65,13 +105,34 @@ function Landing() {
         <T>Welcome to OpenIDEA</T>
       </div>
       <p className={styles.landingText}>
-        {canClone
-          ? tx("Open a folder from disk or clone a repository from version control.")
-          : tx("Open a folder from disk.")}
+        {canCreate && canClone
+          ? tx("Create a project, open a folder from disk or clone a repository from version control.")
+          : canClone
+            ? tx("Open a folder from disk or clone a repository from version control.")
+            : tx("Open a folder from disk.")}
         <br />
         <T>You can also drop a folder onto this window.</T>
       </p>
       <div className={styles.landingActions}>
+        <button type="button" className={styles.landingAction} onClick={() => void executeAction("file.newUntitled")}>
+          <span className={styles.landingIcon}>
+            <Icon name="file-new" size={20} />
+          </span>
+          <T>New File</T>
+        </button>
+        {canCreate && (
+          <button
+            type="button"
+            className={styles.landingAction}
+            disabled={opening}
+            onClick={() => void executeAction("file.newProject")}
+          >
+            <span className={styles.landingIcon}>
+              <Icon name="plus" size={20} />
+            </span>
+            <T>New Project</T>
+          </button>
+        )}
         <button
           type="button"
           className={styles.landingAction}
@@ -82,6 +143,12 @@ function Landing() {
             <Icon name="folder-open" size={20} />
           </span>
           <T>Open</T>
+        </button>
+        <button type="button" className={styles.landingAction} onClick={() => void executeAction("file.openFile")}>
+          <span className={styles.landingIcon}>
+            <Icon name="file" size={20} />
+          </span>
+          <T>Open File</T>
         </button>
         {canClone && (
           <button type="button" className={styles.landingAction} onClick={() => void executeAction("vcs.clone")}>
@@ -99,7 +166,7 @@ function Landing() {
             onClick={() => void executeAction("remote.connect")}
           >
             <span className={styles.landingIcon}>
-              <Icon name="terminal" size={20} />
+              <Icon name="remote" size={20} />
             </span>
             <T>Remote Development</T>
           </button>
@@ -187,7 +254,8 @@ function ProjectRow({
   /** Listed under a group. */
   nested?: boolean;
   onSelect: () => void;
-  onOpen: () => void;
+  /** Its modifier keys pick the window ({@link projectWindowOverride}). */
+  onOpen: (e: MouseEvent<HTMLDivElement>) => void;
 }) {
   const opening = useRecent((s) => s.opening === m.project.path);
   // Opening a remote project: which stage of connecting it is at.
@@ -205,12 +273,12 @@ function ProjectRow({
       id={id}
       role="option"
       aria-selected={selected}
-      title={m.project.path}
+      title={unavailableTitle(m.project) ?? m.project.path}
       className={clsx(styles.project, nested && styles.projectNested, selected && styles.projectSelected)}
       onMouseDown={(e) => e.preventDefault()}
-      onClick={() => {
+      onClick={(e) => {
         onSelect();
-        onOpen();
+        onOpen(e);
       }}
       onContextMenu={(e) => {
         e.preventDefault();
@@ -218,9 +286,19 @@ function ProjectRow({
         showContextMenu(e, recentMenu(m.project));
       }}
     >
-      <ProjectBadge name={m.project.name} className={styles.projectBadge} />
+      <ProjectBadge
+        name={m.project.name}
+        path={m.project.path}
+        className={styles.projectBadge}
+        missing={!!m.project.missing}
+      />
       <span className={styles.projectText}>
-        <HighlightedText className={styles.projectName} text={m.project.name} indices={m.nameMatch} tone="strong" />
+        <HighlightedText
+          className={clsx(styles.projectName, m.project.missing && styles.unavailable)}
+          text={m.project.name}
+          indices={m.nameMatch}
+          tone="strong"
+        />
         {stage ? (
           <span className={styles.projectPath} role="status">
             {stage}
@@ -324,7 +402,7 @@ export function ProjectsPage() {
       }
       return;
     }
-    if (r.kind === "open") void openRecent(match.m.project);
+    if (r.kind === "open") void openRecent(match.m.project, projectWindowOverride(e));
     else if (r.kind === "remove") void askRemoveRecent(match.m.project);
     else {
       const el = document.getElementById(optionId(current))?.getBoundingClientRect();
@@ -380,7 +458,7 @@ export function ProjectsPage() {
               selected={i === current}
               nested={row.group !== null}
               onSelect={() => setActive(i)}
-              onOpen={() => void openRecent(row.m.project)}
+              onOpen={(e) => void openRecent(row.m.project, projectWindowOverride(e))}
             />
           ),
         )}

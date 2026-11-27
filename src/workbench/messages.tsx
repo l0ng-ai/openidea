@@ -10,8 +10,9 @@
  */
 import { useState, type ReactNode } from "react";
 import { create } from "zustand";
-import { t } from "@/platform/i18n";
-import { Checkbox, Dialog, type DialogButton, type MessageIconKind } from "@/ui";
+import { t, VerbatimTextContext } from "@/platform/i18n";
+import { Checkbox, Dialog, Given, selectableText, type DialogButton, type MessageIconKind } from "@/ui";
+import styles from "./messages.module.css";
 
 export interface MessageButton {
   id: string;
@@ -35,7 +36,11 @@ export interface MessageRequest {
   signal?: AbortSignal;
   /** Defaults to `question`. */
   icon?: MessageIconKind;
+  /** A titled dialog with the message and checkbox in its body. */
+  presentation?: "form";
   width?: number;
+  /** Title, text and labels come from outside the IDE (a plugin) and are shown as written. */
+  verbatim?: boolean;
 }
 
 export interface MessageResult {
@@ -78,9 +83,14 @@ export interface ConfirmOptions {
   /** Label of the default button. */
   ok: string;
   icon?: MessageIconKind;
+  presentation?: MessageRequest["presentation"];
   checkbox?: string;
   /** Initial state of `checkbox`. */
   checked?: boolean;
+  /** Closes the dialog as cancelled when aborted. */
+  signal?: AbortSignal;
+  /** Title, text and labels come from outside the IDE (a plugin) and are shown as written. */
+  verbatim?: boolean;
 }
 
 /** OK / Cancel question; resolves `null` when cancelled, else the checkbox state. */
@@ -89,9 +99,12 @@ export async function confirmChecked(opts: ConfirmOptions): Promise<{ checked: b
     title: opts.title,
     body: opts.message,
     icon: opts.icon,
+    presentation: opts.presentation,
     checkbox: opts.checkbox,
     checked: opts.checked,
     buttons: [{ id: "ok", label: opts.ok, primary: true }],
+    signal: opts.signal,
+    verbatim: opts.verbatim,
   });
   return r.button === "ok" ? { checked: r.checked } : null;
 }
@@ -133,17 +146,31 @@ function MessageDialog({ message }: { message: Pending }) {
     onClick: () => done(b.id),
   }));
   const withCancel = message.cancel !== false && !message.buttons.some((b) => b.id === "cancel");
+  const form = message.presentation === "form";
+  const checkbox = message.checkbox && <Checkbox checked={checked} onChange={setChecked} label={message.checkbox} />;
   return (
-    <Dialog
-      open
-      onClose={() => done("cancel")}
-      title={message.title}
-      icon={message.icon ?? "question"}
-      width={message.width ?? 460}
-      footerStart={message.checkbox && <Checkbox checked={checked} onChange={setChecked} label={message.checkbox} />}
-      buttons={withCancel ? [...declared, { label: t("common.cancel"), role: "cancel" }] : declared}
-    >
-      {message.body}
-    </Dialog>
+    <VerbatimTextContext.Provider value={!!message.verbatim}>
+      <Dialog
+        open
+        blockWorkbenchShortcuts
+        onClose={() => done("cancel")}
+        title={message.title}
+        icon={form ? undefined : (message.icon ?? "question")}
+        width={message.width ?? 460}
+        footerStart={!form && checkbox}
+        buttons={withCancel ? [...declared, { label: t("common.cancel"), role: "cancel" }] : declared}
+      >
+        {form ? (
+          <div className={styles.form}>
+            <div className={selectableText}>
+              {typeof message.body === "string" ? <Given>{message.body}</Given> : message.body}
+            </div>
+            {checkbox}
+          </div>
+        ) : (
+          message.body
+        )}
+      </Dialog>
+    </VerbatimTextContext.Provider>
   );
 }

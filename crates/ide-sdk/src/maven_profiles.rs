@@ -3,7 +3,6 @@
 //! user `settings.xml`. The profiles chosen in the Maven tool window are therefore
 //! passed as a copy of the user's settings with those profiles activated.
 
-use crate::apply::setting_path;
 use ide_core::settings::Settings;
 use ide_language::LanguageServerConfig;
 use serde_json::{Value, json};
@@ -12,15 +11,15 @@ use std::path::{Path, PathBuf};
 const PREFIX: &str = "jdtls-maven-settings-";
 
 /// Points jdtls at a user `settings.xml` activating `profiles` (`-P` entries of the
-/// last Maven sync), written to `dir`. Through `settings`, so a running server
+/// last Maven sync), combined with Settings profiles and written to `dir`. Through `settings`, so a running server
 /// re-imports its Maven projects instead of restarting. `!id` entries can't be
 /// expressed in `settings.xml` and are left to the POMs' own activation.
 pub fn configure_jdtls(cfg: &mut LanguageServerConfig, root: &Path, s: &Settings, profiles: &[String], dir: &Path) {
     if cfg.name != "jdtls" {
         return;
     }
-    let active: Vec<&str> =
-        profiles.iter().map(|p| p.trim()).filter(|p| !p.is_empty() && !p.starts_with('!')).collect();
+    let profiles = s.languages.java.maven.profiles(profiles);
+    let active: Vec<&str> = profiles.iter().map(String::as_str).filter(|p| !p.starts_with(['!', '-'])).collect();
     let Some(file) = (!active.is_empty()).then(|| write_settings(root, s, &active, dir)).flatten() else {
         remove_generated(dir, None);
         return;
@@ -32,13 +31,24 @@ pub fn configure_jdtls(cfg: &mut LanguageServerConfig, root: &Path, s: &Settings
     }
 }
 
-/// The user's settings (Settings › Maven, else `~/.m2/settings.xml`) with `active`
-/// added to `<activeProfiles>`. Named after its content: m2e reloads a settings file
-/// only when the configured path changes.
+/// The Maven tool window's offline mode of the last sync, for jdtls (m2e) too: without it the
+/// import keeps downloading from the repositories while `mvn` runs with `-o`.
+pub fn configure_offline(cfg: &mut LanguageServerConfig, offline: bool) {
+    if cfg.name != "jdtls" {
+        return;
+    }
+    let layer = json!({ "java": { "import": { "maven": { "offline": { "enabled": offline } } } } });
+    match &mut cfg.settings {
+        Some(settings) => merge(settings, layer),
+        None => cfg.settings = Some(layer),
+    }
+}
+
+/// The user settings m2e reads (Settings › Maven, else `~/.m2/settings.xml`, with the
+/// configured local repository) with `active` added to `<activeProfiles>`. Named after its
+/// content: m2e reloads a settings file only when the configured path changes.
 fn write_settings(root: &Path, s: &Settings, active: &[&str], dir: &Path) -> Option<PathBuf> {
-    let user = setting_path(root, &s.languages.java.maven.user_settings)
-        .or_else(|| crate::home_dir().map(|h| h.join(".m2").join("settings.xml")));
-    let base = user.and_then(|f| std::fs::read_to_string(f).ok()).unwrap_or_else(|| "<settings>\n</settings>\n".into());
+    let (_, base) = crate::apply::m2e_user_settings(root, s, &crate::home_dir().unwrap_or_default());
     let Some(text) = with_active_profiles(&base, active) else {
         tracing::warn!("Maven profiles not passed to jdtls: the user settings.xml has no <settings> element");
         return None;
@@ -91,7 +101,7 @@ pub fn with_active_profiles(text: &str, ids: &[&str]) -> Option<String> {
 }
 
 /// Start of the element `open` (`<name`), not a longer name sharing its prefix.
-fn find_tag(masked: &str, open: &str, from: usize) -> Option<usize> {
+pub(crate) fn find_tag(masked: &str, open: &str, from: usize) -> Option<usize> {
     let mut at = from;
     while let Some(i) = masked[at..].find(open) {
         let start = at + i;
@@ -105,7 +115,7 @@ fn find_tag(masked: &str, open: &str, from: usize) -> Option<usize> {
 }
 
 /// `text` with comments and CDATA blanked out, byte offsets unchanged.
-fn mask_comments(text: &str) -> String {
+pub(crate) fn mask_comments(text: &str) -> String {
     let mut out = text.as_bytes().to_vec();
     let mut at = 0;
     while at < text.len() {
@@ -193,6 +203,48 @@ mod tests {
     }
 
     #[test]
+    fn jdtls_combines_settings_profiles_and_checkbox_choices() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut s = Settings::default();
+        s.languages.java.maven.user_settings = "config files/settings.xml".into();
+        s.languages.java.maven.active_profiles = " a, c, !d, a ".into();
+        std::fs::create_dir_all(tmp.path().join("config files")).unwrap();
+        std::fs::write(tmp.path().join("config files/settings.xml"), "<settings><mirrors/></settings>").unwrap();
+        let mut cfg = jdtls();
+        configure_jdtls(&mut cfg, tmp.path(), &s, &["b".into(), "!c".into(), "d".into()], &tmp.path().join("cache"));
+        let text = std::fs::read_to_string(user_settings(&cfg).unwrap()).unwrap();
+        assert!(text.contains("<mirrors/>"));
+        assert_eq!(text.matches("<activeProfile>a</activeProfile>").count(), 1);
+        assert!(text.contains("<activeProfile>b</activeProfile>"));
+        assert!(!text.contains("<activeProfile>c</activeProfile>"));
+        assert!(!text.contains("<activeProfile>d</activeProfile>"));
+
+        let mut cfg = jdtls();
+        configure_jdtls(&mut cfg, tmp.path(), &s, &[], &tmp.path().join("cache"));
+        let text = std::fs::read_to_string(user_settings(&cfg).unwrap()).unwrap();
+        assert!(text.contains("<activeProfile>a</activeProfile>"));
+        assert!(text.contains("<activeProfile>c</activeProfile>"));
+    }
+
+    #[test]
+    fn jdtls_imports_offline_when_the_last_sync_was_offline() {
+        let offline = |cfg: &LanguageServerConfig| {
+            cfg.settings.as_ref().and_then(|s| s.pointer("/java/import/maven/offline/enabled")).cloned()
+        };
+        for value in [true, false] {
+            let mut cfg = jdtls();
+            cfg.settings = Some(json!({ "java": { "import": { "maven": { "enabled": true } } } }));
+            configure_offline(&mut cfg, value);
+            assert_eq!(offline(&cfg), Some(json!(value)), "explicit, so turning it off reaches a running server");
+            assert_eq!(cfg.settings.as_ref().unwrap().pointer("/java/import/maven/enabled"), Some(&json!(true)));
+        }
+        let mut other: LanguageServerConfig =
+            serde_json::from_value(json!({ "name": "kotlin-lsp", "command": "kotlin-lsp" })).unwrap();
+        configure_offline(&mut other, true);
+        assert_eq!(other.settings, None);
+    }
+
+    #[test]
     fn jdtls_imports_with_the_synced_profiles() {
         let tmp = tempfile::tempdir().unwrap();
         let user = tmp.path().join("user-settings.xml");
@@ -230,6 +282,15 @@ mod tests {
             assert_eq!(user_settings(&plain), None);
         }
         assert!(!Path::new(&second).exists());
+
+        // The local repository of Settings › Maven stays in the copy (#1739).
+        s.languages.java.maven.local_repository = tmp.path().join("configured").to_string_lossy().into_owned();
+        let mut cfg = jdtls();
+        configure_jdtls(&mut cfg, tmp.path(), &s, &profiles(&["native"]), &dir);
+        let text = std::fs::read_to_string(user_settings(&cfg).unwrap()).unwrap();
+        let expected =
+            format!("<localRepository>{}</localRepository>", tmp.path().join("configured").to_string_lossy());
+        assert!(text.contains(&expected) && !text.contains("/repo<"), "{text}");
 
         let mut other_server: LanguageServerConfig =
             serde_json::from_value(json!({ "name": "kotlin-lsp", "command": "kotlin-lsp" })).unwrap();

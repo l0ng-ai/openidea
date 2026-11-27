@@ -1,0 +1,54 @@
+.executableControls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-width: 0;
+}
+
+.executableControls > input {
+  flex: 1;
+  min-width: 0;
+}
+
+.testResult {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.branchPatterns {
+  width: 100%;
+}
+
+.signingForm {
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-4) var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+.signingPicker {
+  width: 100%;
+}
+
+.signingRoot,
+.signingHint {
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
+.updateMethods {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+}
+
+@container settings-content (max-width: 440px) {
+  .executable > div {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: var(--space-1);
+  }
+
+  .executable > div > div {
+    grid-column: 1;
+  }
+}

@@ -9,8 +9,11 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 0 6px;
+}
+.toolbarMore {
+  margin-left: auto;
 }
 .sep {
   width: 1px;
@@ -22,7 +25,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-height: 28px;
   padding: 2px 10px;
   font-size: var(--fs-small);
@@ -57,14 +60,14 @@
 .loading {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 12px;
   color: var(--fg-muted);
 }
 .row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
   flex: 1;
   white-space: nowrap;
@@ -79,6 +82,10 @@
   text-overflow: ellipsis;
   color: var(--fg);
 }
+.skippedGoal {
+  color: var(--fg-muted);
+  text-decoration: line-through;
+}
 .selectedLabel {
   color: var(--fg-strong);
 }
@@ -89,13 +96,25 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.pluginText {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
+  overflow: hidden;
+}
+.pluginText > .label {
+  flex: none;
+  min-width: 0;
+  max-width: 100%;
+}
 .profile {
   min-width: 0;
 }
 
 /* Execute Maven Goal / Gradle Task popup */
 .popup {
-  width: 560px;
+  width: 620px;
   max-width: calc(100vw - 32px);
   overflow: hidden;
 }
@@ -106,7 +125,7 @@
 .popupHeader {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   height: var(--h-row);
   padding: 4px 10px 0;
   font-size: var(--fs-small);
@@ -120,34 +139,55 @@
 .inputRow {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 6px 10px;
   border-bottom: 1px solid var(--border-popup);
 }
+.commandIcon {
+  flex: none;
+}
 .inputPrefix {
   flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--fs-code);
-  color: var(--fg-subtle);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+  color: var(--fg-strong);
 }
 .input {
   flex: 1;
-  font-family: var(--font-mono);
+  min-width: 0;
+  font-family: var(--font-ui);
+}
+.completionSection {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 10px;
+  padding: 0;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.completionSection::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border-popup);
 }
 .completions {
-  max-height: 280px;
+  max-height: min(380px, 55vh);
   height: auto;
 }
 .completion {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
   flex: 1;
 }
 .completionLabel {
-  font-family: var(--font-mono);
-  font-size: var(--fs-code);
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
   color: var(--fg-emphasis);
   white-space: pre;
   overflow: hidden;
@@ -157,6 +197,12 @@
   color: var(--fg-strong);
 }
 .completionDetail {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-style: italic;
   margin-left: auto;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
@@ -165,7 +211,7 @@
 .popupFooter {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 6px 10px;
   border-top: 1px solid var(--border-popup);
   font-size: var(--fs-small);

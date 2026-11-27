@@ -1,17 +1,23 @@
 import { create } from "zustand";
-import { commands, isTauri } from "@/platform/ipc";
+import { commands, isTauri, type WindowButtonLayout } from "@/platform/ipc";
+import { isWebMode } from "@/platform/webBridge";
 
 interface PlatformInfo {
   /** `macos` | `windows` | `linux` | `web`. */
   os: string;
   version: string | null;
+  windowsBuildNumber: number | null;
   /** Native traffic lights overlay the title bar (Tauri, macOS, Overlay style). */
   overlayTitleBar: boolean;
   /** Frameless window: the title bar draws the main menu and caption buttons (Tauri, Windows and Linux). */
   framelessTitleBar: boolean;
   /** Linux on a Wayland display: GTK draws the frameless windows' shadow and resize edges. */
   wayland: boolean;
+  /** Caption buttons per side of the frameless title bar, left to right (the desktop's layout on Linux). */
+  windowButtons: WindowButtonLayout;
 }
+
+const DEFAULT_WINDOW_BUTTONS: WindowButtonLayout = { left: [], right: ["minimize", "maximize", "close"] };
 
 /** OS from the user agent (before the backend answers, or in a browser). "darwin" must not read as Windows. */
 export function guessOs(): "macos" | "windows" | "linux" | "web" {
@@ -25,12 +31,15 @@ export function guessOs(): "macos" | "windows" | "linux" | "web" {
 
 export const usePlatform = create<PlatformInfo>(() => {
   const os = guessOs();
+  const desktop = isTauri() && !isWebMode();
   return {
     os,
     version: null,
-    overlayTitleBar: isTauri() && os === "macos",
-    framelessTitleBar: isTauri() && (os === "windows" || os === "linux"),
+    windowsBuildNumber: null,
+    overlayTitleBar: desktop && os === "macos",
+    framelessTitleBar: desktop && (os === "windows" || os === "linux"),
     wayland: false,
+    windowButtons: isWebMode() ? { left: [], right: [] } : DEFAULT_WINDOW_BUTTONS,
   };
 });
 
@@ -38,12 +47,15 @@ export async function loadPlatformInfo() {
   if (!isTauri()) return;
   try {
     const info = await commands.appInfo();
+    const web = isWebMode();
     usePlatform.setState({
       os: info.platform,
       version: info.version,
-      overlayTitleBar: info.platform === "macos",
-      framelessTitleBar: info.platform === "windows" || info.platform === "linux",
-      wayland: info.wayland,
+      windowsBuildNumber: info.windowsBuildNumber,
+      overlayTitleBar: !web && info.platform === "macos",
+      framelessTitleBar: !web && (info.platform === "windows" || info.platform === "linux"),
+      wayland: !web && info.wayland,
+      windowButtons: web ? { left: [], right: [] } : (info.windowButtons ?? DEFAULT_WINDOW_BUTTONS),
     });
   } catch {
     /* keep the user-agent guess */

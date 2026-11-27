@@ -97,6 +97,8 @@ pub(super) struct ModelInfo {
     /// `(effort, description)`.
     pub efforts: Vec<(String, String)>,
     pub default_effort: Option<String>,
+    pub fast_tier: Option<String>,
+    pub default_service_tier: Option<String>,
     pub is_default: bool,
     pub hidden: bool,
 }
@@ -123,6 +125,22 @@ pub(super) fn models_of(list: &Value) -> Vec<ModelInfo> {
                     })
                     .collect(),
                 default_effort: str_of(m, "defaultReasoningEffort"),
+                fast_tier: m
+                    .get("serviceTiers")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|tier| tier.get("id").and_then(Value::as_str))
+                    .chain(
+                        m.get("additionalSpeedTiers")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(Value::as_str),
+                    )
+                    .find(|tier| is_fast_tier(tier))
+                    .map(str::to_owned),
+                default_service_tier: str_of(m, "defaultServiceTier"),
                 is_default: m.get("isDefault").and_then(Value::as_bool) == Some(true),
                 hidden: m.get("hidden").and_then(Value::as_bool) == Some(true),
                 id,
@@ -137,7 +155,16 @@ pub(super) struct Settings {
     /// A model id from `model/list`, or the one the thread reported.
     pub model: String,
     pub effort: Option<String>,
+    pub service_tier: Option<String>,
+    /// No choice preserves the runtime's default; false explicitly selects Standard.
+    pub fast_override: Option<bool>,
     pub mode: Mode,
+    /// Codex's Default/Plan collaboration mode. It is sent with each turn because it is
+    /// part of the turn contract rather than the sandbox permission mode above.
+    pub collaboration_mode: String,
+    /// A mode just chosen by the user, sent once even when it is Default so a resumed Plan
+    /// thread is explicitly reset. Subsequent default turns can omit the field again.
+    pub collaboration_mode_override: Option<String>,
 }
 
 impl Settings {
@@ -152,10 +179,22 @@ impl Settings {
         let mut s = Settings {
             model,
             effort: str_of(result, "reasoningEffort"),
+            service_tier: match result.get("serviceTier") {
+                // A live thread can explicitly report Standard even when the catalog defaults to Fast.
+                Some(Value::Null) => Some("default".into()),
+                _ => str_of(result, "serviceTier"),
+            },
+            fast_override: None,
             mode: Mode::of(
                 result.get("approvalPolicy").unwrap_or(&Value::Null),
                 result.get("sandbox").unwrap_or(&Value::Null),
             ),
+            collaboration_mode: result
+                .pointer("/collaborationMode/mode")
+                .and_then(Value::as_str)
+                .unwrap_or(DEFAULT_COLLABORATION_MODE)
+                .to_owned(),
+            collaboration_mode_override: None,
         };
         s.fit_effort(models);
         s
@@ -193,18 +232,54 @@ impl Settings {
                 }
                 self.effort = Some(value.to_owned());
             }
+            SERVICE_TIER => {
+                if !models.iter().any(|m| m.id == self.model && m.fast_tier.is_some()) {
+                    return Err(format!("{} has no Fast mode", self.model));
+                }
+                self.fast_override = Some(match value {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err(format!("unknown Fast mode {value}")),
+                });
+            }
             MODE => self.mode = Mode::parse(value).ok_or_else(|| format!("unknown mode {value}"))?,
+            COLLABORATION_MODE => {
+                if !matches!(value, DEFAULT_COLLABORATION_MODE | PLAN_COLLABORATION_MODE) {
+                    return Err(format!("unknown collaboration mode {value}"));
+                }
+                self.collaboration_mode = value.to_owned();
+                self.collaboration_mode_override = Some(value.to_owned());
+            }
             _ => return Err(format!("unknown setting {option}")),
         }
         Ok(())
+    }
+
+    /// `turn/start.serviceTier`: omission inherits; "default" explicitly resets Fast.
+    pub fn service_tier_override<'a>(&self, models: &'a [ModelInfo]) -> Option<&'a str> {
+        match self.fast_override {
+            Some(true) => Some(
+                models.iter().find(|m| m.id == self.model).and_then(|m| m.fast_tier.as_deref()).unwrap_or("default"),
+            ),
+            Some(false) => Some("default"),
+            None => None,
+        }
     }
 }
 
 pub(super) const MODEL: &str = "model";
 pub(super) const EFFORT: &str = "reasoning_effort";
+pub(super) const SERVICE_TIER: &str = "service_tier";
 pub(super) const MODE: &str = "mode";
+pub(super) const COLLABORATION_MODE: &str = "collaboration_mode";
+pub(super) const DEFAULT_COLLABORATION_MODE: &str = "default";
+pub(super) const PLAN_COLLABORATION_MODE: &str = "plan";
 
-/// ACP `configOptions`: model, reasoning effort (for models that have it) and mode.
+fn is_fast_tier(tier: &str) -> bool {
+    matches!(tier, "fast" | "priority")
+}
+
+/// ACP `configOptions`: model, its supported settings and session modes.
 pub(super) fn config_options(models: &[ModelInfo], s: &Settings) -> Value {
     let mut model_values: Vec<Value> = models
         .iter()
@@ -231,11 +306,44 @@ pub(super) fn config_options(models: &[ModelInfo], s: &Settings) -> Value {
             "currentValue": effort, "options": values,
         }));
     }
+    if let Some(model) = models.iter().find(|m| m.id == s.model && m.fast_tier.is_some()) {
+        let fast = s.fast_override.unwrap_or_else(|| {
+            s.service_tier.as_deref().or(model.default_service_tier.as_deref()).is_some_and(is_fast_tier)
+        });
+        out.push(json!({
+            "id": SERVICE_TIER, "name": "Fast", "category": "model_config", "type": "select",
+            "currentValue": if fast { "true" } else { "false" },
+            "options": [select_value("false", "Standard", None), select_value("true", "Fast", None)],
+        }));
+    }
     out.push(json!({
         "id": MODE, "name": "Mode", "category": "mode", "type": "select", "currentValue": s.mode.id(),
         "options": Mode::ALL.iter().map(|m| select_value(m.id(), m.name(), Some(m.description()))).collect::<Vec<_>>(),
     }));
+    out.push(json!({
+        "id": COLLABORATION_MODE,
+        "name": "Collaboration mode",
+        "category": "collaboration_mode",
+        "type": "select",
+        "currentValue": s.collaboration_mode,
+        "options": [
+            select_value(DEFAULT_COLLABORATION_MODE, "Default", Some("Execute changes directly")),
+            select_value(PLAN_COLLABORATION_MODE, "Plan", Some("Plan before making changes")),
+        ],
+    }));
     Value::Array(out)
+}
+
+/// `turn/start.collaborationMode`: the preset plus the selected model settings.
+pub(super) fn collaboration_mode(settings: &Settings, models: &[ModelInfo]) -> Value {
+    json!({
+        "mode": settings.collaboration_mode_override.as_deref().unwrap_or(&settings.collaboration_mode),
+        "settings": {
+            "model": settings.model_slug(models),
+            "reasoning_effort": settings.effort,
+            "developer_instructions": null,
+        },
+    })
 }
 
 fn select_value(value: &str, name: &str, description: Option<&str>) -> Value {
@@ -254,6 +362,31 @@ fn effort_name(effort: &str) -> String {
             c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
         }
     }
+}
+
+/// The enabled skills from `skills/list`, named as Codex ACP advertises them.
+pub(super) fn skill_commands(result: &Value) -> Option<Value> {
+    let entries = result.get("data")?.as_array()?;
+    let mut seen = std::collections::HashSet::new();
+    let commands: Vec<Value> = entries
+        .iter()
+        .filter_map(|entry| entry.get("skills").and_then(Value::as_array))
+        .flatten()
+        .filter_map(|skill| {
+            let name = skill.get("name")?.as_str()?.trim();
+            if name.is_empty() || skill.get("enabled") == Some(&Value::Bool(false)) || !seen.insert(name) {
+                return None;
+            }
+            let description = skill
+                .pointer("/interface/shortDescription")
+                .and_then(Value::as_str)
+                .or_else(|| skill.get("shortDescription").and_then(Value::as_str))
+                .or_else(|| skill.get("description").and_then(Value::as_str))
+                .unwrap_or(name);
+            Some(json!({ "name": format!("${name}"), "description": description, "source": "skill", "input": null }))
+        })
+        .collect();
+    Some(json!({ "sessionUpdate": "available_commands_update", "availableCommands": commands }))
 }
 
 /// ACP prompt content blocks as codex `UserInput`s. Embedded files become text.
@@ -278,34 +411,16 @@ pub(super) fn user_input(prompt: &Value) -> Vec<Value> {
             }
             "resource" => {
                 let r = b.get("resource")?;
-                let path = uri_path(r.get("uri").and_then(Value::as_str).unwrap_or_default());
+                let path = crate::images::uri_path(r.get("uri").and_then(Value::as_str).unwrap_or_default());
                 let text = r.get("text").and_then(Value::as_str)?;
                 Some(json!({ "type": "text", "text": format!("<file path=\"{path}\">\n{text}\n</file>") }))
             }
-            "resource_link" => Some(json!({ "type": "text", "text": uri_path(b.get("uri")?.as_str()?) })),
+            "resource_link" => {
+                Some(json!({ "type": "text", "text": crate::images::uri_path(b.get("uri")?.as_str()?) }))
+            }
             _ => None,
         })
         .collect()
-}
-
-/// The path of a `file://` URI (percent-decoded); other URIs as they are.
-fn uri_path(uri: &str) -> String {
-    let Some(rest) = uri.strip_prefix("file://") else { return uri.to_owned() };
-    let bytes = rest.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && let Some(b) = rest.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())
-        {
-            out.push(b);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// A `session/update` notification's `update` for content.
@@ -397,6 +512,9 @@ pub(super) fn tool_call(item: &Value, done: bool, cwd: Option<&str>, output: Opt
         "imageView" => {
             let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
             call.insert("locations".into(), json!([{ "path": path }]));
+            if done && let Some(image) = crate::images::from_file(std::path::Path::new(path)) {
+                call.insert("content".into(), json!([image_content(&image)]));
+            }
             (format!("View {}", display_path(path, cwd)), "read")
         }
         "collabAgentToolCall" => {
@@ -412,7 +530,12 @@ pub(super) fn tool_call(item: &Value, done: bool, cwd: Option<&str>, output: Opt
         }
         "contextCompaction" => ("Compact the conversation".to_owned(), "other"),
         "sleep" => ("Wait".to_owned(), "other"),
-        "imageGeneration" => ("Generate an image".to_owned(), "other"),
+        "imageGeneration" => {
+            if done && let Some(image) = generated_image(item) {
+                call.insert("content".into(), json!([image_content(&image)]));
+            }
+            ("Generate an image".to_owned(), "other")
+        }
         _ => return None,
     };
     call.insert("sessionUpdate".into(), json!(if done { "tool_call_update" } else { "tool_call" }));
@@ -421,6 +544,19 @@ pub(super) fn tool_call(item: &Value, done: bool, cwd: Option<&str>, output: Opt
     call.insert("kind".into(), json!(kind));
     call.insert("status".into(), json!(tool_status(item, done)));
     Some(Value::Object(call))
+}
+
+fn image_content(image: &crate::model::AgentImage) -> Value {
+    json!({ "type": "content", "content": crate::images::content(image) })
+}
+
+/// A generated image: inline (base64 PNG) or, when codex saved it, the file.
+fn generated_image(item: &Value) -> Option<crate::model::AgentImage> {
+    if let Some(data) = item.get("result").and_then(Value::as_str).filter(|d| !d.is_empty()) {
+        let image = crate::model::AgentImage { mime_type: "image/png".into(), data: data.into(), name: None };
+        return Some(crate::model::AgentImage { mime_type: image.media_type().into(), ..image });
+    }
+    crate::images::from_file(std::path::Path::new(item.get("savedPath")?.as_str()?))
 }
 
 /// The output of a running command, as a `tool_call_update`.
@@ -587,6 +723,16 @@ pub(super) fn usage(params: &Value) -> Option<Value> {
     Some(json!({ "sessionUpdate": "usage_update", "used": used, "size": size }))
 }
 
+/// A thread name from the model's reply to the naming prompt: its first line, without
+/// quotes or a closing period. `None` when nothing is left.
+pub(super) fn thread_name(reply: &str) -> Option<String> {
+    const MAX_NAME: usize = 80;
+    let line = reply.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let line = line.trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '“' | '”' | '「' | '」' | '*'));
+    let line = line.trim_end_matches(['.', '。']).trim();
+    (!line.is_empty()).then(|| line.chars().take(MAX_NAME).collect())
+}
+
 /// How a failed turn is reported.
 #[derive(Debug, PartialEq)]
 pub(super) enum Failure {
@@ -732,19 +878,24 @@ pub(super) fn answer_of(choices: &[Choice], outcome: &Value, decline: Value) -> 
     choices.iter().find(|c| selected && c.option["optionId"].as_str() == chosen).map_or(decline, |c| c.answer.clone())
 }
 
+/// The command a command approval is about: the request's own, else its item's.
+pub(super) fn approval_command<'a>(params: &'a Value, item: Option<&'a Value>) -> Option<&'a str> {
+    // Approval payloads can describe a different command from the item's earlier summary.
+    let item = item.filter(|i| i.get("id") == params.get("itemId"));
+    params
+        .get("command")
+        .and_then(Value::as_str)
+        .filter(|c| !c.is_empty())
+        .or_else(|| item.and_then(|i| i.get("command")).and_then(Value::as_str).filter(|c| !c.is_empty()))
+}
+
 /// The ACP title of a command approval.
-pub(super) fn command_approval_title(params: &Value, item: Option<&Value>, cwd: Option<&str>) -> String {
+pub(super) fn command_approval_title(params: &Value, item: Option<&Value>) -> String {
     if let Some(host) = params.pointer("/networkApprovalContext/host").and_then(Value::as_str) {
         return format!("Allow network access to {host}");
     }
-    let from_item = item.and_then(|i| tool_call(i, false, cwd, None)).and_then(|c| str_of(&c, "title"));
-    let title = from_item.or_else(|| {
-        let synthetic = json!({ "id": "", "type": "commandExecution", "command": params.get("command"),
-            "commandActions": params.get("commandActions").cloned().unwrap_or(json!([])) });
-        tool_call(&synthetic, false, cwd, None).and_then(|c| str_of(&c, "title"))
-    });
-    match title.filter(|t| !t.is_empty()) {
-        Some(t) => format!("Run {t}"),
+    match approval_command(params, item) {
+        Some(command) => format!("Run {}", crate::shell_script(command).unwrap_or_else(|| command.to_owned())),
         None => "Run a command".to_owned(),
     }
 }
@@ -771,9 +922,23 @@ pub(super) fn history(thread: &Value, cwd: Option<&str>) -> Vec<Value> {
                                 "user_message_chunk",
                                 c.get("text").and_then(Value::as_str).unwrap_or_default(),
                             )),
-                            Some("image") => out.push(json!({ "sessionUpdate": "user_message_chunk",
-                                "content": { "type": "resource_link", "uri": c.get("url"), "name": "image" } })),
-                            Some("localImage" | "mention" | "skill") => {
+                            Some("image") => {
+                                let url = c.get("url").and_then(Value::as_str).unwrap_or_default();
+                                let content = crate::images::from_uri(url).map_or_else(
+                                    || json!({ "type": "resource_link", "uri": url, "name": "image" }),
+                                    |image| crate::images::content(&image),
+                                );
+                                out.push(json!({ "sessionUpdate": "user_message_chunk", "content": content }));
+                            }
+                            Some("localImage") => {
+                                let path = c.get("path").and_then(Value::as_str).unwrap_or_default();
+                                out.push(match crate::images::from_file(std::path::Path::new(path)) {
+                                    Some(image) => json!({ "sessionUpdate": "user_message_chunk",
+                                        "content": crate::images::content(&image) }),
+                                    None => chunk("user_message_chunk", path),
+                                });
+                            }
+                            Some("mention" | "skill") => {
                                 let path = c.get("path").and_then(Value::as_str).unwrap_or_default();
                                 out.push(chunk("user_message_chunk", path));
                             }
@@ -786,6 +951,7 @@ pub(super) fn history(thread: &Value, cwd: Option<&str>) -> Vec<Value> {
                     if !text.is_empty() {
                         out.push(chunk("agent_message_chunk", text));
                     }
+                    out.extend(question_update(item));
                 }
                 Some("reasoning") => {
                     let text = reasoning_text(item);
@@ -803,6 +969,36 @@ pub(super) fn history(thread: &Value, cwd: Option<&str>) -> Vec<Value> {
         }
     }
     out
+}
+
+/// Structured async questions accompany a completed message, even when its text streamed already.
+pub(super) fn question_update(item: &Value) -> Option<Value> {
+    let id = item.get("id")?.as_str().filter(|id| !id.is_empty())?;
+    let questions: Vec<Value> = item
+        .get("questions")?
+        .as_array()?
+        .iter()
+        .enumerate()
+        .filter_map(|(index, q)| {
+            let title = q.get("title")?.as_str().filter(|title| !title.trim().is_empty())?;
+            let options: Vec<Value> = q
+                .get("options")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .filter(|label| !label.trim().is_empty())
+                .map(|label| json!({ "label": label, "description": "" }))
+                .collect();
+            Some(json!({ "answerKey": json!(["request_user_input_async", id, index]).to_string(),
+            "question": title, "header": "", "multiSelect": false, "options": options }))
+        })
+        .collect();
+    if questions.is_empty() {
+        return None;
+    }
+    Some(json!({ "sessionUpdate": "user_question", "id": id,
+        "title": questions[0]["question"], "questions": questions }))
 }
 
 /// A reasoning item's summary (or, without one, its raw text).
@@ -834,4 +1030,53 @@ pub(super) fn tail(text: &str) -> String {
 
 fn str_of(v: &Value, key: &str) -> Option<String> {
     v.get(key).and_then(Value::as_str).map(str::to_owned)
+}
+
+/// Session-scoped MCP configuration, carried in thread/start, resume and fork.
+pub(super) fn mcp_config(params: &Value) -> Option<Value> {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from);
+    let cwd = params.get("cwd").and_then(Value::as_str).map_or_else(|| std::path::Path::new("."), std::path::Path::new);
+    let external = crate::mcp::codex_external_server_names(home.as_deref(), cwd);
+    mcp_config_with_external(params, &external)
+}
+
+pub(super) fn mcp_config_with_external(
+    params: &Value,
+    external_names: &std::collections::BTreeSet<String>,
+) -> Option<Value> {
+    let mut servers = serde_json::Map::new();
+    for server in params.get("mcpServers").and_then(Value::as_array).into_iter().flatten() {
+        if server.get("type").and_then(Value::as_str).is_some_and(|t| t != "stdio") {
+            continue;
+        }
+        let (Some(name), Some(command)) =
+            (server.get("name").and_then(Value::as_str), server.get("command").and_then(Value::as_str))
+        else {
+            continue;
+        };
+        let env: serde_json::Map<String, Value> = server
+            .get("env")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|v| Some((v.get("name")?.as_str()?.to_owned(), v.get("value")?.clone())))
+            .collect();
+        servers.insert(
+            name.into(),
+            json!({"command":command,
+            "args":server.get("args").cloned().unwrap_or_else(||json!([])),"env":env}),
+        );
+    }
+    for name in params
+        .pointer("/_meta/openidea/mcpServersOff")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        if !servers.contains_key(name) && external_names.contains(name) {
+            servers.insert(name.to_owned(), json!({ "enabled": false }));
+        }
+    }
+    (!servers.is_empty()).then(|| json!({"mcp_servers":servers}))
 }

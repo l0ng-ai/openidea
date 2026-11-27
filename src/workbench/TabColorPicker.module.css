@@ -1,0 +1,95 @@
+.panel {
+  padding: var(--space-2);
+}
+.swatches {
+  display: grid;
+  grid-template-columns: repeat(5, 22px);
+  gap: var(--space-2);
+}
+.swatch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  padding: 0;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  cursor: default;
+}
+.swatch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.swatchColor {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--danger),
+    var(--warning),
+    var(--success),
+    var(--info),
+    var(--syn-annotation),
+    var(--danger)
+  );
+}
+.swatchOn {
+  box-shadow: inset 0 0 0 2px var(--fg-emphasis);
+}
+.colorNative {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  border: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+}
+.footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.hex {
+  width: 86px;
+  height: var(--h-list-row);
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-small);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  background: var(--bg-control);
+  color: var(--fg);
+  font: inherit;
+  font-family: var(--font-mono);
+}
+.hex:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.hexInvalid,
+.hexInvalid:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--danger);
+}
+.reset {
+  border: 0;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  white-space: nowrap;
+  cursor: default;
+}
+.reset:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.reset:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}

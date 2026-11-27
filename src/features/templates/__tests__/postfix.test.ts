@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
-import { ensureSyntaxTree } from "@codemirror/language";
+import { completedSyntaxState } from "@/test/syntax";
 import { languages } from "@codemirror/language-data";
 import {
   candidatesFor,
@@ -22,8 +22,7 @@ const MODES: Record<string, string> = {
 
 async function target(language: string, doc: string) {
   const desc = languages.find((l) => l.name === MODES[language])!;
-  const state = EditorState.create({ doc, extensions: [await desc.load()] });
-  ensureSyntaxTree(state, state.doc.length, 5000);
+  const state = completedSyntaxState(EditorState.create({ doc, extensions: [await desc.load()] }));
   return findPostfixTarget(state, doc.length, language);
 }
 
@@ -100,8 +99,18 @@ describe("postfix target", () => {
     expect(e.snippet).toBe("const ${1:name} = user.getName();${0}");
   });
 
+  it("Zig: optional unwrap and expansion", () => {
+    const doc = "const value = maybe.nn";
+    const target = findPostfixTarget(EditorState.create({ doc }), doc.length, "zig")!;
+    expect(target.key).toBe("nn");
+    expect(target.candidates[0]!.text).toBe("maybe");
+    const tpl = postfixTemplatesFor("zig").find((x) => x.key === "nn")!;
+    const e = expandTemplate(tpl, { predefined: { EXPR: "maybe" } });
+    expect(e.snippet).toBe("if (maybe) |${1:item}| \\{\n\t${0}\n\\}");
+  });
+
   it("every language has the core keys", () => {
-    for (const lang of ["typescript", "rust", "python", "go", "java", "kotlin"]) {
+    for (const lang of ["typescript", "rust", "python", "go", "zig", "java", "kotlin"]) {
       const keys = postfixTemplatesFor(lang).map((t) => t.key);
       for (const k of ["if", "not", "return", "par", "nn"].filter((k) => !(lang === "rust" && k === "nn")))
         expect(keys).toContain(k);

@@ -8,26 +8,58 @@ name: Language smoke
 # (Run, Run tests, the test tree, Rerun Failed Tests): smoke/run.test.ts; and debugging its
 # entry point with the debugger the IDE installs (breakpoint, frames, variables, evaluate,
 # Step Over, Resume): smoke/debug.test.ts.
+# The paths below and the Changes step's patterns must cover every file the smoke loads and
+# every crate it runs: scripts/smoke-paths.test.ts checks them (`node scripts/smoke-paths.ts
+# [file…]` lists what they miss, or the languages a change runs).
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened]
-    paths:
+    paths: &paths
       - "crates/**"
       - "languages/**"
       - "fixtures/**"
+      - "java/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "src/features/run/**"
       - "src/features/debugger/**"
+      - "src/features/build/**"
+      - "src/features/build-tools/**"
       - "src/platform/**"
+      - "src/workbench/**"
+      - "src/ui/**"
+      - "src/editor/api.ts"
+      - "src/editor/navigationProviders.ts"
+      - "src/editor/relatedProviders.ts"
+      - "src/editor/core/cm/cornerInset.ts"
+      - "src/editor/core/cm/iconArea.ts"
+      - "src/editor/lsp/availability.ts"
+      - "src/editor/lsp/diagnostics.ts"
+      - "src/editor/lsp/files.ts"
+      - "src/editor/lsp/hint.ts"
+      - "src/editor/lsp/lsp.ts"
+      - "src/editor/lsp/positions.ts"
+      - "src/bindings.ts"
+      - "src/styles/tokens.css"
+      - "src/test/setup.ts"
+      - "src-tauri/icons/128x128.png"
       - "smoke/**"
+      - "vite.config.ts"
+      - "tsconfig.json"
       - "package.json"
       - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "patches/**"
       - ".github/workflows/language-smoke.yml"
+      - ".github/tool-versions.env"
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths: *paths
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: language-smoke-${{ github.ref }}
@@ -37,41 +69,174 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  # Pinned so a server release can't fail an unrelated PR; bump them deliberately.
-  VTSLS: 0.3.0
-  TYPESCRIPT: 6.0.3
-  BASEDPYRIGHT: 1.40.2
-  RUFF: 0.17.3
-  GOPLS: v0.24.0
-  JDTLS: 1.63.0-202610191322
-  KOTLIN_LSP: 263.7084.0
-  GRADLE: 8.14.3
 
 jobs:
+  # The languages a pull request can affect: a change to one language's fixture, definition or
+  # JDT LS bundle runs that language; crates the smoke doesn't exercise and other crates' tests
+  # run none; anything else runs them all. Pushes and manual runs always run them all.
+  changes:
+    name: Changes
+    # Self-hosted runners (scripts/selfhost-runner) only for trusted events, and only while the
+    # SELFHOSTED_RUNNERS repository variable is 'true': runs-on cannot fall back when none is online.
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      languages: ${{ steps.classify.outputs.languages }}
+    steps:
+      - id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          all="typescript python rust go java kotlin php c cpp"
+          emit() { tr ' ' '\n' <<< "$1" | { grep . || true; } | sort -u | jq -Rsc 'split("\n") | map(select(. != ""))'; }
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            echo "languages=$(emit "$all")" | tee -a "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" \
+            --jq '.[] | .filename, (.previous_filename // empty)' > files.txt
+          cat files.txt
+          # Crates outside what the smoke runs (language servers, debuggers, run configurations,
+          # SDKs, build tools, the project model, Find Usages candidates, debug stream traces):
+          # cargo metadata, ide-host's direct deps ide-search/ide-streams and the deps of
+          # ide-lsp/dap/run/sdk/tools.
+          unused='^crates/(ide-agent|ide-analysis|ide-android|ide-cli|ide-clipboard|ide-coverage|ide-db|ide-docker|ide-fonts|ide-github|ide-http|ide-mcp|ide-notebook|ide-profiler|ide-scaffold|ide-spell|ide-ssh|ide-vcs|ide-web)/'
+          # The workflow's paths, less those handled per language below.
+          smoke='^(crates/|Cargo\.(toml|lock)$|src/features/(run|debugger|build|build-tools)/|src/platform/|src/workbench/|src/ui/|src/editor/(api|navigationProviders|relatedProviders|core/cm/(cornerInset|iconArea)|lsp/(availability|diagnostics|files|hint|lsp|positions))\.ts$|src/bindings\.ts$|src/styles/tokens\.css$|src/test/setup\.ts$|src-tauri/icons/128x128\.png$|smoke/|vite\.config\.ts$|tsconfig\.json$|package\.json$|pnpm-(lock|workspace)\.yaml$|patches/|\.github/workflows/language-smoke\.yml$|\.github/tool-versions\.env$)'
+          langs=""
+          while read -r f; do
+            case "$f" in
+              crates/ide-host/tests/language_smoke.rs | crates/ide-host/tests/project_smoke.rs) langs="$all"; break ;;
+              crates/*/tests/* | crates/*/benches/*) ;;
+              fixtures/ts-app/*) langs+=" typescript" ;;
+              fixtures/python-app/*) langs+=" python" ;;
+              fixtures/rust-app/*) langs+=" rust" ;;
+              fixtures/go-app/*) langs+=" go" ;;
+              fixtures/java-app/*) langs+=" java" ;;
+              fixtures/kotlin-gradle/*) langs+=" kotlin" ;;
+              fixtures/php-app/*) langs+=" php" ;;
+              fixtures/c-app/*) langs+=" c cpp" ;;
+              fixtures/*) ;;
+              languages/typescript.toml | languages/typescriptreact.toml | languages/javascript.toml | languages/javascriptreact.toml) langs+=" typescript" ;;
+              languages/python.toml) langs+=" python" ;;
+              languages/rust.toml) langs+=" rust" ;;
+              languages/go.toml | languages/gomod.toml | languages/gowork.toml) langs+=" go" ;;
+              languages/java.toml) langs+=" java" ;;
+              languages/kotlin.toml) langs+=" kotlin" ;;
+              languages/php.toml) langs+=" php" ;;
+              languages/c.toml) langs+=" c" ;;
+              languages/cpp.toml) langs+=" cpp" ;;
+              languages/*) ;;
+              java/kotlin-bridge/*) langs+=" kotlin" ;;
+              java/*) langs+=" java kotlin" ;;
+              *) if grep -Eq "$smoke" <<< "$f" && ! grep -Eq "$unused" <<< "$f"; then langs="$all"; break; fi ;;
+            esac
+          done < files.txt
+          echo "languages=$(emit "$langs")" | tee -a "$GITHUB_OUTPUT"
+
+  # Builds the smoke test binaries and openidea-server once for every language below.
+  build:
+    name: Build
+    needs: changes
+    if: needs.changes.outputs.languages != '[]'
+    # Self-hosted runners (scripts/selfhost-runner) only for trusted events, and only while the
+    # SELFHOSTED_RUNNERS repository variable is 'true': runs-on cannot fall back when none is online.
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    env:
+      # Line tables keep test backtraces readable and the binaries handed on small without
+      # stripping local-variable debuginfo from fixtures debugged in the smoke job (CodeLLDB).
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment != 'self-hosted'
+        with:
+          shared-key: language-smoke
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Persistent Cargo target dir
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          echo "CARGO_INCREMENTAL=1" >> "$GITHUB_ENV"
+          size=$(du -sm "$CARGO_TARGET_DIR" 2>/dev/null | cut -f1 || true)
+          if [ "${size:-0}" -gt 40000 ]; then
+            echo "$CARGO_TARGET_DIR is ${size} MB; clearing it"
+            rm -rf "$CARGO_TARGET_DIR"
+          fi
+      - run: |
+          set -euo pipefail
+          mkdir -p smoke-bin
+          cargo test --locked -p ide-host --test language_smoke --test project_smoke --no-run --message-format=json \
+            | jq -r 'select(.reason == "compiler-artifact" and .executable != null and .target.kind == ["test"]) | "\(.target.name) \(.executable)"' \
+            | while read -r name exe; do cp "$exe" "smoke-bin/$name"; done
+          cargo build --locked -p ide-host --bin openidea-server
+          cp "${CARGO_TARGET_DIR:-target}/debug/openidea-server" smoke-bin/
+          ls -l smoke-bin
+          test -x smoke-bin/language_smoke && test -x smoke-bin/project_smoke
+          # A tar keeps the executable bits, which artifacts drop.
+          tar -cf smoke-bin.tar smoke-bin
+      - uses: actions/upload-artifact@v6
+        with: { name: smoke-bin, path: smoke-bin.tar, retention-days: 1 }
+
   smoke:
     name: Language smoke (${{ matrix.language }})
+    needs: [changes, build]
     strategy:
       fail-fast: false
       matrix:
-        language: [typescript, python, rust, go, java, kotlin]
-    runs-on: ubuntu-22.04
+        language: ${{ fromJSON(needs.changes.outputs.languages) }}
+    # Self-hosted runners (scripts/selfhost-runner) only for trusted events, and only while the
+    # SELFHOSTED_RUNNERS repository variable is 'true': runs-on cannot fall back when none is online.
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
     timeout-minutes: 40
+    # Self-hosted runner slots have distinct checkout paths (/persist/slot-<N>/work/...); override
+    # the compiled-in CARGO_MANIFEST_DIR so binaries from the Build job find this slot's fixtures.
+    env:
+      CARGO_MANIFEST_DIR: ${{ github.workspace }}/crates/ide-host
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      # Tool versions, shared with the evals (pnpm eval).
+      - run: grep -E '^[A-Z0-9_]+=' .github/tool-versions.env >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "rust-analyzer, rustfmt" }
-      # One build cache for every language; main saves it.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: language-smoke
-          save-if: ${{ github.ref == 'refs/heads/main' && matrix.language == 'rust' }}
+      - uses: actions/download-artifact@v6
+        with: { name: smoke-bin }
+      - run: |
+          tar -xf smoke-bin.tar && rm smoke-bin.tar
+          mkdir -p target/debug && mv smoke-bin/openidea-server target/debug/
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
         with: { version: 11 }
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: pnpm }
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: ${{ runner.environment != 'self-hosted' && 'pnpm' || '' }}
+          package-manager-cache: ${{ runner.environment != 'self-hosted' }}
       - if: matrix.language == 'typescript'
         run: npm install --global "@vtsls/language-server@$VTSLS" "typescript@$TYPESCRIPT"
+
+      # The smoke checks C/C++ with clangd and debugs c-app with GDB's own DAP interpreter (GDB 14+).
+      - if: matrix.language == 'c' || matrix.language == 'cpp'
+        shell: bash
+        run: |
+          pkgs=()
+          command -v clangd >/dev/null || pkgs+=(clangd)
+          command -v gdb >/dev/null || pkgs+=(gdb)
+          if [ "${#pkgs[@]}" -gt 0 ]; then
+            sudo apt-get update
+            sudo apt-get install -y "${pkgs[@]}"
+          fi
+          major=$(gdb --version | head -n1 | grep -Eo '[0-9]+\.[0-9]+' | head -n1 | cut -d. -f1)
+          if [ "${major:-0}" -lt 14 ]; then
+            echo "::error::GDB 14+ is required for its DAP interpreter; recreate the runner from scripts/selfhost-runner (Ubuntu 24.04)."
+            exit 1
+          fi
 
       - if: matrix.language == 'python'
         uses: actions/setup-python@v5
@@ -87,9 +252,10 @@ jobs:
 
       - if: matrix.language == 'java' || matrix.language == 'kotlin'
         uses: actions/setup-java@v4
-        with: { distribution: temurin, java-version: "21" }
+        with: { distribution: temurin, java-version: "${{ env.JAVA }}" }
       - if: matrix.language == 'java'
         run: |
+          command -v mvn >/dev/null || { sudo apt-get update && sudo apt-get install -y maven; }
           mkdir -p "$RUNNER_TEMP/jdtls"
           curl -fsSL "https://download.eclipse.org/jdtls/milestones/${JDTLS%-*}/jdt-language-server-$JDTLS.tar.gz" \
             | tar xz -C "$RUNNER_TEMP/jdtls"
@@ -107,17 +273,27 @@ jobs:
           ln -s "$RUNNER_TEMP/kotlin-lsp/kotlin-lsp.sh" "$RUNNER_TEMP/bin/kotlin-lsp"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
-      - run: cargo test --locked -p ide-host --test language_smoke --no-run
-      - run: cargo test --locked -p ide-host --test language_smoke -- --ignored --exact ${{ matrix.language }}
+      # Xdebug for the debug smoke; Composer installs the fixture's Pest for the run smoke.
+      - if: matrix.language == 'php'
+        uses: shivammathur/setup-php@v2
+        with: { php-version: "8.5", coverage: xdebug, tools: composer }
+      - if: matrix.language == 'php'
+        run: npm install --global "intelephense@$INTELEPHENSE"
+
+      # The binaries from the build job, run from the crate directory as `cargo test` does.
+      - working-directory: crates/ide-host
+        run: ../../smoke-bin/language_smoke --ignored --exact ${{ matrix.language }}
       - if: matrix.language == 'java'
-        run: cargo test --locked -p ide-host --test project_smoke -- --ignored --exact maven_sync jdk
+        working-directory: crates/ide-host
+        run: ../../smoke-bin/project_smoke --ignored --exact maven_sync jdk maven_launch_classpath_uses_the_runner_jdk_classifier
       - if: matrix.language == 'kotlin'
-        run: cargo test --locked -p ide-host --test project_smoke -- --ignored --exact gradle_sync
+        working-directory: crates/ide-host
+        run: ../../smoke-bin/project_smoke --ignored --exact gradle_sync
       - if: matrix.language == 'python'
-        run: cargo test --locked -p ide-host --test project_smoke -- --ignored --exact python_venv
+        working-directory: crates/ide-host
+        run: ../../smoke-bin/project_smoke --ignored --exact python_venv
 
       - run: pnpm install --frozen-lockfile
-      - run: cargo build --locked -p ide-host --bin openidea-server
       - run: pnpm smoke smoke/run.test.ts -t "^${{ matrix.language }}$"
       - run: pnpm smoke smoke/debug.test.ts -t "^${{ matrix.language }}$"
         # The IDE installs the debugger from GitHub releases: authenticated, against rate limits.

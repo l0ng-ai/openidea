@@ -1,0 +1,26 @@
+id = "swift"
+name = "Swift"
+group = "Swift"
+icon = "project-swift"
+description = "A Swift package from swift package init."
+
+[[requires]]
+program = "swift"
+hint = "Install Swift: https://www.swift.org/install/"
+
+[[fields]]
+id = "type"
+label = "Type:"
+type = "choice"
+segmented = true
+options = [
+    { value = "executable", label = "Executable" },
+    { value = "library", label = "Library" },
+    { value = "tool", label = "Command-line tool" },
+]
+default = "executable"
+
+[[steps]]
+label = "Running swift package init"
+program = "swift"
+args = ["package", "init", "--type", "{{type}}", "--name", "{{name|pascal}}"]

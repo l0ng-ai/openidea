@@ -1,9 +1,9 @@
 /** ⌘F in the terminal: search the scrollback (xterm addon-search) with Match Case / Words / Regex. */
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
 import { IconButton, SearchField } from "@/ui";
-import type { TerminalSearchOptions, TerminalSearchResult } from "./session";
+import { ACTIVE_SEARCH_DECORATION_CLASS, type TerminalSearchOptions, type TerminalSearchResult } from "./session";
 import { activeSession } from "./store";
 import styles from "./Terminal.module.css";
 import { formatBinding, hasPrimaryModifier } from "@/platform/keymap";
@@ -20,8 +20,11 @@ export const useTerminalFind = create<{ open: boolean; seq: number; query: strin
 
 /** Opens (or refocuses) the find bar, seeding it with the terminal selection. */
 export function openTerminalFind() {
-  // While open, the terminal selection is the current match: keep the query.
-  const selection = useTerminalFind.getState().open ? "" : activeSession()?.term.getSelection().trim();
+  // While open, a selection placed by SearchAddon is the current match: keep the query.
+  // A fresh user selection in the terminal still seeds the find bar.
+  const session = activeSession();
+  const { open } = useTerminalFind.getState();
+  const selection = session && (!open || !session.isSearchSelection) ? session.term.getSelection().trim() : "";
   useTerminalFind.setState((s) => ({
     open: true,
     seq: s.seq + 1,
@@ -49,6 +52,7 @@ let focusedSeq = 0;
 
 export function TerminalFindBar({ sessionKey }: { sessionKey: string | null }) {
   const { open, seq, query, options } = useTerminalFind();
+  const bar = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
   const [result, setResult] = useState<TerminalSearchResult | null>(null);
 
@@ -76,6 +80,46 @@ export function TerminalFindBar({ sessionKey }: { sessionKey: string | null }) {
     };
   }, [open, query, options, sessionKey]);
 
+  // Measure against the bar's default upper-right position, even when it has moved.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const element = bar.current;
+    const output = element?.parentElement;
+    const session = activeSession();
+    if (!element || !output || !session) return;
+    let frame = 0;
+    const update = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        const match = session.isSearchSelection
+          ? session.term.element?.querySelector(`.${ACTIVE_SEARCH_DECORATION_CLASS}`)?.getBoundingClientRect()
+          : undefined;
+        if (!match?.width) {
+          element.removeAttribute("data-match-covered");
+          return;
+        }
+        const top = output.getBoundingClientRect().top;
+        const { left, right, height } = element.getBoundingClientRect();
+        element.toggleAttribute(
+          "data-match-covered",
+          match.bottom > top && match.top < top + height && match.right > left && match.left < right,
+        );
+      });
+    };
+    const render = session.term.onRender(update);
+    const observer = new ResizeObserver(update);
+    observer.observe(output);
+    observer.observe(element);
+    update();
+    return () => {
+      render.dispose();
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+      element.removeAttribute("data-match-covered");
+    };
+  }, [open, sessionKey]);
+
   if (!open) return null;
 
   const find = (direction: "next" | "previous") => activeSession()?.find(query, options, direction);
@@ -87,6 +131,7 @@ export function TerminalFindBar({ sessionKey }: { sessionKey: string | null }) {
       e.stopPropagation();
       closeTerminalFind();
     } else if (e.key === "Enter") {
+      if ((e.target as Element).closest("button")) return;
       e.preventDefault();
       find(e.shiftKey ? "previous" : "next");
     } else if (e.key === "F3" || (hasPrimaryModifier(e) && e.key.toLowerCase() === "g")) {
@@ -106,6 +151,7 @@ export function TerminalFindBar({ sessionKey }: { sessionKey: string | null }) {
 
   return (
     <div
+      ref={bar}
       className={styles.find}
       role="search"
       aria-label={tx("Find in terminal")}
@@ -120,54 +166,64 @@ export function TerminalFindBar({ sessionKey }: { sessionKey: string | null }) {
         placeholder="Find in terminal"
         aria-label="Find in terminal"
         invalid={none}
-        toggles={[
-          {
-            id: "case",
-            icon: "case",
-            title: "Match Case",
-            shortcut: formatBinding("Alt+C"),
-            pressed: options.caseSensitive,
-            onToggle: () => toggle("caseSensitive"),
-          },
-          {
-            id: "word",
-            icon: "word",
-            title: "Words",
-            shortcut: formatBinding("Alt+W"),
-            pressed: options.wholeWord,
-            onToggle: () => toggle("wholeWord"),
-          },
-          {
-            id: "regex",
-            icon: "regex",
-            title: "Regex",
-            shortcut: formatBinding("Alt+X"),
-            pressed: options.regex,
-            onToggle: () => toggle("regex"),
-          },
-        ]}
       />
-      <span className={clsx(styles.findCount, none && styles.findCountNone)} aria-live="polite">
-        {counter}
-      </span>
-      <IconButton
-        icon="arrow-up"
-        title="Previous Occurrence"
-        shortcut={formatBinding("Shift+Enter")}
-        size="small"
-        disabled={!query}
-        onClick={() => find("previous")}
-      />
-      <IconButton
-        icon="arrow-down"
-        title="Next Occurrence"
-        shortcut="↵"
-        size="small"
-        disabled={!query}
-        onClick={() => find("next")}
-      />
-      <span className={styles.findSpacer} />
-      <IconButton icon="close" title="Close" shortcut="⎋" size="small" onClick={closeTerminalFind} />
+      <div className={styles.findControls}>
+        <div className={styles.findOptions}>
+          <IconButton
+            icon="case"
+            title="Match Case"
+            shortcut={formatBinding("Alt+C")}
+            pressed={options.caseSensitive}
+            size="small"
+            onClick={() => toggle("caseSensitive")}
+          />
+          <IconButton
+            icon="word"
+            title="Words"
+            shortcut={formatBinding("Alt+W")}
+            pressed={options.wholeWord}
+            size="small"
+            onClick={() => toggle("wholeWord")}
+          />
+          <IconButton
+            icon="regex"
+            title="Regex"
+            shortcut={formatBinding("Alt+X")}
+            pressed={options.regex}
+            size="small"
+            onClick={() => toggle("regex")}
+          />
+        </div>
+        <div className={styles.findActions}>
+          <span className={clsx(styles.findCount, none && styles.findCountNone)} aria-live="polite">
+            {counter}
+          </span>
+          <IconButton
+            icon="arrow-up"
+            title="Previous Occurrence"
+            shortcut={formatBinding("Shift+Enter")}
+            size="small"
+            disabled={!query || !result?.count}
+            onClick={() => find("previous")}
+          />
+          <IconButton
+            icon="arrow-down"
+            title="Next Occurrence"
+            shortcut="↵"
+            size="small"
+            disabled={!query || !result?.count}
+            onClick={() => find("next")}
+          />
+        </div>
+        <IconButton
+          className={styles.findClose}
+          icon="close"
+          title="Close"
+          shortcut="⎋"
+          size="small"
+          onClick={closeTerminalFind}
+        />
+      </div>
     </div>
   );
 }

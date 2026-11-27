@@ -23,6 +23,7 @@ import {
   type EditorDocumentLifecycle,
   type EditorInput,
 } from "@/workbench/contributions";
+import { pluginsBackend } from "../backend";
 import { PluginView } from "./PluginView";
 import { WebView, type DocumentState, type FrameDocument } from "./WebView";
 import styles from "./PluginView.module.css";
@@ -35,6 +36,7 @@ export interface CustomEditorData {
   title: string;
   /** A web page of the package (`web`) rather than content the code renders. */
   web?: boolean;
+  binary?: boolean;
 }
 
 export interface CustomEditorDecl {
@@ -45,10 +47,17 @@ export interface CustomEditorDecl {
   /** `tab`: its own tab; `split` / `preview`: beside the text editor, starting in that layout. */
   layout?: "tab" | "split" | "preview";
   web?: string;
+  binary?: boolean;
 }
 
 export function customEditorInput(pluginId: string, decl: CustomEditorDecl, path: string): EditorInput {
-  const data: CustomEditorData = { pluginId, editorId: decl.id, title: decl.title, web: !!decl.web };
+  const data: CustomEditorData = {
+    pluginId,
+    editorId: decl.id,
+    title: decl.title,
+    web: !!decl.web,
+    ...(decl.binary ? { binary: true } : {}),
+  };
   return { kind: CUSTOM_EDITOR_KIND, key: `${CUSTOM_EDITOR_KIND}:${pluginId}/${decl.id}:${path}`, path, data };
 }
 
@@ -143,6 +152,8 @@ function session(key: string, path: string): Promise<Session> {
       });
       const frameDocument: FrameDocument = {
         read: () => ({ version, text: view.state.doc.toString(), readOnly: attachment.readOnly, name: basename(path) }),
+        // The file's bytes, for a binary custom editor the page renders.
+        bytes: () => pluginsBackend().readFileBytes(path),
         edit: (at, changes) => {
           if (at !== version) throw new Error("stale");
           // One edit of the document's history: Undo in the text editor (or this tab) reverts it.
@@ -280,6 +291,36 @@ function SessionBody({
 }
 
 export function CustomEditor({ input }: { input: EditorInput }) {
+  return (input.data as CustomEditorData).binary ? (
+    <BinaryCustomEditor input={input} />
+  ) : (
+    <DocumentCustomEditor input={input} />
+  );
+}
+
+function BinaryCustomEditor({ input }: { input: EditorInput }) {
+  const { pluginId, editorId, title } = input.data as CustomEditorData;
+  const path = input.path!;
+  const name = basename(path);
+  const document = useMemo<FrameDocument>(
+    () => ({
+      read: () => ({ version: 0, text: "", readOnly: true, name }),
+      bytes: () => pluginsBackend().readFileBytes(path),
+      size: async () => (await pluginsBackend().readFileRange(path, 0, 0)).total,
+      readRange: async (offset, length) => (await pluginsBackend().readFileRange(path, offset, length)).data,
+      edit: () => {
+        throw new Error("the document is read-only");
+      },
+      subscribe: () => () => {},
+    }),
+    [path, name],
+  );
+  return (
+    <WebView pluginId={pluginId} view={editorId} document={document} binaryPath={path} label={tx`${title}: ${name}`} />
+  );
+}
+
+function DocumentCustomEditor({ input }: { input: EditorInput }) {
   const data = input.data as CustomEditorData;
   const state = useSession(input.key, input.path ?? "", false);
 

@@ -2,7 +2,91 @@
 //! URI (library classes from `jdt://`, disk classes from `file://`, or
 //! `workspace/textDocumentContent`).
 
-use percent_encoding::percent_decode_str;
+use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
+
+const URI_ESCAPES: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'<')
+    .add(b'>')
+    .add(b'[')
+    .add(b']')
+    .add(b'\\')
+    .add(b'^')
+    .add(b'`')
+    .add(b'{')
+    .add(b'|')
+    .add(b'}');
+
+/// Servers can leave spaces and Unicode unescaped in document URIs: csharp-ls uses .NET
+/// `Uri.ToString()`, and Java servers build some URIs with `java.net.URI.toString()` (which keeps
+/// non-ASCII characters), e.g. jdtls in a refactoring's edit for a project under a Chinese path.
+/// Escape them in document URI fields (and `WorkspaceEdit.changes` keys) before lsp-types' strict
+/// URI deserialization, which otherwise rejects the whole response.
+pub(crate) fn normalize_uris(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Array(values) => values.iter_mut().for_each(normalize_uris),
+        serde_json::Value::Object(fields) => {
+            for (key, value) in fields.iter_mut() {
+                // Opaque payloads must survive resolve/execute round trips unchanged.
+                if matches!(key.as_str(), "data" | "arguments") {
+                    continue;
+                }
+                if matches!(key.as_str(), "uri" | "targetUri" | "oldUri" | "newUri" | "target")
+                    && let Some(uri) = value.as_str().and_then(escaped_uri)
+                {
+                    *value = uri.into();
+                } else if key == "changes"
+                    && let serde_json::Value::Object(changes) = value
+                {
+                    *changes = std::mem::take(changes)
+                        .into_iter()
+                        .map(|(uri, mut edits)| {
+                            normalize_uris(&mut edits);
+                            (escaped_uri(&uri).unwrap_or(uri), edits)
+                        })
+                        .collect();
+                } else {
+                    normalize_uris(value);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `uri` with the characters a URI can't hold escaped; `None` when nothing changes or it is
+/// not a document URI this applies to (other schemes are passed back to servers as given).
+fn escaped_uri(uri: &str) -> Option<String> {
+    if !(uri.starts_with("file:") || uri.starts_with("csharp:")) {
+        return None;
+    }
+    let escaped = utf8_percent_encode(uri, URI_ESCAPES).to_string();
+    (escaped != uri).then_some(escaped)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CSharpMetadata {
+    pub source: String,
+    pub assembly_name: Option<String>,
+}
+
+/// csharp-ls serves both decompiled and source-generated documents through metadata.
+pub(crate) fn is_csharp_decompiled(uri: &str) -> bool {
+    if scheme(uri) != "csharp" {
+        return false;
+    }
+    let segs = segments(uri);
+    // The kind follows the project file, not a directory that happens to have this name.
+    if let Some(kind) = segs.windows(2).find_map(|s| {
+        (s[0].ends_with(".csproj") && matches!(s[1].as_str(), "decompiled" | "generated")).then_some(s[1].as_str())
+    }) {
+        return kind == "decompiled";
+    }
+    // Older csharp-ls versions used csharp:/metadata/... for decompiled symbols.
+    segs.first().is_some_and(|s| s == "metadata")
+}
 
 /// Recognize decompiler headers, without treating disassembler stubs as Java source.
 pub fn is_decompiled(text: &str) -> bool {
@@ -24,6 +108,17 @@ pub fn is_decompiled(text: &str) -> bool {
             .iter()
             .any(|marker| line.starts_with(marker))
         })
+}
+
+/// Whether a `.class` stub is written in Java: its first `package` or `import` line ends with `;`.
+/// The Kotlin language server shows Java classes from jars as Java and Kotlin ones as Kotlin, under
+/// the same `.class` name.
+pub fn is_java_class_stub(text: &str) -> bool {
+    text.lines()
+        .take(200)
+        .map(str::trim)
+        .find(|line| line.starts_with("package ") || line.starts_with("import "))
+        .is_some_and(|line| line.ends_with(';'))
 }
 
 /// `scheme` of a URI (`jdt` for `jdt://…`).
@@ -88,12 +183,44 @@ pub fn description(uri: &str) -> Option<String> {
     }
 }
 
-/// Check both the package and actual archive, so duplicate type names never pick another jar.
-pub(crate) fn matches_class(uri: &str, jar: &std::path::Path, package: &str, name: &str) -> bool {
+/// The archive a `jar:` or `jdt:` library class comes from.
+pub(crate) fn archive(uri: &str) -> Option<std::path::PathBuf> {
+    match scheme(uri) {
+        "jar" => Some(crate::library_source::parse(uri)?.jar),
+        "jdt" => description(uri).filter(|p| p.ends_with(".jar") || p.ends_with(".jmod")).map(Into::into),
+        _ => None,
+    }
+}
+
+/// Timestamps for a library document's archive and its replaceable SNAPSHOT attachment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ArchiveStamp {
+    archive: std::time::SystemTime,
+    sources: Option<std::time::SystemTime>,
+}
+
+pub(crate) fn archive_modified(uri: &str) -> Option<ArchiveStamp> {
+    let modified = |path: &std::path::Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    let archive = archive(uri)?;
+    let sources = archive
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix("-SNAPSHOT.jar"))
+        .and_then(|name| modified(&archive.with_file_name(format!("{name}-SNAPSHOT-sources.jar"))));
+    Some(ArchiveStamp { archive: modified(&archive)?, sources })
+}
+
+/// Whether `uri` is jdtls' class `package.name`, in any archive.
+pub(crate) fn matches_class_name(uri: &str, package: &str, name: &str) -> bool {
     let segs = segments(uri);
     scheme(uri) == "jdt"
         && (package.is_empty() && segs.len() == 3 || segs.get(2).is_some_and(|s| s == package))
         && segs.last().is_some_and(|s| s == &format!("{name}.class") || s == &format!("{name}.java"))
+}
+
+/// Check both the package and actual archive, so duplicate type names never pick another jar.
+pub(crate) fn matches_class(uri: &str, jar: &std::path::Path, package: &str, name: &str) -> bool {
+    matches_class_name(uri, package, name)
         && description(uri).is_some_and(|p| {
             let path = std::path::Path::new(&p);
             path == jar
@@ -101,11 +228,161 @@ pub(crate) fn matches_class(uri: &str, jar: &std::path::Path, package: &str, nam
         })
 }
 
+/// jdtls' document for class `package.name` of archive `jar` among `uris`. With `any_archive`,
+/// when the caller names the archive by another path than the Java model does (a copy another
+/// server made of a `system`-scope jar, say), the one class of that name in the model; with
+/// several, none rather than another jar's.
+pub(crate) fn pick_class(
+    uris: impl IntoIterator<Item = String>,
+    jar: &std::path::Path,
+    package: &str,
+    name: &str,
+    any_archive: bool,
+) -> Option<String> {
+    let named: Vec<String> = uris.into_iter().filter(|uri| matches_class_name(uri, package, name)).collect();
+    if let Some(uri) = named.iter().find(|uri| matches_class(uri, jar, package, name)) {
+        return Some(uri.clone());
+    }
+    match named.as_slice() {
+        [only] if any_archive => Some(only.clone()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const JDT: &str = "jdt://contents/spring-boot-4.1.1.jar/org.springframework.boot/SpringApplication.class?=spring-demo/%5C/Users%5C/me%5C/.m2%5C/repository%5C/spring-boot-4.1.1.jar%3Corg.springframework.boot%28SpringApplication.class";
+
+    #[test]
+    fn picks_the_class_of_the_archive_or_the_only_one_of_that_name() {
+        let jdt = |jar: &str, file: &str| {
+            format!(
+                "jdt://contents/{file}/org.springframework.boot/SpringApplication.class?=demo/%5C/repo%5C/{jar}%3Corg.springframework.boot%28SpringApplication.class"
+            )
+        };
+        let (a, b) = (jdt("a.jar", "a.jar"), jdt("b.jar", "b.jar"));
+        let pick = |uris: &[&String], jar: &str| {
+            pick_class(
+                uris.iter().map(|u| (*u).clone()),
+                std::path::Path::new(jar),
+                "org.springframework.boot",
+                "SpringApplication",
+                true,
+            )
+        };
+        assert_eq!(pick(&[&a, &b], "/repo/b.jar"), Some(b.clone()));
+        // Another path for the archive: the only class of that name.
+        assert_eq!(pick(&[&a], "/elsewhere/copy.jar"), Some(a.clone()));
+        // Two candidates and neither archive matches: none rather than a guess.
+        assert_eq!(pick(&[&a, &b], "/elsewhere/copy.jar"), None);
+        let other = JDT.replace("SpringApplication.class", "Banner.class");
+        assert_eq!(pick(&[&other], "/elsewhere/copy.jar"), None);
+        // Strict: only the named archive.
+        let strict = pick_class(
+            [a.clone()],
+            std::path::Path::new("/elsewhere/copy.jar"),
+            "org.springframework.boot",
+            "SpringApplication",
+            false,
+        );
+        assert_eq!(strict, None);
+    }
+
+    #[test]
+    fn class_stubs_in_java_or_kotlin() {
+        let java = "// IntelliJ API Decompiler stub source generated from a class file\n\npackage com.boydti.fawe.util;\n\npublic class EditSessionBuilder {\n}\n";
+        let kotlin = "// IntelliJ API Decompiler stub source generated from a class file\n// Implementation of methods is not available\n\npackage kotlin.collections\n\npublic fun <T> listOf(): List<T> { /* compiled code */ }\n";
+        let imports_only = "import java.util.List;\n\npublic class A {}\n";
+        assert!(is_java_class_stub(java));
+        assert!(is_java_class_stub(imports_only));
+        assert!(!is_java_class_stub(kotlin));
+        assert!(!is_java_class_stub("public class A {}"));
+    }
+
+    #[test]
+    fn csharp_metadata_titles_and_kinds() {
+        for (uri, expected) in [
+            ("csharp:/D:/My%20Game/Game.csproj/decompiled/UnityEngine.MonoBehaviour.cs", true),
+            ("csharp:/home/me/%E9%A1%B9%E7%9B%AE/App.csproj/decompiled/System.String.cs", true),
+            ("csharp:/metadata/projects/App/assemblies/System.Runtime/symbols/System.String.cs", true),
+            ("csharp:/work/App.csproj/generated/Generator/Player.g.cs", false),
+            ("csharp:/work/decompiled/App.csproj/generated/Generator/Player.g.cs", false),
+            ("csharp:/metadata/App.csproj/generated/Player.g.cs", false),
+            ("csharp:/work/App.csproj/generated/decompiled/Player.g.cs", false),
+            ("file:///work/App.csproj/decompiled/Player.cs", false),
+        ] {
+            assert_eq!(is_csharp_decompiled(uri), expected, "{uri}");
+        }
+        assert_eq!(
+            title("csharp:/D:/My%20Game/Game.csproj/decompiled/UnityEngine.MonoBehaviour.cs", true),
+            "UnityEngine.MonoBehaviour.cs"
+        );
+        assert_eq!(title("csharp:/home/me/App.csproj/decompiled/Example.%E7%B1%BB.cs", true), "Example.类.cs");
+    }
+
+    #[test]
+    fn csharp_uri_encoding_preserves_escapes_and_other_response_fields() {
+        let uri = "csharp:/D:/My Game/项目 [1]/App%23%25.csproj/decompiled/Example.C%601.cs";
+        let encoded = "csharp:/D:/My%20Game/%E9%A1%B9%E7%9B%AE%20%5B1%5D/App%23%25.csproj/decompiled/Example.C%601.cs";
+        let mut response = serde_json::json!([
+            { "uri": uri, "source": uri },
+            { "location": { "targetUri": uri } },
+            { "uri": encoded },
+            { "uri": "file:///D:/project/App.cs" },
+            { "uri": "jdt://contents/a.jar/p/C.class?=p/%5C/a.jar" },
+            { "data": { "uri": uri }, "command": { "arguments": [{ "targetUri": uri }] } }
+        ]);
+        let original = response.clone();
+        normalize_uris(&mut response);
+        assert_eq!(response[0]["uri"], encoded);
+        assert_eq!(response[0]["source"], uri);
+        assert_eq!(response[1]["location"]["targetUri"], encoded);
+        assert_eq!(response.as_array().unwrap()[2..], original.as_array().unwrap()[2..]);
+        assert!(encoded.parse::<lsp_types::Uri>().is_ok());
+    }
+
+    /// `DocumentLink.target` is a URI too: one unescaped link fails the whole `documentLink` response.
+    #[test]
+    fn document_link_targets_are_escaped() {
+        let range = serde_json::json!({ "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } });
+        let mut links = serde_json::json!([
+            { "range": range, "target": "file:///D:/My Game/项目/a.xsd" },
+            { "range": range, "target": "https://example.com/a b" }
+        ]);
+        assert!(serde_json::from_value::<Vec<lsp_types::DocumentLink>>(links.clone()).is_err());
+        normalize_uris(&mut links);
+        assert_eq!(links[0]["target"], "file:///D:/My%20Game/%E9%A1%B9%E7%9B%AE/a.xsd");
+        assert_eq!(links[1]["target"], "https://example.com/a b", "other schemes are not touched");
+        links[1]["target"] = "https://example.com/ab".into();
+        assert_eq!(serde_json::from_value::<Vec<lsp_types::DocumentLink>>(links).unwrap().len(), 2);
+    }
+
+    /// #3089: jdtls's Introduce Variable edit for a project under a Chinese path names the file
+    /// with the characters unescaped, and the resolved code action failed to deserialize.
+    #[test]
+    fn file_uris_with_unicode_and_spaces_deserialize_in_workspace_edits() {
+        let uri = "file:///C:/项目/my app/src/A.java";
+        let encoded = "file:///C:/%E9%A1%B9%E7%9B%AE/my%20app/src/A.java";
+        let edit = serde_json::json!([{ "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } }, "newText": "x" }]);
+        let mut action = serde_json::json!({
+            "title": "Extract to local variable",
+            "edit": {
+                "documentChanges": [{ "textDocument": { "uri": uri, "version": 3 }, "edits": edit }],
+                "changes": { (uri): edit },
+            },
+            "data": { "uri": uri },
+        });
+        assert!(serde_json::from_value::<lsp_types::CodeAction>(action.clone()).is_err());
+        normalize_uris(&mut action);
+        let action: lsp_types::CodeAction = serde_json::from_value(action.clone()).unwrap();
+        let edit = action.edit.unwrap();
+        let Some(lsp_types::DocumentChanges::Edits(edits)) = edit.document_changes else { panic!() };
+        assert_eq!(edits[0].text_document.uri.as_str(), encoded);
+        assert_eq!(edit.changes.unwrap().keys().next().unwrap().as_str(), encoded);
+        assert_eq!(action.data.unwrap()["uri"], uri, "opaque data is passed back unchanged");
+    }
 
     #[test]
     fn jdt_titles() {
@@ -151,6 +428,34 @@ mod tests {
         );
         assert_eq!(description("jdt://contents/a.jar/p/C.class").as_deref(), Some("a.jar › p"));
         assert_eq!(description("foo://x/y"), None);
+    }
+
+    #[test]
+    fn finds_the_archive_behind_a_library_class() {
+        assert_eq!(archive(JDT), Some("/Users/me/.m2/repository/spring-boot-4.1.1.jar".into()));
+        assert_eq!(
+            archive("jdt://contents/java.base/java.lang/String.class?=p/%5C/jdk%5C/lib%5C/jrt-fs.jar%60java.base=x"),
+            None
+        );
+        assert_eq!(archive("jdt://contents/a.jar/p/C.class"), None);
+        assert_eq!(archive("file:///a/C.java"), None);
+
+        let dir = tempfile::tempdir().unwrap();
+        let jar = dir.path().join("lib-1.0-SNAPSHOT.jar");
+        std::fs::write(&jar, b"PK").unwrap();
+        let uri = format!("jar:file://{}!/p/C.class", jar.display());
+        assert_eq!(archive(&uri), Some(jar.clone()));
+        let before = archive_modified(&uri).unwrap();
+        std::fs::write(dir.path().join("lib-1.0-SNAPSHOT-sources.jar"), b"PK").unwrap();
+        let with_sources = archive_modified(&uri).unwrap();
+        assert_eq!(before.archive, with_sources.archive);
+        assert_ne!(with_sources, before);
+
+        let file = std::fs::File::options().write(true).open(&jar).unwrap();
+        file.set_modified(before.archive + std::time::Duration::from_secs(5)).unwrap();
+        assert_ne!(archive_modified(&uri), Some(with_sources));
+        std::fs::remove_file(&jar).unwrap();
+        assert_eq!(archive_modified(&uri), None);
     }
 
     #[test]

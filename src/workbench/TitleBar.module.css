@@ -3,26 +3,49 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 0 8px 0 10px;
   white-space: nowrap;
   -webkit-user-select: none;
   user-select: none;
   color: var(--fg-strong);
+  font-size: var(--fs-chrome);
 }
-/* Room for the native macOS traffic lights (Overlay title bar). */
+/* Room for the native macOS traffic lights, including in full screen (#4746). */
 .overlay {
   padding-left: max(82px, calc(82px / var(--titlebar-zoom, 1)));
+  /* Keep the gear on the icon-only right stripe's centre line, including compact mode. */
+  padding-right: calc(var(--stripe-outer-padding) + (var(--stripe-icon-button) - var(--titlebar-tool-button)) / 2);
 }
 /* Welcome window: plain title on the frame colour with a hairline, like IntelliJ's welcome frame. */
 .minimal {
   background: var(--bg-elev);
   box-shadow: inset 0 -1px 0 var(--border);
 }
+.minimal .windowTitle {
+  margin-left: var(--space-2);
+}
 /* Dialog window (Settings): the title sits on the dialog surface, no hairline. */
 .dialogBar {
   background: var(--bg-dialog, var(--bg-elev));
   box-shadow: none;
+}
+/* IDEA's compact header (Distraction Free, toolbar hidden): the window title, centred. */
+.compactHeader {
+  --h-titlebar: var(--h-compact-header);
+}
+.overlay.compactHeader {
+  padding-right: max(82px, calc(82px / var(--titlebar-zoom, 1)));
+}
+.compactTitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+  font-size: var(--fs-ui);
+  color: var(--fg-secondary);
+  cursor: default;
 }
 .windowTitle {
   min-width: 0;
@@ -36,20 +59,29 @@
 .item {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
+}
+.bar > .widget,
+.item:has([data-toolbar-label]) {
+  flex: none;
+}
+.bar [data-toolbar-label] {
+  min-inline-size: 0;
+  max-inline-size: min(var(--toolbar-label-width, 100vw), var(--toolbar-label-max, 100vw));
 }
 /* Main toolbar dropdown widgets. */
 .widget {
-  height: 30px;
+  min-width: 0;
+  height: var(--h-toolbar-widget);
   margin: 0;
   padding: 0 8px;
-  border-radius: var(--radius-popup);
+  border-radius: var(--radius-toolbar-dropdown);
   color: var(--fg-strong);
-  font-size: var(--fs-ui);
+  font-size: var(--fs-chrome);
 }
 .widget {
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .widget:hover,
 .widget[aria-expanded="true"] {
@@ -59,7 +91,6 @@
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-weight: 500;
 }
 .chevron {
   flex: none;
@@ -80,32 +111,61 @@
   font-weight: 600;
   letter-spacing: 0.02em;
 }
+/* IDEA compact: the avatar follows MainToolbar.Button.iconSize (20 → 16). */
+.avatar:has(> img) {
+  background: none;
+}
+:global(:root[data-compact]) .avatar {
+  width: 16px;
+  height: 16px;
+  font-size: 9px;
+}
 .drag {
   flex: 1;
   align-self: stretch;
   min-width: 24px;
 }
+/* Customize Main Toolbar's Center group; toolbarCenter.ts sizes the spacer before it. */
+.centerGroup {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
 .tools {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   margin-left: 12px;
 }
 .tool {
-  width: 30px;
-  height: 30px;
-  border-radius: var(--radius-popup);
+  width: var(--titlebar-tool-button);
+  height: var(--titlebar-tool-button);
+  border-radius: var(--radius-toolbar-button);
   color: var(--fg-secondary);
 }
 
 /* Frameless window (Windows, Linux): caption buttons sit flush with the right and top edges. */
 .frameless {
   padding-right: 0;
+  /* The main menu button leads the left stripe, so the bar starts where the
+     stripe's own padding does and the two share a centre line. */
+  padding-left: var(--stripe-outer-padding);
 }
+/* The desktop puts caption buttons on the left (GTK decoration layout): they take the left
+   edge, and the right keeps the bar's own padding when no buttons are left there. */
+.frameless.captionsAtLeft {
+  padding-left: 0;
+}
+.frameless.noCaptionsAtRight {
+  padding-right: 8px;
+}
+/* The button heads the tool window stripe below it, so it takes the stripe's
+   size: both shrink in compact mode. */
 .mainMenuButton {
   flex: none;
-  width: 30px;
-  height: 30px;
+  width: var(--stripe-icon-button);
+  height: var(--stripe-icon-button);
   margin-right: 4px;
   padding: 0;
   display: inline-flex;
@@ -115,6 +175,10 @@
   background: transparent;
   color: var(--fg-secondary);
 }
+.mainMenuButton:hover,
+.mainMenuButton[aria-expanded="true"] {
+  background: var(--bg-toolbar-hover);
+}
 .mainMenuButton:focus-visible,
 .menuTitle:focus-visible,
 .caption:focus-visible {
@@ -122,14 +186,15 @@
   outline-offset: -2px;
 }
 /* Preserve the menu's natural width while allowing its slot to yield to toolbar controls. */
+/* Ends where the stripe column below it does, the bar's padding being the
+   stripe's own. */
 .mainMenuSlot {
   position: relative;
   flex: 0 1 auto;
-  min-width: 34px;
-  height: 30px;
+  min-width: calc(var(--stripe-icon-button) + var(--island-gap));
+  height: var(--stripe-icon-button);
   overflow: hidden;
 }
-.mainMenuSlot ~ .item,
 .mainMenuSlot ~ .tools {
   flex-shrink: 0;
 }
@@ -146,12 +211,22 @@
   display: flex;
   align-items: center;
 }
+/* Main menu › Separate toolbar: the titles in their own row below the title bar. */
+.menuRow {
+  flex: none;
+  display: flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 8px 0 10px;
+  -webkit-user-select: none;
+  user-select: none;
+}
 /* The main menu titles. */
 .menuBar {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   min-width: 0;
 }
 .menuTitle {
@@ -171,6 +246,10 @@
   align-self: stretch;
   display: flex;
   margin-left: 8px;
+}
+.captionsLeft {
+  margin-left: 0;
+  margin-right: 8px;
 }
 .caption {
   width: 46px;
@@ -193,4 +272,48 @@
 .captionClose:active {
   background: var(--caption-close-pressed);
   color: var(--fg-caption-close-hover);
+}
+
+/* A narrow window leaves more room for widgets and window controls. */
+@media (max-width: 560px) {
+  .bar {
+    gap: var(--space-0-5);
+  }
+  .widget {
+    padding: 0 4px;
+  }
+  .item button:has(> [data-toolbar-label]) {
+    margin-inline: 0;
+    padding-inline: var(--space-1);
+  }
+  .tools {
+    margin-left: 2px;
+  }
+  .drag {
+    min-width: 0;
+  }
+  .mainMenuButton {
+    margin-right: 0;
+  }
+  .captions {
+    margin-left: 0;
+  }
+  .captionsLeft {
+    margin-right: 0;
+  }
+  .caption {
+    width: 28px;
+  }
+}
+
+/* The leading icons identify these dropdowns when the toolbar has to use its smallest spacing. */
+@media (max-width: 480px) {
+  .bar [data-toolbar-icon-dropdown] {
+    gap: var(--space-0-5);
+    min-inline-size: var(--h-control-small);
+    padding-inline: var(--space-0-5);
+  }
+  .bar [data-toolbar-icon-dropdown] > svg:last-child {
+    display: none;
+  }
 }

@@ -151,6 +151,24 @@ fn stdin_echo_with_cat() {
 }
 
 #[test]
+fn full_stdin_does_not_block_input_or_stop_for_pipes_and_ptys() {
+    for pty in [false, true] {
+        let h = harness();
+        let mut config =
+            cfg("t:blocked-input", "/bin/sh", &["-c", "stty raw -echo 2>/dev/null; printf READY; exec sleep 60"]);
+        config.extras.emulate_terminal = pty;
+        let (id, chunks) = start(&h, &config);
+        wait_for(&chunks, "READY");
+        let started = Instant::now();
+        h.pm.write_stdin(id, &"x".repeat(512 * 1024)).unwrap();
+        assert!(started.elapsed() < Duration::from_millis(250));
+        h.pm.stop(id).unwrap();
+        h.pm.stop(id).unwrap();
+        wait_exit(&h, id, Duration::from_secs(10));
+    }
+}
+
+#[test]
 fn missing_command_and_cwd_are_errors() {
     let h = harness();
     let err =
@@ -204,6 +222,9 @@ fn stop_kills_whole_process_group() {
     let grandchild: i32 = out.trim().parse().expect("pid");
     assert!(alive(grandchild));
 
+    // The first Stop only asks the group to exit (and waits); the second one kills it.
+    h.pm.stop(id).unwrap();
+    std::thread::sleep(Duration::from_millis(200));
     h.pm.stop(id).unwrap();
     wait_exit(&h, id, Duration::from_secs(10));
     let deadline = Instant::now() + Duration::from_secs(8);
@@ -211,6 +232,22 @@ fn stop_kills_whole_process_group() {
         assert!(Instant::now() < deadline, "grandchild {grandchild} survived stop");
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+#[test]
+fn running_in_lists_the_live_runs_of_one_project_root() {
+    let h = harness();
+    let (done, _) = start(&h, &cfg("t:done", "true", &[]));
+    wait_exit(&h, done, Duration::from_secs(5));
+    let (id, _) = start(&h, &cfg("t:serve", "sleep", &["30"]));
+    let running: Vec<_> = h.pm.running_in(h.root.path()).into_iter().map(|r| (r.id, r.name)).collect();
+    assert_eq!(running, [(id, "t:serve".to_owned())], "the finished run is left out");
+    // Another project's root, even one that contains this root, has none.
+    assert!(h.pm.running_in(h.root.path().parent().unwrap()).is_empty());
+    assert!(h.pm.running_in(&h.root.path().join("nested")).is_empty());
+    h.pm.stop(id).unwrap();
+    wait_exit(&h, id, Duration::from_secs(5));
+    assert!(h.pm.running_in(h.root.path()).is_empty());
 }
 
 #[test]
@@ -239,6 +276,73 @@ fn large_output_is_complete_and_batched() {
     assert_eq!(out.lines().count(), 3000);
     assert!(!out.contains('\u{FFFD}'));
     assert!(chunks.lock().len() < 3000);
+}
+
+#[test]
+fn a_console_slower_than_the_process_still_gets_all_output_in_order_and_the_exit() {
+    const LINES: usize = 1_000_000;
+    let h = harness();
+    let chunks: Chunks = Arc::default();
+    let sink = chunks.clone();
+    let info =
+        h.pm.start(
+            h.root.path(),
+            &cfg("t:slow-console", "awk", &[&format!("BEGIN{{for(i=1;i<={LINES};i++)print i}}")]),
+            &StartOptions::default(),
+            h.sink.clone(),
+            Box::new(move |c| {
+                sink.lock().push(c);
+                std::thread::sleep(Duration::from_millis(1));
+            }),
+        )
+        .expect("start");
+    assert_eq!(wait_exit(&h, info.id, Duration::from_secs(120)), Some(0));
+    let expected: String = (1..=LINES).map(|n| format!("{n}\n")).collect();
+    assert!(text(&chunks, stdout) == expected, "the output arrived incomplete or out of order");
+    // The exit is reported after the output, never before the last of it.
+    let all = chunks.lock();
+    assert!(matches!(all.last(), Some(OutputChunk::System { text }) if text.contains("exit code 0")));
+}
+
+#[test]
+fn stop_ends_a_flooding_run_whose_console_stalled() {
+    let h = harness();
+    let chunks: Chunks = Arc::default();
+    let sink = chunks.clone();
+    let (stalled_tx, stalled) = mpsc::channel();
+    let (resume_tx, resume) = mpsc::channel::<()>();
+    // The first output blocks the console until `resume_tx` is dropped.
+    let resume = Mutex::new(Some(resume));
+    let info =
+        h.pm.start(
+            h.root.path(),
+            &cfg("t:stalled-console", "yes", &[]),
+            &StartOptions::default(),
+            h.sink.clone(),
+            Box::new(move |c| {
+                let output = matches!(c, OutputChunk::Stdout { .. });
+                sink.lock().push(c);
+                if output && let Some(resume) = resume.lock().take() {
+                    let _ = stalled_tx.send(());
+                    let _ = resume.recv();
+                }
+            }),
+        )
+        .expect("start");
+    stalled.recv_timeout(Duration::from_secs(10)).expect("no output reached the console");
+    // The pipe and the queue behind the stalled console fill up and `yes` waits on its pipe.
+    std::thread::sleep(Duration::from_millis(300));
+    h.pm.stop(info.id).unwrap();
+    let pid = i32::try_from(info.pid.expect("pid")).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while alive(pid) {
+        assert!(Instant::now() < deadline, "the stalled run survived Stop");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    drop(resume_tx);
+    assert_eq!(wait_exit(&h, info.id, Duration::from_secs(30)), Some(130));
+    let out = text(&chunks, stdout);
+    assert!(!out.is_empty() && out.lines().all(|l| l == "y"), "the output was damaged");
 }
 
 #[test]
@@ -316,6 +420,36 @@ fn env_files_system_env_and_redirects() {
 
     config.extras.env_files = vec!["missing.env".into()];
     assert!(h.pm.start(root, &config, &StartOptions::default(), h.sink.clone(), Box::new(|_| {})).is_err());
+}
+
+#[test]
+fn runs_get_the_project_environment_and_its_programs() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = harness();
+    let root = h.root.path();
+    // A Nix devshell's tool, on the project's `PATH` only.
+    let devshell = tempfile::tempdir().unwrap();
+    let tool = devshell.path().join("openidea-devshell-tool");
+    std::fs::write(&tool, "#!/bin/sh\nprintf 'tool:%s' \"$OPENIDEA_TEST_DEVSHELL\"\n").unwrap();
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(devshell.path().to_path_buf()).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    ide_core::project_env::set(
+        root,
+        vec![("PATH".into(), Some(path)), ("OPENIDEA_TEST_DEVSHELL".into(), Some("loaded".into()))],
+    );
+    let mut config = cfg("t:devshell", "openidea-devshell-tool", &[]);
+    config.extras.include_system_env = true;
+    assert_eq!(ide_run::resolved_env(root, &config).unwrap().get("OPENIDEA_TEST_DEVSHELL").unwrap(), "loaded");
+    for pty in [false, true] {
+        config.extras.emulate_terminal = pty;
+        let (id, chunks) = start(&h, &config);
+        assert_eq!(wait_exit(&h, id, Duration::from_secs(10)), Some(0), "pty: {pty}");
+        assert!(wait_for(&chunks, "tool:loaded").contains("tool:loaded"), "pty: {pty}");
+    }
+    ide_core::project_env::remove(root);
 }
 
 #[test]
@@ -480,6 +614,36 @@ fn python_scripts_import_sibling_packages_and_preserve_env_file_paths() {
 }
 
 #[test]
+fn ruby_test_runs_load_the_reporter_and_other_runs_do_not() {
+    let reporter = std::env::temp_dir().join("ruby reporter");
+    let run = |kind: &str, is_test: bool| {
+        let h = harness();
+        let mut config =
+            cfg("ruby-env", "/bin/sh", &["-c", r#"echo "lib=$RUBYLIB opt=$RUBYOPT report=$OPENIDEA_TEST_REPORT""#]);
+        config.kind = kind.into();
+        config.is_test = is_test;
+        let options = StartOptions { ruby_reporter: Some(reporter.clone()), ..Default::default() };
+        let chunks: Chunks = Arc::default();
+        let sink = chunks.clone();
+        let info =
+            h.pm.start(h.root.path(), &config, &options, h.sink.clone(), Box::new(move |c| sink.lock().push(c)))
+                .unwrap();
+        assert_eq!(wait_exit(&h, info.id, Duration::from_secs(10)), Some(0));
+        text(&chunks, stdout)
+    };
+    for kind in ["ruby", "rake"] {
+        let out = run(kind, true);
+        // The directory has a space: it is on RUBYLIB and only the bare feature name is in RUBYOPT.
+        assert!(out.contains(&format!("lib={}", reporter.display())), "{out}");
+        assert!(out.contains("-ropenidea_test_hook") && !out.contains(&format!("-r{}", reporter.display())), "{out}");
+        assert!(out.contains("report=1"), "{out}");
+    }
+    for (kind, is_test) in [("ruby", false), ("rspec", true), ("pytest", true)] {
+        assert!(run(kind, is_test).contains("report=\n"), "{kind} {is_test}");
+    }
+}
+
+#[test]
 fn revoking_one_project_stops_only_its_runs() {
     let h = harness();
     let other = tempfile::tempdir().unwrap();
@@ -499,6 +663,30 @@ fn revoking_one_project_stops_only_its_runs() {
     h.pm.stop(theirs.id).unwrap();
 }
 
+/// Quitting the app kills what every project's runs started, forked children included (#1691).
+#[test]
+fn kill_all_stops_every_projects_process_trees() {
+    let h = harness();
+    let other = tempfile::tempdir().unwrap();
+    let (mine, chunks) = start(&h, &cfg("mine", "/bin/sh", &["-c", "sleep 30 & echo $!; wait"]));
+    let grandchild: i32 = wait_for(&chunks, "\n").trim().parse().expect("pid");
+    let theirs =
+        h.pm.start(
+            other.path(),
+            &cfg("theirs", "/bin/sh", &["-c", "sleep 30"]),
+            &StartOptions::default(),
+            h.sink.clone(),
+            Box::new(|_| {}),
+        )
+        .unwrap();
+    h.pm.kill_all();
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while alive(grandchild) || h.pm.list().iter().any(|r| (r.id == mine || r.id == theirs.id) && r.running) {
+        assert!(Instant::now() < deadline, "a run survived kill_all");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 #[test]
 #[ignore = "requires CMake, CTest and a C++ compiler"]
 fn cmake_configure_discovers_builds_and_runs_a_multifile_target() {
@@ -515,7 +703,7 @@ fn cmake_configure_discovers_builds_and_runs_a_multifile_target() {
     assert!(h.root.path().join("build/.cmake/api/v1/query/client-openidea/codemodel-v2").exists());
     let root = h.root.path().canonicalize().unwrap();
     let configs = ide_run::detect(&root);
-    let target = configs.iter().find(|c| c.kind == "native").expect("File API executable");
+    let target = configs.iter().find(|c| c.kind == "cmake-application").expect("File API executable");
     assert_eq!(target.debug_adapter.as_deref(), Some("lldb-dap"));
     let sources = &target.extras.params["cmakeSources"];
     assert!(sources.lines().any(|s| s.ends_with("/main.cpp")));
@@ -535,7 +723,7 @@ fn cmake_configure_discovers_builds_and_runs_a_multifile_target() {
 #[test]
 fn go_build_runs_with_separate_arguments_environment_and_working_directory() {
     let h = harness();
-    let Some(go) = ide_run::which::find_executable("go", &std::env::var_os("PATH").unwrap_or_default()) else {
+    let Some(go) = ide_core::process::find_executable("go", &std::env::var_os("PATH").unwrap_or_default()) else {
         eprintln!("skipped: no Go toolchain");
         return;
     };
@@ -575,9 +763,53 @@ fn go_build_runs_with_separate_arguments_environment_and_working_directory() {
 }
 
 #[test]
+fn go_build_only_supports_multiple_packages_and_explicit_output() {
+    let h = harness();
+    let Some(go) = ide_core::process::find_executable("go", &std::env::var_os("PATH").unwrap_or_default()) else {
+        return;
+    };
+    std::fs::write(h.root.path().join("go.mod"), "module example.com/buildall\ngo 1.22\n").unwrap();
+    for name in ["one", "two"] {
+        let dir = h.root.path().join("cmd").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("main.go"), "package main\nfunc main() {}\n").unwrap();
+    }
+    let mut config = cfg("go-build-only", &go.to_string_lossy(), &["build", "./..."]);
+    config.kind = "go".into();
+    config.extras.params = BTreeMap::from([
+        ("goKind".into(), "build".into()),
+        ("scope".into(), "package".into()),
+        ("target".into(), "./...".into()),
+        ("runAfterBuild".into(), "false".into()),
+        ("outputDir".into(), "compiled output".into()),
+    ]);
+    let (id, output) = start(&h, &config);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(60)), Some(0), "{}", text(&output, stderr));
+    for name in ["one", "two"] {
+        assert!(
+            h.root.path().join("compiled output").join(format!("{name}{}", std::env::consts::EXE_SUFFIX)).is_file()
+        );
+    }
+    std::fs::create_dir_all(h.root.path().join("explicit output")).unwrap();
+    config.args = vec!["build".into(), "-o=explicit output/".into(), "./...".into()];
+    let plan = ide_run::go::plan(h.root.path(), &config).unwrap().unwrap();
+    assert_eq!(plan.build.args, config.args);
+    assert!(plan.run.is_none());
+    let (id, output) = start(&h, &config);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(60)), Some(0), "{}", text(&output, stderr));
+    for name in ["one", "two"] {
+        assert!(
+            h.root.path().join("explicit output").join(format!("{name}{}", std::env::consts::EXE_SUFFIX)).is_file()
+        );
+    }
+    config.args = vec!["build".into(), "-o".into(), "one-binary".into(), "./cmd/one".into()];
+    assert_eq!(ide_run::go::plan(h.root.path(), &config).unwrap().unwrap().build.args, config.args);
+}
+
+#[test]
 fn go_file_tests_use_build_selected_sources_and_only_the_selected_test_file() {
     let h = harness();
-    let Some(go) = ide_run::which::find_executable("go", &std::env::var_os("PATH").unwrap_or_default()) else {
+    let Some(go) = ide_core::process::find_executable("go", &std::env::var_os("PATH").unwrap_or_default()) else {
         eprintln!("skipped: no Go toolchain");
         return;
     };
@@ -586,12 +818,12 @@ fn go_file_tests_use_build_selected_sources_and_only_the_selected_test_file() {
     std::fs::write(h.root.path().join("generate.go"), "//go:build ignore\n\npackage main\nfunc main() {}\n").unwrap();
     std::fs::write(
         h.root.path().join("demo_test.go"),
-        "package filetests\nimport \"testing\"\nfunc TestChosen(t *testing.T) { if value()!=2 { t.Fatal(\"bad\") } }\n",
+        "package filetests\nimport \"testing\"\nfunc TestChosen(t *testing.T) { if helper()!=2 { t.Fatal(\"bad\") } }\n",
     )
     .unwrap();
     std::fs::write(
         h.root.path().join("other_test.go"),
-        "package filetests\nimport \"testing\"\nfunc TestOther(t *testing.T) { t.Fatal(\"must not run\") }\n",
+        "package filetests\nimport (\"testing\"; \"os\")\nvar initialized int\nfunc TestMain(m *testing.M) { initialized=value(); os.Exit(m.Run()) }\nfunc helper() int { return initialized }\nfunc TestOther(t *testing.T) { t.Fatal(\"must not run\") }\n",
     )
     .unwrap();
     let mut c = cfg("go-file", &go.to_string_lossy(), &["test", "-json", "demo_test.go"]);
@@ -604,7 +836,30 @@ fn go_file_tests_use_build_selected_sources_and_only_the_selected_test_file() {
     ide_run::go::prepare_test_file(h.root.path(), &mut c).unwrap();
     assert!(!c.args.iter().any(|a| a.ends_with("generate.go") || a.ends_with("other_test.go")));
     let (id, out) = start(&h, &c);
-    assert_eq!(wait_exit(&h, id, Duration::from_secs(60)), Some(0), "{}", text(&out, stderr));
+    assert_eq!(
+        wait_exit(&h, id, Duration::from_secs(60)),
+        Some(0),
+        "{} {} {:?}",
+        text(&out, stderr),
+        text(&out, stdout),
+        c.args
+    );
     assert!(text(&out, stdout).contains("TestChosen"));
     assert!(!text(&out, stdout).contains("TestOther"));
+    std::fs::write(
+        h.root.path().join("external_test.go"),
+        "package filetests_test\nimport t \"testing\"\nfunc TestExternal(\n t *t.T,\n) { if externalHelper()!=3 {t.Fail()} }\n",
+    ).unwrap();
+    std::fs::write(
+        h.root.path().join("external_helpers_test.go"),
+        "package filetests_test\nimport \"testing\"\nfunc externalHelper() int {return 3}\nfunc TestOutside(t *testing.T) {t.Fatal(\"must not run\")}\n",
+    ).unwrap();
+    c.args = vec!["test".into(), "-json".into(), "external_test.go".into()];
+    c.extras.params.insert("target".into(), "external_test.go".into());
+    ide_run::go::prepare_test_file(h.root.path(), &mut c).unwrap();
+    let (id, out) = start(&h, &c);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(60)), Some(0), "{} {}", text(&out, stderr), text(&out, stdout));
+    assert!(text(&out, stdout).contains("TestExternal"));
+    assert!(!text(&out, stdout).contains("TestChosen"));
+    assert!(!text(&out, stdout).contains("TestOutside"));
 }

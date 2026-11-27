@@ -6,7 +6,7 @@
 .facts {
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: 4px 12px;
+  gap: var(--space-1) var(--space-3);
   padding: 12px;
   margin: 0;
 }
@@ -26,7 +26,7 @@
 }
 .actions {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 0 12px 12px;
 }
 
@@ -34,4 +34,13 @@
   display: flex;
   height: 100%;
   min-height: 0;
+}
+
+.importList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  max-height: 320px;
+  overflow: auto;
 }

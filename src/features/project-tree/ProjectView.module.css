@@ -21,7 +21,7 @@
   height: 100%;
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--space-1);
   border-radius: var(--radius-row);
 }
 
@@ -41,9 +41,19 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.rootName {
+.labelGroup {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  overflow: hidden;
+  /* Room for the error wavy underline below the line box without changing row layout height. */
+  padding-block: var(--space-1);
+  margin-block: calc(-1 * var(--space-1));
+}
+.labelGroup .label {
   flex: none;
-  max-width: 60%;
+  max-inline-size: 100%;
 }
 .rootLabel {
   color: var(--fg-strong);
@@ -56,19 +66,42 @@
 .excluded {
   color: var(--vcs-ignored);
 }
-.excludedRow {
-  background: color-mix(in srgb, var(--vcs-ignored) 14%, transparent);
+.deprecated {
+  text-decoration-line: line-through;
 }
 .error {
+  /* Room for the wave below the line box, which the ellipsis' overflow would clip. */
+  padding-block: var(--space-1);
+  margin-block: calc(-1 * var(--space-1));
   text-decoration-line: underline;
   text-decoration-style: wavy;
   text-decoration-color: var(--danger);
   text-decoration-skip-ink: none;
   text-underline-offset: 3px;
 }
+/* The error's wavy underline takes the text decoration; the strike-out is drawn underneath. */
+.deprecated.error {
+  background: linear-gradient(currentColor, currentColor) 0 55% / 100% 1px no-repeat;
+}
+.suffix {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  margin-left: 6px;
+  overflow: hidden;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.suffixSegment {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
 .detail {
   min-width: 0;
-  margin-left: 4px;
+  margin-inline-start: var(--space-1);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -122,7 +155,7 @@
   z-index: var(--z-tooltip);
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: 22px;
   padding: 0 8px;
   border-radius: var(--radius-small);
@@ -147,7 +180,7 @@
   width: 16px;
   height: 16px;
 }
-.runnable {
+.overlay {
   position: absolute;
   inset: 0;
   pointer-events: none;

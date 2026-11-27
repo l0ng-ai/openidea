@@ -17,7 +17,7 @@
 .templateRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .icon {
   flex: none;
@@ -26,30 +26,53 @@
 .form {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
-.kinds {
+.variableDialog {
+  --form-inset: calc((var(--space-3) + var(--space-4)) / 2);
+}
+.variableDialog .form {
+  padding-inline: var(--form-inset);
+  gap: var(--space-3);
+}
+.variableDialog [data-dialog-footer] {
+  padding-inline: var(--form-inset);
+}
+.field {
   display: flex;
   flex-direction: column;
-  padding: 2px 0;
+  gap: var(--space-2);
 }
-.kind {
+.nameDialog .form {
+  padding: 0 var(--space-2) var(--space-2);
+  gap: 0;
+  font-size: var(--fs-ui);
+}
+.nameField {
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: var(--h-row);
-  padding: 0 8px;
-  border-radius: var(--radius-row);
-  color: var(--fg);
-  cursor: default;
+  gap: var(--space-1-5);
+  min-height: calc(var(--h-field) + var(--space-1));
+  padding-inline: var(--space-2);
 }
-.kind:hover {
-  background: var(--bg-hover);
+.nameField:has(input[aria-invalid="true"]) {
+  box-shadow: inset 0 -1px var(--danger);
 }
-.kindActive,
-.kindActive:hover {
-  background: var(--bg-selected);
-  color: var(--fg-strong);
+.nameInput {
+  width: 100%;
+}
+.nameDialog .kinds {
+  border-top: 1px solid var(--border);
+  padding-block: var(--space-1);
+}
+.kindList {
+  --list-inset: 0px;
+  max-height: min(240px, 40vh);
+}
+.kindLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .hint {
   min-height: 16px;
@@ -59,6 +82,11 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.nameDialog .hint {
+  margin: var(--space-1) var(--space-2) 0;
+}
 .error {
   color: var(--danger);
+  white-space: normal;
+  overflow-wrap: anywhere;
 }

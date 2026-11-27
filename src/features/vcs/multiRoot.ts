@@ -8,10 +8,14 @@ export type RepoCommit = Commit & {
   user?: string | null;
   userName?: string | null;
   remoteNames?: string[];
+  refBranches?: Branch[];
   readOnly?: boolean;
 };
 export const commitRepo = (c: Commit | undefined): string | null | undefined => (c as RepoCommit | undefined)?.repo;
 export const commitKey = (c: Pick<RepoCommit, "id" | "repo">): string => (c.repo ? `${c.repo}\0${c.id}` : c.id);
+/** Commits Cherry-Pick and Revert can apply: at least one, no merge commit, none from an external log. */
+export const canApplyCommits = (commits: readonly Commit[]): boolean =>
+  commits.length > 0 && !commits.some((c) => c.parents.length > 1 || (c as RepoCommit).readOnly);
 export const graphCommit = (c: Commit): Commit & GraphCommit => ({
   ...c,
   id: commitKey(c),
@@ -31,15 +35,15 @@ export function mergeRepoLogs(streams: readonly RepoCommit[][], limit: number): 
   const result: RepoCommit[] = [];
   while (result.length < limit) {
     let best = -1;
+    let latest = -Infinity;
     for (let i = 0; i < streams.length; i++) {
       const c = streams[i]![offsets[i]!];
-      if (
-        c &&
-        (best < 0 ||
-          (c.commitTimeMs ?? c.timeMs ?? 0) >
-            (streams[best]![offsets[best]!]!.commitTimeMs ?? streams[best]![offsets[best]!]!.timeMs ?? 0))
-      )
+      if (!c) continue;
+      const time = c.logMergeTimeMs ?? c.commitTimeMs ?? c.timeMs ?? 0;
+      if (time > latest) {
         best = i;
+        latest = time;
+      }
     }
     if (best < 0) break;
     result.push(streams[best]![offsets[best]!]!);

@@ -36,6 +36,8 @@ export interface Action {
   icon?: string;
   /** Enablement; evaluated against context keys. */
   when?: string;
+  /** Additional enablement for a parameterised action or the current selection. */
+  enabled?: (c: ActionContext) => boolean;
   /**
    * Extra condition for keyboard shortcuts only (menus and Find Action ignore
    * it), e.g. to yield a shared shortcut to an editor action while typing.
@@ -43,13 +45,23 @@ export interface Action {
   keyWhen?: string;
   /** Extra search terms for the Actions tab. */
   keywords?: string[];
+  /** The title comes from outside the IDE (a plugin) and is shown as written; the category still names an IDE group. */
+  verbatim?: boolean;
   /** Hidden from Search Everywhere (internal / parameterised actions). */
   hidden?: boolean;
+  /** Listed in Settings › Keymap although `hidden`, so it can get a shortcut (Cut / Copy / Paste). */
+  keymap?: boolean;
   /**
    * Marks a toggle action (IDEA's ToggleAction): returns the current state.
    * Search Everywhere shows an ON/OFF switch and keeps the popup open.
    */
   toggled?: () => boolean;
+  /**
+   * The run takes long enough to need feedback where it was clicked: toolbar buttons of this
+   * action show a spinner and ignore clicks until `run` settles. Only for actions that finish
+   * by themselves, not ones that wait on the user (a dialog).
+   */
+  indicatesRunning?: boolean;
   run: (c: ActionContext) => void | Promise<void>;
 }
 
@@ -58,6 +70,19 @@ interface ActionStore {
 }
 
 export const useActions = create<ActionStore>(() => ({ actions: new Map() }));
+
+/** Ids of `indicatesRunning` actions with a run in flight, with how many. */
+export const useRunningActions = create<{ running: ReadonlyMap<string, number> }>(() => ({ running: new Map() }));
+
+function trackRun(id: string, delta: 1 | -1) {
+  useRunningActions.setState(({ running }) => {
+    const next = new Map(running);
+    const count = (next.get(id) ?? 0) + delta;
+    if (count > 0) next.set(id, count);
+    else next.delete(id);
+    return { running: next };
+  });
+}
 
 /** Registered actions as written (English), by id; the store holds their localised copies. */
 const sources = new Map<string, Action>();
@@ -68,14 +93,20 @@ function translated(key: string): string | undefined {
 }
 
 /** Catalog key, else the source-text catalog; `undefined` when untranslated. */
-function localized(key: string, text: string | undefined): string | undefined {
+function localized(key: string | null, text: string | undefined): string | undefined {
   if (!text) return undefined;
-  const v = translated(key) ?? tx(text);
+  const v = (key === null ? undefined : translated(key)) ?? tx(text);
   return v === text ? undefined : v;
 }
 
-function localize(action: Action): Action {
-  const title = localized(`action.${action.id}`, action.title);
+/** Titles that follow state ({@link retitleAction}), as written (English). */
+const titleOverrides = new Map<string, string>();
+
+function localize(source: Action): Action {
+  const override = titleOverrides.get(source.id);
+  const action = override ? { ...source, title: override } : source;
+  // An override is text, not the id's catalog entry (which names the registered title).
+  const title = action.verbatim ? undefined : localized(override ? null : `action.${action.id}`, action.title);
   const description = localized(`action.${action.id}.description`, action.description);
   const category = localized(`action.category.${action.category}`, action.category);
   if (!title && !description && !category) return action;
@@ -93,10 +124,22 @@ useI18n.subscribe((s, prev) => {
   useActions.setState({ actions: new Map([...sources].map(([id, a]) => [id, localize(a)])) });
 });
 
-/** Registers an action; returns a disposer. Re-registering an id replaces it. */
-export function registerAction(action: Action): () => void {
+/**
+ * Shows action `id` as `title` (English, translated through the text catalog) while its
+ * state calls for it, e.g. Hide All Tool Windows as "Restore Tool Windows"; `undefined`
+ * returns to the registered title.
+ */
+export function retitleAction(id: string, title: string | undefined) {
+  if (titleOverrides.get(id) === title) return;
+  if (title) titleOverrides.set(id, title);
+  else titleOverrides.delete(id);
+  const source = sources.get(id);
+  if (source) useActions.setState((s) => ({ actions: new Map(s.actions).set(id, localize(source)) }));
+}
+
+/** Adds `action` to the written sources; returns a disposer that removes it. */
+function addSource(action: Action): () => void {
   sources.set(action.id, action);
-  useActions.setState((s) => ({ actions: new Map(s.actions).set(action.id, localize(action)) }));
   return () => {
     if (sources.get(action.id) !== action) return;
     sources.delete(action.id);
@@ -108,9 +151,64 @@ export function registerAction(action: Action): () => void {
   };
 }
 
+/** Registers an action; returns a disposer. Re-registering an id replaces it. */
+export function registerAction(action: Action): () => void {
+  const dispose = addSource(action);
+  useActions.setState((s) => ({ actions: new Map(s.actions).set(action.id, localize(action)) }));
+  return dispose;
+}
+
 export function registerActions(actions: Action[]): () => void {
-  const disposers = actions.map(registerAction);
-  return () => disposers.forEach((d) => d());
+  const owned = new Map<string, Action>();
+  for (const action of actions) {
+    sources.set(action.id, action);
+    owned.set(action.id, action);
+  }
+  // One state update for the batch: features register dozens of actions at start-up,
+  // and cloning the whole map per action made that O(n²).
+  if (owned.size) {
+    useActions.setState((s) => {
+      const next = new Map(s.actions);
+      for (const [id, action] of owned) next.set(id, localize(action));
+      return { actions: next };
+    });
+  }
+  return () => {
+    const removed: string[] = [];
+    for (const [id, action] of owned) {
+      if (sources.get(id) !== action) continue;
+      sources.delete(id);
+      removed.push(id);
+    }
+    if (!removed.length) return;
+    useActions.setState((s) => {
+      const next = new Map(s.actions);
+      for (const id of removed) next.delete(id);
+      return { actions: next };
+    });
+  };
+}
+
+/**
+ * Registers `actions` over the ones currently registered under the same ids; the disposer
+ * removes them and puts the earlier registrations back, so their owners' own disposers
+ * still remove them later.
+ */
+export function overrideActions(actions: Action[]): () => void {
+  const shadowed = actions.map((a) => sources.get(a.id)).filter((a): a is Action => !!a);
+  const dispose = registerActions(actions);
+  return () => {
+    const mine = new Set(actions);
+    const restore = shadowed.filter((a) => mine.has(sources.get(a.id)!));
+    dispose();
+    if (!restore.length) return;
+    for (const action of restore) sources.set(action.id, action);
+    useActions.setState((s) => {
+      const next = new Map(s.actions);
+      for (const action of restore) next.set(action.id, localize(action));
+      return { actions: next };
+    });
+  };
 }
 
 export function getAction(id: string): Action | undefined {
@@ -121,13 +219,13 @@ export function allActions(): Action[] {
   return [...useActions.getState().actions.values()];
 }
 
-export function isActionEnabled(action: Action, ctx: ContextKeys = getContext()): boolean {
+export function isActionEnabled(action: Action, ctx: ContextKeys = getContext(), arg?: unknown): boolean {
   if (
     ctx.projectOpening &&
     !["app.quit", "window.next", "window.previous", "window.toggleFullScreen"].includes(action.id)
   )
     return false;
-  return evaluateWhen(action.when, ctx);
+  return evaluateWhen(action.when, ctx) && (action.enabled?.({ ctx, arg }) ?? true);
 }
 
 /** Whether a keyboard shortcut may run `action` (`when` and `keyWhen`). */
@@ -165,14 +263,23 @@ export function onActionExecuted(listener: ActionListener): () => void {
 }
 
 /** Runs an action if registered and enabled. Returns whether it ran. */
-export async function executeAction(id: string, arg?: unknown): Promise<boolean> {
+export function executeAction(id: string, arg?: unknown): Promise<boolean> {
+  return runAction(id, arg, false);
+}
+
+/** Host requests need the launch error before acknowledging an operation. */
+export async function executeActionOrThrow(id: string, arg?: unknown): Promise<void> {
+  if (!(await runAction(id, arg, true))) throw new Error(`Action unavailable: ${id}`);
+}
+
+async function runAction(id: string, arg: unknown, propagateError: boolean): Promise<boolean> {
   const action = getAction(id);
   if (!action) {
     console.warn(`unknown action: ${id}`);
     return false;
   }
   const ctx = getContext();
-  if (!isActionEnabled(action, ctx)) return false;
+  if (!isActionEnabled(action, ctx, arg)) return false;
   if (nesting === 0)
     for (const l of listeners)
       try {
@@ -180,6 +287,7 @@ export async function executeAction(id: string, arg?: unknown): Promise<boolean>
       } catch (e) {
         console.error("action listener failed", e);
       }
+  if (action.indicatesRunning) trackRun(id, 1);
   try {
     let pending: void | Promise<void>;
     nesting++;
@@ -190,7 +298,10 @@ export async function executeAction(id: string, arg?: unknown): Promise<boolean>
     }
     await pending;
   } catch (e) {
+    if (propagateError) throw e;
     console.error(`action ${id} failed`, e);
+  } finally {
+    if (action.indicatesRunning) trackRun(id, -1);
   }
   return true;
 }

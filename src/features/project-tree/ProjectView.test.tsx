@@ -1,9 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { emitLocalIdeEvent } from "@/platform/ipc";
 import { installRepeatedDoubleClick } from "@/platform/doubleClick";
-import { getContext } from "@/platform/context";
-import { provideEditorService, registerProjectViewRoot, type EditorService } from "@/workbench/contributions";
+import { getContext, setContext } from "@/platform/context";
+import { applyKeymapSettings, installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
+import { usePlatform } from "@/platform/platformInfo";
+import {
+  provideEditorService,
+  registerProjectViewRoot,
+  setFileDecorations,
+  type EditorService,
+} from "@/workbench/contributions";
 import { activate } from "./index";
 import { setOsClipboardForTests } from "./clipboard";
 import { MemoryFs, setProjectFsForTests } from "./fs";
@@ -12,20 +19,31 @@ import { FileRefactorDialogHost } from "./FileRefactorDialogs";
 import { setRefactorBackendForTests } from "./fileRefactor";
 import { ProjectView } from "./ProjectView";
 import { beginNew, canPaste } from "./operations";
-import { initProjectTree, setViewOption, useProjectTree } from "./store";
+import { initProjectTree, selectModel, setSelection, setViewOption, useProjectTree } from "./store";
 import type { OutlineItem } from "@/bindings";
-import { _emitEditorEvent } from "@/editor/api";
+import { _emitEditorEvent, useEditorRegistry } from "@/editor/api";
+import { ProjectHeaderActions, useProjectHeaderMenu } from "./HeaderActions";
+import { executeAction, getAction } from "@/platform/actions";
+import { useProject } from "@/platform/project";
+import type { MenuItem } from "@/ui";
 import { loadOutline } from "./store";
 
 const ipc = vi.hoisted(() => ({
   docOpen: vi.fn(),
   docClose: vi.fn(),
   docOutline: vi.fn(),
+  settingsSet: vi.fn(),
 }));
 vi.mock("@/bindings", async (orig) => {
   const real = await orig<typeof import("@/bindings")>();
   return { ...real, commands: { ...real.commands, ...ipc } };
 });
+const dragOut = vi.hoisted(() => ({
+  canDragOut: vi.fn(() => false),
+  dragOut: vi.fn(async (_paths: readonly string[]) => true),
+  isDraggingOut: vi.fn(() => false),
+}));
+vi.mock("@/platform/dragOut", () => dragOut);
 
 const ok = <T,>(data: T) => ({ status: "ok" as const, data });
 const item = (name: string, kind: OutlineItem["kind"], line: number, children: OutlineItem[] = []): OutlineItem => {
@@ -44,9 +62,27 @@ const deferred = <T,>() => {
 };
 
 const ROOT = "/w/acme";
+const initialSettings = useProject.getState().settings;
+
+/** Settings › Editor › General › Editor Tabs › Enable preview tab. */
+const previewTabSettings = (on: boolean) => ({ editor: { tabs: { previewTab: on } } });
+const setPreviewTabSetting = (on: boolean) => act(() => useProject.setState({ settings: previewTabSettings(on) }));
 let fs: MemoryFs;
 let openFile: ReturnType<typeof vi.fn>;
 let dispose: () => void;
+
+const initialPlatform = usePlatform.getState();
+const initialKeymap = useKeymap.getState();
+let uninstallDispatcher: (() => void) | null = null;
+
+/** Presses the presets' shortcuts: the global dispatcher runs the keymap's actions. */
+function dispatchViaKeymap() {
+  usePlatform.setState({ os: "macos" });
+  useKeymap.setState({ preset: "intellij-macos", overrides: {} });
+  // The workbench activation that publishes this in the app does not run here.
+  setContext("projectOpen", true);
+  uninstallDispatcher = installKeyboardDispatcher(window);
+}
 
 beforeEach(() => {
   localStorage.clear();
@@ -71,7 +107,12 @@ beforeEach(() => {
 
 afterEach(() => {
   dispose();
+  useProject.setState({ settings: initialSettings });
   setProjectFsForTests(null);
+  uninstallDispatcher?.();
+  uninstallDispatcher = null;
+  usePlatform.setState(initialPlatform);
+  useKeymap.setState(initialKeymap);
 });
 
 function setup() {
@@ -146,7 +187,193 @@ describe("ProjectView", () => {
     await waitFor(() => expect(rows()).toEqual(["acme/w/acme", "build", "src", "App.kt", "Util.kt", "README.md"]));
   });
 
+  it("restores visible expansion across workspace roots while a compacted folder is slow", async () => {
+    const left = "/left/src/nested/deep";
+    const right = "/right/src/package";
+    fs = new MemoryFs({
+      [`${left}/New.ts`]: "new",
+      [`${right}/Ready.ts`]: "ready",
+      "/left/closed/orphan/Skipped.ts": "",
+      "/left/ignored/inside/Hidden.ts": "",
+    });
+    fs.ignored.add("/left/ignored");
+    const gate = deferred<void>();
+    const read = fs.readDir.bind(fs);
+    const spy = vi.spyOn(fs, "readDir").mockImplementation(async (path) => {
+      if (path === left) await gate.promise;
+      return read(path);
+    });
+    const { showExcluded } = useProjectTree.getState().options;
+    setViewOption("showExcluded", false);
+    try {
+      setProjectFsForTests(fs, ROOT);
+      localStorage.setItem(
+        `openidea.projectTree.expanded:${ROOT}`,
+        JSON.stringify([
+          "/left",
+          "/left/src",
+          "/left/src/nested",
+          left,
+          "/right",
+          "/right/src",
+          right,
+          "/left/closed/orphan",
+          "/left/ignored",
+          "/left/ignored/inside",
+        ]),
+      );
+      initProjectTree(ROOT, "Workspace", ["/left", "/right"]);
+      const { rows } = setup();
+
+      await waitFor(() => expect(rows()).toContain("Ready.ts"));
+      expect(spy).toHaveBeenCalledWith(left);
+      expect(rows()).not.toContain("New.ts");
+
+      gate.resolve();
+      await waitFor(() => expect(rows()).toContain("New.ts"));
+      expect(spy.mock.calls.map(([path]) => path).sort()).toEqual([
+        "/left",
+        "/left/src",
+        "/left/src/nested",
+        left,
+        "/right",
+        "/right/src",
+        right,
+      ]);
+    } finally {
+      gate.resolve();
+      act(() => setViewOption("showExcluded", showExcluded));
+    }
+  });
+
+  it("reveals ready selected folders from the toolbar while a compacted sibling waits", async () => {
+    const blocked = `${ROOT}/slow/nested/leaf`;
+    fs = new MemoryFs(
+      {
+        [`${ROOT}/fast/pkg/leaf/Ready.ts`]: "ready",
+        [`${blocked}/Blocked.ts`]: "blocked",
+        [`${ROOT}/unselected/Skipped.ts`]: "",
+        [`${ROOT}/README.md`]: "",
+        "/outside/Linked.ts": "",
+      },
+      ROOT,
+      { [`${ROOT}/linked-parent/link`]: "/outside" },
+    );
+    setProjectFsForTests(fs, ROOT);
+    const gate = deferred<void>();
+    const done = deferred<void>();
+    const read = fs.readDir.bind(fs);
+    const spy = vi.spyOn(fs, "readDir").mockImplementation(async (path) => {
+      if (path === blocked) await gate.promise;
+      const entries = await read(path);
+      if (path === blocked) done.resolve();
+      return entries;
+    });
+    setContext("projectOpen", true);
+    render(<ProjectHeaderActions />);
+    const { rows, row, tree } = setup();
+    const button = screen.getByRole("button", { name: "Expand Selected" });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("data-tooltip", "Expand Selected");
+    expect(getAction("project.expandSelected")?.title).toBe("Expand Selected");
+    expect(getAction("project.expandAll")?.title).toBe("Expand All");
+    expect(await executeAction("project.expandSelected")).toBe(false);
+    await waitFor(() => expect(rows()).toContain("fast"));
+
+    fireEvent.mouseDown(row("README.md"));
+    expect(button).toBeEnabled();
+    expect(await executeAction("project.expandSelected")).toBe(true);
+    expect(spy.mock.calls).toEqual([[ROOT]]);
+    fireEvent.mouseDown(row("fast"));
+    fireEvent.mouseDown(row("linked-parent"), { metaKey: true });
+    fireEvent.mouseDown(row("slow"), { metaKey: true });
+    const selection = useProjectTree.getState().selected;
+    expect(selection).toEqual(new Set([`${ROOT}/fast`, `${ROOT}/linked-parent`, `${ROOT}/slow`]));
+    tree.scrollTop = 18;
+    const scrollTop = tree.scrollTop;
+
+    try {
+      fireEvent.click(button);
+      await waitFor(() => expect(rows()).toContain("Ready.ts"));
+      expect(spy).toHaveBeenCalledWith(blocked);
+      expect(rows()).not.toContain("Blocked.ts");
+      expect(rows()).toContain("link");
+      expect(rows()).not.toContain("Linked.ts");
+      expect(spy).not.toHaveBeenCalledWith(`${ROOT}/linked-parent/link`);
+      expect(spy).not.toHaveBeenCalledWith(`${ROOT}/unselected`);
+      expect(useProjectTree.getState().selected).toBe(selection);
+      expect(tree.scrollTop).toBe(scrollTop);
+
+      fireEvent.mouseDown(row("Ready.ts"));
+      await act(async () => void (await executeAction("project.collapseAll")));
+      await act(async () => {
+        gate.resolve();
+        await done.promise;
+      });
+      const root = row("acme");
+      expect(root).toHaveAttribute("aria-expanded", "false");
+      expect(rows()).toEqual(["acme/w/acme"]);
+      expect(button).toBeDisabled();
+      expect(useProjectTree.getState().listings.has(blocked)).toBe(false);
+      const paths = spy.mock.calls.map(([path]) => path);
+      expect(paths).toHaveLength(new Set(paths).size);
+
+      fireEvent.mouseDown(root);
+      fireEvent.keyDown(tree, { key: "ArrowRight" });
+      expect(root).toHaveAttribute("aria-expanded", "true");
+      expect(rows()).toContain("README.md");
+      expect(rows()).not.toContain("Ready.ts");
+      expect(rows()).not.toContain("Blocked.ts");
+    } finally {
+      gate.resolve();
+    }
+  });
+
+  it("closes every workspace root and reopens only the chosen root", async () => {
+    fs = new MemoryFs({ "/left/Left.ts": "left", "/right/Right.ts": "right" });
+    setProjectFsForTests(fs, ROOT);
+    initProjectTree(ROOT, "Workspace", ["/left", "/right"]);
+    setContext("projectOpen", true);
+    render(<ProjectHeaderActions />);
+    const { rows, row, tree } = setup();
+    await waitFor(() => expect(rows()).toEqual(["left/left", "Left.ts", "right/right", "Right.ts"]));
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse All" }));
+
+    expect(rows()).toEqual(["left/left", "right/right"]);
+    expect(row("left")).toHaveAttribute("aria-expanded", "false");
+    expect(row("right")).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.mouseDown(row("right"));
+    fireEvent.keyDown(tree, { key: "ArrowRight" });
+    expect(rows()).toEqual(["left/left", "right/right", "Right.ts"]);
+    expect(row("left")).toHaveAttribute("aria-expanded", "false");
+    expect(row("right")).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("opens the selected file in the right split with ⇧Enter; a folder still expands", async () => {
+    dispatchViaKeymap();
+    const { tree, row, rows } = setup();
+    await waitFor(() => expect(rows()).toContain("README.md"));
+    fireEvent.mouseDown(row("README.md"));
+    tree.focus();
+    fireEvent.keyDown(tree, { key: "Enter", code: "Enter", shiftKey: true });
+    await waitFor(() =>
+      expect(openFile).toHaveBeenLastCalledWith(
+        "/w/acme/README.md",
+        expect.objectContaining({ side: true, focus: true }),
+      ),
+    );
+    openFile.mockClear();
+    fireEvent.mouseDown(row("src"));
+    tree.focus();
+    fireEvent.keyDown(tree, { key: "Enter", code: "Enter", shiftKey: true });
+    await waitFor(() => expect(rows()).toContain("App.kt"));
+    expect(openFile).not.toHaveBeenCalled();
+  });
+
   it("pastes the files Explorer copied into the selected folder, as copies", async () => {
+    dispatchViaKeymap();
     // What Explorer leaves on the clipboard: a path outside the project.
     fs.nodes.set("/elsewhere/Photo.png", { kind: "file", size: 3 });
     setOsClipboardForTests({
@@ -169,7 +396,44 @@ describe("ProjectView", () => {
     }
   });
 
+  it("pastes a copied keyword into the tree's speed search instead of pasting files", async () => {
+    dispatchViaKeymap();
+    // Explorer holds a file, and the user wants to paste a word they copied from somewhere else
+    // into the search they just opened with ⌘F.
+    fs.nodes.set("/elsewhere/Photo.png", { kind: "file", size: 3 });
+    setOsClipboardForTests({
+      files: async () => ["/elsewhere/Photo.png"],
+      hasFiles: async () => true,
+      setFiles: async () => false,
+    });
+    try {
+      const { tree, row, rows } = setup();
+      await waitFor(() => expect(rows()).toContain("README.md"));
+      fireEvent.mouseDown(row("src"));
+      tree.focus();
+      fireEvent.keyDown(tree, { key: "f", code: "KeyF", metaKey: true });
+      fireEvent.paste(tree, {
+        clipboardData: { getData: () => "Read" },
+      } as unknown as ClipboardEventInit);
+      expect(within(tree.parentElement!).getByRole("status")).toHaveTextContent("Read");
+      // The file Paste never ran: give a wrong one the time to land, then check the project.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
+      expect([...fs.nodes.keys()].filter((p) => p.startsWith("/w/acme/") && p.endsWith("Photo.png"))).toEqual([]);
+      // Closed, ⌘V is the view's file Paste again.
+      fireEvent.keyDown(tree, { key: "Escape", code: "Escape" });
+      fireEvent.keyDown(tree, { key: "v", code: "KeyV", metaKey: true });
+      await waitFor(() =>
+        expect([...fs.nodes.keys()].some((p) => p.startsWith("/w/acme/") && p.endsWith("Photo.png"))).toBe(true),
+      );
+    } finally {
+      setOsClipboardForTests(null);
+    }
+  });
+
   it("clears cut dimming and disables Paste on focus after the OS clipboard becomes text", async () => {
+    dispatchViaKeymap();
     let files: string[] = [];
     setOsClipboardForTests({
       files: async () => files,
@@ -203,21 +467,80 @@ describe("ProjectView", () => {
     }
   });
 
-  it("opens files on double click and previews on single click only when enabled", async () => {
+  it("opens files on double click and previews on single click while the editor's preview tab is on", async () => {
     const { row, rows } = setup();
     await waitFor(() => expect(rows()).toContain("README.md"));
     const content = row("README.md").querySelector("[data-project-path]")!;
-    fireEvent.click(content, { detail: 1 });
-    expect(openFile).not.toHaveBeenCalled();
-    fireEvent.doubleClick(row("README.md"));
-    expect(openFile).toHaveBeenLastCalledWith("/w/acme/README.md", { preview: undefined, focus: true });
-    act(() => setViewOption("previewTab", true));
+    // Settings › Editor › General › Editor Tabs › Enable preview tab is on by default.
     fireEvent.click(content, { detail: 1 });
     expect(openFile).toHaveBeenLastCalledWith("/w/acme/README.md", { preview: true, focus: false });
     openFile.mockClear();
     fireEvent.click(content, { detail: 3 });
     expect(openFile).not.toHaveBeenCalled();
-    act(() => setViewOption("previewTab", false));
+    setPreviewTabSetting(false);
+    fireEvent.click(content, { detail: 1 });
+    expect(openFile).not.toHaveBeenCalled();
+    fireEvent.doubleClick(row("README.md"));
+    expect(openFile).toHaveBeenLastCalledWith("/w/acme/README.md", { preview: undefined, focus: true });
+  });
+
+  it("toggles the editor's preview tab setting from the Behavior menu and its action", async () => {
+    ipc.settingsSet.mockImplementation(async (_scope: string, _key: string, value: string) =>
+      ok(previewTabSettings(JSON.parse(value) as boolean)),
+    );
+    const { result } = renderHook(() => useProjectHeaderMenu());
+    type Item = Extract<MenuItem, { id?: string }>;
+    const behavior = () => (result.current[0] as Item).submenu as Item[];
+    const item = () => behavior().find((i) => i.id === "previewTab")!;
+    expect(item().checked).toBe(true);
+    act(() => item().run!());
+    await waitFor(() => expect(item().checked).toBe(false));
+    expect(ipc.settingsSet).toHaveBeenLastCalledWith("global", "editor.tabs.previewTab", "false");
+    const action = getAction("project.option.previewTab")!;
+    expect(action.toggled!()).toBe(false);
+    act(() => void executeAction(action.id));
+    await waitFor(() => expect(item().checked).toBe(true));
+  });
+
+  it("drops the former view-only preview tab option from saved view options", () => {
+    localStorage.setItem("openidea.projectTree.options", JSON.stringify({ previewTab: true, singleClickOpen: true }));
+    vi.resetModules();
+    return import("./store").then(({ useProjectTree: fresh }) => {
+      expect(fresh.getState().options).not.toHaveProperty("previewTab");
+      expect(fresh.getState().options.singleClickOpen).toBe(true);
+    });
+  });
+
+  it("follows tab switches with Always Select Opened File, hiding Select Opened File", async () => {
+    const focusEditor = (path: string) => act(() => useEditorRegistry.setState({ active: { ctx: { path } } } as never));
+    const selected = () =>
+      screen
+        .getAllByRole("treeitem")
+        .filter((r) => r.getAttribute("aria-selected") === "true")
+        .map((r) => r.textContent);
+    try {
+      render(<ProjectHeaderActions />);
+      const { rows } = setup();
+      await waitFor(() => expect(rows()).toContain("README.md"));
+      expect(screen.getByRole("button", { name: "Select Opened File" })).toBeTruthy();
+      focusEditor("/w/acme/src/Util.kt");
+      expect(rows()).not.toContain("Util.kt");
+
+      act(() => setViewOption("autoscrollFromSource", true));
+      await waitFor(() => expect(selected()).toEqual(["Util.kt"]));
+      expect(screen.queryByRole("button", { name: "Select Opened File" })).toBeNull();
+      focusEditor("/w/acme/README.md");
+      await waitFor(() => expect(selected()).toEqual(["README.md"]));
+      focusEditor("/w/acme/src/App.kt");
+      await waitFor(() => expect(selected()).toEqual(["App.kt"]));
+
+      act(() => setViewOption("autoscrollFromSource", false));
+      focusEditor("/w/acme/README.md");
+      expect(selected()).toEqual(["App.kt"]);
+      expect(screen.getByRole("button", { name: "Select Opened File" })).toBeTruthy();
+    } finally {
+      act(() => useEditorRegistry.setState({ active: null }));
+    }
   });
 
   it("expands and collapses folders on single click only when enabled", async () => {
@@ -274,6 +597,7 @@ describe("ProjectView", () => {
           burst(clicks);
           const toggles = singleClickExpand ? Math.ceil(clicks / 2) : Math.floor(clicks / 2);
           if (toggles % 2) expanded = !expanded;
+          // oxlint-disable-next-line no-await-in-loop -- each click burst is asserted before the next burst is fired
           await waitFor(() => expect(rows().includes("App.kt")).toBe(expanded));
         }
       }
@@ -310,6 +634,67 @@ describe("ProjectView", () => {
     expect(ghost()).not.toBeNull();
     release();
     expect(ghost()).toBeNull();
+  });
+
+  it("keeps the tree from scrolling sideways during a drag", async () => {
+    const { tree, row, rows } = setup();
+    await waitFor(() => expect(rows()).toContain("README.md"));
+    document.elementFromPoint = () => null;
+    fireEvent(
+      row("README.md").querySelector("[data-project-path]")!,
+      new MouseEvent("pointerdown", { bubbles: true, button: 0 }),
+    );
+    act(() => void window.dispatchEvent(new MouseEvent("pointermove", { buttons: 1, clientX: 40, clientY: 0 })));
+    // WebKit's autoscroll toward a pointer right of the tree.
+    tree.scrollLeft = 600;
+    fireEvent.scroll(tree);
+    expect(tree.scrollLeft).toBe(0);
+    act(() => void window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true })));
+  });
+
+  it("hands the selected files to an OS drag once the pointer leaves the window", async () => {
+    const { row, rows } = setup();
+    await waitFor(() => expect(rows()).toContain("README.md"));
+    document.elementFromPoint = () => null;
+    const model = selectModel(useProjectTree.getState());
+    const keys = [`${ROOT}/README.md`, `${ROOT}/src`].map((p) => model.keyOfPath.get(p)!);
+    act(() => setSelection(new Set(keys), keys[0]!));
+    const ghost = () => screen.queryByText("2 items");
+    const press = () =>
+      fireEvent(
+        row("README.md").querySelector("[data-project-path]")!,
+        new MouseEvent("pointerdown", { bubbles: true, button: 0 }),
+      );
+    const move = (x: number) =>
+      act(() => {
+        window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, buttons: 1, clientX: x, clientY: 10 }));
+      });
+    const release = () => act(() => void window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true })));
+    try {
+      // Where files can't leave (a remote project, the browser), the drag stays in the window.
+      press();
+      move(40);
+      move(-5);
+      expect(ghost()).not.toBeNull();
+      release();
+      expect(dragOut.dragOut).not.toHaveBeenCalled();
+
+      dragOut.canDragOut.mockReturnValue(true);
+      press();
+      move(40);
+      expect(ghost()).not.toBeNull();
+      expect(dragOut.dragOut).not.toHaveBeenCalled();
+      move(window.innerWidth + 5);
+      expect(dragOut.dragOut).toHaveBeenCalledExactlyOnceWith([`${ROOT}/README.md`, `${ROOT}/src`]);
+      // The OS drag owns the pointer now: the in-window drag is over.
+      expect(ghost()).toBeNull();
+      move(-5);
+      release();
+      expect(dragOut.dragOut).toHaveBeenCalledOnce();
+    } finally {
+      dragOut.canDragOut.mockReturnValue(false);
+      dragOut.dragOut.mockClear();
+    }
   });
 
   it("cancels a new file when its name field loses focus", async () => {
@@ -374,6 +759,7 @@ describe("ProjectView", () => {
   });
 
   it("renames in IDEA's Rename dialog with Shift+F6, validating conflicts, and undoes with ⌘Z", async () => {
+    dispatchViaKeymap();
     const { tree, row, rows } = setup();
     await waitFor(() => expect(rows()).toContain("README.md"));
     fireEvent.mouseDown(row("README.md"));
@@ -401,7 +787,34 @@ describe("ProjectView", () => {
     expect(fs.nodes.has("/w/acme/GUIDE.md")).toBe(false);
   });
 
+  it("stops renaming with Shift+F6 once Rename File is unbound, following the keymap", async () => {
+    dispatchViaKeymap();
+    // Unbinding used to leave the component's hardcoded Shift+F6 in place (issue #2801).
+    applyKeymapSettings("intellij-macos", { "project.rename": [] });
+    const { tree, row, rows } = setup();
+    await waitFor(() => expect(rows()).toContain("README.md"));
+    fireEvent.mouseDown(row("README.md"));
+    tree.focus();
+    fireEvent.keyDown(tree, { key: "F6", code: "F6", shiftKey: true });
+    expect(screen.queryByRole("dialog", { name: "Rename" })).toBeNull();
+  });
+
+  it("renames with the shortcut the keymap rebinds Rename File to", async () => {
+    dispatchViaKeymap();
+    applyKeymapSettings("intellij-macos", { "project.rename": ["F2"] });
+    const { tree, row, rows } = setup();
+    await waitFor(() => expect(rows()).toContain("README.md"));
+    fireEvent.mouseDown(row("README.md"));
+    tree.focus();
+    fireEvent.keyDown(tree, { key: "F6", code: "F6", shiftKey: true });
+    expect(screen.queryByRole("dialog", { name: "Rename" })).toBeNull();
+    fireEvent.keyDown(tree, { key: "F2", code: "F2" });
+    const dialog = await screen.findByRole("dialog", { name: "Rename" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  });
+
   it("moves with F6 through the Move dialog", async () => {
+    dispatchViaKeymap();
     const { tree, row, rows } = setup();
     await waitFor(() => expect(rows()).toContain("README.md"));
     fireEvent.mouseDown(row("README.md"));
@@ -420,6 +833,7 @@ describe("ProjectView", () => {
   });
 
   it("deletes the selection after confirmation", async () => {
+    dispatchViaKeymap();
     const { tree, row, rows } = setup();
     await waitFor(() => expect(rows()).toContain("README.md"));
     fireEvent.mouseDown(row("README.md"));
@@ -525,6 +939,20 @@ describe("Show Members", () => {
     },
   );
 
+  it.each([true, false])("autoscrolls to source with preview tabs set to %s", async (preview) => {
+    const { rows, row } = setup();
+    setPreviewTabSetting(preview);
+    act(() => {
+      setViewOption("autoscrollToSource", true);
+      setViewOption("singleClickOpen", false);
+    });
+    await waitFor(() => expect(rows()).toContain("README.md"));
+    fireEvent.mouseDown(row("README.md"));
+    await waitFor(() =>
+      expect(openFile).toHaveBeenLastCalledWith("/w/acme/README.md", { preview, focus: false, external: false }),
+    );
+  });
+
   it("honours member single-click options and double-click focus", async () => {
     ipc.docOpen.mockResolvedValue(ok({ id: 7 }));
     ipc.docClose.mockResolvedValue(ok(null));
@@ -534,14 +962,14 @@ describe("Show Members", () => {
       setViewOption("showMembers", true);
       setViewOption("autoscrollToSource", false);
       setViewOption("singleClickOpen", false);
-      setViewOption("previewTab", false);
+      useProject.setState({ settings: previewTabSettings(false) });
       useProjectTree.setState({ expanded: new Set([ROOT, "/w/acme/src", APP]) });
     });
     await waitFor(() => expect(rows()).toContain("main"));
     const content = () => row("main").querySelector("[data-project-key]")!;
     fireEvent.click(content(), { detail: 1 });
     expect(openFile).not.toHaveBeenCalled();
-    act(() => setViewOption("previewTab", true));
+    setPreviewTabSetting(true);
     fireEvent.click(content(), { detail: 1 });
     expect(openFile).toHaveBeenLastCalledWith(
       APP,
@@ -664,10 +1092,102 @@ describe("Show Members", () => {
   });
 });
 
-it("renders workspace member roots with their own paths, without the settings directory", async () => {
-  fs = new MemoryFs({ "/z/first.txt": "", "/a/second.txt": "", "/workspace/.openidea/workspace.json": "{}" });
+it("sorts workspace member roots by the folder names shown in the tree", async () => {
+  fs = new MemoryFs({
+    "/a/service10/ten.txt": "",
+    "/z/Service2/two.txt": "",
+    "/m/alpha/first.txt": "",
+    "/workspace/.openidea/workspace.json": "{}",
+  });
   setProjectFsForTests(fs, "/workspace");
-  initProjectTree("/workspace", "Workspace", ["/z", "/a"]);
+  initProjectTree("/workspace", "Workspace", ["/a/service10", "/z/Service2", "/m/alpha"]);
   const { rows } = setup();
-  await waitFor(() => expect(rows()).toEqual(["z/z", "first.txt", "a/a", "second.txt"]));
+  await waitFor(() =>
+    expect(rows()).toEqual([
+      "alpha/m/alpha",
+      "first.txt",
+      "Service2/z/Service2",
+      "two.txt",
+      "service10/a/service10",
+      "ten.txt",
+    ]),
+  );
+});
+
+it("hides the path beside workspace roots when Show Root Paths is off, keeping it on hover", async () => {
+  fs = new MemoryFs({
+    "/a/service/one.txt": "",
+    "/b/web/two.txt": "",
+    "/workspace/.openidea/workspace.json": "{}",
+  });
+  setProjectFsForTests(fs, "/workspace");
+  initProjectTree("/workspace", "Workspace", ["/a/service", "/b/web"]);
+  const { rows } = setup();
+  await waitFor(() => expect(rows()).toContain("service/a/service"));
+
+  act(() => setViewOption("showRootPaths", false));
+  await waitFor(() => expect(rows()).toEqual(["service", "one.txt", "web", "two.txt"]));
+  const root = document.querySelector('[data-project-path="/a/service"]');
+  expect(root?.getAttribute("title")).toBe("/a/service");
+  act(() => setViewOption("showRootPaths", true));
+});
+
+it("shows a decoration's suffix after the root name, with icons and struck-out segments", async () => {
+  const { row } = setup();
+  await waitFor(() => expect(row("acme")).toBeTruthy());
+  act(() =>
+    setFileDecorations(
+      "test-suffix",
+      new Map([
+        [
+          ROOT,
+          {
+            suffixColor: "var(--accent)",
+            suffix: [
+              { text: "main" },
+              { text: "/" },
+              { text: "0", strike: true, label: "Up to date with origin/main" },
+              { text: "2", icon: "vcs-outgoing", label: "2 outgoing commits" },
+            ],
+          },
+        ],
+      ]),
+    ),
+  );
+  await waitFor(() => expect(row("acme").textContent).toContain("main/02"));
+  const root = row("acme");
+  expect(root.querySelector("s")?.textContent).toBe("0");
+  expect(root.querySelector("s")?.closest("[style]")?.getAttribute("style")).toContain("var(--accent)");
+  expect(within(root).getByLabelText("2 outgoing commits").querySelector("svg")).not.toBeNull();
+  expect(within(root).getByLabelText("Up to date with origin/main").textContent).toBe("0");
+  act(() => setFileDecorations("test-suffix", new Map()));
+  await waitFor(() => expect(row("acme").textContent).not.toContain("main/"));
+});
+
+it("marks file and folder symlinks with the link arrow, leaving real folders and files alone", async () => {
+  fs = new MemoryFs(
+    {
+      "/w/acme/dir1/keep.txt": "x",
+      "/w/acme/dir2/keep.txt": "x",
+      "/w/acme/note.txt": "x",
+    },
+    ROOT,
+    // `ln -s dir1 link1` on macOS/Linux; the backend reports kind "symlink", size 0.
+    { "/w/acme/link1": "/w/acme/dir1", "/w/acme/note-link.txt": "/w/acme/note.txt" },
+  );
+  setProjectFsForTests(fs, ROOT);
+  initProjectTree(ROOT, "acme");
+  const { row } = setup();
+  const iconAt = (label: string) => row(label).querySelector("[data-project-path]")?.getAttribute("data-project-icon");
+  await waitFor(() => expect(row("link1")).toBeTruthy());
+  // The link to a folder carries the arrow (IDEA's symlink badge)…
+  expect(within(row("link1")).getByLabelText("Symbolic link").tagName).toBe("svg");
+  expect(iconAt("link1")).toBe("folder");
+  expect(iconAt("dir1")).toBe("folder");
+  // …so does a link to a file, as in IDEA; real folders and files do not.
+  expect(within(row("note-link.txt")).getByLabelText("Symbolic link").tagName).toBe("svg");
+  expect(iconAt("note-link.txt")).toBe("file-text");
+  expect(within(row("dir1")).queryByLabelText("Symbolic link")).toBeNull();
+  expect(within(row("dir2")).queryByLabelText("Symbolic link")).toBeNull();
+  expect(within(row("note.txt")).queryByLabelText("Symbolic link")).toBeNull();
 });

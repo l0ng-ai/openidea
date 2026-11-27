@@ -42,7 +42,7 @@
   display: flex;
   flex: 1;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
   padding: 2px 10px 4px;
   margin-bottom: -2px;
@@ -92,7 +92,7 @@
 .chipMain {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   height: 100%;
   max-width: 200px;
   padding: 0 4px 0 6px;
@@ -170,7 +170,7 @@
 .right {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
 }
 .left {
@@ -211,7 +211,7 @@
   display: inline-flex;
   flex: none;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding-right: 1px;
   color: var(--fg);
   font-variant-numeric: tabular-nums;
@@ -259,7 +259,7 @@
 .balloonRow {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   height: 24px;
   white-space: nowrap;
 }

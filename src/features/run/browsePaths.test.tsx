@@ -59,7 +59,7 @@ describe("path fields", () => {
 
   it("pick a file or a directory for a configuration type's path fields", async () => {
     useProject.setState({ project: { root: "/work/app" } as never });
-    const tomcat = { ...newConfigOfType(tomcatType, []), params: { deployment: "war" } };
+    const tomcat = { ...newConfigOfType(tomcatType, []), kind: "tomcat-fields", params: { deployment: "war" } };
     const onChange = vi.fn();
     render(<ConfigForm config={tomcat} all={[]} type={tomcatType} errors={{}} onChange={onChange} modifyRequest={0} />);
     const home = screen.getByRole("textbox", { name: "Tomcat installation directory" });

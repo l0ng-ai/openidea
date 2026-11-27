@@ -1,7 +1,8 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Branch } from "@/bindings";
 import { BranchFilterPopup } from "../BranchFilterPopup";
+import { useFavoriteBranches } from "../branchOps";
 
 const branch = (name: string, extra: Partial<Branch> = {}) =>
   ({ name, remote: false, current: false, ...extra }) as Branch;
@@ -27,13 +28,46 @@ function renderPopup(onSelect = vi.fn()) {
   return { input: screen.getByRole("textbox", { name: "Search branches" }), onSelect };
 }
 
+const rowTexts = () => screen.getAllByRole("option").map((o) => o.textContent);
+
+afterEach(() => {
+  localStorage.clear();
+  useFavoriteBranches.setState({ key: "", names: null });
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
 describe("branch filter popup", () => {
-  it("groups HEAD, local and remote branches and leaves out the remote HEAD", () => {
+  it("lists HEAD and the favorites, with Local and Remote collapsed until opened; no remote HEAD", () => {
     renderPopup();
-    expect(screen.getByText("Local")).toBeTruthy();
-    expect(screen.getByText("Remote")).toBeTruthy();
+    // `main` is a favorite by default.
+    expect(screen.getByText("Favorites")).toBeTruthy();
+    expect(rowTexts()).toEqual(["HEAD (Current Branch)", "main", "Local", "Remote"]);
+    fireEvent.click(screen.getByText("Remote"));
+    expect(screen.getByText("Remote").closest("[aria-expanded]")).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("origin/develop")).toBeTruthy();
     expect(screen.queryByText("origin/HEAD")).toBeNull();
+  });
+
+  it("shows the user's favorite branches, local and remote, under Favorites by name", () => {
+    localStorage.setItem("openidea.vcs.favoriteBranches:", JSON.stringify(["origin/develop", "feature/demo"]));
+    renderPopup();
+    expect(rowTexts()).toEqual(["HEAD (Current Branch)", "feature/demo", "origin/develop", "Local", "Remote"]);
+    const input = screen.getByRole("textbox", { name: "Search branches" });
+    // Right opens a group on the keyboard, Left closes it. Inside, the current branch, then favorites.
+    for (let i = 0; i < 3; i++) fireEvent.keyDown(input, { key: "ArrowDown" });
+    fireEvent.keyDown(input, { key: "ArrowRight" });
+    expect(rowTexts()).toEqual([
+      "HEAD (Current Branch)",
+      "feature/demo",
+      "origin/develop",
+      "Local",
+      "main",
+      "feature/demo",
+      "Remote",
+    ]);
+    fireEvent.keyDown(input, { key: "ArrowLeft" });
+    expect(rowTexts()).toEqual(["HEAD (Current Branch)", "feature/demo", "origin/develop", "Local", "Remote"]);
   });
 
   it("searches case-insensitively and hides groups without a match", () => {
@@ -48,7 +82,7 @@ describe("branch filter popup", () => {
 
   it("moves over section headers with the arrow keys", () => {
     const { input, onSelect } = renderPopup();
-    // HEAD → (Local header skipped) → main
+    // HEAD → (Favorites header skipped) → main
     fireEvent.keyDown(input, { key: "ArrowDown" });
     fireEvent.keyDown(input, { key: "Enter" });
     expect(onSelect).toHaveBeenLastCalledWith("main");
@@ -60,5 +94,38 @@ describe("branch filter popup", () => {
     expect(document.querySelectorAll("mark")).toHaveLength(3);
     fireEvent.change(input, { target: { value: "missing" } });
     expect(screen.getByText("No matching branches")).toBeTruthy();
+  });
+
+  it("grows an opened group down to the window's bottom edge, keeping the usual limit with less room", () => {
+    const many = [branch("main", { current: true }), ...Array.from({ length: 40 }, (_, i) => branch(`feature-${i}`))];
+    const list = () => screen.getByRole("listbox", { name: "Branches" }).parentElement!;
+    // No layout in jsdom: a 1000 px window, and a popup 80 px taller than its list.
+    vi.stubGlobal("innerHeight", 1000);
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute("data-popup") ? 80 + parseFloat(list().style.height) : 0;
+    });
+    const open = (anchorBottom: number) => {
+      const anchor = document.createElement("button");
+      anchor.getBoundingClientRect = () => ({ bottom: anchorBottom }) as DOMRect;
+      const view = render(
+        <BranchFilterPopup
+          anchor={anchor}
+          branches={many}
+          selected={[]}
+          onSelect={vi.fn()}
+          onSelectMany={vi.fn()}
+          onClose={vi.fn()}
+        />,
+      );
+      fireEvent.click(screen.getByText("Local"));
+      return view;
+    };
+
+    // 1000 - 100 (anchor) - 10 (popup margins) - 80 (search, padding, Select…) leaves 810 px.
+    open(100);
+    expect(list().style.height).toBe("810px");
+    cleanup();
+    open(700);
+    expect(list().style.height).toBe("320px");
   });
 });

@@ -1,0 +1,9 @@
+id = "test.semantic-tokens"
+name = "Semantic tokens fixture"
+version = "0.1.0"
+engines.openidea = "^1.3"
+wasm = "dist/plugin.wasm"
+
+[[contributes.providers]]
+kinds = ["semantic-tokens"]
+languages = ["php"]

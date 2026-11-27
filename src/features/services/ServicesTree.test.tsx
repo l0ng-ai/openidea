@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { useServiceProviders, type ServiceTreeItem } from "@/workbench/contributions";
+import { usePlatform } from "@/platform/platformInfo";
+import {
+  ToolWindowShownProvider,
+  registerServiceSelectionItems,
+  useServiceProviders,
+  type ServiceContext,
+  type ServiceTreeItem,
+} from "@/workbench/contributions";
 import { ServicesTreeView } from "./ServicesTree";
 import { useServicesTree } from "./tree";
 import { selectedServices, selectionActions, selectionMenu } from "./selection";
@@ -12,6 +19,7 @@ const roots: ServiceTreeItem[] = ["one", "two", "three"].map((key) => ({ key, la
 const run = vi.fn();
 const stop = vi.fn();
 const remove = vi.fn();
+const select = vi.fn();
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -32,6 +40,7 @@ beforeEach(() => {
             { label: "Remove from Services", run: () => remove(item.key) },
           ],
           detail: ({ item }) => <div data-testid="detail">{item.label}</div>,
+          select: (item) => select(item.key),
         },
       ],
     ]),
@@ -52,19 +61,68 @@ function setup() {
 }
 
 describe("Services selection → actions", () => {
-  it.each(["ctrlKey", "metaKey"])("%s toggles rows and Run applies to the selection", (modifier) => {
-    const { row, selected, toolbar } = setup();
+  it.each([
+    { os: "macos", modifier: "metaKey" },
+    { os: "windows", modifier: "ctrlKey" },
+    { os: "linux", modifier: "ctrlKey" },
+  ])("$modifier on $os toggles rows and Run applies to the selection", ({ os, modifier }) => {
+    const previousOs = usePlatform.getState().os;
+    usePlatform.setState({ os });
+    try {
+      const { row, selected, toolbar } = setup();
+      fireEvent.mouseDown(row("one"));
+      fireEvent.mouseDown(row("two"), { [modifier]: true });
+      expect(selected()).toEqual(["one", "two"]);
+      expect(screen.getByTestId("detail")).toHaveTextContent("two");
+      fireEvent.click(within(toolbar).getByRole("button", { name: "Run" }));
+      expect(run.mock.calls).toEqual([["one"], ["two"]]);
+      fireEvent.mouseDown(row("one"), { [modifier]: true });
+      expect(selected()).toEqual(["two"]);
+      fireEvent.mouseDown(row("two"), { [modifier]: true });
+      expect(selected()).toEqual([]);
+      expect(screen.queryByTestId("detail")).not.toBeInTheDocument();
+    } finally {
+      usePlatform.setState({ os: previousOs });
+    }
+  });
+
+  it("tells the provider which node became the lead selection", () => {
+    const { row } = setup();
     fireEvent.mouseDown(row("one"));
-    fireEvent.mouseDown(row("two"), { [modifier]: true });
-    expect(selected()).toEqual(["one", "two"]);
-    expect(screen.getByTestId("detail")).toHaveTextContent("two");
-    fireEvent.click(within(toolbar).getByRole("button", { name: "Run" }));
-    expect(run.mock.calls).toEqual([["one"], ["two"]]);
-    fireEvent.mouseDown(row("one"), { [modifier]: true });
-    expect(selected()).toEqual(["two"]);
-    fireEvent.mouseDown(row("two"), { [modifier]: true });
-    expect(selected()).toEqual([]);
+    fireEvent.mouseDown(row("two"));
+    expect(select.mock.calls).toEqual([["one"], ["two"]]);
+  });
+
+  it("drops the detail pane (and what it streams) while the Services window is hidden", () => {
+    const view = (shown: boolean) => (
+      <ToolWindowShownProvider value={shown}>
+        <ServicesTreeView />
+      </ToolWindowShownProvider>
+    );
+    const { rerender } = render(view(true));
+    fireEvent.mouseDown(within(screen.getByRole("tree", { name: "Services" })).getByText("one"));
+    expect(screen.getByTestId("detail")).toHaveTextContent("one");
+    rerender(view(false));
     expect(screen.queryByTestId("detail")).not.toBeInTheDocument();
+    rerender(view(true));
+    expect(screen.getByTestId("detail")).toHaveTextContent("one");
+  });
+
+  it("Expand All and Collapse All reach lazy nodes and tell their provider", () => {
+    const expand = vi.fn();
+    const lazy: ServiceTreeItem[] = [{ key: "lazy", label: "lazy", icon: "run", expandable: true, children: [] }];
+    useServiceProviders.setState({
+      providers: new Map([["lazy", { id: "lazy", useRoots: () => lazy, expand: (i, open) => expand(i.key, open) }]]),
+    });
+    render(<ServicesTreeView />);
+    fireEvent.click(screen.getByRole("button", { name: "Expand All" }));
+    expect(useServicesTree.getState().expanded.has("lazy")).toBe(true);
+    expect(expand.mock.calls).toEqual([["lazy", true]]);
+    fireEvent.click(screen.getByRole("button", { name: "Collapse All" }));
+    expect(expand.mock.calls).toEqual([
+      ["lazy", true],
+      ["lazy", false],
+    ]);
   });
 
   it("Shift click selects a range; Stop skips disabled services", () => {
@@ -138,6 +196,30 @@ it("ignores removed rows and avoids invoking a selected group's descendants twic
   expect(stop.mock.calls).toEqual([["group"]]);
 });
 
+it("adds other features' entries for selected services, never for a group", () => {
+  const context = (item: ServiceTreeItem): ServiceContext | null =>
+    item.children ? null : { provider: "a", id: item.key, kind: "app", name: item.label, running: false };
+  const provider = { id: "a", useRoots: () => [], menu: () => [{ label: "Own", run }], context };
+  const seen: string[][] = [];
+  const off = registerServiceSelectionItems({
+    id: "extra",
+    menu: (services) => {
+      seen.push(services.map((s) => s.id));
+      return [{ label: "Extra", run }];
+    },
+    actions: () => [{ id: "extra", title: "Extra", icon: "run", run }],
+  });
+  const at = (item: ServiceTreeItem) => ({ provider: "a", item, parent: null });
+  expect(
+    selectionMenu([at(roots[0]!), at(roots[1]!)], [provider]).map((i) => ("label" in i ? i.label : i.kind)),
+  ).toEqual(["Own", "separator", "Extra"]);
+  expect(seen).toEqual([["one", "two"]]);
+  expect(selectionActions([at(roots[0]!)], [provider]).map((a) => a.id)).toEqual(["extra"]);
+  const group = { key: "g", label: "g", icon: "run", children: [roots[0]!] };
+  expect(selectionMenu([at(group)], [provider]).map((i) => ("label" in i ? i.label : i.kind))).toEqual(["Own"]);
+  off();
+});
+
 it("disables actions when no selected row can run them", () => {
   const { row, toolbar } = setup();
   fireEvent.mouseDown(row("three"));
@@ -153,4 +235,20 @@ it("disables dialog entries for a multi-selection", () => {
   )[0] as { disabled?: boolean };
   expect(one.disabled).toBeFalsy();
   expect(many.disabled).toBe(true);
+});
+
+it("F4 jumps to the source of a provider's node instead of activating it", () => {
+  const jump = vi.fn();
+  const activate = vi.fn();
+  const provider = useServiceProviders.getState().providers.get("test")!;
+  useServiceProviders.setState({
+    providers: new Map([
+      ["test", { ...provider, activate: (item) => activate(item.key), jumpToSource: (item) => jump(item.key) }],
+    ]),
+  });
+  const { tree, row } = setup();
+  fireEvent.mouseDown(row("two"));
+  fireEvent.keyDown(tree, { key: "F4" });
+  expect(jump.mock.calls).toEqual([["two"]]);
+  expect(activate).not.toHaveBeenCalled();
 });

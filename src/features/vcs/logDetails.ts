@@ -10,6 +10,13 @@ export function invalidateLogDetails(roots: readonly string[]) {
   refVersions.setState((s) => Object.fromEntries(roots.map((root) => [root, (s[root] ?? 0) + 1])));
 }
 
+export async function refreshLogDetails(roots: readonly string[]) {
+  await Promise.allSettled(roots.map((root) => call(commands.vcsInvalidateLogSignatures(root))));
+  invalidateLogDetails(roots);
+}
+
+const SIGNATURE_TTL_MS = 60_000;
+
 interface Entry {
   key: string;
   repo: string | null;
@@ -20,6 +27,7 @@ interface Entry {
   users: number;
   request?: RequestId;
   settled: boolean;
+  expires?: number;
 }
 const cache = new Map<string, Entry>();
 const pending: Entry[] = [];
@@ -67,7 +75,9 @@ function flush() {
           entries.forEach((entry, i) => {
             if (details[i]) {
               entry.settled = true;
-              entry.resolve(details[i]!);
+              const result = details[i]!;
+              if (result.signature !== "N") entry.expires = performance.now() + SIGNATURE_TTL_MS;
+              entry.resolve(result);
             } else {
               forget(entry);
               entry.reject(new Error("Commit details were not returned"));
@@ -87,12 +97,16 @@ function flush() {
   }
 }
 
-/** Batches visible rows by root. Ref-dependent fields refresh on version changes;
- * the backend caches immutable messages and signatures independently. */
+/** Batches visible rows by root. Ref-dependent fields refresh on version changes.
+ * Signature results expire because keys and trust can change without moving refs. */
 export function loadLogDetails(commit: Commit, signal?: AbortSignal): Promise<LogDetails> {
   const repo = commitRepo(commit) ?? currentRepo();
   const key = `${repo}\0${commit.id}\0${useVcs.getState().version}\0${refVersions.getState()[repo ?? ""] ?? 0}`;
   let entry = cache.get(key);
+  if (entry?.expires !== undefined && performance.now() >= entry.expires) {
+    forget(entry);
+    entry = undefined;
+  }
   if (!entry) {
     let resolve!: Entry["resolve"], reject!: Entry["reject"];
     const promise = new Promise<LogDetails>((yes, no) => {
@@ -126,19 +140,28 @@ export function useCommitDetails(commit: Commit, enabled = true) {
   const version = useVcs((s) => s.version);
   const repo = commitRepo(commit) ?? currentRepo();
   const refs = refVersions((s) => s[repo ?? ""] ?? 0);
-  const key = `${repo}\0${commit.id}\0${version}\0${refs}`;
-  const [result, setResult] = useState<{ key: string; details: LogDetails | null; error: boolean } | null>(null);
+  const target = `${repo}\0${commit.id}`;
+  const key = `${target}\0${version}\0${refs}`;
+  const [result, setResult] = useState<{
+    target: string;
+    details: LogDetails | null;
+    error: boolean;
+  } | null>(null);
   useEffect(() => {
     if (!enabled) return;
     const controller = new AbortController();
     void loadLogDetails(commit, controller.signal)
       .then((details) => {
-        if (!controller.signal.aborted) setResult({ key, details, error: false });
+        if (!controller.signal.aborted) setResult({ target, details, error: false });
       })
       .catch(() => {
-        if (!controller.signal.aborted) setResult({ key, details: null, error: true });
+        if (!controller.signal.aborted) setResult({ target, details: null, error: true });
       });
     return () => controller.abort();
-  }, [commit, key, enabled, version]);
-  return { details: result?.key === key ? result.details : null, error: result?.key === key && result.error };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, enabled]);
+  // A repository refresh reloads the same commit's details: keep showing the last ones until
+  // the new ones arrive, or the section blinks on every refresh.
+  const current = result?.target === target ? result : null;
+  return { details: current?.details ?? null, error: !!current?.error };
 }

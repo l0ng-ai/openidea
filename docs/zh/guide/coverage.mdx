@@ -1,0 +1,68 @@
+---
+title: "覆盖率"
+description: "使用覆盖率运行配置，在编辑器、项目视图和覆盖率工具窗口中查看已覆盖、部分覆盖和未覆盖的代码行。"
+---
+
+**使用覆盖率运行** 会在对应运行时的覆盖率工具下执行[运行配置](/zh/guide/run)，结束后读取报告，并在三个地方展示：
+
+- **编辑器边栏**：每行一条色带。绿色表示已覆盖，黄色表示部分覆盖（不是每个分支或代码块都执行到），红色表示未覆盖。悬停色带可以看到命中次数和分支覆盖数。
+- **项目视图**：每个文件和文件夹旁显示已覆盖行的百分比。
+- **覆盖率工具窗口**：按文件夹和文件组织的树，带 **行，%** 和 **分支，%** 两列。点击列标题排序，在树里可以直接打开文件。
+
+## 使用覆盖率运行
+
+<Steps>
+  <Step title="选择配置">在运行小部件中选中测试或程序配置，或者把光标放在测试或 `main` 函数里。</Step>
+  <Step title="开始运行">
+    使用 **运行 › 使用覆盖率运行**，或者在边栏运行图标的菜单、运行小部件的 **更多操作**
+    菜单里选择带覆盖率运行的那一项。**使用覆盖率运行上下文配置**（在 **查找操作…** 中，`⌘⇧A` /
+    `Ctrl+Shift+A`）会对光标处的测试或程序收集覆盖率。
+  </Step>
+  <Step title="查看结果">运行结束后，覆盖率工具窗口自动打开，同时弹出通知显示已覆盖行的比例。</Step>
+</Steps>
+
+如果缺少覆盖率工具，通知会说明缺的是什么，并提供 **安装** 按钮，在运行工具窗口里执行安装命令。IDE 不知道如何收集覆盖率的配置，会收到一条说明原因的通知。
+
+## 支持的运行时
+
+| 运行时                  | 配置                                                                   | 覆盖率工具                                                                                      |
+| ----------------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Rust                    | `cargo test`、`cargo run`、`cargo nextest`                             | `cargo llvm-cov`（需安装 `cargo-llvm-cov` 和 rustup 组件 `llvm-tools-preview`）                 |
+| Go                      | `go test`                                                              | `go test -coverprofile`                                                                         |
+| Java / Kotlin（Maven）  | 运行测试的 Maven 配置（`test`、`verify`）                              | JaCoCo Maven 插件目标                                                                           |
+| Java / Kotlin（Gradle） | 运行测试的 Gradle 配置（`test`、`check`）                              | JaCoCo，通过 init 脚本应用                                                                      |
+| JavaScript / TypeScript | 运行 vitest 或 jest 的 `package.json` 测试脚本（npm、pnpm、yarn、bun） | 测试框架自带的 `--coverage`（vitest 需要 `@vitest/coverage-v8` 或 `@vitest/coverage-istanbul`） |
+| Node.js                 | `node`、`npx`、`tsx`、`ts-node` 程序                                   | `c8`                                                                                            |
+| Python                  | 脚本、模块、pytest                                                     | 项目解释器中的 coverage.py（`coverage run --branch`）                                           |
+| Ruby                    | rspec、minitest、rake、rails 和普通脚本                                | SimpleCov（Bundler 项目需写在 Gemfile 中）                                                      |
+
+暂不支持：
+
+- 直接用 `java` 运行的应用：请改用 Maven 或 Gradle 测试配置收集覆盖率。
+- `go run`：Go 的覆盖率由 `go test` 收集。
+- Deno 任务。
+
+<Note>
+  IDE 不会改动项目文件。Gradle 通过临时 init 脚本接入 JaCoCo；没有自行配置 SimpleCov 的 Ruby 项目，通过环境变量预加载
+  SimpleCov。安装缺失工具（例如 `bundle add simplecov --group test` 或 `uv add --dev
+  coverage`）会修改项目，所以只有在你点击 **安装** 时才会执行。
+</Note>
+
+## 导入 CI 生成的报告
+
+**导入覆盖率报告…**（在 **查找操作…** 中，或者点击空白覆盖率工具窗口里的链接）可以展示在别处收集的报告。格式根据内容自动识别：
+
+- lcov 跟踪文件（`lcov.info`）
+- Go cover profile
+- JaCoCo XML 报告
+- SimpleCov `.resultset.json`
+
+报告中记录的其他机器上的路径，会按最长匹配后缀映射到当前项目中。
+
+## 管理覆盖率套件
+
+每次覆盖率运行或导入的报告都是一个套件。最近五次运行会以标签页形式保留在覆盖率工具窗口的标题栏上。
+
+**管理覆盖率报告…**（`⌘⌥F6` / `Ctrl+Alt+F6`）打开 **覆盖率报告** 对话框：选中套件后点击 **显示所选项**，或者 **删除** 套件，也可以 **导入…** 更多报告。导入过的报告按项目记住。
+
+要去掉高亮，使用 **运行 › 隐藏覆盖率** 或覆盖率工具窗口里的按钮；**显示覆盖率** 可以重新显示选中的套件。编辑代码时，边栏色带会跟着移动，直到下一次运行。

@@ -3,6 +3,7 @@ import { act, render, screen } from "@testing-library/react";
 import { executeAction, getAction } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import { bindingsFor, installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
+import type { Settings } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { registerStatusItem, registerToolWindow } from "./contributions";
 import { clearNotifications, useNotifications } from "./notificationStore";
@@ -216,7 +217,7 @@ describe("distraction free shell", () => {
     expect(screen.queryByText("status-x")).toBeNull();
     expect(screen.queryByRole("button", { name: "Project" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Search Everywhere" })).toBeNull();
-    const bar = document.querySelector("header[data-titlebar='bare']");
+    const bar = document.querySelector("header[data-titlebar='compact']");
     // macOS uses its own drag region attribute (window-drag.ts); jsdom reports the host OS.
     expect(bar?.hasAttribute("data-tauri-drag-region") || bar?.hasAttribute("data-window-drag-region")).toBe(true);
 
@@ -225,5 +226,34 @@ describe("distraction free shell", () => {
     expect(screen.getByText("status-x")).toBeInTheDocument();
     unmount();
     useProject.setState({ project: null });
+  });
+
+  it("View › Appearance hides the main toolbar and the status bar on their own", async () => {
+    const { Workbench } = await import("./Workbench");
+    disposers.push(
+      registerStatusItem({ id: "t.status", align: "left", priority: 0, component: () => <span>status-x</span> }),
+    );
+    const appearance = (a: Record<string, boolean>) =>
+      act(() => useProject.setState({ settings: { appearance: a } as unknown as Settings }));
+    act(() =>
+      useProject.setState({
+        project: { root: "/work/df", name: "df-demo", trusted: true, isGit: false, settings: {} },
+      }),
+    );
+    document.title = "df-demo – main.rs";
+    const { unmount } = render(<Workbench />);
+    expect(await screen.findByText("df-demo")).toBeInTheDocument();
+
+    appearance({ showMainToolbar: false });
+    expect(screen.queryByText("df-demo")).toBeNull();
+    expect(document.querySelector("header[data-titlebar='compact']")?.textContent).toBe("df-demo – main.rs");
+    expect(screen.getByText("status-x")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Project" })).toBeInTheDocument();
+
+    appearance({ showStatusBar: false });
+    expect(screen.getByText("df-demo")).toBeInTheDocument();
+    expect(screen.queryByText("status-x")).toBeNull();
+    unmount();
+    useProject.setState({ project: null, settings: null });
   });
 });

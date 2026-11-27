@@ -1,11 +1,11 @@
 /**
- * Navigate › Test / Test Subject (⇧⌘T), Super Method (⌘U), Next / Previous
- * Method (⌃⇧↓ / ⌃⇧↑). Editor-side like editor/lsp (whose popups it uses);
+ * Navigate › Test / Test Subject (⇧⌘T), Super Method (⌘U), Related Symbol (⌃⌘↑), Next /
+ * Previous Method (⌃⇧↓ / ⌃⇧↑). Editor-side like editor/lsp (whose popups it uses);
  * the file templates are reached through the `templates.newFromTemplate` action.
  */
 import { EditorSelection } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
-import { activeEditor, editorsFor, whenSynced, type EditorDocContext } from "@/editor/api";
+import { openCodeLocation, activeEditor, editorsFor, whenSynced, type EditorDocContext } from "@/editor/api";
 import { docOf, lspRequest } from "@/editor/lsp/lsp";
 import { offsetToPos, posToOffset } from "@/editor/lsp/positions";
 import { caretAnchor, openPopup } from "@/editor/lsp/popupStore";
@@ -13,16 +13,20 @@ import { dedupeLocations, locationItems, navigateTo } from "@/editor/lsp/navigat
 import { showHint } from "@/editor/lsp/hint";
 import { registerActions, executeAction, type Action } from "@/platform/actions";
 import { call, commands, isCancelled, type Location, type OutlineItem, type Pos } from "@/platform/ipc";
-import { basename, useProject } from "@/platform/project";
+import { basename, relativePath, useProject } from "@/platform/project";
 import { currentRoots } from "@/platform/projectRoots";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { editorService } from "@/workbench/contributions";
 import { fileIconName } from "@/ui";
+import { registerRelatedProvider, relatedItems } from "@/editor/relatedProviders";
 import { gotoTestOrSubject, type TestNavDeps } from "./gotoTest";
-import { baseName, memberAt, methodStop, superMethods } from "./structureNav";
+import { headerSourceItems } from "./headerSource";
+import { stubRelatedItems } from "./pythonStubs";
+import { projectPythonHierarchy, pythonSuperDeps } from "./pythonHierarchy";
+import { baseName, memberAt, methodStop, superMethods, topLevelTypeAt, type SuperDeps } from "./structureNav";
 import { tx } from "@/platform/i18n";
 
-const EDITOR_WHEN = "textEditorActive && (editorFocus || popupOpen || !toolWindowFocus)";
+const EDITOR_WHEN = "textEditorActive && (editorFocus || !toolWindowFocus)";
 
 /** A backend document id for `path` while `fn` runs (open editors are reused). */
 async function withDoc<T>(path: string, fn: (doc: number) => Promise<T>): Promise<T> {
@@ -71,17 +75,27 @@ async function superFallback(ctx: EditorDocContext, pos: Pos): Promise<Location[
   return dedupeLocations(locs).filter((l) => !(l.path === ctx.path && l.range.start.line === pos.line));
 }
 
+/** Super Method deps: Python answers them from the IDE's inheritance graph (its servers have no type hierarchy). */
+async function superDeps(ctx: EditorDocContext): Promise<SuperDeps> {
+  const outline = (path: string) => withDoc(path, outlineOf);
+  if (ctx.language === "python") {
+    const hierarchy = await projectPythonHierarchy().catch(() => null);
+    if (hierarchy) return pythonSuperDeps(hierarchy, outline);
+  }
+  return {
+    supertypes: (path: string, pos: Pos) =>
+      withDoc(path, (doc) => lspRequest(() => commands.lspTypeHierarchy(doc, pos, "incoming"))),
+    outline,
+  };
+}
+
 async function superMethod(view: EditorView) {
   const ctx = docOf(view);
   if (!ctx) return;
   const at = await caretOutline(view, ctx);
   if (!at) return;
   const { method, type } = memberAt(at.outline, at.caret);
-  const deps = {
-    supertypes: (path: string, pos: Pos) =>
-      withDoc(path, (doc) => lspRequest(() => commands.lspTypeHierarchy(doc, pos, "incoming"))),
-    outline: (path: string) => withDoc(path, outlineOf),
-  };
+  const deps = await superDeps(ctx);
   let locs: Location[] = [];
   if (method && type) locs = await superMethods(ctx.path, type.selection_range.start, method.name, deps);
   else if (type) {
@@ -130,13 +144,17 @@ function testDeps(view: EditorView, ctx: EditorDocContext): TestNavDeps {
         items: items.map((it, i) => ({
           id: `${i}`,
           label: it.label,
-          detail: it.detail,
-          emphasis: it.emphasis,
-          icon: it.emphasis ? "plus" : fileIconName(it.label),
+          ...(it.kind === "create"
+            ? { icon: "plus", section: { id: "create-test" } }
+            : { icon: fileIconName(it.label), target: { container: null, path: it.detail } }),
           run: it.run,
         })),
       }),
     hint: (text) => showHint(view, text),
+    classAtCaret: async () => {
+      const outline = await call(commands.docOutline(ctx.doc));
+      return topLevelTypeAt(outline, offsetToPos(view.state.doc, view.state.selection.main.head))?.name ?? null;
+    },
     createTest: ({ directory, name, extension }) =>
       void executeAction("templates.newFromTemplate", { directory, name, extension, kindId: "test" }),
     createRustTestModule: () => {
@@ -184,15 +202,89 @@ function editorAction(
   };
 }
 
+/** Navigate › Related Symbol: one target opens, several open a chooser. */
+async function gotoRelated(view: EditorView) {
+  const ctx = docOf(view);
+  if (!ctx || isVirtualUri(ctx.path)) return;
+  const head = view.state.selection.main.head;
+  const items = await relatedItems({
+    path: ctx.path,
+    language: ctx.language,
+    text: view.state.doc.toString(),
+    offset: head,
+  });
+  if (!items.length) {
+    showHint(view, tx("No related symbols"), { tone: "error" });
+    return;
+  }
+  const open = (item: (typeof items)[number]) =>
+    openCodeLocation(item.path, item.line === undefined ? undefined : { line: item.line, col: item.col ?? 0 });
+  if (items.length === 1) {
+    await open(items[0]!);
+    return;
+  }
+  const root = useProject.getState().project?.root ?? "";
+  openPopup({
+    kind: "list",
+    anchor: caretAnchor(view, head),
+    title: tx("Choose Target"),
+    items: items.map((item, i) => {
+      const where = relativePath(root, item.path) + (item.line === undefined ? "" : `:${item.line + 1}`);
+      return {
+        id: `${i}`,
+        label: item.label ?? basename(item.path),
+        detail: `${item.group} · ${where}`,
+        icon: fileIconName(basename(item.path), item.path),
+        location: { path: item.path, line: item.line ?? 0 },
+        run: () => open(item),
+      };
+    }),
+  });
+}
+
+const findFilesNamed = async (name: string) => call(commands.findFilesNamed(name));
+
+/** Navigate › Stub / Implementation: the `.pyi` declaration of a Python one, or the reverse. */
+async function gotoStub(view: EditorView) {
+  const ctx = docOf(view);
+  if (!ctx || isVirtualUri(ctx.path)) return;
+  const line = view.state.doc.lineAt(view.state.selection.main.head).number - 1;
+  const [item] = await stubRelatedItems(ctx.doc, ctx.path, line).catch(() => []);
+  if (!item) {
+    showHint(view, tx("No stub or implementation found"), { tone: "error" });
+    return;
+  }
+  await openCodeLocation(item.path, item.line === undefined ? undefined : { line: item.line, col: item.col ?? 0 });
+}
+
 export function registerNavigationActions(): () => void {
-  return registerActions([
+  const unregisterHeaders = registerRelatedProvider((ctx) => headerSourceItems(ctx.path, findFilesNamed));
+  const unregisterStubs = registerRelatedProvider(async (ctx) => {
+    const ed = editorsFor(ctx.path)[0];
+    if (!ed || ctx.language !== "python") return [];
+    return stubRelatedItems(ed.ctx.doc, ctx.path, ed.view.state.doc.lineAt(ctx.offset).number - 1);
+  });
+  const unregister = registerActions([
     editorAction("navigate.gotoTest", "Test", gotoTest, { keywords: ["go to test", "test subject", "create test"] }),
     editorAction("navigate.superMethod", "Super Method", superMethod, {
       keywords: ["go to super", "overridden", "parent"],
     }),
     editorAction("navigate.nextMethod", "Next Method", (v) => gotoMethod(v, 1)),
     editorAction("navigate.previousMethod", "Previous Method", (v) => gotoMethod(v, -1)),
+    editorAction("navigate.relatedSymbol", "Related Symbol…", gotoRelated, {
+      keywords: ["go to related", "header", "source", "switch header source", "view", "controller"],
+    }),
+    editorAction("navigate.pythonStub", "Stub / Implementation", gotoStub, {
+      when: `${EDITOR_WHEN} && editorLangId == python`,
+      keywords: ["go to stub", "go to implementation", "pyi", "type stub"],
+    }),
   ]);
+  return () => {
+    unregister();
+    unregisterHeaders();
+    unregisterStubs();
+  };
 }
 
 export { implementationGutter } from "./implementationGutter";
+export { pythonStubGutter } from "./pythonStubs";

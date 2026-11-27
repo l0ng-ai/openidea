@@ -24,9 +24,44 @@ fallback = true
 command = "phpactor"
 args = ["language-server"]
 root-markers = ["composer.json", ".phpactor.json"]
-install-hint = "Install phpactor (https://phpactor.readthedocs.io/en/master/usage/standalone.html)"
+install-hint = "Install Phpactor in Settings › Languages & Frameworks › Language Servers (it runs on PHP)"
+
+# Alternative with its own Laravel and Blade support. https://github.com/samehelhawary/phoxite
+[[language-servers]]
+name = "phoxite"
+fallback = true
+command = "phoxite-lsp"
+args = []
+root-markers = ["composer.json", "artisan", "index.php"]
+# It answers the Laravel strings itself.
+replaces = ["laravel-lsp"]
+install-hint = "Install phoxite-lsp from https://github.com/samehelhawary/phoxite/releases and put it on PATH"
+
+# Alternative whose engine ships as native builds for Windows, macOS and Linux;
+# only the npm launcher needs Node. Some features (refactorings, call and type
+# hierarchy) need a DEVSENSE licence. https://docs.devsense.com/other/lsp/docs/
+[[language-servers]]
+name = "devsense-php-ls"
+fallback = true
+command = "devsense-php-ls"
+args = []
+root-markers = ["composer.json", "index.php"]
+# It answers the Laravel strings itself.
+replaces = ["laravel-lsp"]
+install-hint = "npm i -g devsense-php-ls"
+
+# Laravel projects only: hover, definition and completion inside
+# config('…'), route('…') and view('…'). Last: Intelephense keeps PHP hover,
+# rename and symbols. https://github.com/laravel/lsp
+[[language-servers]]
+name = "laravel-lsp"
+command = "laravel-lsp"
+args = []
+root-markers = ["artisan"]
+require-root-marker = true
+install-hint = "composer global require laravel/lsp"
 
 [debugger]
 adapter = "php-debug"
 command = "php-debug-adapter"
-install-hint = "Install vscode-php-debug (Xdebug) as `php-debug-adapter` (e.g. via mason.nvim) and enable Xdebug"
+install-hint = "Install PHP Debug (Xdebug) in Settings › Languages & Frameworks › Language Servers, and enable Xdebug"

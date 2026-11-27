@@ -1,4 +1,12 @@
+.dialog [data-dialog-body] {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .body {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -8,9 +16,10 @@
 }
 
 .field {
+  flex: none;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 
 .targets {
@@ -23,6 +32,7 @@
   flex-direction: column;
   border: 1px solid var(--border);
   border-radius: 4px;
+  flex: 1 1 auto;
   min-height: 0;
 }
 
@@ -31,7 +41,7 @@
   display: grid;
   grid-template-columns: 1fr 110px;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 0 8px;
   min-height: var(--h-list-row);
 }
@@ -42,7 +52,8 @@
 }
 
 .rows {
-  max-height: 280px;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
 }
 
@@ -62,11 +73,13 @@
 }
 
 .hint {
+  flex: none;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
 }
 
 .error {
+  flex: none;
   color: var(--danger);
   font-size: var(--fs-small);
   overflow-wrap: anywhere;
@@ -75,6 +88,6 @@
 .busy {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   color: var(--fg-muted);
 }

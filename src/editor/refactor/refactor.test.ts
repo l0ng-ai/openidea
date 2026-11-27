@@ -5,6 +5,7 @@ import {
   isLiteral,
   javaConstructedType,
   javaTypeFromHover,
+  trailingName,
   literalType,
   replacesBareStatement,
   variableDeclaration,
@@ -150,6 +151,15 @@ describe("templates", () => {
     expect(isLiteral("python", "unary_operator", "-1")).toBe(true);
     expect(isLiteral("kotlin", "string_literal", '"a$b"')).toBe(false);
     expect(isLiteral("kotlin", "identifier", "true")).toBe(true);
+  });
+
+  it("finds the name a chained expression ends in, for the hover that types it", () => {
+    expect(trailingName("demo.getList().get(0)")).toEqual({ name: "get", index: 15 });
+    expect(trailingName("a.b(c(d)).e")).toEqual({ name: "e", index: 10 });
+    expect(trailingName("names()")).toEqual({ name: "names", index: 0 });
+    expect(trailingName("list.get(i) ")).toEqual({ name: "get", index: 5 });
+    expect(trailingName("(a + b)")).toBeNull();
+    expect(trailingName("x)")).toBeNull();
   });
 
   it("reads a Java type from a jdtls hover", () => {

@@ -44,9 +44,9 @@ afterEach(() => {
   _resetI18nForTests();
 });
 
-describe.each(["prettier", "oxfmt"])("%s formatter errors", (name) => {
+describe.each(["prettier", "oxfmt", "biome", "dprint", "ruff"])("%s formatter errors", (name) => {
   const tool = { type: "tool", tool: name, missing: false } as const;
-  const display = name === "prettier" ? "Prettier" : name;
+  const display = ({ prettier: "Prettier", biome: "Biome", ruff: "Ruff" } as Record<string, string>)[name] ?? name;
   it("uses structured missing-tool information to request the shared install prompt", async () => {
     const prompt = vi.fn();
     const dispose = registerAction({
@@ -57,9 +57,9 @@ describe.each(["prettier", "oxfmt"])("%s formatter errors", (name) => {
     try {
       failWith({ kind: "notFound", message: "unrelated diagnostic", data: { ...tool, missing: true } });
       await formatDocument(viewFor());
-      expect(prompt).toHaveBeenCalledWith({ name, sticky: true });
+      expect(prompt).toHaveBeenCalledWith({ name, sticky: true, formatter: true });
       await formatDocument(viewFor(), { explicit: false, onSave: true });
-      expect(prompt).toHaveBeenLastCalledWith({ name, sticky: false });
+      expect(prompt).toHaveBeenLastCalledWith({ name, sticky: false, formatter: true });
       expect(useNotifications.getState().items).toHaveLength(0);
     } finally {
       dispose();
@@ -95,7 +95,10 @@ describe.each(["prettier", "oxfmt"])("%s formatter errors", (name) => {
       const stderr = "Formatting timed out";
       failWith({ kind: "invalidInput", message: stderr, data: tool });
       const view = viewFor();
-      for (let i = 0; i < 3; i++) await formatDocument(view, { explicit: false, onSave: true });
+      for (let i = 0; i < 3; i++) {
+        // oxlint-disable-next-line no-await-in-loop -- repeated saves on the same view replace one notification
+        await formatDocument(view, { explicit: false, onSave: true });
+      }
       const notes = useNotifications.getState().items;
       expect(notes).toHaveLength(1);
       expect(notes[0]).toMatchObject({ sticky: false, title: `${display} 格式化失败` });
@@ -126,10 +129,13 @@ describe.each(["prettier", "oxfmt"])("%s formatter errors", (name) => {
   });
 });
 
-describe("Reformat with Prettier / oxfmt", () => {
+describe("Reformat with an external formatter", () => {
   it.each([
     ["code.reformatWithPrettier", "prettier"],
     ["code.reformatWithOxfmt", "oxfmt"],
+    ["code.reformatWithBiome", "biome"],
+    ["code.reformatWithDprint", "dprint"],
+    ["code.reformatWithRuff", "ruff"],
   ])("%s asks the backend for %s whatever the settings select", async (id, tool) => {
     vi.spyOn(lsp, "lspRequest").mockImplementation(async (request) => {
       await request();

@@ -1,0 +1,46 @@
+/*
+ * xterm reads IME commits from its hidden textarea. Its `white-space: nowrap` makes WebKit
+ * store a typed trailing space as U+00A0, so a space committed by an IME (Fcitx5 on Linux)
+ * reached the shell as a non-breaking space. `pre` keeps the line unwrapped and the space a space.
+ */
+.xterm textarea.xterm-helper-textarea {
+  white-space: pre;
+}
+
+/* xterm places its input textarea and IME composition at the cursor. A program that leaves the
+   cursor in the last column (pi, other TUIs drawing their own cursor) pushes them past the edge,
+   and Chromium (WebView2) then scrolls the clipping pane to keep the caret in view: the whole
+   terminal slides sideways while composing. `clip` keeps that overflow out of every ancestor.
+   xterm 6.1 also resyncs the textarea when a composition begins; this rule stays for the paths
+   that still put it past the edge (a right-click anchor, a TUI that never moves the cursor). */
+.xterm {
+  overflow: clip;
+}
+
+/* During a composition xterm clips its composition view to the space between the cursor and the
+   right edge, and sizes the helper textarea from that view. A program that leaves the cursor in the
+   last column therefore leaves one cell of room, and the pre-edit text is painted almost invisibly.
+   The view is drawn on the caret instead (imeAnchor), so the width that matters is the space from
+   that caret to the edge — which `.xterm` clips anyway. */
+.xterm .composition-view[data-openidea-ime-anchor] {
+  max-width: none !important;
+}
+
+/* An icon or fallback symbol wider than its cell stays over the next cell's background
+   (domRowCache), while selected spans keep xterm's `.xterm-decoration-top` z-index (2). */
+.xterm .xterm-rows .openidea-terminal-icon:not(.xterm-decoration-top) {
+  position: relative;
+  z-index: 1;
+}
+
+/* Always-on underline for highlighted URLs (linkHighlights) and modifier-hovered paths (pathLinks). */
+.xterm .xterm-decoration.openidea-terminal-link {
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--link, var(--accent));
+  pointer-events: none;
+}
+
+.xterm.openidea-terminal-path-hover,
+.xterm.openidea-terminal-path-hover.enable-mouse-events {
+  cursor: pointer;
+}

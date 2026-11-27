@@ -1,0 +1,94 @@
+---
+title: "Unity"
+description: "Use OpenIDEA as Unity's external script editor, browse a Unity project, and keep .meta files in step with your assets."
+---
+
+OpenIDEA recognizes a folder as a Unity project when it has an `Assets` folder and `ProjectSettings/ProjectVersion.txt`. It opens scripts that Unity sends it, hides Unity's caches, moves `.meta` files along with their assets, and uses the C# language server for code intelligence. No Unity package or editor plugin is needed.
+
+## Set OpenIDEA as the external script editor
+
+<Steps>
+  <Step title="Open External Tools in Unity">
+    In Unity, open **Edit › Preferences › External Tools** (on macOS, **Unity › Settings** or **Unity › Preferences**, then **External Tools**).
+  </Step>
+  <Step title="Choose OpenIDEA">
+    Under **External Script Editor**, choose **Browse** and select the OpenIDEA executable (on macOS, `OpenIDEA.app`).
+  </Step>
+  <Step title="Set the arguments">
+    Set **External Script Editor Args** to:
+
+    ```text
+    $(ProjectPath) --file $(File) --line $(Line) --column $(Column)
+    ```
+
+    Unity quotes the expanded project and file paths itself, including paths with spaces. Do not add another pair of quotes around the placeholders.
+
+  </Step>
+</Steps>
+
+Double-click a script in Unity's Project window, or a source location in the Console. OpenIDEA opens the project, or focuses the window that already has it open, opens the file and puts the caret at the line and column. Other open tabs stay where they are.
+
+### How the arguments work
+
+These arguments belong to the application executable:
+
+| Argument                      | Meaning                                                                                                                                                       |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| first path (`$(ProjectPath)`) | The project folder to open. With it, a cold start opens the Unity project instead of a single file.                                                           |
+| `--file <path>`               | The file to open. A relative path resolves against the project folder, or against the working directory when no project is given. Must name an existing file. |
+| `--line <n>`                  | 1-based line. `0` and `-1` (what Unity sends when it has no position) mean "unknown": the file opens without a caret position.                                |
+| `--column <n>`                | 1-based column. Omitted or unknown, the caret goes to the start of the line.                                                                                  |
+
+`--file=...`, `--line=...` and `--column=...` also work. Invalid arguments or a missing file are reported as an error. Without a project folder, `--file` opens in an open project window that contains the file, or in LightEdit.
+
+If you call the executable yourself, quote paths as your shell requires. The separately installed `openidea` command has a different syntax (`--line` and `--column` come before the file, and there is no `--file`); see [Command line](/en/reference/cli).
+
+<Note>
+  On Windows, run Unity and OpenIDEA with the same permissions (both elevated or both not). If a running OpenIDEA does
+  not react to a double-click, restart both with matching permissions and try again.
+</Note>
+
+## The Unity project view
+
+When a Unity project is open, the **Project** tool window switches to the **Unity** pane. Its root shows the editor version read from `ProjectVersion.txt` (for example `Unity 6000.0.62f1`).
+
+The Unity pane hides:
+
+- `.meta` files;
+- generated folders at the project root: `Library`, `Temp`, `Obj`, `obj`, `Logs`, `Build`, `Builds`, `UserSettings`, `.vs`, `.idea`, `.vscode`;
+- generated solution and project files at the root (`.csproj`, `.sln`, `.slnx` and similar).
+
+To show them, open the pane's options menu and turn on **Show Meta Files** or **Show Generated Files** under **Appearance**. The **Project** and **Project Files** panes always show everything.
+
+`Assets` and `Packages` are source folders and `ProjectSettings` is a resources folder. The generated folders listed above are excluded from indexing, search and file watching, even before Unity creates them, so `Library/PackageCache` does not slow the IDE down or show up in search results.
+
+## Assets and .meta files
+
+File operations on assets under `Assets` keep Unity's metadata consistent:
+
+- **Rename and move** take the `.meta` file with the asset. This also applies to file moves caused by refactorings.
+- **Delete** removes the asset and its `.meta` file together; Local History keeps a copy of both.
+- **Copy** gives the copies new GUIDs and rewrites references between the copied files (in text-serialized YAML assets and in `.asmdef` / `.asmref` files), so the copy does not clash with the original. Binary-serialized assets (prefabs, scenes, materials and so on saved in binary mode) cannot be copied this way; switch Unity's asset serialization to **Force Text** first.
+- The `Assets` folder itself cannot be moved, copied or deleted, and selecting only a `.meta` file whose asset exists is rejected: select the asset instead.
+- New file names are checked against existing `.meta` files too.
+
+When Git asks whether to add a new file you created in the IDE, the `.meta` file Unity generates for it is added along with it.
+
+## Code intelligence
+
+C# in a Unity project uses the same language server as any other C# project, csharp-ls; see [C# and .NET](/en/languages/csharp) for installation. A Unity project is a workspace root for it even before a solution exists.
+
+csharp-ls reads the `.sln` and `.csproj` files that Unity generates. When they are missing, the Unity pane shows:
+
+> C# project files are missing. In Unity, select an external script editor in Preferences > External Tools, then regenerate project files.
+
+The IDE notices when Unity writes those files and picks them up without reopening the project.
+
+**Navigate › Declaration or Usages** on a Unity type such as `MonoBehaviour` opens the decompiled source read-only. Decompiled files are not checked for errors, since they often use a different C# language version than your project.
+
+## Limitations
+
+- OpenIDEA does not generate Unity's C# project files; Unity has to.
+- There is no Unity debugger integration: you cannot attach to the Unity editor or a player from OpenIDEA.
+- There are no Unity-specific inspections, run configurations or ShaderLab support.
+- Opening files from Unity works for local projects only, not projects in WSL.

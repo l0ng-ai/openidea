@@ -22,8 +22,11 @@ tracing.workspace = true
 tempfile.workspace = true
 globset.workspace = true
 uuid.workspace = true
+zip.workspace = true
+encoding_rs.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
 
 [dev-dependencies]
 tempfile.workspace = true
-encoding_rs.workspace = true
-zip.workspace = true

@@ -1,11 +1,24 @@
 /** Menus of the Database tool window, laid out like IDEA's (New ▸, Copy/Paste ▸, SQL Scripts ▸ …). */
+import { choosePath } from "@/platform/choosePath";
+import { tx } from "@/platform/i18n";
 import type { MenuItem } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { fileSourceName, parseSourceUrl } from "./model";
-import { VENDORS, vendorPreset } from "./vendors";
+import { VENDORS, vendorById, vendorPreset } from "./vendors";
 import { nodeTarget, objectOf, tableOf, type DbNode } from "./nodes";
 import { SCRIPT_LABELS, canDrop, canModifyTable, canRename, type ScriptKind } from "./objects";
-import { connectedTargets, openDialog, openSourceDialog, sourceById, useDatabase } from "./store";
+import {
+  connectedTargets,
+  createsDatabases,
+  newSchemaTarget,
+  openDialog,
+  openSourceDialog,
+  sourceById,
+  useDatabase,
+} from "./store";
+import { readClipboardPlainText } from "@/platform/clipboard";
+import { useRemote } from "@/platform/remote";
+import { dumpScope, mysqlDumpScope } from "./dumpTools";
 
 const act = (
   action: string,
@@ -20,13 +33,14 @@ const act = (
 
 const sep: MenuItem = { kind: "separator" };
 
-async function sqliteFromFile() {
-  const { open } = await import("@tauri-apps/plugin-dialog");
-  const file = await open({ multiple: false, directory: false, title: "SQLite Database File" });
-  if (typeof file === "string") openSourceDialog(null, { driver: "sqlite", file, name: fileSourceName(file) });
+async function sourceFromFile() {
+  const file = await choosePath({ directory: false, title: tx("Database File") });
+  if (file === null) return;
+  const preset = /\.duckdb$/i.test(file) ? vendorPreset(vendorById("duckdb")!) : { driver: "sqlite" as const };
+  openSourceDialog(null, { ...preset, file, name: fileSourceName(file) });
 }
 
-/** New ▸ Data Source ▸ — the drivers the backend speaks and wire-compatible products, A–Z like IDEA's. */
+/** New ▸ Data Source ▸ — built-in and JDBC presets, A–Z. */
 function dataSourceItems(): MenuItem[] {
   return [
     {
@@ -38,7 +52,7 @@ function dataSourceItems(): MenuItem[] {
         run: () => openSourceDialog(null, vendorPreset(v)),
       })),
     },
-    { label: "Data Source from File…", icon: "folder", run: () => void sqliteFromFile() },
+    { label: "Data Source from File…", icon: "folder", run: () => void sourceFromFile() },
     { label: "Data Source from URL…", icon: "external-link", run: () => openDialog({ kind: "sourceUrl" }) },
     { label: "Import from Clipboard", icon: "paste", run: () => void sourceFromClipboard() },
   ];
@@ -48,7 +62,7 @@ function dataSourceItems(): MenuItem[] {
 async function sourceFromClipboard() {
   let text = "";
   try {
-    text = (await navigator.clipboard?.readText()) ?? "";
+    text = await readClipboardPlainText();
   } catch {
     // Unreadable clipboard: reported below like an unknown one.
   }
@@ -65,7 +79,7 @@ async function sourceFromClipboard() {
 
 /** The toolbar's "+" menu (IDEA: New). */
 export function newMenu(): MenuItem[] {
-  return [{ kind: "action", action: "db.openConsole", label: "Query Console" }, sep, ...dataSourceItems()];
+  return [{ kind: "action", action: "db.newConsole", label: "Query Console" }, sep, ...dataSourceItems()];
 }
 
 function sqlScripts(n: DbNode, table: boolean): MenuItem {
@@ -80,6 +94,29 @@ function sqlScripts(n: DbNode, table: boolean): MenuItem {
   return { label: "SQL Scripts", submenu: [act("db.ddlToClipboard", n), act("db.ddlToConsole", n), sep, ...scripts] };
 }
 
+/** Export / Restore with the client tools of a PostgreSQL or MySQL node; they run on this machine, so not in remote windows. */
+function dumpItems(n: DbNode, restore: boolean): MenuItem[] {
+  const source = sourceById(nodeTarget(n));
+  if (useRemote.getState().session) return [];
+  const [dump, load] = dumpScope(n, source)
+    ? ["db.dumpWithPgDump", "db.restoreWithPgRestore"]
+    : mysqlDumpScope(n, source)
+      ? ["db.dumpWithMysqldump", "db.restoreWithMysql"]
+      : [];
+  if (!dump || !load) return [];
+  return [act(dump, n), ...(restore ? [act(load, n, { disabled: !!source?.readOnly })] : [])];
+}
+
+function importExport(items: MenuItem[]): MenuItem[] {
+  return items.length ? [{ label: "Import/Export", submenu: items }] : [];
+}
+
+/** Diagrams ▸ Show Diagram / Show Diagram Popup, of the tree's selection when it holds `n`. */
+const diagrams = (n: DbNode): MenuItem => ({
+  label: "Diagrams",
+  submenu: [act("db.showDiagram", n), act("db.showDiagramPopup", n)],
+});
+
 /** Context menu of a tree node (`null`: the empty area). */
 export function nodeMenu(n: DbNode | null): MenuItem[] {
   if (!n) return [{ label: "New", icon: "plus", submenu: newMenu() }];
@@ -87,16 +124,28 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
   const driver = sourceById(id)?.driver ?? "sqlite";
   const o = objectOf(n);
   const t = tableOf(n);
-  const newConsole = act("db.openConsole", n, { label: "Query Console", icon: "db-console" });
+  const newConsole = act("db.newConsole", n, { label: "Query Console", icon: "db-console" });
   const refresh = act("db.refresh", n);
   const quickDoc = act("db.quickDoc", n);
   const rename = act("db.rename", n, { disabled: !(n.kind === "source" || (o && canRename(driver, o))) });
   const drop = act("db.drop", n, { disabled: !o || !canDrop(driver, o) });
   const copyRef = act("db.copyReference", n);
+  const readOnly = !!sourceById(id)?.readOnly;
+  const newSchema = newSchemaTarget(n) ? [act("db.newSchema", n, { disabled: readOnly })] : [];
   const navigation = (extra: MenuItem[] = []): MenuItem => ({
     label: "Navigation",
     submenu: [...extra, act("db.jumpToConsole", n)],
   });
+
+  if (driver === "jdbc" && n.kind !== "source") {
+    return [
+      newConsole,
+      ...(t ? [act("db.editData", n)] : []),
+      refresh,
+      { label: "Copy/Paste", submenu: [copyRef] },
+      navigation(),
+    ];
+  }
 
   switch (n.kind) {
     case "source": {
@@ -104,9 +153,21 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
       return [
         act("db.properties", n, { label: "Properties" }),
         sep,
-        { label: "New", icon: "plus", submenu: [newConsole, sep, ...dataSourceItems()] },
+        {
+          label: "New",
+          icon: "plus",
+          submenu: [
+            newConsole,
+            sep,
+            ...(createsDatabases(n.source) ? [act("db.newDatabase", n, { disabled: readOnly })] : []),
+            ...newSchema,
+            ...(createsDatabases(n.source) || newSchema.length ? [sep] : []),
+            ...dataSourceItems(),
+          ],
+        },
         { label: "Copy/Paste", submenu: [copyRef, act("db.duplicateSource", n)] },
         refresh,
+        ...(n.source.driver === "snowflake" ? [act("db.introspect", n)] : []),
         act("db.disconnect", n, { disabled: !connected }),
         sep,
         rename,
@@ -114,20 +175,24 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
         quickDoc,
         navigation(),
         sep,
-        sqlScripts(n, false),
+        ...(driver === "jdbc" ? [act("db.runSqlScript", n)] : [sqlScripts(n, false), act("db.compareSchemas", n)]),
+        ...importExport(dumpItems(n, true)),
         sep,
         act("db.drop", n, { label: "Remove Data Source…" }),
       ];
     }
     case "database":
       return [
-        { label: "New", icon: "plus", submenu: [newConsole] },
+        { label: "New", icon: "plus", submenu: [newConsole, ...(newSchema.length ? [sep, ...newSchema] : [])] },
         { label: "Copy/Paste", submenu: [copyRef] },
         refresh,
         act("db.disconnect", n, { disabled: !useDatabase.getState().connected.has(id) || n.current }),
+        ...(createsDatabases(sourceById(id)) ? [sep, act("db.rename", n, { disabled: n.current || readOnly })] : []),
         sep,
         navigation(),
         sqlScripts(n, false),
+        ...importExport(dumpItems(n, true)),
+        ...(createsDatabases(sourceById(id)) ? [sep, act("db.drop", n, { disabled: n.current || readOnly })] : []),
       ];
     case "schema":
     case "folder":
@@ -136,10 +201,13 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
         ...(n.kind === "schema" ? [{ label: "Copy/Paste", submenu: [copyRef] }] : []),
         refresh,
         sep,
-        ...(n.kind === "schema" ? [quickDoc] : []),
+        ...(n.kind === "schema" ? [rename, sep, quickDoc] : []),
         navigation(),
         sep,
         sqlScripts(n, false),
+        ...(n.kind === "schema" ? [act("db.compareSchemas", n)] : []),
+        ...importExport(dumpItems(n, true)),
+        ...(n.kind === "schema" || ["tables", "views", "materializedViews"].includes(n.folder) ? [diagrams(n)] : []),
         ...(n.kind === "schema" ? [sep, drop] : []),
       ];
     case "table":
@@ -171,9 +239,16 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
         navigation([act("db.goToDdl", n)]),
         sep,
         sqlScripts(n, true),
+        ...(n.kind === "table" ? [diagrams(n)] : []),
         ...(n.kind === "table" && !view
           ? [
-              { label: "Import/Export", submenu: [act("db.importData", n, { disabled: driver === "clickhouse" })] },
+              {
+                label: "Import/Export",
+                submenu: [
+                  act("db.importData", n, { disabled: driver === "clickhouse" }),
+                  ...(dumpItems(n, false).length ? [sep, ...dumpItems(n, false)] : []),
+                ],
+              },
               { label: "Object Actions", submenu: [act("db.truncate", n)] },
             ]
           : []),
@@ -195,6 +270,7 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
     case "foreignKey":
       return [refresh, sep, { label: "Navigation", submenu: [act("db.goToReferencedTable", n), act("db.goToDdl", n)] }];
     case "routine":
+    case "package":
     case "sequence":
     case "trigger":
       return [

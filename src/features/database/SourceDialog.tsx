@@ -2,23 +2,33 @@
  * Data source properties (IDEA's Data Sources and Drivers page): name, colour and
  * comment above General / Options / SSH/SSL / Schemas / Advanced tabs, Test Connection.
  */
-import { useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   call,
   commands,
   IpcError,
+  isTauri,
+  nextRequestId,
   type DataSource,
   type DbColor,
+  type DbExternalTunnel,
   type DbIntrospection,
+  type DbJdbcDriver,
   type DbOptions,
   type DbProperty,
+  type DbSnowflake,
+  type DbSnowflakeAuth,
   type DbSsh,
   type SshAuth,
   type DbSslMode,
   type DbTxMode,
+  type RequestId,
 } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
-import { tx, useTx, useTxTemplate } from "@/platform/i18n";
+import { choosePath, chooseSavePath } from "@/platform/choosePath";
+import { tx, txPart, useTx, useTxTemplate } from "@/platform/i18n";
+import { useProject } from "@/platform/project";
+import { useRemote } from "@/platform/remote";
 import { sshLabel as configLabel } from "@/platform/remoteSettings";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { Button, Checkbox, Dialog, IconButton, Input, Select, Tabs, T, type SelectOption } from "@/ui";
@@ -34,11 +44,20 @@ import {
   sshTunnelReady,
 } from "./model";
 import { closeDialog, loadDatabases, loadSchemas, saveSource, useDatabase } from "./store";
-import { VENDORS, sourceUrl, vendorById, vendorOf } from "./vendors";
+import { DUCKDB_JDBC_PREFIX, VENDORS, blankSnowflake, sourceUrl, vendorById, vendorOf } from "./vendors";
+import { JdbcDriverProfiles, jdbcProfileOption, useJdbcDrivers } from "./JdbcDriverProfiles";
 import styles from "./Database.module.css";
 import { isImeKey } from "@/platform/ime";
 
 type Tab = "general" | "options" | "ssh" | "schemas" | "advanced";
+type ConnectionMethod = "direct" | "ssh" | "external";
+type DuckDbMode = "file" | "memory" | "url";
+
+const DUCKDB_MODES: Array<{ id: DuckDbMode; label: string }> = [
+  { id: "file", label: "File" },
+  { id: "memory", label: "In memory" },
+  { id: "url", label: "JDBC URL" },
+];
 
 const TYPES: SelectOption[] = VENDORS.map((v) => ({ value: v.id, label: v.label, icon: v.icon }));
 
@@ -60,6 +79,12 @@ const SSL: Array<SelectOption<DbSslMode>> = [
   { value: "verifyFull", label: "Verify Full" },
 ];
 
+const CONNECTION_METHODS: Array<SelectOption<ConnectionMethod>> = [
+  { value: "direct", label: "Direct" },
+  { value: "ssh", label: "SSH tunnel" },
+  { value: "external", label: "External TCP tunnel" },
+];
+
 const TX: Array<SelectOption<DbTxMode>> = [
   { value: "auto", label: "Auto" },
   { value: "manual", label: "Manual" },
@@ -71,8 +96,27 @@ const SSH_AUTH: Array<SelectOption<SshAuth>> = [
   { value: "keyPair", label: "Key pair" },
 ];
 
+const SNOWFLAKE_AUTH: Array<SelectOption<DbSnowflakeAuth>> = [
+  { value: "keyPair", label: "Key pair" },
+  { value: "browser", label: "Single sign-on (web browser)" },
+  { value: "password", label: "Password" },
+  { value: "token", label: "Programmatic access token" },
+  { value: "oAuth", label: "OAuth token" },
+];
+
+/** What the data source's secret is, by Snowflake authentication method. */
+export function snowflakeSecretLabel(auth: DbSnowflakeAuth | null | undefined): string {
+  if (auth === "password") return "Password:";
+  if (auth === "token" || auth === "oAuth") return "Token:";
+  return "Passphrase:";
+}
+
 /** Driver property names the Advanced tab suggests, and what the backend does with them. */
 const PROPERTIES: Record<string, { names: string[]; hint: string }> = {
+  jdbc: {
+    names: [],
+    hint: "Passed to the JDBC driver as connection properties. Configure TLS and other driver-specific settings here or in the JDBC URL. Use the User and Password fields for credentials.",
+  },
   clickhouse: {
     names: ["max_execution_time", "max_threads", "connect_timeout"],
     hint: "ClickHouse settings sent with each HTTP request. connect_timeout is in seconds.",
@@ -100,6 +144,21 @@ const PROPERTIES: Record<string, { names: string[]; hint: string }> = {
   sqlServer: {
     names: ["connect_timeout"],
     hint: "Connection settings for SQL Server.",
+  },
+  snowflake: {
+    names: [
+      "QUERY_TAG",
+      "STATEMENT_TIMEOUT_IN_SECONDS",
+      "TIMEZONE",
+      "WEEK_START",
+      "CLIENT_SESSION_KEEP_ALIVE",
+      "connect_timeout",
+    ],
+    hint: "Session parameters set when signing in (any session parameter, e.g. QUERY_TAG). connect_timeout is in seconds.",
+  },
+  oracle: {
+    names: ["NLS_DATE_FORMAT", "NLS_TIMESTAMP_FORMAT", "NLS_LANGUAGE", "connect_timeout"],
+    hint: "Session parameters set after connecting (ALTER SESSION SET name = value). connect_timeout is in seconds.",
   },
 };
 
@@ -143,6 +202,54 @@ const parseSecs = (v: string) => {
   return Number.isFinite(n) && n > 0 ? n : null;
 };
 
+const windowsAbsolutePath = /^(?:[A-Za-z]:[/\\]|[/\\]{2})/;
+const jdbcUrlPlaceholder = /<[^>]+>|\{(?:host|port|database|file)\}/;
+
+function absoluteDatabaseFile(path: string, root: string | undefined): boolean {
+  return root && windowsAbsolutePath.test(root)
+    ? windowsAbsolutePath.test(path)
+    : path.startsWith("/") || (!root && windowsAbsolutePath.test(path));
+}
+
+function jdbcDatabaseFile(file: string | null | undefined, root: string | undefined): string | null {
+  if (!file) return null;
+  const windows = !!root && windowsAbsolutePath.test(root);
+  const path = windows ? file.replace(/\\/g, "/") : file;
+  if (absoluteDatabaseFile(path, root)) return path;
+  // Windows drive-relative and current-drive paths depend on the process's working directory.
+  if (!root || (windows && /^(?:[A-Za-z]:|\/)/.test(path))) return null;
+  const directory = windows ? root.replace(/\\/g, "/") : root;
+  return `${directory.replace(/\/+$/, "")}/${path}`;
+}
+
+function builtInTarget(s: DataSource, driver: DataSource["driver"], root: string | undefined): Partial<DataSource> {
+  const url = s.url ?? "";
+  if (driver === "sqlite") {
+    const path = /^jdbc:sqlite3?:(.+)$/i.exec(url)?.[1] ?? "";
+    const file = windowsAbsolutePath.test(root ?? "") ? path.replace(/^\/([A-Za-z]:[/\\])/, "$1") : path;
+    return {
+      file: !/[?#]/.test(file) && !jdbcUrlPlaceholder.test(file) && absoluteDatabaseFile(file, root) ? file : null,
+    };
+  }
+  // The native form has one host. Multi-host and driver-specific descriptors need a manual target.
+  const target = url.replace(/^jdbc:clickhouse:(?=https?:\/\/)/i, "");
+  const parsed =
+    jdbcUrlPlaceholder.test(target) || target.includes("#") || /[;,\s]/.test(target.split("?", 1)[0] ?? "")
+      ? null
+      : parseSourceUrl(target)?.source;
+  if (parsed?.driver !== driver || !parsed?.host) return { host: "", port: null, database: "", ssl: "verifyFull" };
+  return {
+    host: parsed.host,
+    port: parsed.port,
+    database: parsed.database,
+    user: parsed.user || s.user,
+    ssl: parsed.ssl && parsed.ssl !== "prefer" ? parsed.ssl : "verifyFull",
+    sslCaFile: parsed.sslCaFile ?? "",
+    sslCertFile: parsed.sslCertFile ?? "",
+    sslKeyFile: parsed.sslKeyFile ?? "",
+  };
+}
+
 function blank(): DataSource {
   return {
     id: newSourceId(),
@@ -161,6 +268,7 @@ function blank(): DataSource {
     comment: "",
     urlOnly: false,
     url: "",
+    jdbcDriver: "",
     sslCaFile: "",
     sslCertFile: "",
     sslKeyFile: "",
@@ -171,9 +279,7 @@ function blank(): DataSource {
 }
 
 async function pickFile(title: string): Promise<string | null> {
-  const { open } = await import("@tauri-apps/plugin-dialog");
-  const file = await open({ multiple: false, directory: false, title });
-  return typeof file === "string" ? file : null;
+  return choosePath({ directory: false, title });
 }
 
 /** A path field with Browse…. */
@@ -245,7 +351,7 @@ function SecondsOption({
         <Input
           className={styles.secondsInput}
           inputMode="numeric"
-          aria-label={tx`${label} (seconds)`}
+          aria-label={tx`${txPart(label)} (seconds)`}
           disabled={!on}
           value={draft}
           onChange={(e) => {
@@ -334,6 +440,35 @@ function Section({ title }: { title: string }) {
   );
 }
 
+function visibleArgument(value: string): string {
+  // Keep quotes, whitespace and invisible formatting characters visible in the approval.
+  return JSON.stringify(value).replace(
+    /[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}]|[^\S ]/gu,
+    (character) => `\\u{${character.codePointAt(0)!.toString(16)}}`,
+  );
+}
+
+function externalReviewKey(source: DataSource): string | null {
+  if (!source.externalTunnel) return null;
+  return JSON.stringify([
+    source.externalTunnel,
+    source.driver,
+    source.host?.trim(),
+    source.port ?? vendorOf(source).port,
+    source.database,
+    source.user,
+    source.urlOnly,
+    source.ssl,
+    source.sslCaFile,
+    source.sslCertFile,
+    source.sslKeyFile,
+    source.readOnly,
+    source.properties?.filter((property) => property.name?.trim()),
+    source.options,
+    source.global,
+  ]);
+}
+
 export function SourceDialog({
   initial,
   preset,
@@ -345,17 +480,97 @@ export function SourceDialog({
 }) {
   const tx = useTx();
   const txTemplate = useTxTemplate();
-  const [s, setS] = useState<DataSource>(() => ({ ...blank(), ...preset, ...initial }));
-  // `undefined`: unchanged (editing keeps the stored password).
-  const [password, setPassword] = useState<string | undefined>(presetPassword ?? undefined);
+  const [{ source: s, password, reviewedTunnel }, setDraft] = useState(() => ({
+    source: { ...blank(), ...preset, ...initial },
+    // `undefined`: unchanged (editing keeps the stored password).
+    password: presetPassword ?? undefined,
+    reviewedTunnel: false,
+  }));
+  const setS = (update: (source: DataSource) => DataSource) =>
+    setDraft((draft) => {
+      const source = update(draft.source);
+      const reviewedTunnel = draft.reviewedTunnel && externalReviewKey(source) === externalReviewKey(draft.source);
+      return { ...draft, source, reviewedTunnel };
+    });
+  const setPassword = (password: string | undefined) =>
+    setDraft((draft) => ({ ...draft, password, reviewedTunnel: draft.reviewedTunnel && draft.password === password }));
   // Same convention for the SSH password / passphrase.
   const [sshSecret, setSshSecret] = useState<string | undefined>(undefined);
   const [tab, setTab] = useState<Tab>("general");
-  const [test, setTest] = useState<{ ok: boolean; text: string; trust?: boolean } | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [test, setTest] = useState<{ ok: boolean; text: string; trust?: boolean; tunnel?: boolean } | null>(null);
+  const [busyKind, setBusy] = useState<"connecting" | "external" | null>(null);
+  const busy = busyKind !== null;
+  const [reviewRequest, setReviewRequest] = useState(0);
+  const reviewPanel = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (reviewRequest) reviewPanel.current?.querySelector("input")?.focus();
+  }, [reviewRequest]);
+  const externalRequest = useRef<RequestId | null>(null);
+  const cancelExternalTest = useCallback(() => {
+    const request = externalRequest.current;
+    if (request === null) return;
+    externalRequest.current = null;
+    void commands.cancelRequest(request);
+  }, []);
+  useEffect(() => cancelExternalTest, [cancelExternalTest]);
   const [showComment, setShowComment] = useState(!!s.comment);
-  // The URL being typed in default mode (null: show the fields' URL).
-  const [urlDraft, setUrlDraft] = useState<string | null>(null);
+  // URL text being edited in native default mode or DuckDB's explicit URL mode.
+  const [urlDraft, setUrlDraft] = useState<string | null>(s.vendor === "duckdb" && s.urlOnly ? (s.url ?? "") : null);
+  const [showJdbcProfiles, setShowJdbcProfiles] = useState(false);
+  const [nativeDraft, setNativeDraft] = useState<{
+    source: DataSource;
+    password: string | undefined;
+    endpoint: Pick<DataSource, "host" | "port" | "database" | "user" | "file">;
+  } | null>(null);
+  const nativeSource = nativeDraft?.source;
+  const [restoredNativeTarget, setRestoredNativeTarget] = useState(false);
+  const [connectionSecurityConfirmed, setConnectionSecurityConfirmed] = useState(false);
+  const jdbc = s.driver === "jdbc";
+  const vendor = vendorOf(s);
+  const genericJdbc = vendor.id === "jdbc";
+  const duckdb = vendor.id === "duckdb";
+  const jdbcOnly = vendor.driver === "jdbc";
+  const [duckDbMode, setDuckDbMode] = useState<DuckDbMode>(() => {
+    if (s.urlOnly) return "url";
+    return !s.file && s.url === DUCKDB_JDBC_PREFIX ? "memory" : "file";
+  });
+  const savedJdbcWithPreset = initial?.driver === "jdbc" && (!genericJdbc || vendorOf(initial).driver !== "jdbc");
+  const jdbcProfiles = useJdbcDrivers();
+  const availableProfiles = jdbcProfiles.drivers?.filter((d) => genericJdbc || d.vendor === vendor.id);
+  const selectedProfileId = s.jdbcDriver || (duckdb && availableProfiles?.length === 1 ? availableProfiles[0]!.id : "");
+  const jdbcProfile = availableProfiles?.find((d) => d.id === selectedProfileId);
+  const installedJdbcProfile = jdbcProfiles.drivers?.find((d) => d.id === s.jdbcDriver);
+  const projectRoot = useProject((st) => st.project?.root);
+  const remote = useRemote((st) => st.session !== null);
+  const nativeUrl = nativeSource?.urlOnly ? parseSourceUrl(nativeSource.url ?? "") : null;
+  const nativeOptions = nativeSource?.options;
+  const reviewSessionSettings =
+    nativeOptions?.startupScript ||
+    nativeOptions?.defaultSchema ||
+    nativeOptions?.timeZone ||
+    nativeOptions?.transaction === "manual";
+  const newJdbcPassword = jdbc && nativeSource?.driver === "snowflake" && s.snowflake?.auth !== "password";
+  const reviewJdbcSecurity =
+    jdbc &&
+    ((savedJdbcWithPreset &&
+      (initial.jdbcDriver !== s.jdbcDriver ||
+        nativeSource ||
+        (!duckdb && s.url && s.url === jdbcProfile?.urlTemplate && s.url !== initial.url))) ||
+      (nativeSource &&
+        (!!initial ||
+          nativeSource.driver === "clickhouse" ||
+          nativeSource.driver === "snowflake" ||
+          nativeSource.ssh?.enabled ||
+          nativeSource.externalTunnel ||
+          nativeSource.urlOnly ||
+          ["require", "verifyCa", "verifyFull"].includes(nativeSource.ssl ?? "") ||
+          nativeSource.sslCaFile ||
+          nativeSource.sslCertFile ||
+          nativeSource.sslKeyFile ||
+          nativeSource.readOnly ||
+          reviewSessionSettings ||
+          (nativeSource.properties?.length ?? 0) > 0)));
+  const reviewBuiltinSecurity = !jdbc && (initial?.driver === "jdbc" || restoredNativeTarget);
   const loadedDbs = useDatabase((st) => (initial?.id ? st.databases[initial.id] : undefined));
   const loadedSchemas = useDatabase((st) => (initial?.id ? st.schemas[initial.id] : undefined));
 
@@ -368,6 +583,10 @@ export function SourceDialog({
   const sshUsed: DbSsh = effectiveSsh(ssh, sshConfigs) ?? ssh;
   const setSsh = (patch: Partial<DbSsh>) => setS((x) => ({ ...x, ssh: { ...blankSsh(), ...x.ssh, ...patch } }));
   const options: DbOptions = { ...blankOptions(), ...s.options };
+  const connectionTimers = (targetDriver: DataSource["driver"]) => ({
+    keepAliveSecs: s.driver === "sqlite" || targetDriver === "sqlite" ? null : options.keepAliveSecs,
+    autoDisconnectSecs: options.autoDisconnectSecs,
+  });
   const setOptions = (patch: Partial<DbOptions>) =>
     setS((x) => ({ ...x, options: { ...blankOptions(), ...x.options, ...patch } }));
   const intro: DbIntrospection = { ...blankIntrospection(), ...s.introspection };
@@ -377,30 +596,231 @@ export function SourceDialog({
   const setProperty = (i: number, patch: Partial<DbProperty>) =>
     set({ properties: properties.map((p, j) => (j === i ? { ...p, ...patch } : p)) });
 
-  const vendor = vendorOf(s);
   const sqlite = s.driver === "sqlite";
   const postgres = s.driver === "postgres";
+  const externalTunnel = s.externalTunnel;
+  const setExternalTunnel = (patch: Partial<DbExternalTunnel>) =>
+    setS((x) => (x.externalTunnel ? { ...x, externalTunnel: { ...x.externalTunnel, ...patch } } : x));
+  const externalAvailable = postgres && isTauri() && !remote && !s.pluginOwner;
+  /** Drivers that can list every database on the host (tree level + Schemas tab). */
+  const serverDatabases = postgres || s.driver === "sqlServer" || s.driver === "snowflake";
   const clickhouse = s.driver === "clickhouse";
-  const urlOnly = !sqlite && !!s.urlOnly;
+  const oracle = s.driver === "oracle";
+  const snowflake = s.driver === "snowflake";
+  const sf: DbSnowflake = { ...blankSnowflake(), ...s.snowflake };
+  const urlOnly = !sqlite && !jdbc && !!s.urlOnly;
   const parsedUrl = urlOnly ? parseSourceUrl(s.url ?? "") : null;
+  const snowflakeAuth = parsedUrl?.source.snowflake?.auth ?? sf.auth;
+  const setSnowflake = (patch: Partial<DbSnowflake>) => {
+    if (patch.auth && patch.auth !== snowflakeAuth) setPassword("");
+    setS((x) => ({ ...x, snowflake: { ...blankSnowflake(), ...x.snowflake, ...patch } }));
+  };
+  const browserSignIn = snowflake && snowflakeAuth === "browser";
   const urlValid = !!parsedUrl && parsedUrl.source.driver === s.driver;
   const host = urlOnly ? (parsedUrl?.source.host ?? "") : (s.host ?? "");
   const database = urlOnly ? (parsedUrl?.source.database ?? "") : (s.database ?? "");
   const name =
-    s.name?.trim() || (sqlite ? fileSourceName(s.file ?? "") : `${database || s.user || "db"}@${host || "localhost"}`);
-  const sshOn = !sqlite && !!ssh.enabled;
-  const valid = sqlite
-    ? !!s.file?.trim()
-    : (urlOnly ? urlValid : !!s.host?.trim()) && (!sshOn || sshTunnelReady(ssh, sshConfigs));
+    s.name?.trim() ||
+    (genericJdbc
+      ? (jdbcProfile?.name ?? tx("Custom JDBC"))
+      : duckdb
+        ? (duckDbMode === "file" && fileSourceName(s.file ?? "")) || vendor.label
+        : vendor.driver === "sqlite"
+          ? fileSourceName(s.file ?? "")
+          : `${database || s.user || "db"}@${host || "localhost"}`);
+  // Snowflake is reached over HTTPS, where a tunnel to another host name cannot pass certificate checks.
+  const sshOn = !sqlite && !snowflake && !jdbc && !externalTunnel && !!ssh.enabled;
+  const connectionMethod = externalTunnel ? "external" : sshOn ? "ssh" : "direct";
+  const setConnectionMethod = (method: ConnectionMethod) => {
+    setTest(null);
+    set({
+      ssh: { ...ssh, enabled: method === "ssh" },
+      externalTunnel: method === "external" ? (externalTunnel ?? { executable: "", arguments: [] }) : null,
+    });
+  };
+  const externalError = externalTunnel
+    ? !externalAvailable
+      ? tx("External TCP tunnels require a local desktop window and a user-managed PostgreSQL source.")
+      : urlOnly
+        ? tx("External TCP tunnels use the host and port from the default connection type.")
+        : s.ssl === "verifyFull"
+          ? tx("Verify Full is unavailable with an external TCP tunnel.")
+          : null
+    : null;
+  const template = jdbcProfile?.urlTemplate ?? "";
+  const templateFields = (["host", "port", "database", "file"] as const).filter((key) => template.includes(`{${key}}`));
+  const renderedUrl = template.replace(
+    /\{(host|port|database|file)\}/g,
+    (token, key: "host" | "port" | "database" | "file") => String(s[key] || token),
+  );
+  const fromTemplate = !duckdb && !!templateFields.length && (s.url === template || s.url === renderedUrl);
+  const duckDbFile = duckdb && duckDbMode === "file" ? jdbcDatabaseFile(s.file, projectRoot) : null;
+  const duckDbFileError =
+    !duckDbFile || !s.file?.trim() || /[\r\n]/.test(duckDbFile)
+      ? tx("Enter an absolute database path or a path relative to the open project.")
+      : duckDbFile.includes(";")
+        ? tx("DuckDB database paths cannot contain semicolons.")
+        : null;
+  const jdbcUrl =
+    duckdb && duckDbMode === "file"
+      ? duckDbFileError
+        ? ""
+        : DUCKDB_JDBC_PREFIX + duckDbFile
+      : duckdb
+        ? duckDbMode === "memory"
+          ? DUCKDB_JDBC_PREFIX
+          : (urlDraft ?? s.url ?? "")
+        : fromTemplate
+          ? renderedUrl
+          : (s.url ?? "");
+  const duckDbMemory =
+    duckdb &&
+    (duckDbMode === "memory" ||
+      (duckDbMode === "url" &&
+        [DUCKDB_JDBC_PREFIX, `${DUCKDB_JDBC_PREFIX}:memory:`].includes(jdbcUrl.split(";", 1)[0]!)));
+  const chooseProfile = (profile?: DbJdbcDriver, type = vendor) => {
+    setTest(null);
+    setConnectionSecurityConfirmed(false);
+    if (duckdb) {
+      set({ jdbcDriver: profile?.id ?? "" });
+      return;
+    }
+    if (jdbc) {
+      const wasDefault = !s.url || (!savedJdbcWithPreset && (fromTemplate || s.url === jdbcProfile?.urlTemplate));
+      set({ jdbcDriver: profile?.id ?? "", url: wasDefault ? (profile?.urlTemplate ?? "") : s.url });
+      return;
+    }
+    const parsed = s.urlOnly ? parseSourceUrl(s.url ?? "")?.source : undefined;
+    const file = parsed?.file ?? s.file;
+    const secure = ["require", "verifyCa", "verifyFull"].includes(parsed?.ssl ?? s.ssl ?? "");
+    const endpoint = {
+      host: parsed?.host ?? s.host,
+      port: (parsed ? parsed.port : s.port) ?? (clickhouse && secure ? 8443 : vendor.port),
+      database: parsed?.database ?? s.database,
+      user: parsed?.user || s.user,
+      file: sqlite ? jdbcDatabaseFile(file, projectRoot) : file,
+    };
+    setNativeDraft({ source: s, password, endpoint });
+    const snowflakeOptions = { ...sf, ...parsed?.snowflake };
+    const needsJdbcPassword = snowflake && snowflakeOptions.auth !== "password";
+    if (needsJdbcPassword) setPassword(undefined);
+    set({
+      ...endpoint,
+      driver: "jdbc",
+      vendor: type.id === "jdbc" ? "" : type.id,
+      ...(snowflake ? { snowflake: snowflakeOptions } : {}),
+      ...(needsJdbcPassword ? { savePassword: false } : {}),
+      urlOnly: true,
+      url: profile?.urlTemplate ?? "",
+      jdbcDriver: profile?.id ?? "",
+      properties: [],
+      options: { ...blankOptions(), ...connectionTimers("jdbc") },
+      ssh: null,
+      externalTunnel: null,
+      ssl: "disable",
+      sslCaFile: "",
+      sslCertFile: "",
+      sslKeyFile: "",
+    });
+  };
+  const jdbcUrlValid =
+    duckdb && duckDbMode === "file"
+      ? duckDbFileError === null
+      : /^jdbc:[^\s:]+:[^\r\n]*$/.test(jdbcUrl) &&
+        !jdbcUrlPlaceholder.test(jdbcUrl) &&
+        (!duckdb || jdbcUrl.startsWith(DUCKDB_JDBC_PREFIX));
+  const valid =
+    (!externalTunnel ||
+      (!externalError &&
+        !!externalTunnel.executable.trim() &&
+        externalTunnel.arguments.some((argument) => argument.includes("{localPort}")))) &&
+    (jdbc
+      ? !!jdbcProfile &&
+        jdbcUrlValid &&
+        !(duckDbMemory && s.readOnly) &&
+        (!reviewJdbcSecurity || connectionSecurityConfirmed)
+      : (!reviewBuiltinSecurity || connectionSecurityConfirmed) &&
+        (sqlite
+          ? !!s.file?.trim()
+          : (urlOnly ? urlValid : !!s.host?.trim()) &&
+            (!sshOn || sshTunnelReady(ssh, sshConfigs)) &&
+            (!snowflake || (!!s.user?.trim() && (sf.auth !== "keyPair" || !!sf.privateKeyFile?.trim())))));
   const sslOn = (s.ssl ?? "prefer") !== "disable";
 
   /** What is saved / tested: a preset's port when the field was left empty. */
-  const effective = (): DataSource => ({ ...s, name, port: s.port ?? (s.vendor ? vendor.port : null) });
+  const effective = (): DataSource => ({
+    ...s,
+    name,
+    port: s.port ?? (s.vendor ? vendor.port : null),
+    ...(externalTunnel ? { ssh: null } : {}),
+    ...(jdbc
+      ? {
+          jdbcDriver: jdbcProfile?.id ?? "",
+          url: jdbcUrl,
+          urlOnly: !duckdb || duckDbMode === "url",
+          ...(duckdb && { file: duckDbFile }),
+          ssh: null,
+          options: { ...options, transaction: "auto" as const },
+        }
+      : {}),
+  });
 
-  const setType = (id: string) => {
+  const setType = (id: string, builtIn = false) => {
     const v = vendorById(id);
-    if (!v) return;
-    setS((x) => {
+    if (!v || (v.id === vendor.id && (!jdbc || !builtIn))) return;
+    setTest(null);
+    setUrlDraft(null);
+    setConnectionSecurityConfirmed(false);
+    if (v.id === "duckdb") {
+      const sameDriver = installedJdbcProfile?.vendor === v.id;
+      const existingDuckUrl = jdbc && jdbcUrl.startsWith(DUCKDB_JDBC_PREFIX);
+      if (!jdbc) chooseProfile(undefined, v);
+      setDuckDbMode(existingDuckUrl ? "url" : "file");
+      setUrlDraft(existingDuckUrl ? jdbcUrl : null);
+      set({ vendor: v.id, file: null, url: "", jdbcDriver: sameDriver ? s.jdbcDriver : "" });
+      return;
+    }
+    if (v.id === "jdbc") {
+      if (duckdb) set({ vendor: "", jdbcDriver: selectedProfileId, file: duckDbFile, url: jdbcUrl });
+      else if (jdbc) set({ vendor: "" });
+      else chooseProfile(undefined, v);
+      return;
+    }
+    if (jdbc && genericJdbc && installedJdbcProfile?.vendor === v.id) {
+      set({ vendor: v.id });
+      return;
+    }
+    const previous =
+      jdbc && nativeSource
+        ? {
+            ...nativeSource,
+            name: s.name,
+            color: s.color,
+            comment: s.comment,
+            global: s.global,
+            savePassword: newJdbcPassword ? nativeSource.savePassword : s.savePassword,
+            readOnly: s.readOnly,
+            introspection: intro,
+            options: { ...blankOptions(), ...nativeSource.options, ...connectionTimers(v.driver) },
+          }
+        : s;
+    if (nativeDraft) {
+      setPassword(nativeDraft.password);
+      const changed = (["host", "port", "database", "user", "file"] as const).some(
+        (field) => s[field] !== nativeDraft.endpoint[field],
+      );
+      setRestoredNativeTarget(changed || (!!s.url && !fromTemplate && s.url !== template));
+    } else {
+      setRestoredNativeTarget(false);
+      if (jdbc && v.driver === "snowflake" && sf.auth !== "password") setPassword(undefined);
+    }
+    setNativeDraft(null);
+    if (jdbc && nativeSource && vendorOf(nativeSource).id === v.id) {
+      setS(() => previous);
+      return;
+    }
+    setS(() => {
+      const x = previous;
       const old = vendorOf(x);
       const port = x.port == null || x.port === old.port ? v.port : x.port;
       return {
@@ -408,12 +828,28 @@ export function SourceDialog({
         driver: v.driver,
         vendor: v.id === v.driver ? "" : v.id,
         port,
+        ...(v.driver !== "postgres" && x.externalTunnel ? { externalTunnel: null } : {}),
         ssl: v.ssl ?? (v.driver === "clickhouse" ? "disable" : x.ssl),
+        ...(v.driver === "sqlite" && x.driver !== "jdbc" ? { options: { ...x.options, keepAliveSecs: null } } : {}),
+        ...(v.driver === "snowflake"
+          ? { host: x.host === "localhost" ? "" : x.host, snowflake: { ...blankSnowflake(), ...x.snowflake } }
+          : {}),
         ...(v.driver === "clickhouse"
           ? {
               user: x.user || "default",
               database: x.database || "default",
               options: { ...blankOptions(), ...x.options, transaction: "auto" as const },
+            }
+          : {}),
+        ...(x.driver === "jdbc"
+          ? {
+              jdbcDriver: "",
+              urlOnly: false,
+              url: "",
+              properties: [],
+              options: { ...blankOptions(), ...connectionTimers(v.driver) },
+              ssh: null,
+              ...builtInTarget({ ...x, url: jdbcUrl }, v.driver, projectRoot),
             }
           : {}),
       };
@@ -426,6 +862,8 @@ export function SourceDialog({
     const p = parseSourceUrl(text);
     if (!p || p.source.driver !== s.driver) return;
     const { host: h, port, database: db, user, ssl, sslCaFile, sslCertFile, sslKeyFile, vendor: v } = p.source;
+    if (p.source.snowflake) setSnowflake(p.source.snowflake);
+    if (p.source.options?.defaultSchema) setOptions({ defaultSchema: p.source.options.defaultSchema });
     set({
       host: h,
       port,
@@ -440,72 +878,279 @@ export function SourceDialog({
     if (p.password) setPassword(p.password);
   };
 
-  const setUrlOnly = (on: boolean) => set(on && !s.url?.trim() ? { urlOnly: on, url: sourceUrl(s) } : { urlOnly: on });
+  const setConnectionUrl = (url: string, on: boolean) => {
+    if (snowflake) {
+      const auth = (on ? parseSourceUrl(url)?.source.snowflake?.auth : undefined) ?? sf.auth;
+      if (auth !== snowflakeAuth) setPassword("");
+    }
+    set({ url, urlOnly: on });
+  };
+  const setUrlOnly = (on: boolean) => setConnectionUrl(on && !s.url?.trim() ? sourceUrl(s) : (s.url ?? ""), on);
 
-  const runTest = async () => {
-    setBusy(true);
+  const externalReviewed = () => {
+    if (!externalTunnel || reviewedTunnel) return true;
+    setTab("ssh");
+    setReviewRequest((n) => n + 1);
+    return false;
+  };
+
+  /** Test Connection, or with `tunnel` the SSH/SSL tab's Test SSH Tunnel (no database login). */
+  const runTest = async (tunnel = false) => {
+    if (busy || (!tunnel && (!valid || !externalReviewed()))) return;
+    const source = effective();
+    const request = !tunnel && source.externalTunnel ? nextRequestId() : null;
+    if (request !== null) externalRequest.current = request;
+    const stillTesting = () => request === null || externalRequest.current === request;
+    setBusy(request === null ? "connecting" : "external");
     setTest(null);
     try {
-      const v = await call(commands.dbTest(effective(), password ?? null, sshOn ? (sshSecret ?? null) : null));
-      setTest({ ok: true, text: tx`Succeeded: ${v}` });
+      const secret = sshOn ? (sshSecret ?? null) : null;
+      if (tunnel) {
+        const route = await call(commands.dbTestTunnel(source, secret));
+        setTest({ ok: true, text: tx`SSH tunnel works: ${route}`, tunnel });
+      } else {
+        const v = await call(
+          request === null
+            ? commands.dbTest(source, password ?? null, secret)
+            : commands.dbTestExternalTunnel(request, source, password ?? null),
+        );
+        if (stillTesting()) setTest({ ok: true, text: tx`Succeeded: ${v}` });
+      }
     } catch (e) {
-      const text = e instanceof Error ? e.message : String(e);
-      const trust = e instanceof IpcError && connectRemedy(e.kind, e.message, { ssh: sshUsed }) === "trustHostKey";
-      setTest({ ok: false, text, trust });
+      if (stillTesting()) {
+        const text = e instanceof Error ? e.message : String(e);
+        const trust =
+          request === null &&
+          e instanceof IpcError &&
+          connectRemedy(e.kind, e.message, { ssh: sshUsed }) === "trustHostKey";
+        setTest({ ok: false, text, trust, tunnel });
+      }
     } finally {
-      setBusy(false);
+      if (stillTesting()) {
+        externalRequest.current = null;
+        setBusy(null);
+      }
     }
   };
 
   const trustAndRetry = async () => {
     // A shared SSH configuration records the failed host key under its own id.
     await call(sshConfigId ? commands.sshTrustHost(sshConfigId) : commands.dbTrustSshHost(s.id ?? ""));
-    await runTest();
+    await runTest(!!test?.tunnel);
   };
 
   const save = async () => {
-    setBusy(true);
+    if (busy || !valid || !externalReviewed()) return;
+    const draft = effective();
+    const dialog = useDatabase.getState().dialog;
+    setBusy("connecting");
     try {
+      const source = { ...draft, properties: draft.properties?.filter((p) => p.name?.trim()) ?? [] };
+      if (jdbc && !source.global) await call(commands.dbApproveJdbcSource(source));
+      if (source.externalTunnel) await call(commands.dbApproveExternalTunnel(source));
       await saveSource(
-        { ...effective(), properties: properties.filter((p) => p.name?.trim()) },
+        source,
         sqlite ? undefined : password === undefined ? undefined : password || null,
         !sshOn || sshSecret === undefined || sshUsed.auth === "openSsh" ? undefined : sshSecret || null,
       );
-      closeDialog();
+      if (useDatabase.getState().dialog === dialog) closeDialog();
     } catch (e) {
       setTest({ ok: false, text: e instanceof Error ? e.message : String(e) });
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   };
 
   const loadNames = async () => {
     const id = initial?.id;
     if (!id) return;
-    await Promise.all([postgres ? loadDatabases(id) : Promise.resolve(), loadSchemas(id)]);
+    await Promise.all([serverDatabases ? loadDatabases(id) : Promise.resolve(), loadSchemas(id)]);
   };
 
   const tabs: Array<{ id: Tab; label: string }> = [
     { id: "general", label: "General" },
     { id: "options", label: "Options" },
-    ...(sqlite
-      ? []
-      : [
-          { id: "ssh" as const, label: "SSH/SSL" },
-          { id: "schemas" as const, label: "Schemas" },
-        ]),
+    ...(sqlite || snowflake || jdbc ? [] : [{ id: "ssh" as const, label: "SSH/SSL" }]),
+    ...(sqlite ? [] : [{ id: "schemas" as const, label: "Schemas" }]),
     { id: "advanced", label: "Advanced" },
   ];
   const current = tabs.some((t) => t.id === tab) ? tab : "general";
-  const props = PROPERTIES[s.driver ?? "sqlite"]!;
+  const props = duckdb
+    ? { names: [], hint: "Passed to the DuckDB JDBC driver as connection properties." }
+    : PROPERTIES[s.driver ?? "sqlite"]!;
+
+  const pickDuckDbFile = async (create: boolean) => {
+    const filters = [{ name: "DuckDB", extensions: ["duckdb", "db"] }];
+    const defaultPath = duckDbFile ?? projectRoot;
+    const file = create
+      ? await chooseSavePath({
+          title: tx("New DuckDB Database"),
+          filters,
+          defaultPath: jdbcDatabaseFile("database.duckdb", projectRoot) ?? "database.duckdb",
+        })
+      : await choosePath({ directory: false, title: tx("Open DuckDB Database"), filters, defaultPath });
+    if (file) {
+      set({ file });
+      setTest(null);
+    }
+  };
 
   const general = (
     <>
       <span className={styles.formLabel}>
-        <T>Driver:</T>
+        <T>Data source type:</T>
       </span>
-      <Select aria-label="Data source type" value={vendor.id} options={TYPES} onChange={setType} />
-      {sqlite ? (
+      <Select aria-label="Data source type" value={vendor.id} options={TYPES} onChange={(id) => setType(id)} />
+      <span className={styles.formLabel}>{tx(genericJdbc ? "JDBC driver profile:" : "Driver:")}</span>
+      <div className={styles.formRow}>
+        <Select
+          className={styles.fill}
+          aria-label={genericJdbc ? "JDBC driver profile" : "Connection driver"}
+          value={jdbc ? selectedProfileId : ""}
+          disabled={jdbcOnly && !jdbcProfiles.drivers}
+          onChange={(id) => {
+            if (!id && !jdbcOnly) setType(vendor.id, true);
+            else chooseProfile(availableProfiles?.find((d) => d.id === id));
+          }}
+          options={[
+            {
+              value: "",
+              label: jdbcOnly ? "Choose a JDBC driver profile" : "Built-in",
+              disabled: duckdb,
+            },
+            ...(availableProfiles ?? []).map(jdbcProfileOption),
+            ...(jdbc && s.jdbcDriver && !jdbcProfile
+              ? [
+                  {
+                    value: s.jdbcDriver,
+                    label: installedJdbcProfile?.name ?? tx`${s.jdbcDriver} (missing)`,
+                    verbatim: true,
+                    disabled: true,
+                  },
+                ]
+              : []),
+          ]}
+        />
+        <Button disabled={!jdbcProfiles.drivers} onClick={() => setShowJdbcProfiles(true)}>
+          {tx(jdbc && jdbcProfile && !genericJdbc ? "Go to Driver" : "Manage Drivers…")}
+        </Button>
+      </div>
+      {jdbcProfiles.error ? (
+        <div className={styles.formFull} role="alert">
+          {jdbcProfiles.error}{" "}
+          <Button onClick={jdbcProfiles.retry}>
+            <T>Retry</T>
+          </Button>
+        </div>
+      ) : !jdbcProfiles.drivers && jdbc ? (
+        <span className={styles.formFull} role="status">
+          <T>Loading JDBC driver profiles…</T>
+        </span>
+      ) : duckdb && !jdbcProfile && !availableProfiles?.length ? (
+        <span className={styles.formFull} role="status">
+          <T>Add the official DuckDB JDBC JAR in Manage Drivers… to connect.</T>
+        </span>
+      ) : jdbc && s.jdbcDriver && !jdbcProfile && jdbcProfiles.drivers ? (
+        <span className={`${styles.formFull} ${styles.bad}`} role="alert">
+          {tx(
+            duckdb
+              ? "Select a DuckDB driver profile or add the official DuckDB JDBC JAR in Manage Drivers…"
+              : installedJdbcProfile
+                ? "The JDBC driver profile is assigned to a different data source type. Select a matching profile or update its type in Custom JDBC."
+                : "The JDBC driver profile is missing. Select or add a profile before connecting.",
+          )}
+        </span>
+      ) : null}
+      {duckdb ? (
+        <>
+          <span className={styles.formLabel}>
+            <T>Connection type:</T>
+          </span>
+          <div className={styles.segmented} role="group" aria-label={tx("Connection type")}>
+            {DUCKDB_MODES.map(({ id, label }) => (
+              <button
+                type="button"
+                key={id}
+                aria-pressed={id === duckDbMode}
+                onClick={() => {
+                  setDuckDbMode(id);
+                  if (id === "url" && duckDbMode !== "url" && urlDraft === null) set({ url: jdbcUrl });
+                  setTest(null);
+                }}
+              >
+                <T>{label}</T>
+              </button>
+            ))}
+          </div>
+          {duckDbMode === "file" && (
+            <>
+              <label className={styles.formLabel} htmlFor="db-duckdb-file">
+                <T>File:</T>
+              </label>
+              <div className={styles.formRow}>
+                <Input
+                  id="db-duckdb-file"
+                  className={styles.fill}
+                  value={s.file ?? ""}
+                  invalid={!!s.file && !!duckDbFileError}
+                  placeholder="path/to/database.duckdb"
+                  onChange={(e) => {
+                    set({ file: e.target.value });
+                    setTest(null);
+                  }}
+                />
+                <Button onClick={() => void pickDuckDbFile(false)}>
+                  <T>Browse…</T>
+                </Button>
+                <Button disabled={!!s.readOnly} onClick={() => void pickDuckDbFile(true)}>
+                  <T>New File…</T>
+                </Button>
+              </div>
+              <span />
+              {s.file && duckDbFileError ? (
+                <span className={styles.bad} role="alert">
+                  {duckDbFileError}
+                </span>
+              ) : (
+                <span className={styles.formHint}>
+                  {s.readOnly ? (
+                    <T>Read-only requires an existing database file.</T>
+                  ) : (
+                    <T>Creates the database on first connection if the file does not exist.</T>
+                  )}
+                </span>
+              )}
+            </>
+          )}
+          <label className={styles.formLabel} htmlFor="db-url">
+            <T>URL:</T>
+          </label>
+          <Input
+            id="db-url"
+            mono
+            value={jdbcUrl}
+            readOnly={duckDbMode !== "url"}
+            invalid={duckDbMode === "url" && !!jdbcUrl && !jdbcUrlValid}
+            placeholder={DUCKDB_JDBC_PREFIX}
+            onChange={(e) => {
+              setUrlDraft(e.target.value);
+              setTest(null);
+            }}
+          />
+          {duckDbMemory && (
+            <>
+              <span />
+              <span className={styles.formHint}>
+                {s.readOnly ? (
+                  <T>Turn off Read-only in Options to use an in-memory DuckDB database.</T>
+                ) : (
+                  <T>Data is discarded when the connection closes.</T>
+                )}
+              </span>
+            </>
+          )}
+        </>
+      ) : sqlite ? (
         <FileField
           id="db-file"
           label="File:"
@@ -516,41 +1161,96 @@ export function SourceDialog({
         />
       ) : (
         <>
-          <span className={styles.formLabel}>
-            <T>Connection type:</T>
-          </span>
-          <div className={styles.segmented} role="group" aria-label={tx("Connection type")}>
-            <button type="button" aria-pressed={!urlOnly} onClick={() => setUrlOnly(false)}>
-              <T>default</T>
-            </button>
-            <button type="button" aria-pressed={urlOnly} onClick={() => setUrlOnly(true)}>
-              <T>URL only</T>
-            </button>
-          </div>
-          {!urlOnly && (
+          {jdbc ? (
             <>
-              <label className={styles.formLabel} htmlFor="db-host">
-                <T>Host:</T>
-              </label>
-              <div className={styles.formRow}>
-                <Input
-                  id="db-host"
-                  className={styles.fill}
-                  value={s.host ?? ""}
-                  onChange={(e) => set({ host: e.target.value })}
-                />
-                <label className={styles.formLabel} htmlFor="db-port">
-                  <T>Port:</T>
-                </label>
-                <Input
-                  id="db-port"
-                  className={styles.portInput}
-                  inputMode="numeric"
-                  value={s.port ?? ""}
-                  placeholder={String(vendor.port ?? "")}
-                  onChange={(e) => set({ port: parsePort(e.target.value) })}
-                />
+              {fromTemplate &&
+                templateFields.map((key) => (
+                  <Fragment key={key}>
+                    <label className={styles.formLabel} htmlFor={`jdbc-template-${key}`}>
+                      {tx({ host: "Host:", port: "Port:", database: "Database:", file: "File:" }[key])}
+                    </label>
+                    <div className={styles.formRow}>
+                      <Input
+                        id={`jdbc-template-${key}`}
+                        className={styles.fill}
+                        value={s[key] ?? ""}
+                        inputMode={key === "port" ? "numeric" : undefined}
+                        onChange={(e) =>
+                          set({ [key]: key === "port" ? parsePort(e.target.value) : e.target.value, url: template })
+                        }
+                      />
+                      {key === "file" && (
+                        <Button
+                          onClick={() =>
+                            void pickFile("Database File").then((file) => file && set({ file, url: template }))
+                          }
+                        >
+                          <T>Browse…</T>
+                        </Button>
+                      )}
+                    </div>
+                  </Fragment>
+                ))}
+              {!fromTemplate && template && s.url !== template && (
+                <>
+                  <span />
+                  <Button
+                    onClick={() => {
+                      set({ url: template });
+                      setTest(null);
+                      setConnectionSecurityConfirmed(false);
+                    }}
+                  >
+                    <T>Use URL template</T>
+                  </Button>
+                </>
+              )}
+            </>
+          ) : (
+            <>
+              <span className={styles.formLabel}>
+                <T>Connection type:</T>
+              </span>
+              <div className={styles.segmented} role="group" aria-label={tx("Connection type")}>
+                <button type="button" aria-pressed={!urlOnly} onClick={() => setUrlOnly(false)}>
+                  <T>default</T>
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={urlOnly}
+                  disabled={!!externalTunnel}
+                  onClick={() => setUrlOnly(true)}
+                >
+                  <T>URL only</T>
+                </button>
               </div>
+              {!urlOnly && (
+                <>
+                  <label className={styles.formLabel} htmlFor="db-host">
+                    {tx(snowflake ? "Account:" : "Host:")}
+                  </label>
+                  <div className={styles.formRow}>
+                    <Input
+                      id="db-host"
+                      className={styles.fill}
+                      value={s.host ?? ""}
+                      placeholder={snowflake ? "myorg-myaccount or xy12345.eu-central-1" : undefined}
+                      onChange={(e) => set({ host: e.target.value })}
+                    />
+                    <label className={styles.formLabel} htmlFor="db-port">
+                      <T>Port:</T>
+                    </label>
+                    <Input
+                      id="db-port"
+                      className={styles.portInput}
+                      inputMode="numeric"
+                      value={s.port ?? ""}
+                      placeholder={String(vendor.port ?? "")}
+                      onChange={(e) => set({ port: parsePort(e.target.value) })}
+                    />
+                  </div>
+                </>
+              )}
             </>
           )}
           {sshOn && (
@@ -568,16 +1268,53 @@ export function SourceDialog({
             placeholder={urlOnly ? "from the URL" : ""}
             onChange={(e) => set({ user: e.target.value })}
           />
-          <label className={styles.formLabel} htmlFor="db-password">
-            <T>Password:</T>
+          {snowflake && (
+            <>
+              <span className={styles.formLabel}>
+                <T>Authentication:</T>
+              </span>
+              <Select
+                aria-label="Snowflake authentication"
+                value={sf.auth ?? "keyPair"}
+                options={SNOWFLAKE_AUTH}
+                onChange={(auth) => setSnowflake({ auth })}
+              />
+              {sf.auth === "keyPair" && (
+                <FileField
+                  id="db-snowflake-key"
+                  label="Private key:"
+                  value={sf.privateKeyFile ?? ""}
+                  placeholder="~/.ssh/rsa_key.p8"
+                  title="Private Key File"
+                  onChange={(privateKeyFile) => setSnowflake({ privateKeyFile })}
+                />
+              )}
+            </>
+          )}
+          {browserSignIn && (
+            <>
+              <span />
+              <span className={styles.formHint}>
+                <T>Opens your web browser to sign in with your identity provider when connecting.</T>
+              </span>
+            </>
+          )}
+          <label className={styles.formLabel} htmlFor="db-password" hidden={browserSignIn}>
+            {tx(snowflake ? snowflakeSecretLabel(snowflakeAuth) : "Password:")}
           </label>
-          <div className={styles.formRow}>
+          <div className={styles.formRow} hidden={browserSignIn}>
             <Input
               id="db-password"
               className={styles.fill}
               type="password"
               value={password ?? ""}
-              placeholder={initial && password === undefined ? "<unchanged>" : ""}
+              placeholder={
+                initial && password === undefined && !newJdbcPassword
+                  ? "<unchanged>"
+                  : snowflake && sf.auth === "keyPair"
+                    ? "Only for an encrypted key"
+                    : ""
+              }
               onChange={(e) => setPassword(e.target.value)}
             />
             <Checkbox
@@ -586,12 +1323,47 @@ export function SourceDialog({
               label="Save password"
             />
           </div>
-          {!urlOnly && (
+          {!urlOnly && !jdbc && (
             <>
               <label className={styles.formLabel} htmlFor="db-database">
                 <T>Database:</T>
               </label>
-              <Input id="db-database" value={s.database ?? ""} onChange={(e) => set({ database: e.target.value })} />
+              <Input
+                id="db-database"
+                value={s.database ?? ""}
+                placeholder={oracle ? "Service name, e.g. ORCLPDB1" : undefined}
+                onChange={(e) => set({ database: e.target.value })}
+              />
+              {snowflake && (
+                <>
+                  <label className={styles.formLabel} htmlFor="db-snowflake-schema">
+                    <T>Schema:</T>
+                  </label>
+                  <Input
+                    id="db-snowflake-schema"
+                    value={options.defaultSchema ?? ""}
+                    onChange={(e) => setOptions({ defaultSchema: e.target.value })}
+                  />
+                  <label className={styles.formLabel} htmlFor="db-snowflake-warehouse">
+                    <T>Warehouse:</T>
+                  </label>
+                  <Input
+                    id="db-snowflake-warehouse"
+                    value={sf.warehouse ?? ""}
+                    placeholder="The user's default warehouse when empty"
+                    onChange={(e) => setSnowflake({ warehouse: e.target.value })}
+                  />
+                  <label className={styles.formLabel} htmlFor="db-snowflake-role">
+                    <T>Role:</T>
+                  </label>
+                  <Input
+                    id="db-snowflake-role"
+                    value={sf.role ?? ""}
+                    placeholder="The user's default role when empty"
+                    onChange={(e) => setSnowflake({ role: e.target.value })}
+                  />
+                </>
+              )}
             </>
           )}
           <label className={styles.formLabel} htmlFor="db-url">
@@ -600,23 +1372,83 @@ export function SourceDialog({
           <Input
             id="db-url"
             mono
-            value={urlOnly ? (s.url ?? "") : (urlDraft ?? sourceUrl(s))}
-            invalid={urlOnly ? !urlValid : urlDraft !== null && parseSourceUrl(urlDraft)?.source.driver !== s.driver}
-            placeholder={sourceUrl(s)}
-            onChange={(e) => (urlOnly ? set({ url: e.target.value }) : typeUrl(e.target.value))}
+            value={jdbc ? jdbcUrl : urlOnly ? (s.url ?? "") : (urlDraft ?? sourceUrl(s))}
+            invalid={
+              jdbc
+                ? !!s.url && !jdbcUrlValid
+                : urlOnly
+                  ? !urlValid
+                  : urlDraft !== null && parseSourceUrl(urlDraft)?.source.driver !== s.driver
+            }
+            placeholder={jdbc ? jdbcProfile?.urlTemplate : sourceUrl(s)}
+            onChange={(e) => (jdbc || urlOnly ? setConnectionUrl(e.target.value, true) : typeUrl(e.target.value))}
             onBlur={() => setUrlDraft(null)}
           />
           <span />
           <span className={styles.formHint}>
-            {txTemplate(
-              urlOnly
-                ? urlValid || !s.url?.trim()
-                  ? "Connects with the URL alone: host, port, database, SSL and parameters come from it."
-                  : `Not a ${vendor.label} URL`
-                : "Editing the URL fills in the settings above.",
-            )}
+            {jdbc
+              ? tx(
+                  "The URL and Advanced properties are saved with the data source. Enter passwords in the Password field.",
+                )
+              : txTemplate(
+                  urlOnly
+                    ? urlValid || !s.url?.trim()
+                      ? "Connects with the URL alone: host, port, database, SSL and parameters come from it."
+                      : `Not a ${vendor.label} URL`
+                    : "Editing the URL fills in the settings above.",
+                )}
           </span>
         </>
+      )}
+      {(reviewJdbcSecurity || reviewBuiltinSecurity) && (
+        <div className={styles.formWide}>
+          <span className={styles.formHint}>
+            {jdbc
+              ? tx(
+                  "Review the JDBC URL, TLS settings and connection properties. If your native connection used an SSH tunnel, configure the equivalent route before connecting.",
+                )
+              : tx(
+                  restoredNativeTarget
+                    ? "The built-in driver restores the previous target and credentials. Review them before connecting."
+                    : "Review the built-in connection settings, credentials and TLS before connecting.",
+                )}
+          </span>
+          {jdbc && nativeSource?.readOnly && (
+            <span className={styles.formHint}>
+              <T>JDBC asks the driver for a read-only connection. Use a database account with read-only privileges.</T>
+            </span>
+          )}
+          {jdbc && nativeSource?.externalTunnel && (
+            <span className={styles.formHint}>
+              <T>Configure the route for the JDBC driver if the built-in connection uses an external TCP tunnel.</T>
+            </span>
+          )}
+          {jdbc && reviewSessionSettings && (
+            <span className={styles.formHint}>
+              <T>
+                JDBC uses auto-commit. Review your startup script, default schema, and time zone, and configure
+                equivalent settings supported by your driver or database.
+              </T>
+            </span>
+          )}
+          {newJdbcPassword && (
+            <span className={styles.formHint}>
+              <T>This source uses a separate credential for JDBC. Enter a password if your driver requires one.</T>
+            </span>
+          )}
+          {jdbc && !newJdbcPassword && nativeUrl?.password && (
+            <span className={styles.formHint}>
+              <T>If the connection used a password in the previous URL, enter it in the Password field.</T>
+            </span>
+          )}
+          <Checkbox
+            checked={connectionSecurityConfirmed}
+            onChange={setConnectionSecurityConfirmed}
+            label={
+              jdbc ? "I have configured JDBC connection security." : "I have configured built-in connection security."
+            }
+          />
+        </div>
       )}
     </>
   );
@@ -625,18 +1457,36 @@ export function SourceDialog({
     <>
       <Section title="Connection" />
       <span />
-      <Checkbox checked={!!s.readOnly} onChange={(readOnly) => set({ readOnly })} label="Read-only" />
-      <span className={styles.formLabel}>
-        <T>Transaction control:</T>
-      </span>
-      <Select
-        aria-label="Transaction control"
-        className={styles.narrowSelect}
-        value={clickhouse ? "auto" : (options.transaction ?? "auto")}
-        options={clickhouse ? TX.filter((option) => option.value === "auto") : TX}
-        disabled={clickhouse}
-        onChange={(transaction) => setOptions({ transaction })}
+      <Checkbox
+        checked={!!s.readOnly}
+        disabled={duckDbMemory && !s.readOnly}
+        onChange={(readOnly) => set({ readOnly })}
+        label="Read-only"
       />
+      {duckDbMemory ? (
+        <span className={styles.formWide}>
+          <T>In-memory DuckDB databases require write access.</T>
+        </span>
+      ) : jdbc && !duckdb ? (
+        <span className={styles.formWide}>
+          <T>For read-only access, use a database account with read-only privileges.</T>
+        </span>
+      ) : null}
+      {!jdbc && (
+        <>
+          <span className={styles.formLabel}>
+            <T>Transaction control:</T>
+          </span>
+          <Select
+            aria-label="Transaction control"
+            className={styles.narrowSelect}
+            value={clickhouse ? "auto" : (options.transaction ?? "auto")}
+            options={clickhouse ? TX.filter((option) => option.value === "auto") : TX}
+            disabled={clickhouse}
+            onChange={(transaction) => setOptions({ transaction })}
+          />
+        </>
+      )}
       {postgres && (
         <>
           <label className={styles.formLabel} htmlFor="db-default-schema">
@@ -650,7 +1500,20 @@ export function SourceDialog({
           />
         </>
       )}
-      {!sqlite && (
+      {oracle && (
+        <>
+          <label className={styles.formLabel} htmlFor="db-default-schema">
+            <T>Current schema:</T>
+          </label>
+          <Input
+            id="db-default-schema"
+            value={options.defaultSchema ?? ""}
+            placeholder="HR (ALTER SESSION SET CURRENT_SCHEMA)"
+            onChange={(e) => setOptions({ defaultSchema: e.target.value })}
+          />
+        </>
+      )}
+      {!sqlite && !jdbc && (
         <>
           <label className={styles.formLabel} htmlFor="db-time-zone">
             <T>Time zone:</T>
@@ -665,13 +1528,15 @@ export function SourceDialog({
             }
             onChange={(e) => setOptions({ timeZone: e.target.value })}
           />
-          <SecondsOption
-            label="Run keep-alive query each"
-            value={options.keepAliveSecs}
-            fallback={60}
-            onChange={(keepAliveSecs) => setOptions({ keepAliveSecs })}
-          />
         </>
+      )}
+      {!sqlite && (
+        <SecondsOption
+          label="Run keep-alive query each"
+          value={options.keepAliveSecs}
+          fallback={60}
+          onChange={(keepAliveSecs) => setOptions({ keepAliveSecs })}
+        />
       )}
       <SecondsOption
         label="Auto-disconnect after"
@@ -679,7 +1544,7 @@ export function SourceDialog({
         fallback={300}
         onChange={(autoDisconnectSecs) => setOptions({ autoDisconnectSecs })}
       />
-      {postgres && (
+      {serverDatabases && (
         <>
           <span />
           <Checkbox
@@ -689,41 +1554,56 @@ export function SourceDialog({
           />
         </>
       )}
-      <label className={styles.formLabel} htmlFor="db-startup">
-        <T>Startup script:</T>
-      </label>
-      <textarea
-        id="db-startup"
-        className={styles.textArea}
-        spellCheck={false}
-        value={options.startupScript ?? ""}
-        placeholder={
-          postgres
-            ? "SET statement_timeout = '30s';"
-            : clickhouse
-              ? "SET max_execution_time = 30;"
-              : sqlite
-                ? "PRAGMA foreign_keys = ON;"
-                : "SET SESSION sql_mode = 'ANSI';"
-        }
-        onChange={(e) => setOptions({ startupScript: e.target.value })}
-      />
-      <span />
-      <span className={styles.formHint}>
-        <T>Runs on every new connection, before any other statement.</T>
-      </span>
+      {!jdbc && (
+        <>
+          <label className={styles.formLabel} htmlFor="db-startup">
+            <T>Startup script:</T>
+          </label>
+          <textarea
+            id="db-startup"
+            className={styles.textArea}
+            spellCheck={false}
+            value={options.startupScript ?? ""}
+            placeholder={
+              postgres
+                ? "SET statement_timeout = '30s';"
+                : clickhouse
+                  ? "SET max_execution_time = 30;"
+                  : sqlite
+                    ? "PRAGMA foreign_keys = ON;"
+                    : snowflake
+                      ? "ALTER SESSION SET QUERY_TAG = 'ide';"
+                      : oracle
+                        ? "ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS';"
+                        : "SET SESSION sql_mode = 'ANSI';"
+            }
+            onChange={(e) => setOptions({ startupScript: e.target.value })}
+          />
+          <span />
+          <span className={styles.formHint}>
+            <T>Runs on every new connection, before any other statement.</T>
+          </span>
+        </>
+      )}
     </>
   );
 
   const sshConfigOptions: SelectOption[] = [
     { value: "", label: "Custom (fields below)" },
-    ...sshConfigs.map((c) => ({ value: c.id, label: c.name.trim() || configLabel(c) || c.id, detail: configLabel(c) })),
-    ...(sshConfigId && !sshConfig ? [{ value: sshConfigId, label: tx`${sshConfigId} (missing)` }] : []),
+    ...sshConfigs.map((c) => ({
+      value: c.id,
+      verbatim: true,
+      verbatimDetail: true,
+      label: c.name.trim() || configLabel(c) || c.id,
+      detail: configLabel(c),
+    })),
+    ...(sshConfigId && !sshConfig ? [{ value: sshConfigId, verbatim: true, label: tx`${sshConfigId} (missing)` }] : []),
   ];
-  const sshTab = (
+  const targetHost = s.host?.trim() ?? "";
+  const targetPort = s.port ?? vendor.port ?? 5432;
+  const targetAddress = `${targetHost.includes(":") && !targetHost.startsWith("[") ? `[${targetHost}]` : targetHost}:${targetPort}`;
+  const sshFields = (
     <>
-      <span />
-      <Checkbox checked={!!ssh.enabled} onChange={(enabled) => setSsh({ enabled })} label="Use SSH tunnel" />
       <span className={styles.formLabel}>
         <T>Configuration:</T>
       </span>
@@ -849,6 +1729,108 @@ export function SourceDialog({
           </div>
         </>
       )}
+      <span />
+      <div className={styles.formRow}>
+        <Button
+          size="small"
+          onClick={() => void runTest(true)}
+          disabled={busy || !sshOn || !(sshConfigId || ssh.host?.trim())}
+        >
+          <T>Test SSH Tunnel</T>
+        </Button>
+        <span className={styles.formHint}>
+          <T>Logs in to the SSH host and checks that it reaches the database host and port.</T>
+        </span>
+      </div>
+    </>
+  );
+  const sshTab = (
+    <>
+      {externalAvailable || externalTunnel ? (
+        <>
+          <span className={styles.formLabel}>
+            <T>Connection method:</T>
+          </span>
+          <Select
+            aria-label="Connection method"
+            className={styles.narrowSelect}
+            value={connectionMethod}
+            options={
+              externalAvailable
+                ? CONNECTION_METHODS
+                : CONNECTION_METHODS.map((method) => ({ ...method, disabled: method.value === "external" }))
+            }
+            onChange={setConnectionMethod}
+          />
+          {sshOn && sshFields}
+          {externalAvailable && externalTunnel && (
+            <>
+              <FileField
+                id="db-tunnel-executable"
+                label="Executable:"
+                title="External Tunnel Executable"
+                value={externalTunnel.executable}
+                onChange={(executable) => setExternalTunnel({ executable })}
+              />
+              <span id="db-tunnel-arguments" className={`${styles.formLabel} ${styles.tunnelArgumentsLabel}`}>
+                <T>Arguments:</T>
+              </span>
+              <div className={styles.tunnelArguments} role="group" aria-labelledby="db-tunnel-arguments">
+                {externalTunnel.arguments.map((argument, i) => (
+                  // oxlint-disable-next-line react/no-array-index-key -- the position identifies an argument
+                  <div key={i} className={styles.formRow}>
+                    <Input
+                      className={`${styles.fill} ${styles.paramInput}`}
+                      aria-label={tx`Argument ${i + 1}`}
+                      value={argument}
+                      spellCheck={false}
+                      onChange={(e) =>
+                        setExternalTunnel({
+                          arguments: externalTunnel.arguments.map((value, j) => (j === i ? e.target.value : value)),
+                        })
+                      }
+                    />
+                    <IconButton
+                      icon="close"
+                      size="small"
+                      aria-label={tx`Remove argument ${i + 1}`}
+                      title="Remove"
+                      onClick={() =>
+                        setExternalTunnel({
+                          arguments: externalTunnel.arguments.filter((_, j) => j !== i),
+                        })
+                      }
+                    />
+                  </div>
+                ))}
+                <Button
+                  icon="plus"
+                  size="small"
+                  onClick={() => setExternalTunnel({ arguments: [...externalTunnel.arguments, ""] })}
+                >
+                  <T>Add Argument</T>
+                </Button>
+                <span className={styles.formHint}>
+                  <T>
+                    {
+                      "Use one field per argument. Include {localPort} for the loopback port. {host} and {port} use the PostgreSQL destination."
+                    }
+                  </T>
+                </span>
+                <span className={styles.formHint}>
+                  <T>The executable must listen on 127.0.0.1 and run in the foreground.</T>
+                </span>
+              </div>
+            </>
+          )}
+        </>
+      ) : (
+        <>
+          <span />
+          <Checkbox checked={!!ssh.enabled} onChange={(enabled) => setSsh({ enabled })} label="Use SSH tunnel" />
+          {sshFields}
+        </>
+      )}
       <Section title="SSL" />
       <span className={styles.formLabel}>
         <T>Mode:</T>
@@ -894,6 +1876,66 @@ export function SourceDialog({
         title="Client Key File"
         onChange={(sslKeyFile) => set({ sslKeyFile })}
       />
+      {valid && externalTunnel && (
+        <div className={styles.tunnelReview} role="group" aria-labelledby="db-tunnel-review" ref={reviewPanel}>
+          <div className={styles.formSection} id="db-tunnel-review">
+            <T>Review External Tunnel</T>
+          </div>
+          <p className={styles.formHint}>
+            <T>The executable runs on this computer with your user permissions when connecting.</T>
+          </p>
+          <dl className={styles.tunnelPreview}>
+            <dt>
+              <T>Executable:</T>
+            </dt>
+            <dd>
+              <code>{visibleArgument(externalTunnel.executable)}</code>
+            </dd>
+            <dt>
+              <T>Arguments:</T>
+            </dt>
+            <dd>
+              <ol>
+                {externalTunnel.arguments.map((argument, i) => (
+                  // oxlint-disable-next-line react/no-array-index-key -- a literal argument can repeat at different positions
+                  <li key={i}>
+                    <code>{visibleArgument(argument)}</code>
+                  </li>
+                ))}
+              </ol>
+            </dd>
+            <dt>
+              <T>Destination:</T>
+            </dt>
+            <dd>
+              <code>{visibleArgument(targetAddress)}</code>
+            </dd>
+            {!!s.database && (
+              <>
+                <dt>
+                  <T>Database:</T>
+                </dt>
+                <dd>
+                  <code>{visibleArgument(s.database)}</code>
+                </dd>
+              </>
+            )}
+          </dl>
+          <Checkbox
+            checked={reviewedTunnel}
+            disabled={busy}
+            label="Allow this command for the destination shown"
+            onChange={(checked) => {
+              const key = externalReviewKey(s);
+              setDraft((draft) => ({
+                ...draft,
+                reviewedTunnel: checked && draft.password === password && externalReviewKey(draft.source) === key,
+              }));
+              setTest(null);
+            }}
+          />
+        </div>
+      )}
     </>
   );
 
@@ -902,7 +1944,7 @@ export function SourceDialog({
   const schemasTab = (
     <>
       <div className={styles.formWide}>
-        {postgres && (
+        {serverDatabases && (
           <NamePicker
             allLabel={tx("All databases")}
             addLabel={tx("Add databases pattern")}
@@ -975,6 +2017,7 @@ export function SourceDialog({
           <span />
         </div>
         {properties.map((p, i) => (
+          // oxlint-disable-next-line react/no-array-index-key -- property fields are edited in place; position is the identity
           <div role="row" key={i} className={styles.propertyRow}>
             <Input
               aria-label="Property name"
@@ -1022,13 +2065,17 @@ export function SourceDialog({
     schemas: schemasTab,
     advanced: advancedTab,
   };
+  const shownTest = externalTunnel && !reviewedTunnel ? null : test;
 
   return (
     <Dialog
       open
-      onClose={closeDialog}
+      onClose={() => {
+        cancelExternalTest();
+        closeDialog();
+      }}
       title={initial ? tx`Data Source: ${initial.name}` : "New Data Source"}
-      width={640}
+      width={760}
       footerStart={
         <Button onClick={() => void runTest()} disabled={busy || !valid}>
           <T>Test Connection</T>
@@ -1039,72 +2086,86 @@ export function SourceDialog({
         { label: "OK", role: "default", disabled: busy || !valid, onClick: () => void save() },
       ]}
     >
-      <div className={styles.form}>
-        <label className={styles.formLabel} htmlFor="db-name">
-          <T>Name:</T>
-        </label>
-        <div className={styles.formRow}>
-          <Input
-            id="db-name"
-            className={styles.fill}
-            value={s.name ?? ""}
-            placeholder={name}
-            onChange={(e) => set({ name: e.target.value })}
-          />
-          <span className={styles.formLabel}>
-            <T>Color:</T>
-          </span>
-          <Select
-            aria-label="Color"
-            className={styles.narrowSelect}
-            value={s.color ?? "none"}
-            options={COLORS}
-            onChange={(c) => set({ color: c === "none" ? null : c })}
-            renderValue={(o) => (
-              <span className={styles.colorValue}>
-                {o && o.value !== "none" && (
-                  <span className={styles.colorSwatch} style={{ background: colorVar(o.value as DbColor) }} />
-                )}
-                <T>{o?.label ?? "No color"}</T>
-              </span>
-            )}
-          />
-          {/* IDEA's Make Global: stored with the IDE and listed in every project. */}
-          <span title={tx("Available in all projects")}>
-            <Checkbox checked={!!s.global} onChange={(global) => set({ global })} label="Global" />
-          </span>
+      <div className={styles.sourceLayout}>
+        <div className={styles.form}>
+          <label className={styles.formLabel} htmlFor="db-name">
+            <T>Name:</T>
+          </label>
+          <div className={styles.formRow}>
+            <Input
+              id="db-name"
+              className={styles.fill}
+              value={s.name ?? ""}
+              placeholder={name}
+              onChange={(e) => set({ name: e.target.value })}
+            />
+            <span className={styles.formLabel}>
+              <T>Color:</T>
+            </span>
+            <Select
+              aria-label="Color"
+              className={styles.narrowSelect}
+              value={s.color ?? "none"}
+              options={COLORS}
+              onChange={(c) => set({ color: c === "none" ? null : c })}
+              renderValue={(o) => (
+                <span className={styles.colorValue}>
+                  {o && o.value !== "none" && (
+                    <span className={styles.colorSwatch} style={{ background: colorVar(o.value as DbColor) }} />
+                  )}
+                  <T>{o?.label ?? "No color"}</T>
+                </span>
+              )}
+            />
+            {/* IDEA's Make Global: stored with the IDE and listed in every project. */}
+            <span title={tx("Available in all projects")}>
+              <Checkbox
+                checked={!!s.global}
+                disabled={!!s.pluginOwner}
+                onChange={(global) => set({ global })}
+                label="Global"
+              />
+            </span>
+          </div>
+          <span />
+          {showComment ? (
+            <textarea
+              className={styles.textArea}
+              aria-label={tx("Comment")}
+              autoFocus={!s.comment}
+              rows={2}
+              value={s.comment ?? ""}
+              placeholder={tx("Comment")}
+              onChange={(e) => set({ comment: e.target.value })}
+            />
+          ) : (
+            <button type="button" className={styles.linkButton} onClick={() => setShowComment(true)}>
+              <T>Add comment</T>
+            </button>
+          )}
         </div>
-        <span />
-        {showComment ? (
-          <textarea
-            className={styles.textArea}
-            aria-label={tx("Comment")}
-            autoFocus={!s.comment}
-            rows={2}
-            value={s.comment ?? ""}
-            placeholder={tx("Comment")}
-            onChange={(e) => set({ comment: e.target.value })}
-          />
-        ) : (
-          <button type="button" className={styles.linkButton} onClick={() => setShowComment(true)}>
-            <T>Add comment</T>
-          </button>
-        )}
-      </div>
-      <Tabs
-        variant="compact"
-        className={styles.dialogTabs}
-        activeId={current}
-        onSelect={(id) => setTab(id as Tab)}
-        aria-label="Data source settings"
-        panelIdPrefix="db-source"
-        items={tabs}
-      />
-      <div className={styles.form} role="tabpanel" id={`db-source-panel-${current}`}>
-        {body[current]}
-        <div className={`${styles.testResult} ${test?.ok ? styles.ok : styles.bad}`} role="status">
-          {busy && !test ? tx("Connecting…") : test?.text}
-          {test?.trust && (
+        <Tabs
+          variant="compact"
+          className={styles.dialogTabs}
+          activeId={current}
+          onSelect={(id) => setTab(id as Tab)}
+          aria-label="Data source settings"
+          panelIdPrefix="db-source"
+          items={tabs}
+        />
+        <div className={`${styles.form} ${styles.sourcePanel}`} role="tabpanel" id={`db-source-panel-${current}`}>
+          {body[current]}
+        </div>
+        <div
+          className={`${styles.testResult} ${shownTest?.ok ? styles.ok : shownTest || externalError ? styles.bad : ""}`}
+          role="status"
+        >
+          {busy && !shownTest
+            ? busyKind === "external"
+              ? tx("Testing external TCP tunnel and PostgreSQL connection…")
+              : tx("Connecting…")
+            : (externalError ?? shownTest?.text)}
+          {shownTest?.trust && (
             <>
               {" "}
               <Button size="small" onClick={() => void trustAndRetry()} disabled={busy}>
@@ -1114,6 +2175,24 @@ export function SourceDialog({
           )}
         </div>
       </div>
+      {showJdbcProfiles && jdbcProfiles.drivers && (
+        <JdbcDriverProfiles
+          drivers={jdbcProfiles.drivers}
+          selected={jdbc ? (jdbcProfile?.id ?? "") : ""}
+          sourceVendor={genericJdbc ? undefined : vendor.id}
+          onClose={() => setShowJdbcProfiles(false)}
+          onSave={(driver) => {
+            jdbcProfiles.setDrivers((drivers) => [...(drivers ?? []).filter((d) => d.id !== driver.id), driver]);
+            if (jdbc && (genericJdbc || driver.vendor === vendor.id) && (!s.jdbcDriver || s.jdbcDriver === driver.id))
+              chooseProfile(driver);
+          }}
+          onUse={(driver) => {
+            chooseProfile(driver);
+            setShowJdbcProfiles(false);
+          }}
+          onRemove={(id) => jdbcProfiles.setDrivers((drivers) => (drivers ?? []).filter((d) => d.id !== id))}
+        />
+      )}
     </Dialog>
   );
 }

@@ -2,7 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CLIENT_SETTINGS_KEYS } from "./clientSettings";
 import { commands, call, type Settings } from "./ipc";
 import { loadSettings, useProject } from "./project";
-import { connectRemote, disableRemote, enableRemote, isRemoteWindow, remoteRouting } from "./remote";
+import {
+  connectRemote,
+  disableRemote,
+  enableRemote,
+  isRemoteWindow,
+  localGlobalSettings,
+  remoteRouting,
+  useRemote,
+  useRemoteProgress,
+} from "./remote";
+import { invoke as routedInvoke } from "./tauriCore";
 
 const handlers = vi.hoisted(() => new Map<string, () => void>());
 vi.mock("./ipc", async (original) => ({
@@ -23,6 +33,7 @@ const local = {
   appearance: { theme: "dark" },
   editor: { fontSize: 19, tabSize: 8 },
   terminal: { fontSize: 18, shellPath: "/local" },
+  agents: { fitWindowWidth: true, newTaskApprovals: "ask" },
 };
 const remote = {
   keymap: "intellij-linux",
@@ -31,6 +42,7 @@ const remote = {
   appearance: { theme: "light" },
   editor: { fontSize: 13, tabSize: 2 },
   terminal: { fontSize: 13, shellPath: "/remote" },
+  agents: { fitWindowWidth: false, newTaskApprovals: "bypass", mcpServers: { docs: { command: "npx" } } },
 };
 const served = new Set(["settings_get", "settings_set", "project_current"]);
 let invoke: ReturnType<typeof vi.fn>;
@@ -41,14 +53,76 @@ beforeEach(() => {
     cmd === "remote_invoke" ? JSON.stringify(remote) : local,
   );
   Object.assign(window, { __TAURI_INTERNALS__: { invoke, transformCallback: () => 1 } });
-  enableRemote({ sshConfig: "test", root: "/remote", host: "test", commands: [...served] });
+  enableRemote({
+    target: { kind: "ssh", config: "test" },
+    root: "/remote",
+    host: "test",
+    os: "linux",
+    commands: [...served],
+  });
 });
 afterEach(() => {
   disableRemote();
   useProject.setState({ opening: false, settings: null });
+  useRemoteProgress.setState({ progress: null, location: null });
 });
 
 describe("remote client settings", () => {
+  it("routes window reports through the commands advertised by the remote host", async () => {
+    enableRemote({
+      target: { kind: "ssh", config: "test" },
+      root: "/remote",
+      host: "test",
+      os: "linux",
+      commands: ["mcp_set_open_editors", "mcp_set_focused_editor", "mcp_report_problems"],
+    });
+    invoke.mockResolvedValue("null");
+    await call(commands.mcpSetOpenEditors(["/remote/a.txt"]));
+    await call(commands.mcpSetFocusedEditor(null, true));
+    const files = [{ path: "/remote/a.txt", items: [] }];
+    await call(commands.mcpReportProblems(true, files));
+    await call(commands.mcpReportProblems(false, files));
+    const reports = invoke.mock.calls.map(([cmd, args]) => [
+      cmd,
+      (args as { cmd: string }).cmd,
+      JSON.parse((args as { args: string }).args),
+    ]);
+    expect(reports).toEqual([
+      ["remote_invoke", "mcp_set_open_editors", { paths: ["/remote/a.txt"] }],
+      ["remote_invoke", "mcp_set_focused_editor", { editor: null, focused: true }],
+      ["remote_invoke", "mcp_report_problems", { reset: true, files }],
+      ["remote_invoke", "mcp_report_problems", { reset: false, files }],
+    ]);
+  });
+
+  it.each([
+    { gradle: { dir: "app", projects: [] }, expected: [{ dir: "app", projects: [] }] },
+    {
+      gradle: [
+        { dir: "one", projects: [] },
+        { dir: "two", projects: [] },
+      ],
+      expected: [
+        { dir: "one", projects: [] },
+        { dir: "two", projects: [] },
+      ],
+    },
+    { gradle: null, expected: null },
+  ])("accepts the released and current remote Gradle build models: $gradle", async ({ gradle, expected }) => {
+    for (const command of ["build_model", "build_sync", "gradle_link_projects", "gradle_unlink_projects"]) {
+      enableRemote({
+        target: { kind: "wsl", distro: "Ubuntu" },
+        root: "/remote",
+        host: "Ubuntu",
+        os: "linux",
+        commands: [command],
+      });
+      invoke.mockResolvedValue(JSON.stringify({ gradle, maven: null }));
+      // oxlint-disable-next-line no-await-in-loop -- each command reconfigures global remote routing, then asserts against it
+      expect(await routedInvoke(command)).toEqual({ gradle: expected, maven: null });
+    }
+  });
+
   it("ends remote routing before a successful local open is published, even at the same path", async () => {
     invoke.mockResolvedValueOnce({ root: "/remote", settings: local });
     await call(commands.openProject("/remote"));
@@ -81,17 +155,59 @@ describe("remote client settings", () => {
     "terminal.env",
     "tools.node",
     "languages.python.interpreter",
+    "agents.newTaskApprovals",
+    "agents.defaults",
+    "agents.mcpServers",
     "keymapExtra",
   ])("preserves routing for host setting %s", (key) => {
     expect(remoteRouting("settings_set", { scope: "project", key }, served)).toBe("remote");
     expect(remoteRouting("settings_set", { scope: "global", key }, served)).toBe("both");
+  });
+  it("writes the backend idle timeout only on the remote host, regardless of MCP support", async () => {
+    const args = { scope: "global", key: "remoteDevelopment.idleTimeoutMinutes", value: "45" };
+    await call(commands.settingsSet("global", args.key, args.value));
+    const writes = invoke.mock.calls.filter(
+      ([cmd, params]) =>
+        cmd === "settings_set" || (cmd === "remote_invoke" && (params as { cmd: string }).cmd === "settings_set"),
+    );
+    expect(writes.map(([cmd, params]) => [cmd, params])).toEqual([
+      ["remote_invoke", expect.objectContaining({ cmd: "settings_set", args: JSON.stringify(args) })],
+    ]);
+  });
+  it("routes mcpServer settings and MCP commands to the remote host without mutating local MCP settings", async () => {
+    const withMcp = new Set([...served, "settings_get_global", "mcp_server_status", "mcp_ui_ready", "mcp_respond"]);
+    enableRemote({
+      target: { kind: "ssh", config: "test" },
+      root: "/remote",
+      host: "test",
+      os: "linux",
+      commands: [...withMcp],
+    });
+    expect(remoteRouting("settings_set", { scope: "global", key: "mcpServer.enabled", value: "true" }, withMcp)).toBe(
+      "remote",
+    );
+    expect(
+      remoteRouting("settings_set", { scope: "global", key: "mcpServer.address", value: '"0.0.0.0"' }, withMcp),
+    ).toBe("remote");
+    expect(remoteRouting("mcp_server_status", undefined, withMcp)).toBe("remote");
+    expect(remoteRouting("mcp_ui_ready", { ready: true }, withMcp)).toBe("remote");
+    expect(remoteRouting("mcp_respond", { id: 1, allow: true, error: null }, withMcp)).toBe("remote");
+
+    expect(await commands.settingsGetGlobal()).toMatchObject({
+      keymap: "my-map",
+      editor: { fontSize: 19, tabSize: 2 },
+    });
+    expect(await localGlobalSettings()).toMatchObject({
+      keymap: "my-map",
+      editor: { fontSize: 19, tabSize: 8 },
+    });
   });
   it("merges settings before publishing a newly connected project", async () => {
     disableRemote();
     invoke.mockImplementation(async (cmd: string) =>
       cmd === "remote_connect"
         ? {
-            sshConfig: "test",
+            target: { kind: "ssh", config: "test" },
             root: "/remote",
             host: "test",
             commands: [...served],
@@ -101,8 +217,73 @@ describe("remote client settings", () => {
           ? "null"
           : local,
     );
-    await connectRemote("test", "/remote");
+    await connectRemote({ kind: "ssh", config: "test" }, "/remote");
     expect(useProject.getState().settings).toMatchObject({ keymap: "my-map", editor: { tabSize: 2, fontSize: 19 } });
+  });
+  it("does not disconnect a newer connect when an older one finishes", async () => {
+    disableRemote();
+    useRemoteProgress.setState({ progress: null, location: null });
+    let releaseFirst: (value: unknown) => void = () => {};
+    const first = new Promise((resolve) => {
+      releaseFirst = resolve;
+    });
+    let connects = 0;
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd !== "remote_connect") return cmd === "remote_invoke" ? "null" : local;
+      connects += 1;
+      const root = connects === 1 ? "/home/me/old" : "/home/me/new";
+      const project = {
+        target: { kind: "wsl", distro: "Ubuntu" },
+        root,
+        host: "Ubuntu",
+        os: "linux",
+        commands: [...served],
+        project: { root, name: "app", displayName: "app", settings: remote },
+      };
+      return connects === 1 ? first.then(() => project) : project;
+    });
+    const older = connectRemote({ kind: "wsl", distro: "Ubuntu" }, "/home/me/old");
+    const newer = connectRemote({ kind: "wsl", distro: "Ubuntu" }, "/home/me/new");
+    await newer;
+    releaseFirst(undefined);
+    await expect(older).rejects.toMatchObject({ kind: "cancelled" });
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "remote_disconnect")).toHaveLength(0);
+    expect(useRemote.getState().session?.root).toBe("/home/me/new");
+  });
+  it("attaches the latest of two connects to the same location when the older one is superseded", async () => {
+    disableRemote();
+    useRemoteProgress.setState({ progress: null, location: null });
+    let supersedeFirst: () => void = () => {};
+    let releaseSecond: () => void = () => {};
+    const first = new Promise((_, reject) => {
+      supersedeFirst = () => reject({ kind: "cancelled", message: "superseded" });
+    });
+    const second = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    let connects = 0;
+    const project = {
+      target: { kind: "ssh", config: "box" },
+      root: "/srv/app",
+      host: "box",
+      os: "linux",
+      commands: [...served],
+      project: { root: "/srv/app", name: "app", displayName: "app", settings: remote },
+    };
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd !== "remote_connect") return cmd === "remote_invoke" ? "null" : local;
+      connects += 1;
+      return connects === 1 ? first : second.then(() => project);
+    });
+    const older = connectRemote({ kind: "ssh", config: "box" }, "/srv/app");
+    const newer = connectRemote({ kind: "ssh", config: "box" }, "/srv/app");
+    supersedeFirst();
+    await expect(older).rejects.toMatchObject({ kind: "cancelled" });
+    expect(useRemoteProgress.getState().location).not.toBeNull();
+    releaseSecond();
+    await expect(newer).resolves.toMatchObject({ root: "/srv/app" });
+    expect(useRemote.getState().session?.root).toBe("/srv/app");
+    expect(useRemoteProgress.getState()).toEqual({ progress: null, location: null });
   });
   it("overlays the project snapshot used by the settings window", async () => {
     invoke.mockImplementation(async (cmd: string) =>
@@ -161,6 +342,7 @@ describe("remote client settings", () => {
       ...local,
       editor: { fontSize: 19, tabSize: 2 },
       terminal: { fontSize: 18, shellPath: "/remote" },
+      agents: { fitWindowWidth: true, newTaskApprovals: "bypass", mcpServers: { docs: { command: "npx" } } },
     });
     expect(invoke).toHaveBeenCalledWith("settings_get_global", {}, undefined);
   });

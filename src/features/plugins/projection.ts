@@ -23,11 +23,15 @@ export interface UiItem<T = Record<string, unknown>> {
 
 export interface ProjectionContext {
   plugin: PluginInfo;
+  /** Position within this plugin's declarations of this point. */
+  index: number;
 }
 
 export interface UiPointDefinition<T = Record<string, unknown>> {
   /** Makes one item take effect; returns its disposer. */
   project?: (item: UiItem<T>, ctx: ProjectionContext) => (() => void) | void;
+  /** Re-project when its position in the declaration snapshot changes. */
+  orderSensitive?: boolean;
   /** Optional section in Settings › Plugins › details for this point's items. */
   Details?: ComponentType<{ plugin: PluginInfo; items: UiItem<T>[] }>;
   /** Section title for the details page (defaults to the point id). */
@@ -79,8 +83,12 @@ export function syncUiContributions(items: readonly UiContribution[], plugins: r
   lastItems = items;
   lastPlugins = plugins;
   const byId = new Map(plugins.map((p) => [p.id, p]));
-  const next = new Map<string, { item: UiContribution; sig: string }>();
+  const next = new Map<string, { item: UiContribution; sig: string; index: number }>();
+  const indices = new Map<string, number>();
   for (const item of items) {
+    const scope = `${item.pluginId}\u0000${item.point}`;
+    const index = indices.get(scope) ?? 0;
+    indices.set(scope, index + 1);
     if (!points.get(item.point)?.project) {
       if (!points.has(item.point) && !warned.has(item.point)) {
         warned.add(item.point);
@@ -89,7 +97,11 @@ export function syncUiContributions(items: readonly UiContribution[], plugins: r
       continue;
     }
     if (!byId.has(item.pluginId)) continue;
-    next.set(itemKey(item), { item, sig: JSON.stringify(item.decl) });
+    next.set(itemKey(item), {
+      item,
+      sig: JSON.stringify(points.get(item.point)?.orderSensitive ? [item.decl, index] : item.decl),
+      index,
+    });
   }
   for (const [key, entry] of live) {
     if (next.get(key)?.sig !== entry.sig) {
@@ -97,12 +109,12 @@ export function syncUiContributions(items: readonly UiContribution[], plugins: r
       live.delete(key);
     }
   }
-  for (const [key, { item, sig }] of next) {
+  for (const [key, { item, sig, index }] of next) {
     if (live.has(key)) continue;
     const def = points.get(item.point)!;
     const plugin = byId.get(item.pluginId)!;
     try {
-      const dispose = def.project!(item as UiItem<never>, { plugin }) ?? (() => {});
+      const dispose = def.project!(item as UiItem<never>, { plugin, index }) ?? (() => {});
       live.set(key, { sig, dispose });
     } catch (e) {
       // The backend validated the declaration: a failing projection is a defect.

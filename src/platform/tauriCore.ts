@@ -19,6 +19,11 @@ export function setInvokeRoute(next: InvokeRoute | null) {
   route = next;
 }
 
+/** Whether commands have somewhere to go besides this process's Tauri runtime. */
+export function hasInvokeRoute(): boolean {
+  return route !== null;
+}
+
 export function invoke<T>(cmd: string, args?: InvokeArgs, options?: InvokeOptions): Promise<T> {
   return (route?.(cmd, args, options) ?? invokeLocal<T>(cmd, args, options)) as Promise<T>;
 }

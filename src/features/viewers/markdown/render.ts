@@ -1,34 +1,68 @@
 /**
- * Markdown → sanitized HTML for the preview. Every top-level block is wrapped
- * in an element carrying its 0-based source line (`data-line`) for scroll
- * sync; images keep their source in `data-src` and are loaded by the preview
+ * Markdown → sanitized HTML for the preview. Every top-level block (or run of
+ * blocks inside one HTML container) is wrapped in an element carrying its
+ * 0-based source line (`data-line`) for scroll sync; images keep their source in `data-src` and are loaded by the preview
  * (local files through the backend, as the CSP blocks file URLs). Mermaid
- * blocks become `[data-mermaid]` placeholders, drawn by `./mermaid`. YAML front matter is shown
+ * blocks become `[data-mermaid]` placeholders, drawn by `./mermaid`; math becomes `[data-math]`
+ * placeholders, typeset by the preview (`renderMath`). YAML front matter is shown
  * as a table of its top-level fields.
  */
-import { Marked, type Token, type TokensList } from "marked";
+import { Marked, Renderer, type Token, type TokensList } from "marked";
 import DOMPurify from "dompurify";
+import { mathExtension } from "@/editor/lsp/markdownMath";
+import { opensOtherShare } from "@/platform/paths";
+import { footnoteExtension, renderFootnotes } from "./footnotes";
+
+export const ANCHOR_PREFIX = "user-content-";
 
 const escapeHtml = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+const FENCE_ATTR = "data-markdown-fence";
+const fenceMarker = Array.from(crypto.getRandomValues(new Uint32Array(4)), (value) => value.toString(36)).join("-");
+const fenceStart = `<pre ${FENCE_ATTR}="${fenceMarker}">`;
+const defaultRenderer = new Renderer();
+
+export const isRenderedFence = (pre: HTMLElement): boolean => pre.hasAttribute(FENCE_ATTR);
 
 const marked = new Marked({
   gfm: true,
   breaks: false,
   renderer: {
-    code({ text, lang }) {
-      if (lang?.trim().split(/\s+/)[0]?.toLowerCase() !== "mermaid") return false;
-      return `<div data-mermaid=""><pre><code class="language-mermaid">${escapeHtml(text)}</code></pre></div>\n`;
+    code(token) {
+      const { text, lang, codeBlockStyle } = token;
+      if (lang?.trim().split(/\s+/)[0]?.toLowerCase() === "mermaid")
+        return `<div data-mermaid="">${fenceStart}<code class="language-mermaid">${escapeHtml(text)}</code></pre></div>\n`;
+      if (codeBlockStyle === "indented") return false;
+      return defaultRenderer.code(token).replace("<pre>", fenceStart);
     },
   },
-});
+}).use(mathExtension(), footnoteExtension(ANCHOR_PREFIX));
 
 // Own instance: hooks must not leak into the hover / documentation renderer.
 let purifier: ReturnType<typeof DOMPurify> | null = null;
 
+/** Whether the webview would read `value` as an address on another host: it drops blanks and takes `\` for `/`. */
+const namesHost = (value: string) =>
+  /^(https?:|[\\/]{2})/i.test([...value].filter((c) => c.charCodeAt(0) > 32).join(""));
+
 function purify(): ReturnType<typeof DOMPurify> {
   if (purifier) return purifier;
   const p = DOMPurify(window);
+  // The preview loads nothing from other hosts. Only a link, opened on a click, names one;
+  // an image keeps its source for the preview to refuse.
+  p.addHook("uponSanitizeAttribute", (node, data) => {
+    if (data.attrName === FENCE_ATTR) {
+      // Keep provenance without exposing the marker in the preview DOM
+      data.keepAttr = node.tagName === "PRE" && data.attrValue === fenceMarker;
+      if (data.keepAttr) data.attrValue = "";
+      return;
+    }
+    if (data.attrName === "alt" || data.attrName === "title") return;
+    if (data.attrName === "href" && node.tagName === "A") return;
+    if (data.attrName === "src" && node.tagName === "IMG") return;
+    if (namesHost(data.attrValue)) data.keepAttr = false;
+  });
   p.addHook("afterSanitizeAttributes", (node) => {
     if (node.tagName === "IMG") {
       const src = node.getAttribute("src");
@@ -41,12 +75,6 @@ function purify(): ReturnType<typeof DOMPurify> {
   return p;
 }
 
-/**
- * Heading ids carry GitHub's prefix: bare ids like `title` would clobber
- * `document` properties, so the sanitizer drops them.
- */
-export const ANCHOR_PREFIX = "user-content-";
-
 /** GitHub-style heading anchor: lower case, punctuation dropped, spaces → dashes. */
 export function slugify(text: string): string {
   return text
@@ -55,6 +83,14 @@ export function slugify(text: string): string {
     .replace(/<[^>]*>/g, "")
     .replace(/[^\p{L}\p{N}\s_-]/gu, "")
     .replace(/\s/g, "-");
+}
+
+/** The id of the next heading titled `text`, counting repeats in `slugs` as GitHub does (`a`, `a-1`, `a-2`…). */
+function headingId(slugs: Map<string, number>, text: string): string {
+  const base = slugify(text);
+  const n = slugs.get(base) ?? 0;
+  slugs.set(base, n + 1);
+  return n ? `${base}-${n}` : base;
 }
 
 const countLines = (s: string) => {
@@ -99,34 +135,214 @@ function frontMatterTable(fields: readonly [string, string][]): string {
   return `<table data-front-matter=""><tbody>${rows.join("")}</tbody></table>`;
 }
 
-export function renderMarkdown(text: string): string {
+// Containers whose open and close tags may sit in separate HTML blocks with Markdown between them.
+const CONTAINER_TAGS = new Set([
+  "article",
+  "aside",
+  "blockquote",
+  "center",
+  "details",
+  "div",
+  "dl",
+  "figure",
+  "footer",
+  "header",
+  "main",
+  "nav",
+  "ol",
+  "section",
+  "table",
+  "ul",
+]);
+const TAG = /<(\/?)([a-zA-Z][\w-]*)(?:"[^"]*"|'[^']*'|[^'">])*?(\/?)>/g;
+
+/** Applies the container tags an HTML block opens and closes to `open`, the stack of unclosed ones. */
+function trackContainers(raw: string, open: string[]) {
+  for (const [, closing, name, selfClosing] of raw.replace(/<!--[\s\S]*?(?:-->|$)/g, "").matchAll(TAG)) {
+    const tag = name!.toLowerCase();
+    if (!CONTAINER_TAGS.has(tag) || selfClosing) continue;
+    if (!closing) open.push(tag);
+    else if (open.includes(tag)) open.length = open.lastIndexOf(tag);
+  }
+}
+
+type MarkdownBlock = { line: number; endLine: number; html: string };
+
+function lexBlocks(body: string): TokensList {
+  // Marked repeatedly scans the remaining input for block boundaries. Keep the bytes of
+  // standalone embedded images out of those scans and restore their URLs before rendering.
+  const prefix = "openidea-embedded-image-";
+  if (!body.includes(";base64,") || body.includes(prefix)) return marked.lexer(body);
+  const urls: string[] = [];
+  const compact = body.replace(
+    /^!\[\]\((data:image\/[\w.+-]+;base64,[A-Za-z0-9+/]{256,}={0,2})\)(?=[ \t]*\r?$)/gm,
+    (_, url: string) => {
+      urls.push(url);
+      return `![](${prefix}${urls.length - 1})`;
+    },
+  );
+  const tokens = marked.lexer(compact);
+  let restored = 0;
+  for (const token of tokens) {
+    if (restored === urls.length) break;
+    if (!token.raw.includes(prefix)) continue;
+    const image = token.type === "paragraph" && token.tokens?.length === 1 && token.tokens[0];
+    if (!image || image.type !== "image" || image.href !== prefix + restored || token.raw.trimEnd() !== image.raw)
+      return marked.lexer(body);
+    image.href = urls[restored++]!;
+  }
+  return restored === urls.length ? tokens : marked.lexer(body);
+}
+
+/** Top-level source ranges; an open HTML container groups its enclosed blocks. */
+function blocks(text: string): MarkdownBlock[] {
   const front = frontMatter(text);
   const body = front ? text.split("\n").slice(front.lines).join("\n") : text;
-  const tokens = marked.lexer(body);
+  const tokens = lexBlocks(body);
   const slugs = new Map<string, number>();
   let line = front?.lines ?? 0;
-  let html = front ? `<div data-line="0">${frontMatterTable(front.fields)}</div>` : "";
+  const out = front ? [{ line: 0, endLine: front.lines, html: frontMatterTable(front.fields) }] : [];
+  // Blocks inside an HTML container left open (`<details>`, `<div>`…) share its wrapper up to
+  // the close: a wrapper per block would end the container early and spill its content out.
+  const open: string[] = [];
+  let group: MarkdownBlock | null = null;
   for (const token of tokens) {
     const start = line;
     line += countLines(token.raw);
-    if (token.type === "space") continue;
+    if (token.type === "space" || token.type === "footnoteDefinition") continue;
     const list = Object.assign([token], { links: tokens.links }) as TokensList;
     let body = marked.parser(list);
-    if (token.type === "heading") {
-      const base = slugify((token as Token & { text: string }).text);
-      const n = slugs.get(base) ?? 0;
-      slugs.set(base, n + 1);
-      body = body.replace(/^<h(\d)>/, `<h$1 id="${ANCHOR_PREFIX}${n ? `${base}-${n}` : base}">`);
+    if (token.type === "table") {
+      body = body.replace(/^<table>/, '<table data-markdown-table="">');
     }
-    html += `<div data-line="${start}">${body}</div>`;
+    if (token.type === "heading") {
+      const id = headingId(slugs, (token as Token & { text: string }).text);
+      body = body.replace(/^<h(\d)>/, `<h$1 id="${ANCHOR_PREFIX}${id}">`);
+    }
+    group ??= { line: start, endLine: start, html: "" };
+    group.endLine = start + countLines(token.raw.trimEnd()) + 1;
+    group.html += body;
+    if (token.type === "html") trackContainers(token.raw, open);
+    if (open.length) continue;
+    out.push(group);
+    group = null;
   }
+  if (group) out.push(group);
+  const footnotes = renderFootnotes(marked, tokens);
+  if (footnotes) out.push({ line: countLines(text), endLine: countLines(text) + 1, html: footnotes });
+  return out;
+}
+
+const SANITIZE = {
+  USE_PROFILES: { html: true },
+  ADD_ATTR: ["data-src", "data-line", "data-end-line", "data-markdown-table", "data-front-matter", "data-math"],
   // The preview shares the IDE's document: a `<style>` in a file would restyle the whole IDE.
-  return purify().sanitize(html, {
-    USE_PROFILES: { html: true },
-    ADD_ATTR: ["data-src", "data-line", "data-front-matter"],
-    FORBID_TAGS: ["style", "form"],
-    FORBID_ATTR: ["style"],
-  });
+  // `srcset` and `<source>` would pick an image past the one the preview loads.
+  FORBID_TAGS: ["style", "form", "source"],
+  FORBID_ATTR: ["style", "srcset"],
+};
+
+const wrap = (line: number, endLine: number, html: string) =>
+  `<div data-line="${line}" data-end-line="${endLine}">${html}</div>`;
+
+const sanitizeWhole = (all: readonly MarkdownBlock[]) =>
+  purify().sanitize(all.map((b) => wrap(b.line, b.endLine, b.html)).join(""), SANITIZE);
+
+/**
+ * 0-based source line of the heading the preview gives the anchor `anchor` (with or without
+ * {@link ANCHOR_PREFIX}), or null when no heading has it. Lets a link to another file open at
+ * that heading.
+ */
+export function headingLine(text: string, anchor: string): number | null {
+  const want = slugify(anchor.startsWith(ANCHOR_PREFIX) ? anchor.slice(ANCHOR_PREFIX.length) : anchor);
+  if (!want) return null;
+  const front = frontMatter(text);
+  const body = front ? text.split("\n").slice(front.lines).join("\n") : text;
+  const slugs = new Map<string, number>();
+  let line = front?.lines ?? 0;
+  for (const token of marked.lexer(body)) {
+    if (token.type === "heading" && headingId(slugs, (token as Token & { text: string }).text) === want) return line;
+    line += countLines(token.raw);
+  }
+  return null;
+}
+
+export function renderMarkdown(text: string): string {
+  return sanitizeWhole(blocks(text));
+}
+
+/**
+ * `renderMarkdown` for a preview that re-renders as the file is edited: blocks sanitized for an
+ * earlier render are reused, so an edit sanitizes only the blocks it changed. Same output.
+ */
+export function createMarkdownRenderer(): (text: string) => string {
+  // Sanitized wrapper contents by unsanitized block HTML; `null` for a block that leaks.
+  let cache = new Map<string, string | null>();
+  return (text) => {
+    const all = blocks(text);
+    const misses = [...new Set(all.map((b) => b.html).filter((html) => !cache.has(html)))];
+    for (const html of misses) if (PARSER_STATE.test(html)) cache.set(html, null);
+    if (misses.length && !all.some((b) => cache.get(b.html) === null)) sanitizeApart(misses, cache);
+    const kept = new Map<string, string | null>();
+    for (const b of all) {
+      const clean = cache.get(b.html);
+      if (clean !== undefined) kept.set(b.html, clean);
+    }
+    cache = kept;
+    const parts = all.map((b) => cache.get(b.html));
+    if (parts.some((part) => typeof part !== "string")) return sanitizeWhole(all);
+    return all.map((b, i) => wrap(b.line, b.endLine, parts[i]!)).join("");
+  };
+}
+
+const WRAPPER_OPEN = '<div data-line="0" data-end-line="1">';
+// Tags that change how the parser reads the blocks after them without moving the markers.
+const PARSER_STATE = /<(?:form|frameset)(?=[\s/>]|$)/i;
+
+/**
+ * Sanitizes `blocks` in one pass, a marker after each, and records what each one sanitizes to
+ * in `cache`. That equals its part of the whole document only if the HTML parser reads it the
+ * same way on its own: an unclosed `<b>`, `<textarea>`, `<table>` or `<!--` carries into the
+ * blocks after it, which moves or swallows the marker. The first block that does is recorded
+ * as `null`; the blocks after it are not recorded.
+ */
+function sanitizeApart(blocks: readonly string[], cache: Map<string, string | null>) {
+  const nonce = Array.from(crypto.getRandomValues(new Uint32Array(4)), (n) => n.toString(36)).join("");
+  const marker = `<p data-marker="${nonce}">.</p>`;
+  const isMarker = (node: Node | undefined) =>
+    node instanceof Element &&
+    node.tagName === "P" &&
+    node.attributes.length === 1 &&
+    node.getAttribute("data-marker") === nonce &&
+    node.childNodes.length === 1 &&
+    node.firstChild!.nodeType === Node.TEXT_NODE &&
+    node.textContent === ".";
+  // Blocks the parser read on their own: each a top-level wrapper with its marker right after it.
+  let apart = 0;
+  const checkParse = (node: Node) => {
+    if (node.nodeName !== "BODY") return;
+    const nodes = node.childNodes;
+    while (apart < blocks.length && nodes[2 * apart]?.nodeName === "DIV" && isMarker(nodes[2 * apart + 1])) apart++;
+    if (apart === blocks.length && nodes.length !== 2 * blocks.length) apart--;
+  };
+  const p = purify();
+  p.addHook("beforeSanitizeElements", checkParse);
+  let html: string;
+  try {
+    html = p.sanitize(blocks.map((b) => wrap(0, 1, b) + marker).join(""), SANITIZE);
+  } finally {
+    p.removeHook("beforeSanitizeElements", checkParse);
+  }
+  const parts = html.split(marker);
+  for (let i = 0; i < apart; i++) {
+    const part = parts[i]!;
+    if (!part.startsWith(WRAPPER_OPEN) || !part.endsWith("</div>")) {
+      cache.set(blocks[i]!, null);
+      return;
+    }
+    cache.set(blocks[i]!, part.slice(WRAPPER_OPEN.length, -"</div>".length));
+  }
+  if (apart < blocks.length) cache.set(blocks[apart]!, null);
 }
 
 export type LinkTarget =
@@ -137,9 +353,9 @@ export type LinkTarget =
 /** Directory of `file` (forward slashes). */
 const dirOf = (file: string) => file.slice(0, Math.max(0, file.lastIndexOf("/")));
 
-/** Joins `rel` onto `dir`, resolving `.` / `..`. Absolute `rel` (leading `/`) is kept. */
+/** Joins `rel` onto `dir`, resolving `.` / `..`. Absolute `rel` (`/…` or `C:/…`) is kept. */
 export function joinPath(dir: string, rel: string): string {
-  const parts = (rel.startsWith("/") ? rel : `${dir}/${rel}`).split("/");
+  const parts = (rel.startsWith("/") || /^[A-Za-z]:\//.test(rel) ? rel : `${dir}/${rel}`).split("/");
   const out: string[] = [];
   for (const p of parts) {
     if (p === "..") {
@@ -162,6 +378,7 @@ export function resolveLink(file: string, href: string): LinkTarget | null {
   const fragment = hash >= 0 ? decodeURIComponent(rest.slice(hash + 1)) : undefined;
   const pathPart = decodeURIComponent((hash >= 0 ? rest.slice(0, hash) : rest).replace(/\?.*$/, ""));
   const path = pathPart ? joinPath(dirOf(file), pathPart) : file;
+  if (pathPart && opensOtherShare(path, pathPart, file)) return null;
   const lineMatch = fragment ? /^L(\d+)/.exec(fragment) : null;
   if (lineMatch) return { kind: "file", path, line: Math.max(0, Number(lineMatch[1]) - 1) };
   return { kind: "file", path, ...(fragment ? { anchor: fragment } : {}) };
@@ -172,28 +389,49 @@ export function resolveLink(file: string, href: string): LinkTarget | null {
  * between the blocks around it (`blocks` sorted by line, with their offsets).
  */
 export function previewOffsetForLine(
-  blocks: ReadonlyArray<{ line: number; top: number }>,
+  blocks: ReadonlyArray<{ line: number; top: number; endLine?: number; bottom?: number }>,
   line: number,
   end: number,
+  sourceOffsets?: readonly number[],
 ): number {
   if (!blocks.length) return 0;
-  let i = 0;
-  while (i + 1 < blocks.length && blocks[i + 1]!.line <= line) i++;
-  const a = blocks[i]!;
+  let lo = 0,
+    hi = blocks.length;
+  while (lo < hi) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    if (blocks[mid]!.line <= line) lo = mid + 1;
+    else hi = mid;
+  }
+  const a = blocks[Math.max(0, lo - 1)]!;
   if (line <= a.line) return a.top;
-  const b = blocks[i + 1];
-  const nextLine = b?.line ?? a.line + 1;
-  const nextTop = b?.top ?? end;
-  const t = Math.min(1, (line - a.line) / Math.max(1, nextLine - a.line));
-  return a.top + t * (nextTop - a.top);
+  const b = blocks[lo];
+  const endLine = a.endLine ?? b?.line ?? a.line + 1;
+  const bottom = a.bottom ?? b?.top ?? end;
+  if (line < endLine) {
+    let progress = (line - a.line) / Math.max(1, endLine - a.line);
+    if (sourceOffsets && endLine < sourceOffsets.length) {
+      const row = Math.floor(line);
+      const start = sourceOffsets[a.line]!;
+      const length = sourceOffsets[endLine]! - start;
+      const offset = sourceOffsets[row]! + (line - row) * (sourceOffsets[row + 1]! - sourceOffsets[row]!);
+      if (length > 0) progress = (offset - start) / length;
+    }
+    return a.top + progress * (bottom - a.top);
+  }
+  if (!b || b.line <= endLine) return bottom;
+  return bottom + ((line - endLine) / (b.line - endLine)) * (b.top - bottom);
 }
 
 /** Source line of the block at the top of a preview scrolled to `offset`: the first one if none is above it. */
 export function previewLineAtOffset(blocks: ReadonlyArray<{ line: number; top: number }>, offset: number): number {
-  let line = blocks[0]?.line ?? 0;
-  for (const b of blocks) {
-    if (b.top > offset + 1) break;
-    line = b.line;
+  // Read only the offsets needed for the lookup. Reading every block's layout on each
+  // scroll frame stutters on dense previews, and cached offsets would miss later reflows.
+  let lo = 0;
+  let hi = blocks.length;
+  while (lo < hi) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    if (blocks[mid]!.top <= offset + 1) lo = mid + 1;
+    else hi = mid;
   }
-  return line;
+  return blocks[Math.max(0, lo - 1)]?.line ?? 0;
 }

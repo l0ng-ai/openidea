@@ -1,0 +1,170 @@
+---
+title: "Python"
+description: "Python code intelligence with basedpyright and Ruff, interpreter and virtualenv detection, pytest and Django runs, and debugging with debugpy."
+---
+
+OpenIDEA edits Python through a type-checking language server (basedpyright by default) and, in projects configured for Ruff, the Ruff server next to it. The IDE finds your interpreters and virtualenvs, runs scripts, pytest and Django tests with the project interpreter, and debugs them with debugpy. For other languages, see the [support matrix](/en/languages/index).
+
+## Language server
+
+Python files (`.py`, `.pyi`, `.pyw`, `SConstruct`, `SConscript` and files with a `python` shebang) are served by one type checker at a time, plus Ruff:
+
+| Server       | Role                                                                           | Installed with               |
+| ------------ | ------------------------------------------------------------------------------ | ---------------------------- |
+| basedpyright | Default type checker: completion, navigation, hover, diagnostics, refactorings | pip, in a private virtualenv |
+| Pyright      | Used only while basedpyright is not installed                                  | npm                          |
+| ty           | Used only while neither of the above is installed                              | pip, in a private virtualenv |
+| Pyrefly      | Used only while none of the above is installed                                 | pip, in a private virtualenv |
+| Ruff         | Lint, format, organize imports, fix all                                        | pip, in a private virtualenv |
+
+basedpyright starts in its `standard` type-checking mode instead of its own stricter default. A `[tool.basedpyright]` section in `pyproject.toml` or a `pyrightconfig.json` in the project still wins.
+
+Ruff starts only for files below a Ruff configuration: a `ruff.toml`, a `.ruff.toml`, or a `pyproject.toml` that contains a `[tool.ruff]` table. basedpyright has no formatter, so formatting comes from Ruff.
+
+Moving or renaming a module or package in the Project view with **Search for references** on updates the `import` and `from … import` statements that refer to it, relative imports included, in the same preview as the move. basedpyright has no file-move support, so the IDE finds these imports itself from the syntax tree. When a rename changes the name an import binds, the import keeps it as an alias: `from pkg import models` becomes `from pkg import domain as models`.
+
+To pick the type checker yourself, open **Settings › Languages & Frameworks › Language Servers**, select any of the four servers and change **Language server for Python**. **Automatic** uses the first installed one in the order above; you can also choose one server or **None**.
+
+## Setup
+
+### Installing the servers
+
+When you open a Python file and the server is missing, OpenIDEA shows a notification such as **basedpyright is not installed** with an **Install** button. You can also install, reinstall or point to your own executable in **Settings › Languages & Frameworks › Language Servers**.
+
+- basedpyright, ty, Pyrefly and Ruff go into a private virtualenv inside the IDE's tools folder. The IDE uses uv when it is on `PATH`, else `python3 -m venv`. Python 3 or uv must be installed.
+- Pyright is installed with npm, so it needs Node.js.
+- Nothing is installed into your project's environment.
+
+The tools folder is in the local data directory; see [Data directories and logs](/en/reference/data-directories).
+
+### Interpreters and virtualenvs
+
+The project interpreter is chosen in this order:
+
+1. The interpreter set in **Settings › Languages & Frameworks › Python Interpreter**.
+2. A virtualenv in the project: `.venv`, `venv`, `env` or `.env` (a folder with `pyvenv.cfg`), or a pixi environment in `.pixi/envs/`.
+3. The Pipenv environment for the nearest `Pipfile`, including one selected by a `.venv` file or `PIPENV_CUSTOM_VENV_NAME`.
+4. The `default` environment of a project with Hatch configuration, once Hatch has created it.
+5. The Python version the project pins for mise or asdf (`mise.toml`, `.tool-versions` and the other mise config files).
+
+The interpreter list on that page also shows what the IDE detects on the machine: the active `VIRTUAL_ENV`, virtualenvs made by virtualenvwrapper, pipenv and Poetry, Hatch environments, pyenv versions, Pythons installed by uv, mise and asdf installs, conda environments (Miniconda, Anaconda, Miniforge, Mambaforge, micromamba, and every env that `conda env list` shows), and the `python` executables on `PATH`.
+
+The selected interpreter is passed to basedpyright and Pyright (`python.pythonPath`), and its virtualenv is set as `VIRTUAL_ENV` for the language server and for run configurations.
+
+The **Python Interpreter** item in the status bar shows the current interpreter. Click it to switch, or to open **Add New Interpreter…** and **Interpreter Settings…**.
+
+### Interpreter paths
+
+**Settings › Languages & Frameworks › Python › All Interpreters › Show Paths for Selected Interpreter** lists the interpreter's `sys.path` and lets you add folders outside the project to it, such as a checkout of a shared library. The added folders are saved per interpreter in the IDE settings, so they apply to every project that uses it. basedpyright and Pyright get them as `extraPaths`, runs, debug sessions, tests and the Python Console get them on `PYTHONPATH`, and they are listed under **External Libraries**. At run time they are searched before the interpreter's own entries. A folder that no longer exists is marked as missing and skipped, and so is one that `PYTHONPATH` cannot hold (not absolute, or with its separator in the name). A folder inside the project is not listed under External Libraries, so its files stay editable. The interpreter's own entries cannot be removed, and a Docker or Compose run target has no paths of its own to edit.
+
+### A Docker or Compose run target as the interpreter
+
+When the project's dependencies are installed only in an image, choose a Docker or Docker Compose [run target](/en/guide/remote/containers#docker-and-docker-compose-run-targets) as the interpreter: the interpreter list and the status bar item show those targets next to the local interpreters.
+
+- **Editor.** The IDE runs the target's Python once in a new container (the image's entrypoint and the service's dependencies are skipped) and copies the folders of its `sys.path` outside the standard library and the project, such as `site-packages`, to its cache with `docker cp`. basedpyright and Pyright get the copies as `extraPaths`, with an empty virtualenv the IDE creates as their interpreter, so local packages don't mix in. Without any Python on this machine they get `extraPaths` alone and use their bundled standard library stubs. The copy is shown under **External Libraries**.
+- **Rebuilds.** The copy belongs to the image: when the project opens or the interpreter is chosen, a rebuilt image gets a new copy. The refresh button on the packages list copies again.
+- **Run.** Python run configurations without a run target of their own run on that target.
+- **Packages.** The list comes from the copy and is read-only: change the image or its requirements, rebuild it, and copy again. Nothing is installed into the container.
+
+A `pyrightconfig.json` or a `[tool.basedpyright]` / `[tool.pyright]` section with its own `extraPaths` replaces the copied paths. The interpreter's Python version is the empty virtualenv's, from a local Python of the same version when there is one.
+
+### Creating an environment
+
+On **Settings › Languages & Frameworks › Python Interpreter**, choose **Add Python Interpreter** and pick the **Interpreter type**:
+
+- **Virtualenv Environment**: `python -m venv` from the base interpreter you pick.
+- **uv Environment**: `uv venv <location> --python <base>` (uv must be on `PATH`).
+- **Poetry Environment**: `poetry env use <base>` in the project.
+- **Pipenv Environment**: `pipenv --python <base>` in the project (pipenv must be on `PATH`). Pipenv writes a `Pipfile` when the project has none, importing `requirements.txt` if there is one. With **Install packages from Pipfile** it then runs `pipenv install --dev`. An environment the project already has is reused; if it was built on another Python version than the base interpreter, nothing is changed and the dialog says so (remove it with `pipenv --rm` to start over).
+- **Hatch Environment** is available when the project has `hatch.toml` or a `[tool.hatch]` table in `pyproject.toml`. Pick an environment to run `hatch env create <environment>` in the project. Hatch must be on `PATH` and receives the base interpreter as `HATCH_PYTHON`. Hatch reuses an existing environment. If its Python version differs from the base interpreter, the dialog reports the mismatch. Remove the environment with `hatch env remove <environment>` to recreate it. The interpreter list shows `Hatch: <project>` for `default` and `Hatch: <project>:<environment>` for the others, including environments at custom paths reported by `hatch env find`.
+- **Conda Environment**: `conda create -n <name>` in conda's envs directory, with the chosen Python version.
+
+You can also select an existing interpreter or environment folder. The new interpreter becomes the project interpreter.
+
+### Packages
+
+The same page lists the installed packages of the selected interpreter. You can search them, **Install** a package by name, **Upgrade** and **Uninstall**. The IDE uses the interpreter's pip, or `uv pip` for environments without pip (uv creates them that way). The **Latest** column marks the packages that have a newer release: after the list loads, the IDE asks the same tool (`pip list --outdated`, or `uv pip list --outdated`), so the answer comes from the index that tool is configured to use (pip's configuration for pip, uv's for uv) and is the newest release that the interpreter can install. When the index cannot be reached for every package, or the check takes more than two minutes, the page says the check failed rather than show a list that may be missing upgrades.
+
+The **Python Packages** tool window (**View | Tool Windows**, or Find Action) manages the same packages next to the code. It lists what is installed and marks what can be upgraded. Type in its search field to filter the list; PyPI projects whose names contain the text and that are not installed appear under **PyPI**, the exact name first, then names that start with the text. Select a package to see its summary and its versions, then **Install** it (the newest release that fits the interpreter, or a version you pick), **Upgrade** or **Uninstall** it. The window manages the interpreter that runs use for the active file (in a workspace, its member's virtualenv) and shows its path. PyPI has no search API, so the search runs on a copy of PyPI's list of project names: the first search downloads it (about 10 MB) into the IDE's cache, and a search a day later refreshes it; searching the copy sends nothing. Until it is there, or when it cannot be downloaded, a project is still found by its exact name. Only pypi.org is searched, not a private index configured for pip, although installing does use pip's configuration. The exact-name lookup sends what you type to pypi.org; the name of an installed package is sent only when you click **Show PyPI Details**. When pip or uv is configured to install from another index, the exact-name lookup and the search results wait until you click **Search PyPI for …**, since a private package may have a public namesake.
+
+Other options on the page:
+
+- **Activate virtualenv** (section **Terminal**): new terminal sessions run the virtualenv's activate script.
+- **Documentation string format** (section **Docstrings**): Plain, reStructuredText, Epytext, NumPy or Google. Typing `"""` and Enter under a `def` or `class` inserts a docstring stub in that format (parameters, return value, raised exceptions), and docstring tags and keywords are highlighted in it.
+
+### Formatting
+
+**Reformat Code** (`⌘⌥L` / `Ctrl+Alt+L`) uses Ruff. In **Settings › Languages & Frameworks › Ruff** you can set the Ruff path, a configuration directory, the **Formatting provider** (**Automatic (language server first)** or Ruff), and **Run on save**. Without a configuration directory, Ruff reads the nearest `pyproject.toml` (`[tool.ruff]`), `ruff.toml` or `.ruff.toml`. When neither the project nor your user configuration has one, Ruff formats with the indentation and line length the editor uses: the file's `.editorconfig` (`indent_size`, `indent_style`, `max_line_length`), then the indent, tab character and hard wrap you set in **Settings › Editor › Code Style › Python**. Values set in neither are not passed, so Ruff keeps its own (4 spaces, 88 columns).
+
+Black formats instead of Ruff below a `pyproject.toml` with a `[tool.black]` table, or everywhere when **Formatting provider** is set to Black in **Settings › Languages & Frameworks › Black formatter**. Black reads its `[tool.black]` options itself. The IDE runs the `black` of the project interpreter's environment, else the one in its tools folder or on `PATH`; when none is installed, Reformat Code offers to install it. **Reformat with Black** in Find Action formats with Black whatever the project uses. Black runs on save when its own **Run on save** or the editor's **Format on save** is on. Without a `[tool.black]` (looked up the way Black does: past a `pyproject.toml` without it, up to the repository root) or a user configuration, Black uses that line length too. Files Black's configuration excludes (`force-exclude`) are left unchanged, and Black before 23.11 formats the whole file instead of a selection.
+
+**Optimize Imports** (`⌃⌥O` / `Ctrl+Alt+O`) sorts the imports. Below a Ruff configuration the Ruff server does it and leaves unused imports alone (Ruff's fix-all removes them). Elsewhere the IDE runs `ruff check --extend-select I --fixable I,F401 --fix` on the file, which also removes unused imports unless your Ruff rules leave out F401; Ruff must be installed. The same goes for Optimize imports on save, before commit and in Code Cleanup.
+
+**Rearrange Code** (Find Action, or the Code menu) orders the methods of every class in the file: `__new__`, `__init__` and `__post_init__`, other dunder methods, public methods, `_protected`, then `__private` ones, each group in its original order. The docstring and class attributes before the first method stay put; a method moves with its decorators and the comment lines directly above it, and definitions sharing a name (a property and its setter, `@overload` stubs) move together. A class is left as it is when moving could change it: other statements, standalone comments or `# region` / `# fmt: off` markers among its methods, or a decorator, default value or annotation that names another of its methods. Files with syntax errors are not rearranged.
+
+## Run and test
+
+OpenIDEA detects run configurations in folders that contain `pyproject.toml`, `setup.py`, `setup.cfg`, `requirements.txt`, `pytest.ini`, `tox.ini` or `manage.py`, or a project virtualenv:
+
+| Configuration         | When                                                                                                                                                                             |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `python -m <package>` | A package in the project root or `src/` has a `__main__.py`                                                                                                                      |
+| `pytest`              | The project uses pytest: `pytest.ini`, `tox.ini`, `conftest.py`, `[tool:pytest]` in `setup.cfg`, pytest in `pyproject.toml` or a requirements file, or pytest in the environment |
+| `manage.py runserver` | A `manage.py` is present (Django)                                                                                                                                                |
+| `manage.py test`      | A `manage.py` is present (Django tests)                                                                                                                                          |
+
+Tools run through the project's manager: `uv run` when there is a `uv.lock`, `poetry run` with a `poetry.lock`, `pdm run` with a `pdm.lock`, the tools of `.venv` or `venv`, or `pixi run` for a pixi environment. When you select an interpreter in settings, the configurations use it directly.
+
+In the editor, gutter icons run or debug:
+
+- a file's `if __name__ == "__main__":` block,
+- pytest functions `test_*` and classes `Test*`,
+- `unittest.TestCase` subclasses and their test methods.
+
+A test file runs with pytest even when the project declares no test setup (`python -m pytest` with the project interpreter, so pytest must be installed there). In a Django project, `TestCase` tests can also run with `manage.py test`. Results of pytest and of Django's unittest runner appear in the test tree, where **Rerun Failed Tests** runs only the failures.
+
+You can also create **Python** (a script or module), **pytest** and **Django tests** configurations in **Run › Edit Configurations…**. See [Run configurations](/en/guide/run) and [Testing](/en/guide/testing).
+
+| Action                      | macOS | Windows / Linux  |
+| --------------------------- | ----- | ---------------- |
+| Run Context Configuration   | `⌃⇧R` | `Ctrl+Shift+F10` |
+| Debug Context Configuration | `⌃⇧D` | none             |
+
+Run with Coverage uses coverage.py in the project interpreter, and Profile uses py-spy. When one is missing, the IDE says so and offers the command that installs it (for example `uv add --dev coverage` in a uv project). See [Coverage](/en/guide/coverage) and [Profiler](/en/guide/profiler).
+
+Jupyter notebooks (`.ipynb`) run on a Python interpreter; see [Notebooks](/en/guide/notebook).
+
+## Debugging
+
+Python debugging uses debugpy. If it is missing when you start a debug session, OpenIDEA offers to install it. The IDE keeps a private copy of debugpy in its tools folder and loads it into whichever interpreter runs your program, so you do not need debugpy in the project environment.
+
+- Scripts, `python -m` modules and console scripts such as `pytest` or `uvicorn` can be debugged. Programs started through `uv run`, `poetry run`, `pdm run`, `pipenv run`, `hatch run` or `rye run` run in that manager's environment.
+- Debugging `manage.py` enables Django support in debugpy.
+- **Attach to Process…** (`⌥⇧F5` / `Ctrl+Alt+F5`) lists local Python processes under **Python (debugpy)**.
+- The **Python Remote Debug (debugpy)** configuration attaches to a process started with `python -m debugpy --listen`, locally or on another machine, with local and remote root mapping.
+
+Options:
+
+- **Settings › Build, Execution, Deployment › Python Debugger**: **Attach to subprocess automatically while debugging** and **Gevent compatible**.
+- **Settings › Build, Execution, Deployment › Debugger › Stepping**: **Do not step into library scripts** (debugpy's `justMyCode`).
+
+See [Debugging](/en/guide/debugging) for breakpoints, stepping and the debugger tool window.
+
+## Framework support
+
+Django is the only framework with dedicated support: the `manage.py runserver` and `manage.py test` configurations, the **Django tests** configuration type (target, settings module, options), running single `TestCase` tests from the gutter, and Django mode in the debugger. Other frameworks (Flask, FastAPI and so on) run as ordinary scripts or console scripts.
+
+### Django templates
+
+The HTML and text files in a `templates` folder of a Django project (one with a `manage.py` above it) open as **Django Template** files: the template tags, variables, filters and comments are highlighted on top of the HTML, and block tags (`{% block %}`, `{% if %}`, `{% for %}`, `{% with %}` and the others of Django and its contrib libraries) fold, indent their content and highlight their end tag. Typing `{%`, `{{` or `{#` closes the pair, finishing a block tag adds its end tag, and `{% end` completes the end tags of the open blocks. **Comment with Line Comment** puts each line in its own `{# … #}`, and **Comment with Block Comment** over several lines uses `{% comment %}`. The HTML language server and Emmet work in the markup between the tags.
+
+With **Django Template LSP** (`djlsp`, installed from **Settings › Languages & Frameworks › Language Servers**), the template tags, filters, template names (`{% extends %}`, `{% include %}`), static files and URL names of the project complete, show their documentation on hover, and **Go to Declaration** opens the template or the tag's Python source. It reads them by running Django with the project interpreter, so Django has to be installed there.
+
+An HTML file elsewhere with Django tags shows a banner that switches it to Django Template or keeps it as HTML; either choice is the file's **Override File Type**.
+
+## Limitations
+
+- Only one type checker runs at a time. Ruff runs only in projects with a Ruff configuration.
+- Code intelligence and diagnostics come from the language server; the IDE has no Python analysis of its own.
+- Coverage and profiling need coverage.py and py-spy in your environment; the IDE does not keep its own copies of them.
+- Gutter run icons come from a line-based scan, so unusual test layouts may not get an icon. They can still run through a pytest configuration.

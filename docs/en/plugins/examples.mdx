@@ -1,0 +1,60 @@
+---
+title: "Example plugins"
+description: "A guided tour of the plugins in plugins/official: what each one shows and which parts of the API it uses."
+---
+
+The plugins in [`plugins/official/`](https://github.com/l0ng-ai/openidea/tree/main/plugins/official) are built and signed by the OpenIDEA release workflow and listed in the marketplace under the `openidea.*` ids. They are kept working as the API changes, and they are meant to be read: each one shows how to use part of the API. Build your own plugin in your own repository and use these as a reference.
+
+Each folder has a `plugin.toml`, the Rust source in `src/`, native tests, and a checked-in component in `dist/plugin.wasm`.
+
+## Data-only plugins
+
+| Plugin                                                                                          | What it shows                                                                                                                     | Uses                                      |
+| ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| [harbor-night](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/harbor-night)     | A dark colour theme with a UI theme and an editor colour scheme. The `theme` template of `openidea-plugin new` is copied from it. | `contributes.themes` with `editor-scheme` |
+| [material-icons](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/material-icons) | A complete file and folder icon theme with more than 100 icons.                                                                   | `contributes.iconThemes`                  |
+
+## Code plugins
+
+| Plugin                                                                                          | What it shows                                                                                                                          | Uses                                                                                    |
+| ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| [string-tools](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/string-tools)     | 26 text commands (case conversion, Base64/URL/HTML/JSON encoding, line sorting) applied to every selection at once.                    | Commands, `editor.read`/`editor.write`, versioned multi-cursor edits                    |
+| [key-promoter](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/key-promoter)     | Shows the shortcut of an action you ran with the mouse and counts missed shortcuts.                                                    | `on-event:action-performed`, `events.input`, `storage`                                  |
+| [git-toolbox](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/git-toolbox)       | Fetches repositories in the background and shows ahead/behind counts in the status bar.                                                | `on-schedule`, events, tasks, `vcs.read`/`vcs.write`, status bar items                  |
+| [checkstyle](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/checkstyle)         | Runs Checkstyle on save; problems in the editor and Problems view, quick fixes.                                                        | `process:checkstyle`, `on-event:file-saved`, diagnostics, `code-actions` provider       |
+| [license-header](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/license-header) | Reports files without a license header when they open, adds it with a quick fix, scans the project in a task.                          | File events, `code-actions` provider, menus, settings, tasks                            |
+| [ai-completion](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/ai-completion)   | Inline (ghost text) completion from a local Ollama model or OpenAI.                                                                    | `inline-completion` provider, `net:` grants, `secrets`                                  |
+| [mybatis](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/mybatis)               | Navigation between MyBatis mapper interfaces and XML, gutter markers, completion across files.                                         | `definition`, `line-markers` and `completion` providers, `project.read`                 |
+| [csv-editor](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/csv-editor)         | A table editor for CSV/TSV that edits the same text document as the text view, with shared undo.                                       | `customEditors` with a declarative table, `view-provider` export                        |
+| [regex-tester](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/regex-tester)     | A tool window that tests a regular expression against the editor's selection.                                                          | `views` with an `html` body that talks to the code, settings, menus                     |
+| [graphviz](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/graphviz)             | A DOT language with a live preview beside the text; problems come from the rendering page.                                             | Web view custom editor (`web = "web/index.html"`), a language, file icons and templates |
+| [solidity](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/solidity)             | Solidity support: detection, highlighting, structure and folding without a tree-sitter grammar, plus Forge/Hardhat run configurations. | `languages`, `syntax-provider` export (world `plugin-syntax`), `runDetectors`           |
+
+<Note>
+  The graphviz web page is built from `web-src/` into `web/` by `plugins/build.sh` and is not checked in. Run
+  `plugins/build.sh official/graphviz` before installing it from a checkout.
+</Note>
+
+## Small API 1.4 examples
+
+These four are minimal examples of API 1.4 extension points rather than feature plugins. They declare `engines.openidea = "^1.4"`, and the two that run programs ship fake executables you replace with a real tool. Each folder's README says how to try it.
+
+| Plugin                                                                                                | What it shows                                                                                                                | Uses                                                                                    |
+| ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| [blame-annotations](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/blame-annotations) | **Example: Show Blame Annotations** draws Git blame after each line, also from a code lens.                                  | `vcs.blame`, `decorations.set`, `code-lenses` language feature                          |
+| [container-runner](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/container-runner)   | Registers a project run target that wraps commands (a DDEV-style wrapper), opens a keyed terminal, writes an Output channel. | `run-targets.register`, terminal sessions, `output`, window status items                |
+| [test-runner](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/test-runner)             | Dynamic run configurations, a test output parser and gutter run buttons for a toy test format.                               | `run-configurations` and `test-results` exports, `run.start`, `gutter-actions`          |
+| [todo-finder](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/todo-finder)             | **Example: Find TODOs** lists matches in a tool window, also from a search result's context menu.                            | `project.search-text`, `diagnostics.problems`, list views, `searchResults.context` menu |
+
+## Test fixtures
+
+[`crates/ide-plugin/tests/fixtures/`](https://github.com/l0ng-ai/openidea/tree/main/crates/ide-plugin/tests/fixtures) holds small plugins used by the host's integration tests. Several are the shortest working example of one feature: `settings-pages` (multi-page settings with a table), `file-templates`, `indexer` (background indexing, Find Usages and Rename), `symbols`, `diagnostics`, `hover`, `inlay-hints`, `semantic-tokens`, `files-events`, `private-dir`, `web-pty`, `web-log` and `web-content`.
+
+## Build one from a checkout
+
+```sh
+plugins/build.sh official/string-tools
+cargo test --manifest-path plugins/official/string-tools/Cargo.toml
+```
+
+Then install the folder with **Settings › Plugins › Install Plugin from Disk…**, or link it with `openidea-plugin link plugins/official/string-tools`.

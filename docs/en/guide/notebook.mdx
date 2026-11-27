@@ -1,0 +1,94 @@
+---
+title: "Notebooks"
+description: "Open, edit and run Jupyter notebooks (.ipynb) with a local Python kernel."
+---
+
+OpenIDEA opens `.ipynb` files in a notebook editor. You can edit code and Markdown cells, run them on a Python kernel that the IDE starts for you, and save the result back to the same file.
+
+## Requirements
+
+- A Python interpreter with **ipykernel** installed (`pip install ipykernel`). OpenIDEA never installs packages for you. If ipykernel is missing, the editor shows an error with the hint _Install ipykernel in the selected Python environment, then restart the kernel_.
+- A trusted project. Running cells is blocked while the project is in Restricted Mode.
+- Notebooks in nbformat 4. Other versions are refused and the file is left untouched.
+
+## Open a notebook
+
+Open any `.ipynb` file from the Project tool window, Go to File or the command line. It opens in the notebook editor instead of as raw JSON.
+
+The toolbar at the top of the editor has:
+
+| Control                         | What it does                                                                           |
+| ------------------------------- | -------------------------------------------------------------------------------------- |
+| **Run Cell**                    | Runs the selected code cell.                                                           |
+| **Run All**                     | Runs every code cell from top to bottom. Execution stops at the first cell that fails. |
+| **Interrupt Kernel**            | Interrupts the cell that is running.                                                   |
+| **Restart Kernel**              | Restarts the kernel and clears its state.                                              |
+| Interpreter list                | The Python interpreter for this notebook (**Select Python interpreter**).              |
+| **Refresh Python interpreters** | Detects Python environments again.                                                     |
+| Kernel status                   | `starting`, `idle`, `busy` or `dead`.                                                  |
+| **Undo** / **Redo** / **Save**  | Notebook-level undo, redo and save.                                                    |
+| **Reload Notebook from Disk**   | Discards unsaved changes, stops execution and reloads the file.                        |
+
+## Choose the Python interpreter
+
+The interpreter list shows the Python environments OpenIDEA detects, plus the project interpreter. If you don't pick one, the notebook uses the project's Python interpreter, or the first detected environment.
+
+Your choice is remembered per notebook. Change it while no cell is running.
+
+<Tip>
+  For a virtual environment, select its own `python` (for example `.venv/bin/python`). OpenIDEA does not resolve the
+  symlink to the base interpreter, so the kernel runs inside the environment.
+</Tip>
+
+Each open notebook gets its own kernel process. Closing the notebook shuts its kernel down.
+
+## Edit cells
+
+Every cell has a small toolbar:
+
+- **Cell type** list: **Code**, **Markdown** or **Raw**.
+- **Run Cell** (code cells), or **Edit Markdown** / **Preview Markdown** (Markdown cells). Double-click a rendered Markdown cell to edit it.
+- **Move Cell Up**, **Move Cell Down**, **Insert Code Cell Below**, **Delete Cell**.
+
+Use **Add Code Cell** and **Add Markdown Cell** at the end of the notebook to append cells.
+
+Code cells show the execution count (`[3]`) next to the cell toolbar. Raw cells and cell types OpenIDEA doesn't know are shown read-only; their content is kept as it is.
+
+## Code intelligence
+
+Code cells get completion, quick documentation on hover, parameter info and error highlighting from the project's Python language server, as in a `.py` file. The server reads the code cells in order, so names defined in one cell are known in the cells below it, and IPython syntax such as `%matplotlib inline` or `!pip list` isn't reported as an error.
+
+`⌘`-click (macOS) or `Ctrl`-click (Windows/Linux) a name to go to its declaration, in another cell or in a library.
+
+This needs a language server that supports notebooks: **basedpyright** (the default) and **Ruff** do. With other Python servers, code cells only get syntax highlighting.
+
+## Keyboard
+
+| Action                     | Keys                                                                        |
+| -------------------------- | --------------------------------------------------------------------------- |
+| Run the selected code cell | `⇧Enter` or `⌃Enter` (macOS), `Shift+Enter` or `Ctrl+Enter` (Windows/Linux) |
+| Save                       | `⌘S` / `Ctrl+S`                                                             |
+| Undo                       | `⌘Z` / `Ctrl+Z`                                                             |
+| Redo                       | `⌘⇧Z` / `Ctrl+Shift+Z` or `Ctrl+Y`                                          |
+
+These keys are handled by the notebook editor itself and are not part of the keymap settings.
+
+## Outputs
+
+Outputs are written into the notebook file when you save, the same way Jupyter does.
+
+| Output                                     | How it is shown                                                         |
+| ------------------------------------------ | ----------------------------------------------------------------------- |
+| `stdout` / `stderr` streams                | Text with ANSI colours; `stderr` is highlighted.                        |
+| Errors                                     | The traceback.                                                          |
+| `image/png`, `image/jpeg`, `image/svg+xml` | Inline image.                                                           |
+| `text/html`                                | Static HTML in a sandbox: no scripts, no network, only embedded images. |
+| `text/plain`                               | Text.                                                                   |
+| `application/javascript`                   | Shown as source, not run.                                               |
+| Other MIME types                           | A notice; the data is kept in the file.                                 |
+
+## Limits
+
+- Only Python kernels are supported. Kernels for other languages and remote Jupyter servers are not.
+- Interactive widgets (ipywidgets) and JavaScript outputs do not run.
+- Undo and redo are not available while cells are running.

@@ -5,8 +5,11 @@ import { fileURLToPath } from "node:url";
 import process from "node:process";
 
 const host = process.env.TAURI_DEV_HOST;
+const webServer = process.env.OPENIDEA_WEB_SERVER;
 
 export default defineConfig(() => ({
+  // Relative asset URLs keep both desktop bundles and reverse-proxied web deployments subpath-agnostic.
+  base: "./",
   plugins: [react()],
   resolve: {
     alias: [
@@ -25,6 +28,16 @@ export default defineConfig(() => ({
     strictPort: true,
     host: host || false,
     hmr: host ? { protocol: "ws", host } : undefined,
+    ...(webServer
+      ? {
+          proxy: {
+            "/api": {
+              target: webServer,
+              ws: true,
+            },
+          },
+        }
+      : {}),
     watch: {
       ignored: [
         "**/src-tauri/**",
@@ -39,13 +52,13 @@ export default defineConfig(() => ({
   // separate projects with their own dependencies, never part of this bundle.
   optimizeDeps: { entries: ["index.html"] },
   build: {
-    target: "safari16",
+    target: "safari15.4",
     sourcemap: true,
   },
   test: {
     environment: "jsdom",
     globals: false,
     setupFiles: ["./src/test/setup.ts"],
-    include: ["src/**/*.test.{ts,tsx}", "perf/**/*.test.ts", "scripts/**/*.test.ts"],
+    include: ["src/**/*.test.{ts,tsx}", "perf/**/*.test.ts", "evals/**/*.test.ts", "scripts/**/*.test.ts"],
   },
 }));

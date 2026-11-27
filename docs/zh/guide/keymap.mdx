@@ -1,0 +1,90 @@
+---
+title: "键位映射"
+description: "选择快捷键方案，修改、添加和移除快捷键，创建自己的方案，以及在 settings.toml 中编辑绑定。"
+---
+
+按键映射（快捷键方案）把操作对应到键盘和鼠标快捷键。OpenIDEA 中的每个命令都是一个有固定 id 的操作，所以都可以绑定快捷键。
+
+## 内置方案
+
+| 方案                  | id                 | 说明                                                                                   |
+| --------------------- | ------------------ | -------------------------------------------------------------------------------------- |
+| **macOS**             | `intellij-macos`   | IntelliJ IDEA 的 macOS 方案，macOS 上的默认方案。                                      |
+| **Windows**           | `intellij-windows` | IntelliJ IDEA 的 Windows 方案，Windows 和 Linux 上的默认方案。                         |
+| **VS Code (macOS)**   | `vscode-macos`     | Visual Studio Code 的默认快捷键。                                                      |
+| **VS Code (Windows)** | `vscode-windows`   | 在 macOS 版 VS Code 方案基础上把 `⌘` 换成 `Ctrl`，再加上 VS Code 在 Windows 上的差异。 |
+| **Eclipse (macOS)**   | `eclipse-macos`    | IntelliJ IDEA 的 macOS 版 Eclipse 方案。                                               |
+| **Eclipse**           | `eclipse-windows`  | IntelliJ IDEA 的 Eclipse 方案。                                                        |
+
+默认快捷键见[快捷键表](/zh/reference/shortcuts)。在 IDE 中，**帮助 › 快捷键参考** 会列出当前方案中所有已绑定的操作，可以按操作名称、操作 id 或快捷键筛选。
+
+## 切换方案
+
+打开 **设置 › 按键映射**，在 **按键映射：** 中选择。也可以在欢迎屏幕的 **自定义** › **按键映射** 中切换，或使用 **视图 › 快速切换方案…** › **按键映射**。
+
+如果你在某个内置方案上改过快捷键，切换到另一个内置方案时，这些修改会一起带过去。
+
+## 修改快捷键
+
+在 **设置 › 按键映射** 中找到操作：
+
+- 在 **搜索操作** 中输入名称筛选；或
+- 点击 **按快捷键查找操作**，然后按下快捷键，查看哪些操作在使用它。
+
+操作分为 **主菜单**（文件到帮助）、**编辑器操作**、**工具窗口**、**其他** 和 **插件** 几组。
+
+右键点击某个操作，或选中后按 Enter、双击，打开它的菜单：
+
+- **添加键盘快捷键**：在对话框中按下按键。勾选 **第二次击键：** 可以设置两段式组合键，例如 `⌘K ⌘C`。对话框会列出冲突；确认时选择 **移除** 会把该快捷键从其他操作上去掉，选择 **保留** 则两者都保留。
+- **添加鼠标快捷键**：按住 Ctrl、Alt 或 Command 点击，或按鼠标侧键。
+- **移除** 该操作的某个快捷键。
+- **重置快捷键**：把该操作恢复为方案默认值。
+
+点击 **应用** 或 **确定** 后保存。
+
+<Tip>
+  更快的方法：打开 **查找操作**（`⇧⌘A` / `Ctrl+Shift+A`），选中某个操作后按 `⌥↵` / `Alt+Enter`，直接为它分配快捷键。
+</Tip>
+
+## 自定义方案
+
+**按键映射：** 旁边的齿轮按钮提供：
+
+- **复制…**：以新名称复制当前方案。你的方案以内置方案为父方案，只保存差异部分。
+- **重命名…** 和 **删除**：用于你自己创建的方案。
+- **恢复默认值**：撤销对当前方案的全部修改。
+
+## 在 settings.toml 中配置
+
+按键映射属于全局设置，保存在 `settings.toml` 中（参见[设置项](/zh/reference/settings)）：
+
+```toml
+keymap = "intellij-macos"
+
+[keymapOverrides]
+"navigate.gotoFile" = ["Meta+P"]
+"code.reformat" = ["Meta+Alt+L", "Meta+Shift+F"]
+"vcs.push" = []
+```
+
+- `keymap`：内置方案的 id，或你自己创建的方案的 id。
+- `keymapOverrides`：在内置方案之上，为操作 id 指定快捷键。空列表表示解除绑定。
+- `customKeymaps.<id>`：你创建的方案，包含 `name`、`parent`（内置方案 id）和它自己的 `overrides`。
+
+快捷键写法：
+
+| 写法                     | 含义                                                                                |
+| ------------------------ | ----------------------------------------------------------------------------------- |
+| `Meta+Shift+O`           | 修饰键 `Meta`、`Ctrl`、`Alt`、`Shift` 用 `+` 连接一个按键。macOS 上 `Meta` 即 `⌘`。 |
+| `Meta+K Meta+C`          | 组合键：多次击键用空格分隔。                                                        |
+| `Shift Shift`            | 连按两下同一个修饰键。                                                              |
+| `Alt Alt+Up`             | 连按两下修饰键并按住，再按一个键。                                                  |
+| `Button4`、`Alt+Button1` | 鼠标按键，从 1 开始编号：`Button1` 是左键，`Button4` 和 `Button5` 是侧键。          |
+
+按键按物理位置匹配，所以在用 Option 输入符号的 macOS 键盘布局下，`⌥` 组合键也能正常使用。操作 id 可以在内置方案文件中查到，例如 [`intellij-macos.ts`](https://github.com/l0ng-ai/openidea/blob/main/src/platform/keymaps/intellij-macos.ts)。
+
+## 快捷键不起作用
+
+有些按键在到达 OpenIDEA 之前就被操作系统或其他应用截获了，例如 macOS 的 `⌃⌘D`（查询词典），或 Windows 上显卡叠加层的热键。可以修改冲突的系统或应用快捷键，或者在 OpenIDEA 中换一个快捷键。
+
+Vim 模式也可能在编辑器中占用一些按键，参见[Vim 模式](/zh/guide/vim)。
