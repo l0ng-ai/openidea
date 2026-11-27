@@ -73,6 +73,7 @@ pub struct Connection {
     idle_policy: Option<RemoteIdlePolicy>,
     pub target: RemoteTarget,
     pub root: String,
+    pub display_name: String,
     pub host: String,
     /// The server's `std::env::consts::OS`: where the project's commands run.
     pub os: String,
@@ -794,6 +795,7 @@ pub async fn remote_connect(
         idle_policy: info.idle_policy,
         target: target.clone(),
         root: root.clone(),
+        display_name: project.display_name.clone(),
         host: host.clone(),
         os: info.os.clone(),
         server_version: info.version.clone(),
@@ -1554,6 +1556,7 @@ mod tests {
             idle_policy: None,
             target,
             root: root.into(),
+            display_name: "app".into(),
             host: "host".into(),
             os: "linux".into(),
             server_version: env!("CARGO_PKG_VERSION").into(),

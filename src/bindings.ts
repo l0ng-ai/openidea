@@ -2437,7 +2437,7 @@ export const commands = {
 	windowGroupClose: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_close", { label })),
 	/**  Closes several project tabs one by one (each asks about its own unsaved changes), then selects `keep`. */
 	windowGroupCloseTabs: (keep: string, labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_close_tabs", { keep, labels })),
-	windowGroupCurrent: () => typedError<WindowTab[], IdeError>(__TAURI_INVOKE("window_group_current")),
+	windowGroupCurrent: () => typedError<WindowTab_Serialize[], IdeError>(__TAURI_INVOKE("window_group_current")),
 	windowGroupDetach: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_detach", { label })),
 	/**
 	 *  Adds window `label` to this window's group as a new project tab and selects it. Unlike
@@ -3728,6 +3728,8 @@ export type AppearanceSettings_Deserialize = {
 	smoothScrolling?: boolean,
 	fullPathInTitle?: boolean,
 	projectColorsInToolbar?: boolean,
+	/**  Strength of the project colour tint in the window header, in percent (10–70). */
+	projectColorStrength?: number,
 	dndWithAltOnly?: boolean,
 	menuIcons?: boolean,
 	/**  `hamburger` | `merged` | `toolbar` (a separate row): main menu presentation in the frameless title bar. */
@@ -3805,6 +3807,8 @@ export type AppearanceSettings_Serialize = {
 	smoothScrolling: boolean,
 	fullPathInTitle: boolean,
 	projectColorsInToolbar: boolean,
+	/**  Strength of the project colour tint in the window header, in percent (10–70). */
+	projectColorStrength: number,
 	dndWithAltOnly: boolean,
 	menuIcons: boolean,
 	/**  `hamburger` | `merged` | `toolbar` (a separate row): main menu presentation in the frameless title bar. */
@@ -15150,11 +15154,22 @@ export type WindowRequest_Serialize =
 /**  Open and acknowledge validation by the shared content editor. */
 ({ kind: "contentTab"; tab: ContentTab }) & { args?: never; config?: never; cwd?: never; debug?: never; env?: never; id?: never; key?: never; operation?: never; program?: never; title?: never } | ({ kind: "run"; operation: string; config: RunConfig_Serialize; debug: boolean }) & { args?: never; cwd?: never; env?: never; id?: never; key?: never; program?: never; tab?: never; title?: never } | ({ kind: "terminal"; operation: string; key: string; title: string; program: IpcPath; args: string[]; env: { [key in string]: string }; cwd: IpcPath }) & { config?: never; debug?: never; id?: never; tab?: never };
 
-export type WindowTab = {
+export type WindowTab = WindowTab_Serialize | WindowTab_Deserialize;
+
+export type WindowTab_Deserialize = {
 	label: string,
 	name: string,
 	root: IpcPath | null,
 	current: boolean,
+	remoteHost?: string | null,
+};
+
+export type WindowTab_Serialize = {
+	label: string,
+	name: string,
+	root: IpcPath | null,
+	current: boolean,
+	remoteHost?: string | null,
 };
 
 /**  A workbench event delivered to plugins. */

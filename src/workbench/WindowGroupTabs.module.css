@@ -64,6 +64,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: var(--space-1-5);
   flex: 1;
   min-width: 0;
   height: 30px;
@@ -74,7 +75,30 @@
   font: inherit;
   cursor: default;
 }
-.tab span {
+.name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tab:has(.remoteChip) .name {
+  flex: 0 0 auto;
+  max-width: 55%;
+}
+.remoteChip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--fg-secondary);
+  --icon-color: var(--fg-muted);
+  font-size: var(--fs-tiny);
+  line-height: 15px;
+}
+.remoteHost {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
