@@ -50,6 +50,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("ignore", include_str!("../../../languages/ignore.toml")),
     ("ini", include_str!("../../../languages/ini.toml")),
     ("java", include_str!("../../../languages/java.toml")),
+    ("jinja", include_str!("../../../languages/jinja.toml")),
     ("javascript", include_str!("../../../languages/javascript.toml")),
     ("javascriptreact", include_str!("../../../languages/javascriptreact.toml")),
     ("json", include_str!("../../../languages/json.toml")),
@@ -1009,6 +1010,15 @@ mod tests {
         assert_eq!(detect("site/templates/index.html"), "html");
         assert_eq!(detect("page.djhtml"), "django-html");
         assert!(reg.is_framework_marker(&root.join("src/manage.py")));
+    }
+
+    #[test]
+    fn jinja_extensions_are_jinja_templates() {
+        let reg = reg();
+        let detect = |file: &str| reg.detect(Path::new(file), None).as_str().to_owned();
+        assert_eq!(detect("templates/base.jinja"), "jinja");
+        assert_eq!(detect("templates/page.html.jinja2"), "jinja");
+        assert_eq!(detect("roles/web/templates/nginx.conf.J2"), "jinja");
     }
 
     #[test]

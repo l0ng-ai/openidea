@@ -610,6 +610,7 @@ const LINKED_TAG_LANGUAGES = new Set([
   "vue",
   "jsp",
   "django-html",
+  "jinja",
   "astro",
   "typescriptreact",
   "javascriptreact",

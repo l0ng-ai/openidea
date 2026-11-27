@@ -169,6 +169,10 @@ With **Django Template LSP** (`djlsp`, installed from **Settings › Languages &
 
 An HTML file elsewhere with Django tags shows a banner that switches it to Django Template or keeps it as HTML; either choice is the file's **Override File Type**.
 
+### Jinja2 templates
+
+`.jinja`, `.jinja2` and `.j2` files open as **Jinja2 Template** files: tags, expressions, filters and comments are highlighted on top of the HTML, block statements (`{% block %}`, `{% if %}`, `{% for %}`, `{% macro %}` and the others) fold and indent their content, and Jinja's tags, filters and tests complete. Typing `%` between braces makes `{% %}`. **Comment with Line Comment** and **Comment with Block Comment** use `{# … #}`. The HTML language server and Emmet work in the markup between the tags, and a Python debug configuration stops at breakpoints in them. To open another file as a Jinja2 template, use its **Override File Type**.
+
 ## Limitations
 
 - Only one type checker runs at a time. Ruff runs only in projects with a Ruff configuration.

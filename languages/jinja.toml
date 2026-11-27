@@ -1,0 +1,16 @@
+id = "jinja"
+name = "Jinja2 Template"
+extensions = ["jinja", "jinja2", "j2"]
+block-comment = ["{#", "#}"]
+indent = { tab-size = 2, insert-spaces = true }
+ui-mode = "Jinja"
+tree-sitter = "html"
+
+# The markup between the template tags: completion and hover of tags and
+# attributes. No formatter: HTML formatters reflow template tags.
+[[language-servers]]
+name = "vscode-html-language-server"
+command = "vscode-html-language-server"
+args = ["--stdio"]
+initialization-options = { embeddedLanguages = { css = true, javascript = true } }
+install-hint = "npm i -g vscode-langservers-extracted"

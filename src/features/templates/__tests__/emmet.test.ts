@@ -25,6 +25,8 @@ describe("emmet context", () => {
     expect(syntaxAt("django-html", "{% if user")).toBeNull();
     expect(syntaxAt("django-html", "{{ value|date")).toBeNull();
     expect(syntaxAt("django-html", "{# note")).toBeNull();
+    expect(syntaxAt("jinja", "{% block content %}\n  ul>li")).toEqual({ type: "markup", syntax: "html" });
+    expect(syntaxAt("jinja", "{{ value|upper")).toBeNull();
     expect(syntaxAt("django-html", '<a href="{% url "home" %}">x</a>\nnav')).toEqual({
       type: "markup",
       syntax: "html",
