@@ -31,6 +31,8 @@ A light bulb appears on the caret line when something can be done there. **Show 
 
 From the submenu of a problem's entry (`→`) you can also open the inspection's settings, disable the inspection, or change its severity. These changes are written to the inspection profile in effect.
 
+The submenu's **Suppressed rules** lists the codes the profile in effect turns off for the inspection: uncheck an entry to remove that rule, and **Add rule…** suppresses a code before it has ever reported (for example Ruff's `UP045`). Rules are written to the inspection profile in effect too; the editor, the Problems tool window and Inspect Code no longer show problems of those codes.
+
 ## Inspection profiles
 
 **Settings › Editor › Inspections** lists every inspection, grouped by language or area, with a checkbox to turn it off and a severity: **Error**, **Warning**, **Weak Warning** and others. Language servers appear here once they have reported something, and their diagnostic codes appear as separate entries as they are seen.

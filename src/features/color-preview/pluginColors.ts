@@ -4,14 +4,18 @@ import { ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
 import { onNavigationProvidersChanged, shownAgain, type EditorDocContext } from "@/editor/api";
 import { pluginVisuals } from "@/editor/lsp/pluginVisuals";
 import { call, commands, type ColorInfo } from "@/platform/ipc";
-import { ProviderSwatch, replaceRange } from "./providerSwatch";
+import { ProviderSwatch, mapColors, replaceRange } from "./providerSwatch";
 import styles from "./ColorPreview.module.css";
 const setColors = StateEffect.define<[string, ColorInfo][]>();
 const colors = StateField.define<[string, ColorInfo][]>({
   create: () => [],
   update(v, tr) {
     for (const e of tr.effects) if (e.is(setColors)) return e.value;
-    return tr.docChanged ? [] : v;
+    if (!tr.docChanged) return v;
+    return mapColors(
+      v.map(([provider, color]) => ({ range: color.range, provider, color })),
+      tr,
+    ).map(({ range, provider, color }) => [provider, { ...color, range }]);
   },
 });
 export function pluginColorPreview(ctx: EditorDocContext): Extension {

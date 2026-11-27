@@ -7,6 +7,8 @@ export function followMarkdownSource(path: string, root: HTMLElement, offsetForL
   let lastTime = 0;
   let position = root.scrollTop;
   let applied = position;
+  let paused = false;
+  let navigated = false;
   const target = () => {
     const state = useLiveMarkdown.getState()[path];
     const max = Math.max(0, root.scrollHeight - root.clientHeight);
@@ -17,6 +19,7 @@ export function followMarkdownSource(path: string, root: HTMLElement, offsetForL
     frame = 0;
   };
   const align = () => {
+    if (paused) return;
     stop();
     root.scrollTop = target();
   };
@@ -38,6 +41,10 @@ export function followMarkdownSource(path: string, root: HTMLElement, offsetForL
   const off = useLiveMarkdown.subscribe((next, prev) => {
     const a = next[path],
       b = prev[path];
+    if (paused) {
+      if (a?.caretSeq !== b?.caretSeq) navigated = true;
+      return;
+    }
     if (!a || (a.topLine === b?.topLine && a.scrollSeq === b?.scrollSeq && a.sourceAtEnd === b?.sourceAtEnd)) return;
     if (reducedMotion()) return align();
     if (frame) return;
@@ -49,6 +56,17 @@ export function followMarkdownSource(path: string, root: HTMLElement, offsetForL
   root.addEventListener("touchstart", stop, { passive: true });
   return {
     align,
+    pause() {
+      paused = true;
+      stop();
+    },
+    resume() {
+      paused = false;
+      if (navigated) {
+        navigated = false;
+        align();
+      }
+    },
     dispose() {
       stop();
       off();

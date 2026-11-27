@@ -278,6 +278,8 @@ describe("inspection controls in ⌥↵ (issue #42)", () => {
     expect(withMenu!.submenu?.map((s) => ("label" in s ? s.label : "-"))).toEqual([
       "Edit inspection profile setting",
       "Disable inspection",
+      "-",
+      "Add rule…",
     ]);
     expect(plain!.submenu).toBeUndefined();
     setFileDiagnostics("/p/one.py", "ruff", []);
@@ -288,7 +290,7 @@ describe("inspection controls in ⌥↵ (issue #42)", () => {
     const view = editorAt("/p/two.py");
     const items = withInspectionControls(view, []);
     expect(labels(items)).toEqual(["Inspection 'ruff F401' options"]);
-    expect(items[0]!.submenu).toHaveLength(2);
+    expect(items[0]!.submenu).toHaveLength(4);
     setFileDiagnostics("/p/two.py", "ruff", []);
     expect(withInspectionControls(view, [])).toEqual([]);
   });
@@ -306,6 +308,8 @@ describe("inspection controls in ⌥↵ (issue #42)", () => {
     expect(options!.submenu?.map((s) => ("label" in s ? s.label : "-"))).toEqual([
       "Edit inspection profile setting",
       "Disable inspection",
+      "-",
+      "Add rule…",
       "Suppress for statement",
     ]);
     setFileDiagnostics("/p/three.py", "ruff", []);
@@ -326,7 +330,7 @@ describe("inspection controls in ⌥↵ (issue #42)", () => {
       expect(items.map((i) => i.id)).toEqual(["lsp", "local", "refactor"]);
       expect(items.slice(0, 2).map((i) => i.icon)).toEqual(Array(2).fill(severity === "error" ? "bulb-fix" : "bulb"));
       const controls = withInspectionControls(view, items);
-      expect(controls.slice(0, 2).every((i) => i.submenu?.length === 2)).toBe(true);
+      expect(controls.slice(0, 2).every((i) => i.submenu?.length === 4)).toBe(true);
       expect(controls[2]!.submenu).toBeUndefined();
       setFileDiagnostics(path, "ruff", []);
     },

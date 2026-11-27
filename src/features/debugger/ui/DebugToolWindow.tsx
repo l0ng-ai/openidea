@@ -481,7 +481,8 @@ function FramesPane({ session }: { session: DebugSession }) {
           <div className={styles.note}>
             {session.status === "terminated"
               ? tx("Finished")
-              : (remoteWaitingNote(rootOf(session).runConfig, reconnecting) ?? tx("Running…"))}
+              : (remoteWaitingNote(rootOf(session).runConfig, reconnecting, session.status === "starting") ??
+                tx("Running…"))}
           </div>
         )}
         {stopNote(session) && <div className={styles.note}>{stopNote(session)}</div>}

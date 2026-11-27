@@ -87,6 +87,24 @@ Outputs are written into the notebook file when you save, the same way Jupyter d
 | `application/javascript`                   | Shown as source, not run.                                               |
 | Other MIME types                           | A notice; the data is kept in the file.                                 |
 
+## Convert to a Python script
+
+Right-click a `.ipynb` file in the Project tool window and choose **Convert to Python File** (or run it from Find Action while the notebook is open). OpenIDEA writes `<name>.py` next to the notebook (`<name>-1.py` if that name is taken) and opens it. The notebook itself is not changed; an open notebook is converted with its unsaved edits.
+
+The script uses `# %%` cell markers, the format VS Code and Jupytext read:
+
+- Code cells are copied as they are. IPython magics and shell lines (`%matplotlib inline`, `!pip list`) are commented out, and so is a whole cell that starts with a cell magic such as `%%bash`, so the script runs with plain `python`.
+- Markdown cells become `# %% [markdown]` followed by commented lines; raw cells become `# %% [raw]`.
+- Outputs are not written to the script.
+
+**Convert to Jupyter Notebook** on a `.py` file does the reverse: it writes `<name>.ipynb` with a Python 3 kernel and opens it. Each `# %%` (or `#%%`) line starts a cell, `[markdown]` and `[raw]` cells lose their `# ` prefix, and a file without markers becomes a single code cell. Lines commented out on export stay comments.
+
+## Jupyter Variables
+
+**View › Tool Windows › Jupyter Variables** (or **Jupyter Variables** in Find Action) lists the variables of the last active notebook's kernel: name, type and a short value. It refreshes when a run finishes, after a kernel restart and when you switch to another notebook. Names starting with `_`, modules and the names IPython defines itself are not shown.
+
+The list is read from the kernel without a visible run: it adds no output, history entry or execution count. It never starts a kernel; run a cell first.
+
 ## Limits
 
 - Only Python kernels are supported. Kernels for other languages and remote Jupyter servers are not.

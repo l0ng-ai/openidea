@@ -139,6 +139,8 @@ pub struct StartOptions {
     pub python_paths: Vec<PathBuf>,
     /// Where the Ruby test reporter is installed (see [`crate::ruby_reporter`]); Ruby test runs load it.
     pub ruby_reporter: Option<PathBuf>,
+    /// The Plots tool window's matplotlib backend (see [`crate::plots`]); Python runs use it.
+    pub plots: Option<crate::plots::Plots>,
 }
 
 #[derive(Default)]
@@ -426,8 +428,11 @@ impl ProcessManager {
             return Err(IdeError::invalid("input cannot be redirected from a file when emulating a terminal"));
         }
         let mut env = launch_env(root, config)?;
-        if matches!(config.kind.as_str(), "python" | "pytest" | "unittest" | "django-test") {
+        if matches!(config.kind.as_str(), "python" | "pytest" | "unittest" | "doctest" | "django-test") {
             crate::python_path::extend(&mut env.vars, &options.python_paths, !env.clear)?;
+            if let Some(plots) = &options.plots {
+                crate::plots::add(&mut env.vars, plots, !env.clear)?;
+            }
         }
         if let Some(dir) = options.ruby_reporter.as_deref().filter(|_| crate::ruby_reporter::applies(config)) {
             crate::ruby_preload::add(&mut env.vars, dir, crate::ruby_reporter::FEATURE, !env.clear);
@@ -1087,7 +1092,7 @@ fn launch_env(root: &Path, config: &RunConfig) -> IdeResult<LaunchEnv> {
         let paths: Vec<PathBuf> = extras.env_files.iter().map(|f| resolve_cwd(root, Some(Path::new(f)))).collect();
         crate::envfile::load(&paths, &base).map_err(|e| IdeError::not_found(format!("cannot read .env file: {e}")))?
     };
-    if matches!(config.kind.as_str(), "python" | "pytest" | "unittest" | "django-test")
+    if matches!(config.kind.as_str(), "python" | "pytest" | "unittest" | "doctest" | "django-test")
         && !config.env.contains_key("PYTHONUNBUFFERED")
         && !vars.contains_key("PYTHONUNBUFFERED")
     {

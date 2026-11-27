@@ -34,6 +34,8 @@ export interface TestNavDeps {
   /** Create New Test… in `directory` (file templates), or a Rust test module in the file itself. */
   createTest: (req: { directory: string; name: string; extension: string; subject: string }) => void;
   createRustTestModule: () => void;
+  /** Create Test for a Python module: pytest stubs added to `existing` (its test file), else to a new file at `path`. */
+  createPythonTest?: (req: { existing: string | null; path: string }) => void;
   /** Name of the top-level class, interface, enum or object around the caret, if any. */
   classAtCaret?: () => Promise<string | null>;
 }
@@ -100,7 +102,7 @@ export async function gotoTestOrSubject(path: string, text: string, deps: TestNa
   const roots = deps.roots();
   const root = deps.projectRoot();
   const name = await subjectFileName(path, deps);
-  const { stem, ext } = splitName(name);
+  const { stem } = splitName(name);
   const rank = (paths: string[]) => rankCandidates(path, paths, belowRoot(root, roots));
 
   if (isTestSide(path, roots)) {
@@ -118,7 +120,7 @@ export async function gotoTestOrSubject(path: string, text: string, deps: TestNa
     );
   }
 
-  const tests = rank((await findAll(testNamesFor(name), path, deps)).filter((p) => isTestSide(p, roots)));
+  const tests = await testsOf(path, name, deps);
   const items: ChooserItem[] = tests.map((p) => ({
     kind: "target",
     label: basename(p),
@@ -135,18 +137,41 @@ export async function gotoTestOrSubject(path: string, text: string, deps: TestNa
       run: () => deps.open(path, inFile),
     });
   if (items.length === 1) return void (await items[0]!.run());
-  const create: ChooserItem = {
+  deps.choose(tx`Choose Test for ${stem} (${items.length} found)`, [...items, createItem(path, name, tests, deps)]);
+}
+
+/** Tests of the subject file `path`, best first (none on the test side). */
+async function testsOf(path: string, name: string, deps: TestNavDeps): Promise<string[]> {
+  const roots = deps.roots();
+  const found = (await findAll(testNamesFor(name), path, deps)).filter((p) => isTestSide(p, roots));
+  return rankCandidates(path, found, belowRoot(deps.projectRoot(), roots));
+}
+
+function createItem(path: string, name: string, tests: readonly string[], deps: TestNavDeps): ChooserItem {
+  const roots = deps.roots();
+  const root = deps.projectRoot();
+  const { ext } = splitName(name);
+  const directory = testDirectoryFor(path, root, roots);
+  return {
     kind: "create",
     label: "Create New Test…",
     run: () =>
       path.endsWith(".rs")
         ? deps.createRustTestModule()
-        : deps.createTest({
-            directory: testDirectoryFor(path, root, roots),
-            name: splitName(newTestName(name)).stem,
-            extension: ext.replace(/^\./, ""),
-            subject: name,
-          }),
+        : path.endsWith(".py") && deps.createPythonTest
+          ? deps.createPythonTest({ existing: tests[0] ?? null, path: `${directory}/${newTestName(name)}` })
+          : deps.createTest({
+              directory,
+              name: splitName(newTestName(name)).stem,
+              extension: ext.replace(/^\./, ""),
+              subject: name,
+            }),
   };
-  deps.choose(tx`Choose Test for ${stem} (${items.length} found)`, [...items, create]);
+}
+
+/** Create Test… on a subject file: what "Create New Test…" in the Test chooser does, without the chooser. */
+export async function createTestFor(path: string, deps: TestNavDeps): Promise<void> {
+  if (isTestSide(path, deps.roots())) return deps.hint("This is a test file");
+  const name = await subjectFileName(path, deps);
+  await createItem(path, name, await testsOf(path, name, deps), deps).run();
 }

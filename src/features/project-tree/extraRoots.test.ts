@@ -14,7 +14,8 @@ vi.mock("@/editor/refactor", () => ({
 }));
 
 const { MemoryFs, setProjectFsForTests } = await import("./fs");
-const { DEFAULT_TREE_OPTIONS, buildModel, visibleInfo, withExtraRoots } = await import("./model");
+const { DEFAULT_TREE_OPTIONS, buildModel, isLibKey, pathOfKey, visibleInfo, withExtraRoots } = await import("./model");
+const { menuGroupContext } = await import("./contextMenu");
 const { currentModel, initProjectTree, loadDir, revealPath, useProjectTree } = await import("./store");
 const { beginRename, commitEditing, deleteSelection } = await import("./operations");
 
@@ -270,5 +271,122 @@ describe("library reveal root selection", () => {
 
     expect(revealPath("jar:file:///C:/m2/a.jar!/x/A.class")).toBe(true);
     expect(useProjectTree.getState().revealRequest?.path).toBe("C:/m2/a.jar!/x/A.class");
+  });
+});
+
+describe("withExtraRoots file leaves", () => {
+  const listings = new Map([
+    ["/p", [entry("/p/App.csproj"), entry("/p/src", "dir")]],
+    ["/p/src", [entry("/p/src/App.csproj"), entry("/p/src/lib.cs")]],
+  ]);
+  const base = () => buildModel({ path: "/p", name: "proj" }, listings, DEFAULT_TREE_OPTIONS);
+
+  it("shows a contributed file leaf beside the same file in its folder", () => {
+    const m = withExtraRoots(
+      base(),
+      [
+        {
+          id: "dotnetSolution:/p/App.sln",
+          label: "Solution 'App'",
+          icon: "project-dotnet",
+          beforeProject: true,
+          children: [{ label: "App", icon: "project-dotnet", path: "/p/src/App.csproj", file: true }],
+        },
+      ],
+      listings,
+      DEFAULT_TREE_OPTIONS,
+    );
+    // beforeProject lists the group above the project, like a gradle module group.
+    expect(m.roots.map((r) => [r.label, r.root, r.group])).toEqual([
+      ["Solution 'App'", true, true],
+      ["proj", true, undefined],
+    ]);
+    const leaf = m.children.get(m.roots[0]!.key)![0]!;
+    expect([leaf.label, leaf.dir, leaf.path, leaf.entry]).toEqual(["App", false, "/p/src/App.csproj", null]);
+    // Namespaced key: the same file shows in its folder and `pathOfKey` resolves the real path.
+    expect(isLibKey(leaf.key)).toBe(true);
+    expect(pathOfKey(leaf.key)).toBe("/p/src/App.csproj");
+    const inFolder = m.byKey.get("/p/src/App.csproj")!;
+    expect(inFolder.dir).toBe(false);
+    expect(leaf.key).not.toBe(inFolder.key);
+    expect(m.children.get("/p/src")!.map((n) => n.label)).toContain("App.csproj");
+    expect(m.keyOfPath.get("/p/src/App.csproj")).toBe("/p/src/App.csproj");
+  });
+
+  it("shows a standalone file leaf as a root of its own", () => {
+    const m = withExtraRoots(
+      base(),
+      [
+        {
+          id: "dotnetProject:/p/App.csproj",
+          label: "App",
+          icon: "project-dotnet",
+          path: "/p/App.csproj",
+          file: true,
+        },
+      ],
+      listings,
+      DEFAULT_TREE_OPTIONS,
+    );
+    const leaf = m.roots[1]!;
+    expect([leaf.label, leaf.dir, leaf.root, leaf.group]).toEqual(["App", false, true, undefined]);
+    expect(pathOfKey(leaf.key)).toBe("/p/App.csproj");
+    expect(m.children.get("/p")!.map((n) => n.label)).toContain("App.csproj");
+    expect(m.keyOfPath.get("/p/App.csproj")).toBe("/p/App.csproj");
+  });
+
+  it("resolves a virtual leaf's menu context like a real file node", () => {
+    const m = withExtraRoots(
+      base(),
+      [
+        {
+          id: "dotnetSolution:/p/App.sln",
+          label: "Solution 'App'",
+          icon: "project-dotnet",
+          children: [{ label: "App", icon: "project-dotnet", path: "/p/src/App.csproj", file: true }],
+        },
+      ],
+      listings,
+      DEFAULT_TREE_OPTIONS,
+    );
+    const leaf = m.children.get(m.roots[1]!.key)![0]!;
+    const inFolder = m.byKey.get("/p/src/App.csproj")!;
+    // What contributed menu groups (run/debug, build/restore/clean) see.
+    expect(menuGroupContext([leaf])).toEqual({ paths: ["/p/src/App.csproj"], dirs: [false] });
+    expect(menuGroupContext([leaf])).toEqual(menuGroupContext([inFolder]));
+  });
+});
+
+describe("project view with a solution group of file leaves", () => {
+  let unregister = () => {};
+  beforeEach(() => {
+    localStorage.clear();
+    const fs = new MemoryFs({ "/p/App.sln": "x", "/p/src/App.csproj": "x", "/p/src/Program.cs": "x" }, "/p");
+    setProjectFsForTests(fs, "/p");
+    initProjectTree("/p", "proj");
+    unregister = registerProjectViewRoot({
+      id: "dotnetSolution:/p/App.sln",
+      label: "Solution 'App'",
+      icon: "project-dotnet",
+      beforeProject: true,
+      children: [{ label: "App", icon: "project-dotnet", path: "/p/src/App.csproj", file: true }],
+    });
+  });
+  afterEach(() => {
+    unregister();
+    setProjectFsForTests(null);
+    initProjectTree(null);
+  });
+
+  it("lists the solution above the project with its leaf resolving like the real file", async () => {
+    await loadDir("/p");
+    await loadDir("/p/src");
+    const model = currentModel();
+    expect(model.roots.map((r) => r.label)).toEqual(["Solution 'App'", "proj"]);
+    const leaf = model.children.get(model.roots[0]!.key)![0]!;
+    expect([leaf.dir, leaf.path]).toEqual([false, "/p/src/App.csproj"]);
+    expect(pathOfKey(leaf.key)).toBe("/p/src/App.csproj");
+    expect(menuGroupContext([leaf])).toEqual(menuGroupContext([model.byKey.get("/p/src/App.csproj")!]));
+    expect(model.keyOfPath.get("/p/src/App.csproj")).toBe("/p/src/App.csproj");
   });
 });
