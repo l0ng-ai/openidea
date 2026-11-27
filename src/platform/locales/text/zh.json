@@ -4339,6 +4339,8 @@
   "Not imported:": "不导入：",
   "Current color scheme": "当前配色方案",
   "Current keymap": "当前按键映射",
+  "{imported} imported, {skipped} skipped": "已导入 {imported} 个，跳过 {skipped} 个",
+  "Unsupported template expressions (kept as text, not evaluated): {unsupported}.": "不支持的模板表达式（保留为文本，不执行）：{unsupported}。",
   "Code Style options other than Tabs and Indents": "制表符和缩进以外的代码样式选项",
   "No settings OpenIDEA can import were found": "没有找到 OpenIDEA 可以导入的设置",
   "Rename Project": "重命名项目",

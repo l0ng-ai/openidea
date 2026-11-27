@@ -3748,6 +3748,8 @@
   "Not imported:": "不匯入：",
   "Current color scheme": "目前配色方案",
   "Current keymap": "目前按鍵對映",
+  "{imported} imported, {skipped} skipped": "已匯入 {imported} 個，略過 {skipped} 個",
+  "Unsupported template expressions (kept as text, not evaluated): {unsupported}.": "不支援的範本運算式（保留為文字，不執行）：{unsupported}。",
   "Code Style options other than Tabs and Indents": "製表符和縮排以外的程式碼樣式選項",
   "No settings OpenIDEA can import were found": "沒有找到 OpenIDEA 可以匯入的設定",
   "Rename Project": "重新命名專案",
