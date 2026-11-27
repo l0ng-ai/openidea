@@ -1559,7 +1559,10 @@ export const commands = {
 	redoWorkspaceEdit: (id: number) => typedError<null, IdeError>(__TAURI_INVOKE("redo_workspace_edit", { id })),
 	/**  Whether the file move `id` can still be undone. */
 	refactorCanUndoFileMove: (id: number) => typedError<boolean, IdeError>(__TAURI_INVOKE("refactor_can_undo_file_move", { id })),
-	/**  `workspace/willRenameFiles` on every interested server (before the move). Cancellable. */
+	/**
+	 *  `workspace/willRenameFiles` on every interested server (before the move), plus the
+	 *  Python import updates the IDE makes itself. Cancellable.
+	 */
 	refactorFileMoveEdits: (request: RequestId, moves: FileMove[]) => typedError<FileRenameEdits, IdeError>(__TAURI_INVOKE("refactor_file_move_edits", { request, moves })),
 	/**
 	 *  "Search in comments and strings": textual occurrences of the moved files'
