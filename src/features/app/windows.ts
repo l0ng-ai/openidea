@@ -484,10 +484,12 @@ export function windowActions(): Action[] {
         const label = typeof arg === "string" ? arg : tabs.find((tab) => tab.current)?.label;
         const tab = tabs.find((t) => t.label === label);
         if (!tab?.root) return;
+        const remote = parseRemoteLocation(tab.root);
+        const colorName = remote ? basename(remote.path) || tab.name : tab.name;
         const rect = document.querySelector(`[data-project-tab="${CSS.escape(tab.label)}"]`)?.getBoundingClientRect();
         openTabColorPicker({
           root: tab.root,
-          name: tab.name,
+          name: colorName,
           x: rect ? rect.left : window.innerWidth / 2 - 110,
           y: rect ? rect.bottom : 64,
         });

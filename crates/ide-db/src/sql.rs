@@ -236,7 +236,8 @@ pub fn table_comment(driver: DbDriver, schema: &str, table: &str) -> Option<Stri
     }
 }
 
-/// Rows: `index name, unique (0/1), column` (one row per indexed column, in order).
+/// Rows: `index name, unique (0/1), column, key` (one row per indexed column, in order); `key` is
+/// `p` for the primary key's index, `u` for a unique constraint's, NULL otherwise (ClickHouse: absent).
 // Key columns are paired from one series up to `max_index_keys` (the server's INDEX_MAX_KEYS, the
 // most columns an index or key has): unlike a series per catalog row, it lets the planner find the
 // table's rows through the catalog's index first.
@@ -251,11 +252,14 @@ pub fn indexes(driver: DbDriver, schema: &str, table: &str) -> String {
              WHERE database = {s} AND table = {t}) ORDER BY index_name"
         ),
         DbDriver::Sqlite => format!(
-            "SELECT il.name, il.\"unique\", ii.name FROM pragma_index_list({t}, {s}) il \
+            "SELECT il.name, il.\"unique\", ii.name, CASE il.origin WHEN 'pk' THEN 'p' WHEN 'u' THEN 'u' END \
+             FROM pragma_index_list({t}, {s}) il \
              JOIN pragma_index_info(il.name, {s}) ii ORDER BY il.name, ii.seqno"
         ),
         DbDriver::Postgres => format!(
-            "SELECT i.relname, CASE WHEN ix.indisunique THEN 1 ELSE 0 END, a.attname \
+            "SELECT i.relname, CASE WHEN ix.indisunique THEN 1 ELSE 0 END, a.attname, \
+             CASE WHEN ix.indisprimary THEN 'p' WHEN EXISTS (SELECT 1 FROM pg_constraint con \
+             WHERE con.conindid = ix.indexrelid AND con.conrelid = ix.indrelid AND con.contype = 'u') THEN 'u' END \
              FROM pg_index ix JOIN pg_class t ON t.oid = ix.indrelid JOIN pg_class i ON i.oid = ix.indexrelid \
              JOIN pg_namespace n ON n.oid = t.relnamespace \
              JOIN generate_series(0, current_setting('max_index_keys')::int - 1) AS k(ord) ON k.ord < ix.indnatts \
@@ -263,12 +267,14 @@ pub fn indexes(driver: DbDriver, schema: &str, table: &str) -> String {
              WHERE n.nspname = {s} AND t.relname = {t} ORDER BY i.relname, k.ord"
         ),
         DbDriver::Mysql => format!(
-            "SELECT index_name, CASE WHEN non_unique = 0 THEN 1 ELSE 0 END, column_name \
+            "SELECT index_name, CASE WHEN non_unique = 0 THEN 1 ELSE 0 END, column_name, \
+             CASE WHEN index_name = 'PRIMARY' THEN 'p' WHEN non_unique = 0 THEN 'u' END \
              FROM information_schema.statistics WHERE table_schema = {s} AND table_name = {t} \
              ORDER BY index_name, seq_in_index"
         ),
         DbDriver::SqlServer => format!(
-            "SELECT i.name, CASE WHEN i.is_unique = 1 THEN 1 ELSE 0 END, c.name \
+            "SELECT i.name, CASE WHEN i.is_unique = 1 THEN 1 ELSE 0 END, c.name, \
+             CASE WHEN i.is_primary_key = 1 THEN 'p' WHEN i.is_unique_constraint = 1 THEN 'u' END \
              FROM sys.indexes i JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id \
              JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id \
              WHERE OBJECT_SCHEMA_NAME(i.object_id) = {s} AND OBJECT_NAME(i.object_id) = {t} AND i.name IS NOT NULL \
@@ -276,7 +282,9 @@ pub fn indexes(driver: DbDriver, schema: &str, table: &str) -> String {
         ),
         DbDriver::Snowflake => "SELECT '', 0, '' WHERE 1 = 0".to_owned(),
         DbDriver::Oracle => format!(
-            "SELECT i.index_name, CASE WHEN i.uniqueness = 'UNIQUE' THEN 1 ELSE 0 END, ic.column_name \
+            "SELECT i.index_name, CASE WHEN i.uniqueness = 'UNIQUE' THEN 1 ELSE 0 END, ic.column_name, \
+             (SELECT MIN(LOWER(con.constraint_type)) FROM all_constraints con WHERE con.owner = i.table_owner \
+             AND con.table_name = i.table_name AND con.index_name = i.index_name AND con.constraint_type IN ('P', 'U')) \
              FROM all_indexes i JOIN all_ind_columns ic \
              ON ic.index_owner = i.owner AND ic.index_name = i.index_name \
              WHERE i.owner = {s} AND i.table_name = {t} ORDER BY i.index_name, ic.column_position"

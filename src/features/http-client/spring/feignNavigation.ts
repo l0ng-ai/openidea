@@ -25,10 +25,10 @@ import {
   controllerMethods,
   feignMethods,
   MAX_NAVIGATION_SOURCE,
-  type FeignMethod,
   type HttpShape,
   type MappedMethod,
 } from "./feign";
+import { restCalls, type RestCall } from "./restCalls";
 import { clearRouteIndex, controllerIndex, feignClientIndex, isRouteSource } from "./routeIndex";
 import { isServiceConfiguration, loadServiceName, sourceModule } from "./serviceIdentity";
 import styles from "../HttpClient.module.css";
@@ -125,7 +125,10 @@ async function* currentMappings<T extends MappedMethod>(
   }
 }
 
-export async function feignTargets(source: string, client: FeignMethod): Promise<FeignLocation[]> {
+export async function feignTargets(
+  source: string,
+  client: HttpShape & { service: string | null },
+): Promise<FeignLocation[]> {
   const scope = lookupScope(source);
   if (!scope) return [];
   const indexed = await controllerIndex(scope.project.root);
@@ -183,17 +186,24 @@ export async function feignClients(source: string, controller: MappedMethod): Pr
   return scope.stale() ? [] : [...confirmed, ...possible].slice(0, TARGET_LIMIT);
 }
 
+/** A bare host is a service id only behind @LoadBalanced; when no module has that name, it is a DNS name. */
+export async function restTargets(source: string, call: RestCall): Promise<FeignLocation[]> {
+  const targets = await feignTargets(source, call);
+  return targets.length || !call.service ? targets : feignTargets(source, { ...call, service: null });
+}
+
 export function registerFeignNavigation(): () => void {
   invalidate();
   const unregister = registerNavigationProvider(async (view, offset) => {
     const doc = docOf(view);
     if (!doc || doc.virtual || !["java", "kotlin"].includes(doc.language)) return null;
-    const client = feignMethods(view.state.doc.toString()).find((c) =>
-      c.links.some((l) => l.from <= offset && offset < l.to),
-    );
-    const link = client?.links.find((l) => l.from <= offset && offset < l.to);
-    if (!client || !link) return null;
-    return { ...link, targets: await feignTargets(doc.path, client) };
+    const text = view.state.doc.toString();
+    const at = (l: { from: number; to: number }) => l.from <= offset && offset < l.to;
+    const client = feignMethods(text).find((c) => c.links.some(at));
+    const link = client?.links.find(at);
+    if (client && link) return { ...link, targets: await feignTargets(doc.path, client) };
+    const rest = restCalls(text).find(at);
+    return rest ? { from: rest.from, to: rest.to, targets: await restTargets(doc.path, rest) } : null;
   });
   const filesystem = onIdeEvent("fsChanged", (event) => {
     if (

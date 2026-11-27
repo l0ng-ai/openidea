@@ -55,7 +55,9 @@ vi.mock("@/editor/structure", () => ({
   },
 }));
 const showHint = vi.fn();
-vi.mock("@/editor/lsp/hint", () => ({ showHint }));
+const pendingDone = vi.fn();
+const showPendingHint = vi.fn(() => pendingDone);
+vi.mock("@/editor/lsp/hint", () => ({ showHint, showPendingHint }));
 const introduceFallback = vi.fn(async () => true);
 vi.mock("./introduce", () => ({
   introduceFallback,
@@ -75,6 +77,7 @@ const { useLspPopup, closePopup } = await import("@/editor/lsp/popupStore");
 const { lspDoc } = await import("@/editor/lsp/lsp");
 const { inplaceRenameExtension, inplaceSession } = await import("@/editor/lsp/inplaceRename");
 const { temporaryHighlights } = await import("@/editor/lsp/tempHighlight");
+const { inForeground } = await import("@/editor/lsp/foreground");
 
 const action = (title: string, kind: string, disabledReason: string | null = null): CodeAction => ({
   title,
@@ -261,6 +264,17 @@ describe("Refactor This", () => {
     expect(showHint).not.toHaveBeenCalled();
   });
 
+  it("lets background requests give way while it asks the server", async () => {
+    let release: (r: Result) => void = () => {};
+    query = () => new Promise((r) => (release = r));
+    const running = refactorThis(editor(), vi.fn());
+    await new Promise((r) => setTimeout(r, 0));
+    expect(inForeground()).toBe(true);
+    release(ok({ actions: [action("Inline variable", "refactor.inline")], advertisedKinds: null }));
+    await running;
+    expect(inForeground()).toBe(false);
+  });
+
   it("cancels a superseded query and drops answers after the caret moved", async () => {
     let release: (r: Result) => void = () => {};
     query = (_request) => new Promise((r) => (release = r)).then((x) => x as Result);
@@ -290,6 +304,23 @@ describe("Refactor This", () => {
 });
 
 describe("Refactor menu actions", () => {
+  // #6381: on a busy server (jdtls searching usages for Code Vision) the answer can take seconds.
+  it("say they are waiting, and let background requests give way until the server answers", async () => {
+    let release: (r: Result) => void = () => {};
+    query = () => new Promise((r) => (release = r));
+    const v = editor();
+    const running = runRefactoring(v, "inline");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(showPendingHint).toHaveBeenCalledWith(v, "Looking for refactorings…");
+    expect(inForeground()).toBe(true);
+    expect(pendingDone).not.toHaveBeenCalled();
+    release(ok({ actions: [action("Inline variable", "refactor.inline")], advertisedKinds: null }));
+    await running;
+    expect(inForeground()).toBe(false);
+    expect(pendingDone).toHaveBeenCalled();
+    expect(lspExecuteCodeAction).toHaveBeenCalledOnce();
+  });
+
   it("apply the single matching action, or offer a choice", async () => {
     query = answer([action("Move to a new file", "refactor.move.newFile")]);
     await runRefactoring(editor(), "move");
