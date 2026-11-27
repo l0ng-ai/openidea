@@ -9417,5 +9417,6 @@
   "Pull request link {text}": "拉取請求連結 {text}",
   "Issue link {text}": "Issue 連結 {text}",
   "Commit link {text}": "提交連結 {text}",
-  "Link {text}": "連結 {text}"
+  "Link {text}": "連結 {text}",
+  "No safe lint fixes to apply": "沒有可套用的安全 lint 修正"
 }

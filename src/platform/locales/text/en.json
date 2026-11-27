@@ -4363,5 +4363,6 @@
   "Runs, debug sessions and the Python Console send matplotlib figures to the Plots tool window, unless the run sets MPLBACKEND. Off: figures open in matplotlib's own window.": "Runs, debug sessions and the Python Console send matplotlib figures to the Plots tool window, unless the run sets MPLBACKEND. Off: figures open in matplotlib's own window.",
   "cProfile": "cProfile",
   "py-spy": "py-spy",
-  "Automatic uses py-spy where it is installed and can sample without root (not on macOS), else cProfile from the standard library.": "Automatic uses py-spy where it is installed and can sample without root (not on macOS), else cProfile from the standard library."
+  "Automatic uses py-spy where it is installed and can sample without root (not on macOS), else cProfile from the standard library.": "Automatic uses py-spy where it is installed and can sample without root (not on macOS), else cProfile from the standard library.",
+  "No safe lint fixes to apply": "No safe lint fixes to apply"
 }
