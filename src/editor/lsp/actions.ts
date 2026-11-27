@@ -28,7 +28,7 @@ import { languageSemantics } from "./semantic";
 import { caretAnchor, openPopup } from "./popupStore";
 import { workflowSettings, type ActionsOnSaveValid } from "@/platform/workflowSettings";
 import { startRename } from "./rename";
-import { formatDocument, reformatDialog, type FormatResult } from "./format";
+import { fixRuffDocument, formatDocument, reformatDialog, type FormatResult } from "./format";
 import { showHint } from "./hint";
 import {
   refactorThis,
@@ -261,14 +261,22 @@ export function formatsOnSave(settings: Settings | null, language: string): bool
   );
 }
 
-/** Format on save (settings.editor.formatOnSave), run by editor/core before writing. */
+/** Whether saving a Python file applies Ruff's safe lint fixes, independently of formatting. */
+export function ruffFixesOnSave(settings: Settings | null, language: string): boolean {
+  return language === "python" && validateLanguages(settings?.languages).ruff.fixOnSave;
+}
+
+/** Ruff safe fixes, then format on save, run by editor/core before writing the current text. */
 export function registerFormatOnSave(): () => void {
   return registerSaveParticipant({
     id: "lsp.formatOnSave",
     order: 50,
     beforeSave: async (ctx, handle) => {
-      if (!handle || ctx.readOnly || !formatsOnSave(useProject.getState().settings, ctx.language)) return;
-      await formatDocument(handle.view, { explicit: false, selectionOnly: false, onSave: true });
+      if (!handle || ctx.readOnly) return;
+      const settings = useProject.getState().settings;
+      if (ruffFixesOnSave(settings, ctx.language)) await fixRuffDocument(handle.view);
+      if (formatsOnSave(settings, ctx.language))
+        await formatDocument(handle.view, { explicit: false, selectionOnly: false, onSave: true });
     },
   });
 }

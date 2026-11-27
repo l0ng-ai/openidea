@@ -60,7 +60,8 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
             python.as_deref(),
             config.cwd.as_deref(),
         );
-        super::python::prepare_debug(&mut config, &paths)?;
+        let plots = super::plots::prepare(host, &project);
+        super::python::prepare_debug(&mut config, &paths, plots.as_ref())?;
     }
     let label = window;
     let (sink, flush_output) = output::coalescing_sink(host.window_sink(label));

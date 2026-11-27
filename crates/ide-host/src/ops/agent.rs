@@ -404,8 +404,9 @@ pub async fn agent_commands(
     host.project(window)?.agents.commands(&provider, task.as_deref()).await
 }
 
-/// Entries of `task`'s conversation, or of its subagent `subagent`'s. Async so a long
-/// conversation is cloned and serialised off the main thread.
+/// Entries of `task`'s conversation, or of its subagent `subagent`'s. On the blocking pool:
+/// the first read of a saved conversation parses its task file, and a long one is cloned
+/// and serialised.
 #[command(trust = always)]
 pub async fn agent_entries(
     host: &Host,
@@ -413,7 +414,8 @@ pub async fn agent_entries(
     task: String,
     subagent: Option<String>,
 ) -> IdeResult<Vec<AgentEntry>> {
-    host.project(window)?.agents.entries(&task, subagent)
+    let agents = host.project(window)?.agents.clone();
+    host.blocking(move || agents.entries(&task, subagent)).await
 }
 
 /// Sessions of the project on this machine that no task holds yet, newest first.
