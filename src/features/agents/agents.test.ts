@@ -34,6 +34,8 @@ import {
   usageLabel,
   limitLabel,
   costLabel,
+  groupContextCategories,
+  contextShareLabel,
   workTime,
 } from "./composerModel";
 import {
@@ -442,11 +444,36 @@ describe("usage meters", () => {
       percent: 7,
       detail: "spend_limit: 7% used",
     });
+    expect(limitLabel({ window: "premium_interactions", usedPercent: 4, resetsMs: null }, 0)).toEqual({
+      short: "Premium 4%",
+      percent: 4,
+      detail: "Premium requests: 4% used",
+    });
   });
 
   it("formats the session cost", () => {
     expect(costLabel({ amount: 0.4231, currency: "USD" })).toBe("$0.42");
-    expect(costLabel({ amount: 1.5, currency: "credits" })).toBe("1.50 credits");
+    expect(costLabel({ amount: 1.5, currency: "credits" })).toBe("1.5 credits");
+    expect(costLabel({ amount: 4211.4, currency: "credits" })).toBe("4,211.4 credits");
+    expect(costLabel({ amount: 1.5, currency: "tokens" })).toBe("1.50 tokens");
+  });
+
+  it("groups context categories into System and User Context and formats window share", () => {
+    const grouped = groupContextCategories([
+      { name: "System prompt", tokens: 20_000, kind: "used", group: "System" },
+      { name: "Tool Definitions", tokens: 203_000, kind: "used", group: "System" },
+      { name: "System tools (deferred)", tokens: 50_000, kind: "deferred", group: null },
+      { name: "Tool Results", tokens: 69_000, kind: "used", group: "User Context" },
+      { name: "Messages", tokens: 113_200, kind: "used", group: "User Context" },
+      { name: "Autocompact buffer", tokens: 32_000, kind: "buffer", group: null },
+      { name: "Free space", tokens: 562_800, kind: "free", group: null },
+    ]);
+    expect(grouped.system.map((c) => c.name)).toEqual(["System prompt", "Tool Definitions"]);
+    expect(grouped.userContext.map((c) => c.name)).toEqual(["Tool Results", "Messages"]);
+    expect(grouped.bufferTokens).toBe(32_000);
+    expect(contextShareLabel(20_000, 1_000_000)).toBe("2.0%");
+    expect(contextShareLabel(203_000, 1_000_000)).toBe("20.3%");
+    expect(contextShareLabel(100, 1_000_000)).toBe("<0.1%");
   });
 
   it("adds up the time spent on turns", () => {

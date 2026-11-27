@@ -4298,7 +4298,15 @@ impl Task {
                     true
                 }
                 "usage_update" => {
-                    s.task.usage = config::usage_of(update).or(s.task.usage.take());
+                    let prev_cost = s.task.usage.as_ref().and_then(|u| u.cost.clone());
+                    s.task.usage = config::usage_of(update)
+                        .map(|mut u| {
+                            if u.cost.is_none() {
+                                u.cost = prev_cost;
+                            }
+                            u
+                        })
+                        .or(s.task.usage.take());
                     true
                 }
                 _ => false,

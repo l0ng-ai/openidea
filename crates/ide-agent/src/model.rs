@@ -289,6 +289,9 @@ pub struct AgentContextUsage {
     pub model: String,
     pub is_auto_compact_enabled: Option<bool>,
     pub auto_compact_threshold: Option<u32>,
+    /// Tokens reserved for model response / output buffer, when the agent reports it.
+    #[serde(default)]
+    pub reserved_tokens: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -296,13 +299,16 @@ pub struct AgentContextCategory {
     pub name: String,
     pub tokens: u32,
     pub kind: Option<String>,
+    /// Visual section group (e.g. `"System"`, `"User Context"`).
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCost {
     pub amount: f64,
-    /// ISO 4217 code, e.g. `USD`.
+    /// ISO 4217 code (e.g. `USD`), or `"credits"` for AI-credit billing.
     pub currency: String,
 }
 

@@ -1,6 +1,11 @@
 use super::models::{self, CONTEXT_TIER, EFFORT, MODEL, Mode, Settings, UserDefaults};
+use super::translate::{
+    self, EventTranslator, UsageSnapshot, context_usage_from_attribution, context_usage_from_context_info,
+    context_usage_from_snapshot,
+};
 use super::{acp_args, acp_fallback_spec, attach, headless_args};
 use crate::config;
+use crate::model::{AgentContextCategory, AgentContextUsage};
 use crate::provider::Driver;
 use ide_jsonrpc::{Framing, Handler, Peer, codes};
 use parking_lot::Mutex;
@@ -443,6 +448,38 @@ impl Handler for FakeCopilotServer {
             ] })),
             "session.tasks.cancel" => Ok(json!({ "cancelled": true })),
             "session.abort" => Ok(json!({})),
+            "session.usage.getMetrics" => Ok(json!({
+                "totalNanoAiu": 4_211_400_000_000.0,
+                "totalPremiumRequestCost": 12.0,
+            })),
+            "session.metadata.getContextAttribution" => Ok(json!({
+                "contextAttribution": {
+                    "totalTokens": 405_200,
+                    "limit": 1_000_000,
+                    "promptTokenLimit": 936_000,
+                    "bufferTokens": 64_000,
+                    "compactionThreshold": 800_000,
+                    "modelId": "gemini-4-carbon",
+                    "entries": [
+                        { "kind": "system", "id": "system:root", "label": "System", "tokens": 223_000 },
+                        { "kind": "system", "id": "system:prompt", "label": "System Prompt", "tokens": 20_000, "parentId": "system:root" },
+                        { "kind": "toolDefinition", "id": "toolDefinition:bash", "label": "bash", "tokens": 203_000, "parentId": "system:root" },
+                        { "kind": "tool", "id": "tool:bash", "label": "bash", "tokens": 69_000 }
+                    ]
+                }
+            })),
+            "session.history.compact" => Ok(json!({
+                "success": true,
+                "tokensRemoved": 250_000,
+                "messagesRemoved": 12,
+                "contextWindow": {
+                    "currentTokens": 155_200,
+                    "tokenLimit": 1_000_000,
+                    "systemTokens": 20_000,
+                    "toolDefinitionsTokens": 100_000,
+                    "conversationTokens": 35_200
+                }
+            })),
             "session.send" if self.background_shell => {
                 if let Some(peer) = self.peer.get().cloned() {
                     let sid = params["sessionId"].as_str().unwrap_or("cop-sess-1").to_owned();
@@ -794,4 +831,226 @@ async fn session_new_and_load_forward_staged_skill_directories_and_disabled_skil
         assert_eq!(params["disabledSkills"], json!(["muted", "off"]), "{method}: {params}");
         assert!(params.get("enableConfigDiscovery").is_none(), "{method} must not auto-enable workspace MCP discovery");
     }
+}
+
+#[test]
+fn translates_context_attribution_without_double_counting_parent_rollups() {
+    let payload = json!({
+        "contextAttribution": {
+            "totalTokens": 405_200,
+            "limit": 1_000_000,
+            "bufferTokens": 64_000,
+            "compactionThreshold": 800_000,
+            "modelId": "gemini-4-carbon",
+            "entries": [
+                { "kind": "system", "id": "system:root", "label": "System", "tokens": 223_000 },
+                { "kind": "system", "id": "system:prompt", "label": "System Prompt", "tokens": 20_000, "parentId": "system:root" },
+                { "kind": "toolDefinition", "id": "toolDefinition:bash", "label": "bash", "tokens": 120_000, "parentId": "system:root" },
+                { "kind": "toolDefinition", "id": "toolDefinition:view", "label": "view", "tokens": 83_000, "parentId": "system:root" },
+                { "kind": "tool", "id": "tool:bash", "label": "bash", "tokens": 69_000 },
+                { "kind": "plugin", "id": "plugin:git", "label": "git", "tokens": 5_000 },
+                { "kind": "skill", "id": "skill:pr", "label": "pr", "tokens": 5_000, "parentId": "plugin:git" }
+            ]
+        }
+    });
+    let usage = context_usage_from_attribution(&payload, "fallback", None).unwrap();
+    assert_eq!(usage.total_tokens, 405_200);
+    assert_eq!(usage.max_tokens, 1_000_000);
+    assert_eq!(usage.reserved_tokens, Some(64_000));
+    assert_eq!(usage.auto_compact_threshold, Some(800_000));
+    assert_eq!(usage.is_auto_compact_enabled, Some(true));
+    assert_eq!(
+        usage.categories,
+        vec![
+            AgentContextCategory {
+                name: "System prompt".into(),
+                tokens: 20_000,
+                kind: Some("used".into()),
+                group: Some("System".into()),
+            },
+            AgentContextCategory {
+                name: "Tool Definitions".into(),
+                tokens: 203_000,
+                kind: Some("used".into()),
+                group: Some("System".into()),
+            },
+            AgentContextCategory {
+                name: "Tool Results".into(),
+                tokens: 69_000,
+                kind: Some("used".into()),
+                group: Some("User Context".into()),
+            },
+            AgentContextCategory {
+                name: "Messages".into(),
+                tokens: 108_200,
+                kind: Some("used".into()),
+                group: Some("User Context".into()),
+            },
+            AgentContextCategory {
+                name: "Skills".into(),
+                tokens: 5_000,
+                kind: Some("used".into()),
+                group: Some("User Context".into()),
+            },
+            AgentContextCategory { name: "Free space".into(), tokens: 530_800, kind: Some("free".into()), group: None },
+        ]
+    );
+}
+
+#[test]
+fn translates_context_info_and_usage_snapshot_fallbacks() {
+    let info = json!({
+        "contextInfo": {
+            "modelName": "claude-sonnet-4.5",
+            "systemTokens": 12_000,
+            "toolDefinitionsTokens": 48_000,
+            "conversationTokens": 40_000,
+            "totalTokens": 100_000,
+            "limit": 200_000,
+            "bufferTokens": 20_000,
+            "compactionThreshold": 160_000
+        }
+    });
+    let from_info = context_usage_from_context_info(&info, "fallback", None).unwrap();
+    assert_eq!(from_info.reserved_tokens, Some(20_000));
+    assert_eq!(
+        from_info.categories.iter().map(|c| (c.name.as_str(), c.tokens, c.group.as_deref())).collect::<Vec<_>>(),
+        vec![
+            ("System prompt", 12_000, Some("System")),
+            ("Tool Definitions", 48_000, Some("System")),
+            ("Messages", 40_000, Some("User Context")),
+            ("Free space", 80_000, None),
+        ]
+    );
+
+    let from_snap = context_usage_from_snapshot(
+        &UsageSnapshot {
+            current_tokens: 50_000,
+            token_limit: 200_000,
+            system_tokens: Some(10_000),
+            tool_definitions_tokens: Some(25_000),
+            conversation_tokens: Some(15_000),
+        },
+        "gpt-5.6-sol",
+    );
+    assert_eq!(from_snap.total_tokens, 50_000);
+    assert_eq!(from_snap.max_tokens, 200_000);
+    assert_eq!(from_snap.categories.len(), 4);
+}
+
+#[test]
+fn accumulates_copilot_credits_across_turns_subagents_and_compaction() {
+    let mut tr = EventTranslator::default();
+    let first = tr.translate(
+        "s1",
+        &json!({
+            "type": "session.usage_info",
+            "data": { "currentTokens": 40_000, "tokenLimit": 200_000, "systemTokens": 10_000, "toolDefinitionsTokens": 20_000, "conversationTokens": 10_000 }
+        }),
+        Some(200_000),
+    );
+    assert_eq!(first.updates[0].1["used"], 40_000);
+    assert!(first.updates[0].1.get("cost").is_none());
+
+    // Main-agent usage reports 1.5 credits; subagent usage adds 0.5 credits -> 2.0 credits total.
+    let main_usage = tr.translate(
+        "s1",
+        &json!({
+            "type": "assistant.usage",
+            "data": { "inputTokens": 45_000, "copilotUsage": { "totalNanoAiu": 1_500_000_000.0 } }
+        }),
+        Some(200_000),
+    );
+    assert_eq!(main_usage.updates[0].1["cost"]["currency"], "credits");
+    assert!((main_usage.updates[0].1["cost"]["amount"].as_f64().unwrap() - 1.5).abs() < 1e-6);
+
+    let sub_usage = tr.translate(
+        "s1",
+        &json!({
+            "type": "assistant.usage",
+            "agentId": "sub-1",
+            "data": { "inputTokens": 12_000, "copilotUsage": { "totalNanoAiu": 500_000_000.0 } }
+        }),
+        Some(200_000),
+    );
+    assert_eq!(sub_usage.updates[0].1["used"], 45_000);
+    assert!((sub_usage.updates[0].1["cost"]["amount"].as_f64().unwrap() - 2.0).abs() < 1e-6);
+
+    // Compaction updates token count while keeping accumulated credits.
+    let compacted = tr.translate(
+        "s1",
+        &json!({
+            "type": "session.compaction_complete",
+            "data": { "success": true, "postCompactionTokens": 22_000, "tokenLimit": 200_000 }
+        }),
+        Some(200_000),
+    );
+    assert_eq!(compacted.updates[0].1["used"], 22_000);
+    assert!((compacted.updates[0].1["cost"]["amount"].as_f64().unwrap() - 2.0).abs() < 1e-6);
+}
+
+#[test]
+fn available_commands_includes_compact_when_omitted_by_server() {
+    let cmds = translate::available_commands(Some(&json!({ "commands": [{ "name": "review" }] })), None);
+    assert!(cmds.iter().any(|c| c["name"] == "compact"));
+    assert!(cmds.iter().any(|c| c["name"] == "review"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn context_usage_rpc_and_compact_command_work_end_to_end() {
+    let server =
+        Arc::new(FakeCopilotServer { peer: OnceLock::new(), calls: Mutex::new(Vec::new()), background_shell: false });
+    let updates = Arc::new(CollectUpdates(Mutex::new(Vec::new())));
+    let server_clone = server.clone();
+    let client = attach(updates.clone(), move |events| {
+        let (a, b) = tokio::io::duplex(1 << 16);
+        let (ar, aw) = tokio::io::split(a);
+        let (br, bw) = tokio::io::split(b);
+        let srv_peer = Peer::connect_framed(br, bw, server_clone.clone(), Framing::ContentLength);
+        let _ = server_clone.peer.set(srv_peer);
+        Ok(Peer::connect_framed(ar, aw, events, Framing::ContentLength))
+    })
+    .unwrap();
+
+    let init: Value = client.request("initialize", json!({}), None).await.unwrap();
+    assert_eq!(init["agentCapabilities"]["_meta"]["openidea"]["contextUsage"], true);
+    let _: Value = client.request("session/new", json!({ "cwd": "/tmp", "mcpServers": [] }), None).await.unwrap();
+
+    let ctx: AgentContextUsage =
+        client.request("_openidea/context_usage", json!({ "sessionId": "cop-sess-1" }), None).await.unwrap();
+    assert_eq!(ctx.total_tokens, 405_200);
+    assert_eq!(ctx.max_tokens, 1_000_000);
+    assert_eq!(ctx.reserved_tokens, Some(64_000));
+    assert!(ctx.categories.iter().any(|c| c.name == "System prompt" && c.group.as_deref() == Some("System")));
+    assert!(ctx.categories.iter().any(|c| c.name == "Tool Definitions" && c.group.as_deref() == Some("System")));
+    assert!(ctx.categories.iter().any(|c| c.name == "Tool Results" && c.group.as_deref() == Some("User Context")));
+    assert!(ctx.categories.iter().any(|c| c.name == "Messages" && c.group.as_deref() == Some("User Context")));
+
+    // Syncing metrics updated usage_update with credits cost.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(updates.0.lock().iter().any(|u| {
+        u["sessionUpdate"] == "usage_update"
+            && u["used"] == 405_200
+            && u["cost"]["currency"] == "credits"
+            && (u["cost"]["amount"].as_f64().unwrap_or(0.0) - 4211.4).abs() < 0.01
+    }));
+
+    // `/compact` invokes `session.history.compact` instead of `session.send`.
+    let res: Value = client
+        .request(
+            "session/prompt",
+            json!({ "sessionId": "cop-sess-1", "prompt": [{ "type": "text", "text": "/compact keep PR notes" }] }),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(res["stopReason"], "end_turn");
+    assert!(server.calls.lock().iter().any(|(m, p)| {
+        m == "session.history.compact"
+            && p["sessionId"] == "cop-sess-1"
+            && p["trigger"] == "manual"
+            && p["customInstructions"] == "keep PR notes"
+    }));
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(updates.0.lock().iter().any(|u| u["sessionUpdate"] == "usage_update" && u["used"] == 155_200));
 }

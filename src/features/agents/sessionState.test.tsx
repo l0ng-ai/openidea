@@ -2227,25 +2227,54 @@ describe("meters in the task header", () => {
     useAgents.setState({ limits: new Map() });
   });
 
-  it("queries the active task only when context details are opened", async () => {
+  it("queries the active task only when Session Info is opened and renders System and User Context breakdown", async () => {
     const { commands } = await import("@/platform/ipc");
+    vi.mocked(commands.agentContextUsage).mockResolvedValueOnce({
+      status: "ok",
+      data: {
+        model: "gemini-4-carbon",
+        totalTokens: 405_200,
+        maxTokens: 1_000_000,
+        reservedTokens: 64_000,
+        isAutoCompactEnabled: true,
+        autoCompactThreshold: 800_000,
+        categories: [
+          { name: "System prompt", tokens: 20_000, kind: "used", group: "System" },
+          { name: "Tool Definitions", tokens: 203_000, kind: "used", group: "System" },
+          { name: "Tool Results", tokens: 69_000, kind: "used", group: "User Context" },
+          { name: "Messages", tokens: 113_200, kind: "used", group: "User Context" },
+          { name: "Free space", tokens: 530_800, kind: "free", group: null },
+        ],
+      },
+    });
     const reported: AgentTask = {
       ...task("A"),
       capabilities: { contextUsage: true },
-      usage: { used: 3000, size: 200000, cost: null },
+      commands: [{ name: "compact", description: "Compact", source: "command", hint: null }],
+      usage: { used: 405_200, size: 1_000_000, cost: null },
     };
     useAgents.setState({ tasks: new Map([["A", reported]]) });
     render(<SessionEditor input={input("A")} />);
     const meter = await screen.findByRole("button", { name: /^Context window/ });
     expect(commands.agentContextUsage).not.toHaveBeenCalled();
     fireEvent.click(meter);
-    expect(await screen.findByText("System tools")).toBeInTheDocument();
+    const dialog = await screen.findByRole("dialog", { name: "Session Info" });
     expect(commands.agentContextUsage).toHaveBeenCalledWith("A");
-    expect(screen.getByText("196,800")).toBeInTheDocument();
+    expect(await within(dialog).findByText("System prompt")).toBeInTheDocument();
+    expect(within(dialog).getByText("2.0%")).toBeInTheDocument();
+    expect(within(dialog).getByText("Tool Definitions")).toBeInTheDocument();
+    expect(within(dialog).getByText("20.3%")).toBeInTheDocument();
+    expect(within(dialog).getByText("Tool Results")).toBeInTheDocument();
+    expect(within(dialog).getByText("6.9%")).toBeInTheDocument();
+    expect(within(dialog).getByText("Messages")).toBeInTheDocument();
+    expect(within(dialog).getByText("11.3%")).toBeInTheDocument();
+    expect(within(dialog).getByText("Reserved for response")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Compact Conversation" })).toBeInTheDocument();
     fireEvent.keyDown(document, { key: "Escape" });
-    expect(screen.queryByRole("dialog", { name: "Context window" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Session Info" })).toBeNull();
   });
-  it("shows the provider's usage limits by default and each meter as Settings › Tools › Agents › Chat allows", async () => {
+
+  it("shows only the context ring inline and moves limits, turn tokens, and cost into the Session Info popover", async () => {
     const reported: AgentTask = {
       ...task("A"),
       usage: {
@@ -2253,6 +2282,7 @@ describe("meters in the task header", () => {
         size: 200_000,
         cost: { amount: 0.42, currency: "USD" },
       },
+      stats: { tokens: { input: 12_000, cached: 4_000, output: 500 }, compressions: 0 },
     };
     const limits = [
       { window: "five_hour", usedPercent: 19, resetsMs: null },
@@ -2264,14 +2294,23 @@ describe("meters in the task header", () => {
     });
     render(<SessionEditor input={input("A")} />);
     await screen.findByText("Answer A");
-    const usage = screen.getByLabelText(/^Context /);
-    // The ring and percent show; the counts are in its label and tooltip.
+    const usage = screen.getByRole("button", { name: /^Context window/ });
+    // Only the context ring and percent appear inline; limits, turn tokens, and cost live in the popover.
     expect(usage).toHaveTextContent("12%");
     expect(usage).toHaveAccessibleName(/24k\/200k \(12%\)/);
     expect(usage.querySelector(`.${styles.usageRingArc}`)).toHaveAttribute("data-percent", "12");
-    expect(screen.getByLabelText("5-hour limit: 19% used")).toHaveTextContent("5h 19%");
-    expect(screen.getByLabelText("Weekly limit: 9% used")).toHaveTextContent("7d 9%");
+    expect(screen.queryByText("5h 19%")).toBeNull();
+    expect(screen.queryByText("7d 9%")).toBeNull();
     expect(screen.queryByText("$0.42")).toBeNull();
+
+    fireEvent.click(usage);
+    const dialog = await screen.findByRole("dialog", { name: "Session Info" });
+    expect(within(dialog).getByText("5-hour limit")).toBeInTheDocument();
+    expect(within(dialog).getByText("Weekly limit")).toBeInTheDocument();
+    expect(within(dialog).getByText("in 12k · cached 4k · out 500")).toBeInTheDocument();
+    expect(within(dialog).queryByText("$0.42")).toBeNull();
+    fireEvent.keyDown(document, { key: "Escape" });
+
     act(() =>
       useProject.setState({
         settings: {
@@ -2283,12 +2322,15 @@ describe("meters in the task header", () => {
         },
       }),
     );
-    expect(screen.queryByText("24k/200k (12%)")).toBeNull();
-    expect(screen.queryByLabelText("5-hour limit: 19% used")).toBeNull();
-    expect(screen.getByText("$0.42")).toBeInTheDocument();
+    const infoButton = screen.getByRole("button", { name: "Session Info" });
+    fireEvent.click(infoButton);
+    const costOnly = await screen.findByRole("dialog", { name: "Session Info" });
+    expect(within(costOnly).getByText("$0.42")).toBeInTheDocument();
+    expect(within(costOnly).queryByText("5-hour limit")).toBeNull();
+    expect(within(costOnly).queryByText("Context Window")).toBeNull();
   });
 
-  it("colors meters at warning/danger thresholds and opens usage-limit details on click", async () => {
+  it("colors the context meter and usage-limit rows at warning/danger thresholds inside Session Info", async () => {
     const reported: AgentTask = {
       ...task("A"),
       usage: { used: 164_000, size: 200_000, cost: null },
@@ -2304,20 +2346,17 @@ describe("meters in the task header", () => {
     render(<SessionEditor input={input("A")} />);
     await screen.findByText("Answer A");
 
-    expect(screen.getByLabelText(/^Context /)).toHaveAttribute("data-tone", "warning");
-    const fiveHour = screen.getByLabelText(/^5-hour limit: 82% used/);
-    const sevenDay = screen.getByLabelText("Weekly limit: 95% used");
-    expect(fiveHour).toHaveTextContent("5h 82%");
-    expect(fiveHour).toHaveAttribute("data-tone", "warning");
-    expect(sevenDay).toHaveTextContent("7d 95%");
-    expect(sevenDay).toHaveAttribute("data-tone", "danger");
+    const trigger = screen.getByRole("button", { name: /^Context window/ });
+    expect(trigger).toHaveAttribute("data-tone", "warning");
 
-    fireEvent.click(screen.getByRole("button", { name: "Usage limits" }));
-    expect(await screen.findByRole("dialog", { name: "Usage limits" })).toBeInTheDocument();
-    expect(screen.getByText("5-hour limit")).toBeInTheDocument();
-    expect(screen.getByText("Weekly limit")).toBeInTheDocument();
+    fireEvent.click(trigger);
+    const dialog = await screen.findByRole("dialog", { name: "Session Info" });
+    const fiveHourRow = within(dialog).getByText("5-hour limit").closest("[data-tone]");
+    const sevenDayRow = within(dialog).getByText("Weekly limit").closest("[data-tone]");
+    expect(fiveHourRow).toHaveAttribute("data-tone", "warning");
+    expect(sevenDayRow).toHaveAttribute("data-tone", "danger");
     fireEvent.keyDown(document, { key: "Escape" });
-    expect(screen.queryByRole("dialog", { name: "Usage limits" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Session Info" })).toBeNull();
   });
 
   it("toggles fitWidth on the session root and remeasures off-screen rows from settings.agents.fitWindowWidth", async () => {
