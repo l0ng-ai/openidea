@@ -163,7 +163,7 @@ fn prepared(env: &Env, mode: ProfileMode, program_mode: &str) -> Run {
         allow_parallel: false,
         extras: Default::default(),
     };
-    match prepare(&cwd, &config, &out, mode) {
+    match prepare(&cwd, &config, &out, mode, "auto") {
         ProfilePrepared::Ready { launch, spec, .. } => Run { _dir: dir, cwd, launch: *launch, spec },
         other => panic!("{other:?}"),
     }

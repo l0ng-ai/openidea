@@ -8,8 +8,12 @@ export function readDesktopText(path: string): Promise<string> {
 }
 
 /** Write UTF-8 to a path already confirmed in the desktop's save dialog. */
-export async function writeDesktopText(path: string, text: string): Promise<void> {
-  const data = toBase64(new TextEncoder().encode(text));
+export function writeDesktopText(path: string, text: string): Promise<void> {
+  return writeDesktopBase64(path, toBase64(new TextEncoder().encode(text)));
+}
+
+/** Write base64-encoded bytes to a path already confirmed in the desktop's save dialog. */
+export async function writeDesktopBase64(path: string, data: string): Promise<void> {
   if (!isRemoteWindow()) {
     await call(commands.fsDelete(path)).catch(() => {});
     await call(commands.fsCreateFileBytes(path, data));

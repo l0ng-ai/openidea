@@ -1,11 +1,12 @@
 //! Project-incarnation notebook ownership and whole-batch execution admission.
 use crate::ops::Channel;
+use base64::Engine;
 use ide_core::error::ErrorKind;
 use ide_core::{CancellationToken, IdeError, IdeEvent, IdeResult, IpcPath, SharedSink};
 use ide_notebook::kernel::{KernelManager, KernelOutput};
 use ide_notebook::{NotebookDocument, NotebookEdit, NotebookSnapshot};
 use parking_lot::Mutex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -26,6 +27,31 @@ pub struct NotebookOutputEvent {
     pub version: u32,
     pub dirty: bool,
     pub changed_cells: Vec<String>,
+}
+
+/// One row of the Jupyter Variables tool window.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+pub struct NotebookVariable {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub type_name: String,
+    pub value: String,
+}
+
+const VARIABLES: &str = include_str!("notebook_variables.py");
+
+/// The rows from the `user_expressions` of the variables request.
+fn parse_variables(reply: &serde_json::Value) -> IdeResult<Vec<NotebookVariable>> {
+    let rows = &reply["rows"];
+    if rows["status"] != "ok" {
+        let reason = rows["evalue"].as_str().unwrap_or("no result");
+        return Err(IdeError::unavailable(format!("could not read the kernel's variables: {reason}")));
+    }
+    // The value is a base64 str, so its text/plain is that text in quotes.
+    let text = rows["data"]["text/plain"].as_str().unwrap_or_default().trim_matches(['\'', '"']);
+    let bad = |error: String| IdeError::unavailable(format!("could not read the kernel's variables: {error}"));
+    let json = base64::engine::general_purpose::STANDARD.decode(text).map_err(|e| bad(e.to_string()))?;
+    serde_json::from_slice(&json).map_err(|e| bad(e.to_string()))
 }
 
 #[derive(Default)]
@@ -323,6 +349,19 @@ impl NotebookService {
         Ok(())
     }
 
+    /// The variables of the notebook's running kernel; `None` when no kernel runs.
+    pub async fn variables(&self, id: &str) -> IdeResult<Option<Vec<NotebookVariable>>> {
+        let document = self.resolve(id)?;
+        if document.state.lock().active.is_some() {
+            return Err(IdeError::unavailable("notebook is running"));
+        }
+        let expressions = HashMap::from([("rows".to_owned(), "_openidea_variables()".to_owned())]);
+        match self.kernels.inspect(&document.path, VARIABLES, expressions).await? {
+            Some(reply) => parse_variables(&reply).map(Some),
+            None => Ok(None),
+        }
+    }
+
     pub(crate) fn admit(
         &self,
         id: &str,
@@ -587,6 +626,21 @@ fn commit_output(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn variables_are_decoded_from_the_user_expression() {
+        let rows = r#"[{"name": "x", "type": "int", "value": "1"}]"#;
+        let text = format!("'{}'", base64::engine::general_purpose::STANDARD.encode(rows));
+        let reply = json!({"rows": {"status": "ok", "data": {"text/plain": text}, "metadata": {}}});
+        assert_eq!(
+            parse_variables(&reply).unwrap(),
+            vec![NotebookVariable { name: "x".into(), type_name: "int".into(), value: "1".into() }]
+        );
+        let failed =
+            json!({"rows": {"status": "error", "ename": "NameError", "evalue": "name 'get_ipython' is not defined"}});
+        assert!(parse_variables(&failed).unwrap_err().message.contains("get_ipython"));
+        assert!(parse_variables(&json!({})).is_err());
+    }
 
     fn fixture() -> (tempfile::TempDir, Arc<NotebookService>, NotebookSnapshot) {
         let dir = tempfile::tempdir().unwrap();

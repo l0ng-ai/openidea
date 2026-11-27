@@ -11,7 +11,7 @@ import clsx from "clsx";
 import { Button, Icon, IconButton, Input, Spinner, showContextMenu, T } from "@/ui";
 import { useProject } from "@/platform/project";
 import { usePythonPackages } from "@/platform/pythonPackages";
-import { Section, Toggle } from "../components/Form";
+import { Section, SettingToggle, Toggle } from "../components/Form";
 import {
   containerPython,
   effectivePython,
@@ -445,6 +445,14 @@ export function PythonInterpreterPage() {
           checked={activate}
           onChange={setActivate}
           hint="New terminal sessions run the interpreter's virtualenv activate script."
+        />
+      </Section>
+
+      <Section title="Plots">
+        <SettingToggle
+          k="languages.python.showPlotsInToolWindow"
+          label="Show plots in tool window"
+          hint="Runs, debug sessions and the Python Console send matplotlib figures to the Plots tool window, unless the run sets MPLBACKEND. Off: figures open in matplotlib's own window."
         />
       </Section>
 
