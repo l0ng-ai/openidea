@@ -47,6 +47,7 @@ mod virtual_doc;
 mod vue_navigation;
 mod vue_refs;
 mod xml_catalog;
+mod xml_comment;
 
 pub use injections::{InjectedRange, InjectionProvider, MAX_INJECTED_DOCUMENT_BYTES};
 pub use inspect::{CheckedServer, DocumentCheck, FileInspection, InspectHost, InspectOptions};

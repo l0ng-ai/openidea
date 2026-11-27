@@ -601,6 +601,8 @@ remove_recent                                always             project_host bin
 remove_recent_project                        always             desktop      bindings sync
 replace_in_files                             trusted            project_host bindings async
 replace_preview                              trusted            project_host bindings async
+ruff_fix                                     trusted            project_host bindings async
+ruff_fix_text                                trusted            project_host bindings async
 run_application_build                        trusted            project_host bindings async
 run_application_publish                      trusted            project_host bindings async
 run_apply_settings                           trusted            project_host bindings async

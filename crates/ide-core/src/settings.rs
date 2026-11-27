@@ -1395,6 +1395,8 @@ pub struct ExternalFormatterSettings {
     /// Prefer this formatter even when a language server offers formatting.
     pub prefer: bool,
     pub run_on_save: bool,
+    /// Ruff only: apply safe lint fixes (`ruff check --fix-only`) on save, independently of formatting.
+    pub fix_on_save: bool,
 }
 
 impl Default for ExternalFormatterSettings {
@@ -1423,6 +1425,7 @@ impl Default for ExternalFormatterSettings {
             .collect(),
             prefer: false,
             run_on_save: false,
+            fix_on_save: false,
         }
     }
 }
@@ -1451,6 +1454,9 @@ pub struct PythonSettings {
     /// Default test runner (Settings › Python › Testing): `auto` (pytest when the project uses
     /// it, else unittest), `pytest` or `unittest`.
     pub test_runner: String,
+    /// What Profile runs Python under (Settings › Python › Profiler): `auto` (py-spy where it
+    /// is installed and samples without root, else cProfile), `cprofile` or `py-spy`.
+    pub profiler: String,
     /// Show matplotlib figures of Python runs in the Plots tool window (the IDE sets `MPLBACKEND`
     /// unless the run sets it); off: matplotlib's own window.
     pub show_plots_in_tool_window: bool,
@@ -1467,6 +1473,7 @@ impl Default for PythonSettings {
             show_interpreter_paths: true,
             interpreter_paths: BTreeMap::new(),
             test_runner: "auto".into(),
+            profiler: "auto".into(),
             show_plots_in_tool_window: true,
         }
     }
@@ -1948,6 +1955,16 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ruff_safe_fixes_on_save_default_off_and_round_trip() {
+        let old: Settings = serde_json::from_str(r#"{"languages":{"ruff":{"runOnSave":true}}}"#).unwrap();
+        assert!(old.languages.ruff.run_on_save);
+        assert!(!old.languages.ruff.fix_on_save);
+        let on: Settings = serde_json::from_str(r#"{"languages":{"ruff":{"fixOnSave":true}}}"#).unwrap();
+        assert!(on.languages.ruff.fix_on_save);
+        assert_eq!(serde_json::to_value(&on).unwrap()["languages"]["ruff"]["fixOnSave"], true);
+    }
 
     #[test]
     fn python_interpreter_may_name_a_run_target() {

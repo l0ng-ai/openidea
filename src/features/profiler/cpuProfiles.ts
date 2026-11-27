@@ -3,6 +3,7 @@ import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { notifications, toolWindowService } from "@/workbench/contributions";
+import { treeNotice } from "./model";
 import { addSnapshot } from "./store";
 
 /** A directory of V8 `.cpuprofile` files recorded by another feature (the debugger, for a page). */
@@ -81,11 +82,7 @@ export async function openSnapshotFiles(arg: unknown): Promise<void> {
     try {
       // oxlint-disable-next-line no-await-in-loop -- one snapshot per file, in the order picked
       const profile = await call(commands.profilerCollect({ kind: "snapshotFile", path, root }));
-      // A call-graph profile (cProfile) has exact edges but only an estimated call tree.
-      const notice = profile.calls.length
-        ? "cProfile records callers and callees, not whole stacks: the flame graph and call tree are estimated from them. The method list is exact."
-        : null;
-      addSnapshot(path.split(/[/\\]/).pop() ?? path, profile, notice, path);
+      addSnapshot(path.split(/[/\\]/).pop() ?? path, profile, treeNotice(profile), path);
       opened = true;
     } catch (e) {
       notifications().notify({

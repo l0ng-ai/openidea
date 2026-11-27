@@ -72,6 +72,11 @@ const DEFAULT_PYTHON_FORMATTER: ExternalFormatterValid = {
   languages: ["python"],
 };
 
+const DEFAULT_RUFF_FORMATTER: LanguagesValid["ruff"] = {
+  ...DEFAULT_PYTHON_FORMATTER,
+  fixOnSave: false,
+};
+
 /** `languages.php.languageLevel` values, newest first; `""` = Auto (from `composer.json`). */
 export const PHP_LANGUAGE_LEVELS = [
   "",
@@ -180,6 +185,8 @@ export interface LanguagesValid {
     interpreterPaths: Record<string, string[]>;
     /** Default test runner of gutter and context-menu runs (Settings › Python › Testing). */
     testRunner: PythonTestRunner;
+    /** What Profile runs Python under (Settings › Python › Profiler). */
+    profiler: PythonProfiler;
     /** matplotlib figures of Python runs go to the Plots tool window. */
     showPlotsInToolWindow: boolean;
   };
@@ -220,7 +227,7 @@ export interface LanguagesValid {
   oxfmt: ExternalFormatterValid;
   biome: ExternalFormatterValid;
   dprint: ExternalFormatterValid;
-  ruff: ExternalFormatterValid;
+  ruff: ExternalFormatterValid & { fixOnSave: boolean };
   black: ExternalFormatterValid;
   java: {
     jdk: string;
@@ -312,6 +319,9 @@ export type FolderListKey =
 export const PYTHON_TEST_RUNNERS = ["auto", "pytest", "unittest"] as const;
 export type PythonTestRunner = (typeof PYTHON_TEST_RUNNERS)[number];
 
+export const PYTHON_PROFILERS = ["auto", "cprofile", "py-spy"] as const;
+export type PythonProfiler = (typeof PYTHON_PROFILERS)[number];
+
 export const DEFAULT_LANGUAGES: LanguagesValid = {
   pluginFormatters: {},
   python: {
@@ -323,6 +333,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
     showInterpreterPaths: true,
     interpreterPaths: {},
     testRunner: "auto",
+    profiler: "auto",
     showPlotsInToolWindow: true,
   },
   ruby: { interpreter: "" },
@@ -343,7 +354,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   oxfmt: DEFAULT_FORMATTER,
   biome: DEFAULT_BIOME_FORMATTER,
   dprint: DEFAULT_DPRINT_FORMATTER,
-  ruff: DEFAULT_PYTHON_FORMATTER,
+  ruff: DEFAULT_RUFF_FORMATTER,
   black: DEFAULT_PYTHON_FORMATTER,
   java: {
     jdk: "",
@@ -446,6 +457,14 @@ function validateFormatter(raw: unknown, d = DEFAULT_FORMATTER): ExternalFormatt
   };
 }
 
+function validateRuffFormatter(raw: unknown): LanguagesValid["ruff"] {
+  const ruff = obj(raw);
+  return {
+    ...validateFormatter(ruff, DEFAULT_RUFF_FORMATTER),
+    fixOnSave: bool(ruff.fixOnSave, DEFAULT_RUFF_FORMATTER.fixOnSave),
+  };
+}
+
 export function validateLanguages(raw: unknown): LanguagesValid {
   const d = DEFAULT_LANGUAGES;
   const l = obj(raw);
@@ -481,6 +500,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         Object.entries(obj(py.interpreterPaths)).map(([python, paths]) => [python, strings(paths)]),
       ),
       testRunner: oneOf(py.testRunner, PYTHON_TEST_RUNNERS, d.python.testRunner),
+      profiler: oneOf(py.profiler, PYTHON_PROFILERS, d.python.profiler),
       showPlotsInToolWindow: bool(py.showPlotsInToolWindow, d.python.showPlotsInToolWindow),
     },
     ruby: { interpreter: text(ruby.interpreter, d.ruby.interpreter) },
@@ -528,7 +548,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     oxfmt: validateFormatter(l.oxfmt),
     biome: validateFormatter(l.biome, DEFAULT_BIOME_FORMATTER),
     dprint: validateFormatter(l.dprint, DEFAULT_DPRINT_FORMATTER),
-    ruff: validateFormatter(l.ruff, DEFAULT_PYTHON_FORMATTER),
+    ruff: validateRuffFormatter(l.ruff),
     black: validateFormatter(l.black, DEFAULT_PYTHON_FORMATTER),
     java: {
       jdk: text(java.jdk, d.java.jdk),

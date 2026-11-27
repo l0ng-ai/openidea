@@ -38,6 +38,10 @@
   border-bottom: 1px solid var(--border);
   overflow: hidden;
 }
+/* Match the Tree scroller's 8px end inset plus the row's 8px padding. */
+.view:has(> .tree > [data-scrollbar-shown]) > .header {
+  padding-inline-end: 16px;
+}
 .heading {
   position: relative;
   min-width: 0;
