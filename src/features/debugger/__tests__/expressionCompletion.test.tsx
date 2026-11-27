@@ -8,6 +8,8 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
   return { ...real, commands: { ...real.commands, debugCompletions: completions } };
 });
 
+import { registerAction } from "@/platform/actions";
+import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { useDebug, type DebugSession } from "../state";
 import { DebuggerOverlays } from "../ui/Overlays";
 import { applyCompletion, completionPrefix, matchingCompletions } from "../ui/ExpressionCompletion";
@@ -94,6 +96,31 @@ describe("expression completion", () => {
     expect(screen.queryByRole("option")).toBeNull();
     // The dialog stays open: Enter went to the completion, not to Evaluate.
     expect(useOverlays.getState().evaluate).not.toBeNull();
+  });
+
+  it("keeps ⌃Space in the field instead of running the keymap's completion for an editor", async () => {
+    completions.mockResolvedValue({ status: "ok", data: [] });
+    useDebug.setState({ sessions: { 1: session }, active: 1 });
+    const editorCompletion = vi.fn();
+    useKeymap.setState({ preset: "intellij-macos", overrides: { "test.completion": ["Ctrl+Space"] } });
+    const dispose = [
+      registerAction({ id: "test.completion", title: "Completion", run: editorCompletion }),
+      installKeyboardDispatcher(),
+    ];
+    try {
+      render(<DebuggerOverlays />);
+      act(() => openEvaluateDialog());
+      const field = screen.getByRole("textbox", { name: "Expression" });
+      field.focus();
+      await act(async () => {
+        fireEvent.keyDown(field, { key: " ", code: "Space", ctrlKey: true });
+      });
+      expect(editorCompletion).not.toHaveBeenCalled();
+      expect(completions).toHaveBeenCalled();
+    } finally {
+      dispose.forEach((d) => d());
+      useKeymap.setState({ overrides: {} });
+    }
   });
 
   it("splices a breakpoint's expression before its line, indented like it, for the language server", () => {

@@ -10,6 +10,7 @@ import type { DebugCompletion } from "@/bindings";
 import { useTx } from "@/platform/i18n";
 import { isImeKey } from "@/platform/ime";
 import { call, commands } from "@/platform/ipc";
+import { registerKeyClaim } from "@/platform/keymap";
 import { badgeKind, Popup, SymbolBadge } from "@/ui";
 import { isLive, type DebugSession } from "../state";
 import { importingCompletion, qualifyIn } from "../classImports";
@@ -98,6 +99,8 @@ export function useExpressionCompletion(
     setItems(null);
   };
   useEffect(() => () => clearTimeout(timer.current), []);
+  // ⌃Space in the field asks for completions here, not for the editor's behind a non-modal popup.
+  useEffect(() => registerKeyClaim((e, stroke) => stroke === "Ctrl+Space" && e.target === field.current), [field]);
 
   const request = (explicit: boolean) => {
     const el = field.current;
