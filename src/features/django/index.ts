@@ -7,7 +7,7 @@ import { useProject } from "@/platform/project";
 import { notifications, registerEditorBanner, registerRunAnythingProvider } from "@/workbench/contributions";
 import { loadManage, locateManage, manageRunAnything, resetManage, useManage } from "./manage";
 import { forgetModels, lookupCompletionExtension } from "./models";
-import { checkStubs, resetStubs, useStubsBanner } from "./stubs";
+import { checkStubs, resetStubs, useStubs, useStubsBanner } from "./stubs";
 import { forgetUrlNames, urlCompletionExtension, urlNavigation } from "./urls";
 
 const isUrls = (path: string) => path.endsWith("/urls.py");
@@ -54,6 +54,15 @@ export function activate(): () => void {
       const changed = [...e.created, ...e.modified, ...e.removed];
       if (changed.some(isUrls)) forgetUrlNames();
       if (changed.some(isModels)) forgetModels();
+    }),
+    // A fresh open races the index: manage.py, urls.py and models.py may be there once indexing ends.
+    onIdeEvent("indexState", (e) => {
+      if (e.indexing) return;
+      const { loaded, manage } = useManage.getState();
+      if (loaded === "yes" && !manage) resetManage();
+      forgetUrlNames();
+      forgetModels();
+      if (!useStubs.getState().python) void checkProject();
     }),
     useProject.subscribe((s, prev) => {
       if (s.project?.root === prev.project?.root) return;
