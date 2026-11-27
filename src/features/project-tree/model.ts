@@ -288,6 +288,8 @@ export interface ExtraRoot {
   icon: string;
   /** Folder listed by the node; omitted for a group node of `children`. */
   path?: string;
+  /** `path` is a file: shown as a leaf (a project file under a solution group), not a folder listing. */
+  file?: boolean;
   children?: readonly ExtraRoot[];
   detail?: string;
   readOnly?: boolean;
@@ -379,6 +381,31 @@ export function withExtraRoots(
   };
   const add = (extra: ExtraRoot, parentKey: string | null, readOnly: boolean): ProjectNode | null => {
     const ro = readOnly || !!extra.readOnly;
+    if (extra.file && extra.path !== undefined && !extra.children) {
+      // A file leaf is keyed in its group's namespace (like a library folder): the
+      // same file also shows in its own folder below the project, and `pathOfKey`
+      // still resolves the leaf to the real path for selection and context menus.
+      const ns = parentKey ? parentKey.slice(GROUP_PREFIX.length) : (extra.id ?? extra.label);
+      const key = libKey(ns, extra.path);
+      if (out.byKey.has(key)) return null;
+      const node: ProjectNode = {
+        key,
+        path: extra.path,
+        chain: [],
+        label: extra.label,
+        dir: false,
+        root: !parentKey,
+        entry: null,
+        ignored: false,
+        excluded: false,
+        symlink: false,
+        icon: extra.icon,
+        detail: extra.detail,
+      };
+      if (ro) node.readOnly = true;
+      out.byKey.set(key, node);
+      return node;
+    }
     if (extra.path !== undefined && !extra.children) {
       const path = extra.path;
       // Library folders of a group are keyed in their own namespace; other
@@ -476,10 +503,10 @@ export function withReadOnlyFolders(model: TreeModel, folders: readonly string[]
   return { roots: model.roots.map((n) => byKey.get(n.key) ?? n), children, byKey, keyOfPath: model.keyOfPath };
 }
 
-/** Folder roots of contributed entries (groups flattened), in display order. */
+/** Folder roots of contributed entries (groups flattened, file leaves left out), in display order. */
 export function extraFolders(extras: readonly ExtraRoot[], readOnly = false): ExtraRoot[] {
   return extras.flatMap((e) =>
-    e.path !== undefined && !e.children
+    e.path !== undefined && !e.children && !e.file
       ? [{ ...e, readOnly: readOnly || !!e.readOnly }]
       : extraFolders(e.children ?? [], readOnly || !!e.readOnly),
   );

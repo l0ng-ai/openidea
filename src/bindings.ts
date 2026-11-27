@@ -58,8 +58,9 @@ export const commands = {
 	agentCustomSave: (input: CustomAgentInput) => typedError<null, IdeError>(__TAURI_INVOKE("agent_custom_save", { input })),
 	agentDelete: (task: string, removeWorktree: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("agent_delete", { task, removeWorktree })),
 	/**
-	 *  Entries of `task`'s conversation, or of its subagent `subagent`'s. Async so a long
-	 *  conversation is cloned and serialised off the main thread.
+	 *  Entries of `task`'s conversation, or of its subagent `subagent`'s. On the blocking pool:
+	 *  the first read of a saved conversation parses its task file, and a long one is cloned
+	 *  and serialised.
 	 */
 	agentEntries: (task: string, subagent: string | null) => typedError<AgentEntry[], IdeError>(__TAURI_INVOKE("agent_entries", { task, subagent })),
 	/**  Sessions of the project on this machine that no task holds yet, newest first. */
@@ -842,6 +843,16 @@ export const commands = {
 	 */
 	historyRestore: (path: string, id: string) => typedError<null, IdeError>(__TAURI_INVOKE("history_restore", { path, id })),
 	/**
+	 *  Ends a child process started by this OpenIDEA host (language server, run, terminal,
+	 *  debug adapter or agent) and its descendants; refuses processes outside this host's tree.
+	 */
+	hostEndProcess: (pid: number) => typedError<boolean, IdeError>(__TAURI_INVOKE("host_end_process", { pid })),
+	/**
+	 *  Snapshot of host-wide resource counters (CPU, memory, network, disk) and, when
+	 *  `include_processes` is true, the process breakdown of OpenIDEA and top host processes.
+	 */
+	hostMetrics: (includeProcesses: boolean) => typedError<HostMetrics, IdeError>(__TAURI_INVOKE("host_metrics", { includeProcesses })),
+	/**
 	 *  Convert to cURL and Copy: request `index` of `text` (the editor buffer of `path`), with
 	 *  the variables of `env` substituted, as a cURL command.
 	 */
@@ -1212,6 +1223,24 @@ export const commands = {
 	 */
 	navInheritance: () => typedError<ClassInheritance[], IdeError>(__TAURI_INVOKE("nav_inheritance")),
 	/**
+	 *  Rename of the pytest fixture at `pos`: its definition, every place that gets it and the
+	 *  uses of those parameters in their functions. Cancellable.
+	 */
+	navPytestFixtureRename: (doc: DocId, pos: Pos, newName: string, request: RequestId) => typedError<WorkspaceEdit, IdeError>(__TAURI_INVOKE("nav_pytest_fixture_rename", { doc, pos, newName, request })),
+	/**
+	 *  Find Usages of the pytest fixture at `pos` (its definition, or a place asking for it): every
+	 *  test and fixture parameter, `usefixtures` and `getfixturevalue` string that gets it.
+	 *  None when `pos` names no fixture. Cancellable.
+	 */
+	navPytestFixtureUsages: (doc: DocId, pos: Pos, request: RequestId) => typedError<{
+	name: string,
+	definition: Location,
+	/**  Defined in the project (not by a plugin or pytest): it may be renamed. */
+	inProject: boolean,
+	/**  Every place that gets this fixture: parameters, `usefixtures` and `getfixturevalue` strings. */
+	usages: Location[],
+} | null, IdeError>(__TAURI_INVOKE("nav_pytest_fixture_usages", { doc, pos, request })),
+	/**
 	 *  pytest fixtures at `pos` of a Python document: the definition pytest uses for the fixture
 	 *  named there (a test's parameter, a `usefixtures` / `getfixturevalue` string), and the
 	 *  fixtures visible where a fixture name goes, for completion.
@@ -1239,6 +1268,7 @@ export const commands = {
 	notebookRestart: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_restart", { id })),
 	notebookSave: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_save", { id })),
 	notebookUndo: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_undo", { id })),
+	notebookVariables: (id: string) => typedError<NotebookVariable[] | null, IdeError>(__TAURI_INVOKE("notebook_variables", { id })),
 	openProject: (path: string) => typedError<ProjectInfo_Serialize, IdeError>(__TAURI_INVOKE("open_project", { path })),
 	/**  Files and folders that continue `prefix`, a path being typed in `from`. */
 	pathCompletions: (from: IpcPath, prefix: string) => typedError<PathCompletion[], IdeError>(__TAURI_INVOKE("path_completions", { from, prefix })),
@@ -8420,6 +8450,46 @@ export type HistoryTip = {
 	commit: string,
 };
 
+/**  Snapshot of host-wide CPU, memory, network, disk and process usage. */
+export type HostMetrics = {
+	/**  Overall CPU utilization across all logical cores (`0..=100`); `null` on the first sample. */
+	cpuPercent: number | null,
+	/**  Logical CPU cores available to this host or container. */
+	cpuCores: number,
+	/**  Unix 1m, 5m, 15m load averages; `null` on Windows. */
+	loadAverage: [(number | null), (number | null), (number | null)] | null,
+	/**  Host or container memory in use, in bytes. */
+	memoryUsedBytes: number | null,
+	/**  Total physical (or container limit) memory, in bytes. */
+	memoryTotalBytes: number | null,
+	/**  Bytes/s received across non-loopback network interfaces; `null` on the first sample or unsupported OS. */
+	netRxBytesPerSec: number | null,
+	/**  Bytes/s sent across non-loopback network interfaces; `null` on the first sample or unsupported OS. */
+	netTxBytesPerSec: number | null,
+	/**  Bytes/s read from block storage; `null` on the first sample or unsupported OS. */
+	diskReadBytesPerSec: number | null,
+	/**  Bytes/s written to block storage; `null` on the first sample or unsupported OS. */
+	diskWriteBytesPerSec: number | null,
+	/**  Free bytes available to the user on the project volume (or `$HOME` fallback). */
+	diskAvailableBytes: number | null,
+	/**  Total capacity in bytes of the project volume (or `$HOME` fallback). */
+	diskTotalBytes: number | null,
+	/**  Uptime of the backend process in milliseconds. */
+	uptimeMs: number | null,
+	/**  OpenIDEA backend, language servers, runs, terminals, debug adapters and agents (`includeProcesses = true`). */
+	processes: ProcessMemory[],
+	/**  Highest-usage processes on the host outside OpenIDEA's own process tree (`includeProcesses = true`). */
+	externalProcesses: HostProcess[],
+};
+
+/**  One process outside OpenIDEA's own process tree on the host (read-only in the UI). */
+export type HostProcess = {
+	pid: number,
+	name: string,
+	cpuPercent: number | null,
+	memoryBytes: number | null,
+};
+
 /**  What triggered a hot reload; `flutter debug_adapter` takes it as `reason`. */
 export type HotReloadReason = "manual" | "save";
 
@@ -8534,7 +8604,9 @@ export type IdeError = {
 
 export type IdeEvent = 
 /**  Project data source settings changed; reload the Database tree. */
-{ type: "dbSourcesChanged" } | { type: "mcpRequest"; id: number; request: McpUiRequest } | { type: "mcpRequestClosed"; id: number } | 
+{ type: "dbSourcesChanged" } | 
+/**  A Python run saved a matplotlib figure for the Plots tool window (a PNG file). */
+{ type: "plotAdded"; path: string } | { type: "mcpRequest"; id: number; request: McpUiRequest } | { type: "mcpRequestClosed"; id: number } | 
 /**  Project window membership or selection changed. */
 { type: "windowGroupsChanged" } | 
 /**  A project was loaded or unloaded for the MCP server without a window of its own. */
@@ -10774,6 +10846,13 @@ export type NotebookSnapshot = {
 	cells: NotebookCell[],
 };
 
+/**  One row of the Jupyter Variables tool window. */
+export type NotebookVariable = {
+	name: string,
+	type: string,
+	value: string,
+};
+
 /**  A notification button that runs one of the publishing plugin's commands. */
 export type NotificationAction = {
 	label: string,
@@ -12166,6 +12245,15 @@ export type PytestFixtureReference = {
 	definition: Location | null,
 };
 
+export type PytestFixtureUsages = {
+	name: string,
+	definition: Location,
+	/**  Defined in the project (not by a plugin or pytest): it may be renamed. */
+	inProject: boolean,
+	/**  Every place that gets this fixture: parameters, `usefixtures` and `getfixturevalue` strings. */
+	usages: Location[],
+};
+
 /**  A class definition and the methods it declares. */
 export type PythonClassFacts = {
 	name: string,
@@ -12262,6 +12350,11 @@ export type PythonSettings = {
 	 *  it, else unittest), `pytest` or `unittest`.
 	 */
 	testRunner?: string,
+	/**
+	 *  Show matplotlib figures of Python runs in the Plots tool window (the IDE sets `MPLBACKEND`
+	 *  unless the run sets it); off: matplotlib's own window.
+	 */
+	showPlotsInToolWindow?: boolean,
 };
 
 export type PythonStubLinks = {

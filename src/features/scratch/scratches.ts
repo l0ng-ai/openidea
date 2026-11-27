@@ -2,7 +2,8 @@
  * Scratch files live in the user data dir (`<data>/scratches`) of the host that runs the
  * window's file commands (the server in a remote window), not in the project, like IDEA's
  * config-dir scratches. Creating one picks the next free `scratch[_n].<ext>` name and opens
- * it as a normal document.
+ * it as a normal document. New Scratch Buffer cycles through five plain-text `buffer<n>.txt`
+ * files in the same folder, creating each one only when it is missing.
  */
 import { toBase64 } from "@/platform/base64";
 import { call, commands, emitLocalIdeEvent, isTauri } from "@/platform/ipc";
@@ -32,9 +33,14 @@ export const tauriScratchBackend: ScratchBackend = {
 
 let backend: ScratchBackend = tauriScratchBackend;
 
+// IDEA's ide.scratch.buffers registry default.
+const SCRATCH_BUFFERS = 5;
+let currentBuffer = 0;
+
 /** Tests swap the backend. */
 export function setScratchBackend(b: ScratchBackend) {
   backend = b;
+  currentBuffer = 0;
 }
 
 export const scratchBackend = () => backend;
@@ -62,6 +68,31 @@ export async function createScratch(lang: ScratchLanguage): Promise<string | nul
     notifications().notify({
       level: "error",
       title: "Cannot create scratch file",
+      body: e instanceof Error ? e.message : String(e),
+    });
+    return null;
+  }
+}
+
+export async function newScratchBuffer(): Promise<string | null> {
+  // Advance synchronously so even overlapping invocations choose different buffers.
+  currentBuffer = (currentBuffer % SCRATCH_BUFFERS) + 1;
+  const name = `buffer${currentBuffer}.txt`;
+  try {
+    const dir = await scratchesDir();
+    const existing = new Map((await backend.listNames(dir)).map((n) => [n.toLowerCase(), n]));
+    const path = `${dir}/${existing.get(name.toLowerCase()) ?? name}`;
+    if (!existing.has(name.toLowerCase())) {
+      await backend.createFile(path, "");
+      // The file watcher covers the project only: tell the project view.
+      emitLocalIdeEvent({ type: "fsChanged", created: [path], modified: [], removed: [] });
+    }
+    await backend.open(path, null);
+    return path;
+  } catch (e) {
+    notifications().notify({
+      level: "error",
+      title: "Cannot create scratch buffer",
       body: e instanceof Error ? e.message : String(e),
     });
     return null;
