@@ -82,9 +82,10 @@ export function lspExtensions(ctx: EditorDocContext): Extension[] {
 }
 
 /**
- * A notebook code cell: completion, hover / quick docs, parameter info, diagnostics, highlights
- * and ⌘/Ctrl-click navigation. Features that edit other files or need an editor tab (rename,
- * intentions, inlay hints, lenses) stay with text editors.
+ * A notebook code cell: completion, hover / quick docs, parameter info, diagnostics, highlights,
+ * ⌘/Ctrl-click navigation and the intentions menu (⌥↵), which is where a language contributes its
+ * own entries (Python's "create function") next to the server's code actions. Features that edit
+ * other files or need an editor tab (rename, inlay hints, lenses) stay with text editors.
  */
 export function cellLspExtensions(ctx: EditorDocContext): Extension[] {
   return [
@@ -96,6 +97,7 @@ export function cellLspExtensions(ctx: EditorDocContext): Extension[] {
     signatureExtension(),
     completionExtension(),
     navigationExtension(),
+    intentionsExtension(),
   ];
 }
 

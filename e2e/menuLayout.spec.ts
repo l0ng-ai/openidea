@@ -57,3 +57,41 @@ test("shortcut ends align on a menu level with submenus", async ({ workbench: pa
   expect(await long.evaluate((el) => el.scrollWidth)).toBeGreaterThan(await long.evaluate((el) => el.clientWidth));
   await expect(menu.getByText("Open File in a New Window", { exact: true })).toBeInViewport({ ratio: 1 });
 });
+
+test("a context menu moves up to fit, and one taller than the window scrolls without cutting labels", async ({
+  workbench: page,
+}) => {
+  await page.setViewportSize({ width: 800, height: 480 });
+  const open = (y: number, count: number) =>
+    page.evaluate(
+      async ({ y, count }) => {
+        const path = "/src/ui/Menu.tsx";
+        const { showContextMenu } = await import(/* @vite-ignore */ path);
+        showContextMenu(
+          { x: 80, y },
+          Array.from({ length: count }, (_, i) => ({ label: `Convert to Jupyter Notebook ${i}`, shortcut: "Ctrl+O" })),
+        );
+      },
+      { y, count },
+    );
+  const menu = page.getByRole("menu", { name: "Context menu" });
+  const popup = menu.locator("xpath=ancestor::*[@data-popup][1]");
+  const cut = () =>
+    menu.evaluate((el) =>
+      [...el.querySelectorAll('[role="menuitem"] > span')].some((s) => s.scrollWidth > s.clientWidth),
+    );
+
+  // Taller than the space below and above the point, not than the window: moved up rather than scrolled.
+  await open(240, 12);
+  await expect(popup).toHaveAttribute("data-positioned", "true");
+  expect(await popup.evaluate((el) => el.scrollHeight - el.clientHeight)).toBe(0);
+  await expect(menu.getByRole("menuitem").last()).toBeInViewport({ ratio: 1 });
+  expect(await cut()).toBe(false);
+  await page.keyboard.press("Escape");
+
+  // Taller than the window: scrolls, and the scrollbar widens the menu instead of cutting its labels.
+  await open(240, 40);
+  await expect(popup).toHaveAttribute("data-positioned", "true");
+  expect(await popup.evaluate((el) => el.scrollHeight)).toBeGreaterThan(await popup.evaluate((el) => el.clientHeight));
+  expect(await cut()).toBe(false);
+});

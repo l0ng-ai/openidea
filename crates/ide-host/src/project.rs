@@ -1051,9 +1051,8 @@ fn db_sources_watch(
         let Some(db) = weak.upgrade() else { return };
         let sink = sink.clone();
         runtime.spawn(async move {
-            if db.reconcile_sources().await {
-                sink.emit(IdeEvent::DbSourcesChanged);
-            }
+            db.reconcile_sources().await;
+            sink.emit(IdeEvent::DbSourcesChanged);
         });
     }))
     .inspect_err(|e| tracing::warn!("{}", e.message))

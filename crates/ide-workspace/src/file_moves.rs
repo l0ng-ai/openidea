@@ -56,7 +56,7 @@ pub fn moved_path(path: &Path, moves: &[FileMove]) -> PathBuf {
 }
 
 /// Text as the document layer sees it (normalized line endings, unsaved edits).
-fn read_text(documents: &Documents, path: &Path) -> IdeResult<String> {
+pub fn read_text(documents: &Documents, path: &Path) -> IdeResult<String> {
     if let Some(text) = documents.text_of(path) {
         return Ok(text);
     }

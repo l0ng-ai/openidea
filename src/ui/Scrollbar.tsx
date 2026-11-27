@@ -15,6 +15,7 @@ export const hideNativeScrollbar = styles.hideNative;
  * page catches up.
  *
  * `contentHeight` re-measures when the scroller's content grows.
+ * While the thumb is shown, `target` carries `data-scrollbar-shown`.
  */
 export function Scrollbar({
   target,
@@ -106,6 +107,7 @@ function layout(el: HTMLElement | null, t: HTMLElement | null, th: HTMLElement |
   t.style.top = `${el.offsetTop}px`;
   t.style.height = `${height}px`;
   t.style.display = scrolls ? "" : "none";
+  el.toggleAttribute("data-scrollbar-shown", scrolls);
   if (!scrolls) return null;
   const size = Math.max(MIN_THUMB, (height * height) / el.scrollHeight);
   const range = height - size;

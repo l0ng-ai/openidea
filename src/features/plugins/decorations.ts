@@ -1,4 +1,4 @@
-import { StateEffect, StateField, type Text } from "@codemirror/state";
+import { StateEffect, StateField, type Text, type Range as DecorationRange } from "@codemirror/state";
 import {
   Decoration,
   EditorView,
@@ -239,15 +239,43 @@ class AfterText extends WidgetType {
   }
 }
 
-/** A Markdown hover placed on a range (and its `after` label). */
+/**
+ * A Markdown hover placed on a range (and its `after` label). `label` is where the label is
+ * drawn: the end of the line its range ends on, re-derived on every edit so the label stays
+ * glued to that line (see the field's update below).
+ */
 interface PlacedHover {
   plugin: string;
   path: string;
   range: Range;
   from: number;
   to: number;
+  /** The end of the line the label is drawn on (the widget anchor; AfterText). */
+  label: number;
   after: string | null;
   markdown: string;
+}
+
+/** One placed snapshot item: the mapped range plus everything needed to re-place its drawing. */
+interface Piece {
+  plugin: string;
+  /** The range as the plugin published it, for matching a later snapshot (refreshedMarkdown). */
+  range: Range;
+  from: number;
+  to: number;
+  /** The 1-based line the item's `after` label is drawn on. */
+  line: number;
+  after: string | null;
+  className: string | null;
+  hover: string | null;
+  markdown: string;
+  css: string | null;
+  markCss: string | null;
+}
+
+/** The end of a line by number, clamped to the document (edits may have removed lines). */
+function lineEnd(doc: Text, line: number): number {
+  return doc.line(Math.min(Math.max(line, 1), doc.lines)).to;
 }
 
 /** A hover card that is open now; refreshed when its plugin pushes new data. */
@@ -333,6 +361,8 @@ function refreshOpenHovers(plugin: string) {
 interface PlacedDecorations {
   decorations: CmDecorations;
   hovers: PlacedHover[];
+  /** One entry per placed snapshot item; positions are mapped piece by piece (see update). */
+  pieces: Piece[];
 }
 
 export function decorationExtension(ctx: EditorDocContext) {
@@ -340,26 +370,76 @@ export function decorationExtension(ctx: EditorDocContext) {
     create: (state) => build(state.doc),
     update: (value, tr) => {
       if (tr.effects.some((e) => e.is(refresh))) return build(tr.state.doc);
-      if (tr.docChanged)
-        return {
-          decorations: value.decorations.map(tr.changes),
-          // Follow the same positions as the rendered labels: the mark starts
-          // after an insertion at its edge, and an after label tracks its text.
-          hovers: value.hovers.map((h) => ({
-            ...h,
-            from: tr.changes.mapPos(h.from, 1),
-            to: tr.changes.mapPos(h.to, h.after ? 1 : -1),
-          })),
-        };
-      // A caret move or a selection change must not drop the hover data.
-      return value;
+      if (!tr.docChanged) return value; // A caret move must not drop the hover data.
+      // Plugin snapshots hold stale (line, col) data until republished, so a plain rebuild
+      // would anchor marks back to pre-edit columns. Positions are mapped instead — piece by
+      // piece — with one exception: an `after` label is glued to the end of its line, while
+      // CodeMirror maps a `side: 1` point widget across an insertion typed at its position
+      // (which would walk the lens into the line an Enter creates). The label follows the
+      // range's end (mapped close to the text, before an insertion at its edge), so it stays
+      // on its line across Enter there and still moves with the text when the line is split
+      // inside the range. Everything is re-placed from the mapped pieces.
+      const marks: DecorationRange<Decoration>[] = [];
+      const hovers: PlacedHover[] = [];
+      const pieces: Piece[] = [];
+      for (const piece of value.pieces) {
+        const to = tr.changes.mapPos(piece.to, -1);
+        // An empty range (a point annotation) stays a point before what is typed at it.
+        const from = piece.from === piece.to ? to : tr.changes.mapPos(piece.from, 1);
+        if (from > to) continue; // The edit deleted the item's text: drop it until republish.
+        pieces.push({ ...piece, from, to, line: tr.newDoc.lineAt(to).number });
+      }
+      place(pieces, tr.newDoc, marks, hovers);
+      return { decorations: Decoration.set(marks, true), hovers, pieces };
     },
     provide: (field) => EditorView.decorations.from(field, (value) => value.decorations),
   });
 
+  const place = (pieces: Piece[], doc: Text, marks: DecorationRange<Decoration>[], hovers: PlacedHover[]) => {
+    for (const piece of pieces) {
+      const { from, to } = piece;
+      const label = lineEnd(doc, piece.line);
+      if (piece.markdown) {
+        hovers.push({
+          plugin: piece.plugin,
+          path: ctx.path,
+          range: piece.range,
+          from,
+          to,
+          label,
+          after: piece.after,
+          markdown: piece.markdown,
+        });
+      }
+      if (from < to) {
+        marks.push(
+          Decoration.mark({
+            class: piece.className ?? "",
+            attributes: {
+              ...(piece.hover && !piece.markdown ? { title: piece.hover } : {}),
+              ...(piece.markCss ? { style: piece.markCss } : {}),
+            },
+          }).range(from, to),
+        );
+      }
+      if (piece.after) {
+        // The message belongs at the line end even when the diagnostic's range ends mid-line
+        // (a typo in the middle of a long line). `side: 1` keeps it after the caret there; the
+        // inline blame steps past it, so: git hint | lens | blame.
+        marks.push(
+          Decoration.widget({
+            widget: new AfterText(piece.after, piece.className ?? "", piece.hover, piece.markdown, piece.css),
+            side: 1,
+          }).range(label),
+        );
+      }
+    }
+  };
+
   const build = (doc: Text): PlacedDecorations => {
-    const ranges = [];
+    const marks: DecorationRange<Decoration>[] = [];
     const hovers: PlacedHover[] = [];
+    const pieces: Piece[] = [];
     for (const [plugin, sets] of snapshots)
       for (const set of currentSets(sets, false))
         if (!set.tree && String(set.path) === String(ctx.path)) {
@@ -369,42 +449,23 @@ export function decorationExtension(ctx: EditorDocContext) {
             const from = offset(doc, item.range.start),
               to = offset(doc, item.range.end);
             if (from == null || to == null || from > to) continue;
-            const markdown = item.markdownHover || null;
-            if (markdown)
-              hovers.push({
-                plugin,
-                path: ctx.path,
-                range: item.range,
-                from,
-                to,
-                after: item.after,
-                markdown,
-              });
-            if (from < to)
-              ranges.push(
-                Decoration.mark({
-                  class: className,
-                  attributes: {
-                    ...(item.hover && !markdown ? { title: item.hover } : {}),
-                    ...(colorStyle(item, true) ? { style: colorStyle(item, true)! } : {}),
-                  },
-                }).range(from, to),
-              );
-            if (item.after) {
-              // The message belongs at the line end even when the diagnostic's range ends
-              // mid-line (a typo in the middle of a long line). `side: 1` keeps it after the
-              // caret there; the inline blame steps past it, so: git hint | lens | blame.
-              const end = doc.lineAt(to);
-              ranges.push(
-                Decoration.widget({
-                  widget: new AfterText(item.after, className, item.hover, markdown, colorStyle(item, false)),
-                  side: 1,
-                }).range(end.to),
-              );
-            }
+            pieces.push({
+              plugin,
+              range: item.range,
+              from,
+              to,
+              line: doc.lineAt(to).number,
+              after: item.after,
+              className,
+              hover: item.hover,
+              markdown: item.markdownHover || "",
+              css: colorStyle(item, false),
+              markCss: colorStyle(item, true),
+            });
           }
         }
-    return { decorations: Decoration.set(ranges, true), hovers };
+    place(pieces, doc, marks, hovers);
+    return { decorations: Decoration.set(marks, true), hovers, pieces };
   };
 
   const tooltip: ReturnType<typeof hoverTooltip> = hoverTooltip(
@@ -432,13 +493,12 @@ function markdownHover(
   const active = new WeakMap<EditorView, { placed: PlacedHover; fromLabel: boolean; tooltip: Tooltip }>();
   return (view: EditorView, pos: number, side: -1 | 1): Tooltip | null => {
     const hovers = view.state.field(field).hovers;
-    // An after label is a widget at the line end, past the range when the
-    // annotation ends mid-line.
-    const labelPos = (h: PlacedHover) => (h.after ? view.state.doc.lineAt(h.to).to : null);
-    const candidates = hovers.filter((h) => (h.from <= pos && pos <= h.to) || pos === labelPos(h));
-    const placed = candidates.find((h) => labelPos(h) === pos && side >= 0) ?? candidates[candidates.length - 1];
+    // An after label is a widget drawn at the end of its line (`label`), which can be past the
+    // range when the annotation ends mid-line.
+    const candidates = hovers.filter((h) => (h.from <= pos && pos <= h.to) || pos === h.label);
+    const placed = candidates.find((h) => h.label === pos && side >= 0) ?? candidates[candidates.length - 1];
     if (!placed) return null;
-    const fromLabel = !!placed.after && labelPos(placed) === pos && side >= 0;
+    const fromLabel = !!placed.after && placed.label === pos && side >= 0;
     const current = active.get(view);
     if (
       current?.placed.plugin === placed.plugin &&
@@ -451,12 +511,12 @@ function markdownHover(
     let mounted = false;
     const anchor = fromLabel
       ? () => {
-          // The widget sits at the line end (AfterText), which can be past the
-          // range end when the annotation ends mid-line.
-          const labelPos = view.state.doc.lineAt(placed.to).to;
+          // The widget is drawn at the end of the hover's line (AfterText), which can be past
+          // the range end when the annotation ends mid-line.
+          const at = placed.label;
           if (!label?.isConnected) {
             const matches = [...view.dom.querySelectorAll<HTMLElement>(`.${styles.after}`)].filter(
-              (node) => node.textContent === placed.after && view.posAtDOM(node) === labelPos,
+              (node) => node.textContent === placed.after && view.posAtDOM(node) === at,
             );
             label = matches.length === 1 ? matches[0] : undefined;
           }
@@ -469,18 +529,18 @@ function markdownHover(
       : undefined;
     if (anchor && !anchor()) return null;
     const tooltip: Tooltip = {
-      pos: fromLabel ? (labelPos(placed) ?? placed.to) : placed.from,
+      pos: fromLabel ? placed.label : placed.from,
       end: placed.to,
       above: true,
       create: () => {
         const hover = resizableDecorationHover(view, renderPluginMarkdown(placed.markdown, ctx.uiMode), {
           anchor,
-          position: fromLabel ? (labelPos(placed) ?? placed.to) : placed.from,
+          position: fromLabel ? placed.label : placed.from,
           close: () => close(view),
           containsSource: (event) => {
             if (!(event.target instanceof Node) || !view.contentDOM.contains(event.target)) return false;
             const at = view.posAtCoords({ x: event.clientX, y: event.clientY });
-            return at != null && ((placed.from <= at && at <= placed.to) || at === labelPos(placed));
+            return at != null && ((placed.from <= at && at <= placed.to) || at === placed.label);
           },
         });
         const card: OpenHover = {

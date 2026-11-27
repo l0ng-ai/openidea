@@ -56,6 +56,19 @@ describe("parseComparison", () => {
     });
   });
 
+  it("doctest", () => {
+    const output = [
+      "Failed example:",
+      "    sorted({3, 1})",
+      "Expected:",
+      "    [1, 3]",
+      "    done",
+      "Got:",
+      "    [1, 2]",
+    ];
+    expect(parseComparison(output)).toEqual({ expected: "[1, 3]\ndone", actual: "[1, 2]" });
+  });
+
   it("no comparison in other failures", () => {
     expect(parseComparison(["java.lang.IllegalStateException: boom", "\tat com.acme.A.b(A.java:3)"])).toBeNull();
   });

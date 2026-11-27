@@ -71,6 +71,19 @@ function positionOf(text: string, pos: number): { line: number; col: number } {
   return { line: before.split("\n").length - 1, col: pos - lineStart };
 }
 
+/** Whether two cell-document maps name the same cells and documents. */
+function sameCellDocs(
+  before: ReadonlyMap<string, NotebookCellDoc>,
+  after: ReadonlyMap<string, NotebookCellDoc>,
+): boolean {
+  if (before.size !== after.size) return false;
+  for (const [cell, doc] of after) {
+    const old = before.get(cell);
+    if (!old || old.doc !== doc.doc || old.uri !== doc.uri) return false;
+  }
+  return true;
+}
+
 /**
  * Where the caret goes after undo/redo turned `before` into `after`: the end of the changed
  * text, as IDEA puts it at the undone change; the old caret when the cell did not change.
@@ -116,8 +129,8 @@ export class NotebookSession {
   private output = new OutputReducer();
   private stopEvents: (() => void) | null = null;
   private errors = new Map<ErrorOwner, { cause: unknown; message: string }>();
-  /** The code cells `cellDocs` was fetched for. */
-  private cellDocsKey: string | null = null;
+  /** Orders cell-document lookups so a slow one cannot publish over a newer answer. */
+  private cellDocsSeq = 0;
   private revealSeq = 0;
   // EditorState contains selection and syntax state, but deliberately no local history.
   readonly editors = new Map<string, EditorState>();
@@ -195,18 +208,23 @@ export class NotebookSession {
     for (const id of this.editors.keys()) if (!live.has(id)) this.editors.delete(id);
     this.syncCellDocs(snapshot);
   }
-  /** The backend gives cells their documents as it applies edits; fetch them when the code cells change. */
+  /**
+   * The backend gives cells their documents as it applies edits; fetch them when the code
+   * cells change. The ids alone are not enough: the backend also hands a cell a new
+   * `DocId` when its servers open the notebook again (a restarted language server, a
+   * reopened file), and a request on a spent id answers "DocId#N is not open". The
+   * lookup is cheap, so it runs on every snapshot and only publishes what moved.
+   */
   private syncCellDocs(snapshot: NotebookSnapshot) {
-    const code = snapshot.cells.filter((cell) => cell.cellType === "code").map((cell) => cell.id);
-    const key = [snapshot.id, ...code].join("\n");
-    if (key === this.cellDocsKey) return;
-    this.cellDocsKey = key;
+    const seq = ++this.cellDocsSeq;
     Promise.resolve()
       .then(() => this.backend.cellDocs(snapshot.id))
       .then(
         (docs) => {
-          if (!this.disposed && this.cellDocsKey === key)
-            this.publish({ cellDocs: new Map(docs.map((doc) => [doc.cell, doc])) });
+          if (this.disposed || seq !== this.cellDocsSeq) return;
+          const next = new Map(docs.map((doc) => [doc.cell, doc]));
+          if (sameCellDocs(this.state.cellDocs, next)) return;
+          this.publish({ cellDocs: next });
         },
         // Without language servers cells keep plain editing.
         () => {},

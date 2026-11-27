@@ -4437,6 +4437,45 @@ async fn snapshot_diagnostics_collect_pull_and_push_without_publishing_problems(
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn snapshot_completion_asks_a_transient_copy_and_leaves_the_live_document() {
+    let caps = json!({
+        "positionEncoding": "utf-8",
+        "textDocumentSync": { "openClose": true, "change": 2 },
+        "completionProvider": {},
+    });
+    let h = harness(&[("mock", caps)]);
+    let (_, path) = h.open("a.mk", "the live editor\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let uri = uri_of(&path);
+    let live = uri.clone();
+    *s.responder.lock() = Some(Arc::new(move |_, method, params| {
+        (method == "textDocument/completion").then(|| {
+            assert_ne!(params["textDocument"]["uri"], live);
+            // UTF-16 column 4 after the emoji is UTF-8 byte 6.
+            assert_eq!(params["position"], json!({ "line": 1, "character": 6 }));
+            json!([{ "label": "total", "kind": 5 }])
+        })
+    }));
+    let items = h
+        .mgr
+        .snapshot_completion(&path, &LanguageId("mock".into()), "a\n🙂o.\nb", Pos::new(1, 4), &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        items.iter().map(|i| (i.label.as_str(), i.kind)).collect::<Vec<_>>(),
+        [("total", Some(CompletionKind::Field))]
+    );
+    assert!(s.notified("textDocument/didChange").is_empty());
+    eventually(|| s.notified("textDocument/didClose").len() == 1).await;
+    let opened: Vec<_> =
+        s.notified("textDocument/didOpen").into_iter().filter(|notice| notice["textDocument"]["uri"] != uri).collect();
+    assert_eq!(opened.len(), 1);
+    assert_eq!(opened[0]["textDocument"]["text"], "a\n🙂o.\nb");
+    assert!(s.docs.lock().contains_key(&uri));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn source_actions_use_snapshot_text_and_accept_only_its_passive_edits() {
     let caps = json!({
         "positionEncoding": "utf-8",
@@ -6127,12 +6166,23 @@ async fn references_open_unopened_files_that_mention_the_name() {
     h.wait_status("mock", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 2).await;
 
-    let refs =
-        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
+    let partial = Mutex::new(Vec::new());
+    let shown = |found: ide_lsp::types::References| {
+        let mut paths: Vec<PathBuf> = found.locations.iter().map(|l| l.path.to_path_buf()).collect();
+        paths.sort();
+        partial.lock().push(paths);
+    };
+    let refs = h
+        .mgr
+        .references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), Some(&shown))
+        .await
+        .unwrap();
     let mut paths: Vec<PathBuf> = refs.locations.iter().map(|l| l.path.to_path_buf()).collect();
     paths.sort();
     assert_eq!(paths, vec![a.clone(), b.clone(), d.clone()]);
     assert_eq!(refs.incomplete, None);
+    // What the server found in the open files is shown before the candidate files are searched.
+    assert_eq!(*partial.lock(), vec![vec![a.clone(), d.clone()]]);
 
     let q = seen.lock()[0].clone();
     assert_eq!((q.word.as_str(), q.root.as_path(), q.limit), (WORD, h.root.as_path(), ide_lsp::MAX_CANDIDATES));
@@ -6528,13 +6578,15 @@ async fn java_usages_in_the_sources_arrive_before_the_dependencies() {
         .await
         .unwrap();
     let partials = partials.into_inner();
-    assert_eq!(partials.len(), 1);
+    assert_eq!(partials.len(), 2);
     let paths =
         |r: &References| r.locations.iter().map(|l| (l.path.to_path_buf(), l.uri.is_some())).collect::<Vec<_>>();
-    let mut shown = paths(&partials[0]);
+    // The open file's usages, then the sources' once the candidate files were searched.
+    assert_eq!(paths(&partials[0]), [(a.clone(), false)]);
+    let mut shown = paths(&partials[1]);
     shown.sort();
     assert_eq!(shown, [(a.clone(), false), (b.clone(), false)]);
-    assert_eq!(partials[0].classified.len(), 2);
+    assert_eq!(partials[1].classified.len(), 2);
     // All of them, those in the sources first.
     assert_eq!(refs.locations.len(), 3);
     assert!(refs.locations[..2].iter().all(|l| l.uri.is_none()));
@@ -6546,7 +6598,7 @@ async fn java_usages_in_the_sources_arrive_before_the_dependencies() {
     let scopes: Vec<_> =
         s.requested("workspace/executeCommand").iter().map(|p| p["arguments"].get(4).cloned()).collect();
     assert_eq!(scopes, [Some(json!("sources")), Some(json!("sources")), None]);
-    // Without the libraries: the sources alone, widened, and no partial answer.
+    // Without the libraries: the sources alone, widened, the open file's shown first.
     let partials = Mutex::new(Vec::new());
     let project = h
         .mgr
@@ -6561,7 +6613,8 @@ async fn java_usages_in_the_sources_arrive_before_the_dependencies() {
         )
         .await
         .unwrap();
-    assert!(partials.into_inner().is_empty());
+    let partials = partials.into_inner();
+    assert_eq!(partials.iter().map(paths).collect::<Vec<_>>(), [[(a.clone(), false)]]);
     assert!(project.libraries_skipped);
     assert_eq!(project.locations.len(), 2);
     assert!(project.locations.iter().all(|l| l.uri.is_none()));

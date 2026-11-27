@@ -397,6 +397,7 @@ export const commands = {
 	 */
 	dbRunTool: (request: RequestId, id: string, executable: string, job: DbToolJob, onOutput: Channel<DbToolLine[]>) => typedError<number | null, IdeError>(__TAURI_INVOKE("db_run_tool", { request, id, executable, job, onOutput })),
 	dbSaveJdbcDriver: (driver: DbJdbcDriver_Deserialize) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_jdbc_driver", { driver })),
+	dbSaveSourceFolders: (folders: DbSourceFolder_Deserialize[]) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_source_folders", { folders })),
 	dbSaveSourceVisibility: (id: string, available: string[], change: DbVisibilityChange) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_source_visibility", { id, available, change })),
 	dbSaveSources: (sources: DataSource_Deserialize[]) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_sources", { sources })),
 	dbSavedCatalog: (id: string) => typedError<{
@@ -410,6 +411,7 @@ export const commands = {
 	dbSetManualCommit: (id: string, manual: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_set_manual_commit", { id, manual })),
 	dbSetPassword: (id: string, password: string | null, save: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_set_password", { id, password, save })),
 	dbSetSshSecret: (id: string, secret: string | null, save: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_set_ssh_secret", { id, secret, save })),
+	dbSourceFolders: () => typedError<DbSourceFolder_Serialize[], IdeError>(__TAURI_INVOKE("db_source_folders")),
 	dbSources: () => typedError<DataSource_Serialize[], IdeError>(__TAURI_INVOKE("db_sources")),
 	dbStatements: (id: string, text: string, from: number, to: number) => typedError<SqlStatement[], IdeError>(__TAURI_INVOKE("db_statements", { id, text, from, to })),
 	dbTableDetails: (id: string, schema: string, table: string) => typedError<DbTableDetails, IdeError>(__TAURI_INVOKE("db_table_details", { id, schema, table })),
@@ -1094,6 +1096,7 @@ export const commands = {
 	activeParameter: number,
 } | null, IdeError>(__TAURI_INVOKE("lsp_signature_help", { doc, pos })),
 	lspSignatureInfo: (request: RequestId, doc: DocId, pos: Pos) => typedError<MethodSignature, IdeError>(__TAURI_INVOKE("lsp_signature_info", { request, doc, pos })),
+	lspSnapshotCompletion: (path: string, text: string, pos: Pos, request: RequestId) => typedError<CompletionItem[], IdeError>(__TAURI_INVOKE("lsp_snapshot_completion", { path, text, pos, request })),
 	lspSnapshotDiagnostics: (path: string, text: string, request: RequestId) => typedError<Diagnostic[], IdeError>(__TAURI_INVOKE("lsp_snapshot_diagnostics", { path, text, request })),
 	lspSourceActionText: (path: string, text: string, kind: string, request: RequestId) => typedError<TextEdit[], IdeError>(__TAURI_INVOKE("lsp_source_action_text", { path, text, kind, request })),
 	lspTypeHierarchy: (doc: DocId, pos: Pos, direction: HierarchyDirection) => typedError<HierarchyItem[], IdeError>(__TAURI_INVOKE("lsp_type_hierarchy", { doc, pos, direction })),
@@ -1208,6 +1211,12 @@ export const commands = {
 	 *  for native inheritance gutter markers.
 	 */
 	navInheritance: () => typedError<ClassInheritance[], IdeError>(__TAURI_INVOKE("nav_inheritance")),
+	/**
+	 *  pytest fixtures at `pos` of a Python document: the definition pytest uses for the fixture
+	 *  named there (a test's parameter, a `usefixtures` / `getfixturevalue` string), and the
+	 *  fixtures visible where a fixture name goes, for completion.
+	 */
+	navPytestFixtures: (doc: DocId, pos: Pos) => typedError<PytestFixtureAt, IdeError>(__TAURI_INVOKE("nav_pytest_fixtures", { doc, pos })),
 	/**
 	 *  The stub (`.pyi`) of a Python document, or the implementation of a stub, and the
 	 *  functions and classes declared in both: PyCharm's stub gutter markers.
@@ -1557,7 +1566,10 @@ export const commands = {
 	redoWorkspaceEdit: (id: number) => typedError<null, IdeError>(__TAURI_INVOKE("redo_workspace_edit", { id })),
 	/**  Whether the file move `id` can still be undone. */
 	refactorCanUndoFileMove: (id: number) => typedError<boolean, IdeError>(__TAURI_INVOKE("refactor_can_undo_file_move", { id })),
-	/**  `workspace/willRenameFiles` on every interested server (before the move). Cancellable. */
+	/**
+	 *  `workspace/willRenameFiles` on every interested server (before the move), plus the
+	 *  Python import updates the IDE makes itself. Cancellable.
+	 */
 	refactorFileMoveEdits: (request: RequestId, moves: FileMove[]) => typedError<FileRenameEdits, IdeError>(__TAURI_INVOKE("refactor_file_move_edits", { request, moves })),
 	/**
 	 *  "Search in comments and strings": textual occurrences of the moved files'
@@ -2797,7 +2809,9 @@ images?: AgentImage[];
 /**  Text the tool reported (command output…), truncated. */
 output: string | null; diffs: AgentToolDiff[]; 
 /**  When the call started and ended (ms since the epoch); `None` in tasks saved before. */
-startedMs?: number | null; endedMs?: number | null } | { type: "plan"; items: AgentPlanItem[] } | 
+startedMs?: number | null; endedMs?: number | null; 
+/**  The command an `execute` call runs, from its structured input; `None` when the agent gave none. */
+command?: string | null } | { type: "plan"; items: AgentPlanItem[] } | 
 /**  A subagent the agent started: its own session, whose entries are listed separately. */
 { type: "subagent"; 
 /**  The subagent's session id. */
@@ -4206,6 +4220,23 @@ export type CMakeSettings_Deserialize = {
 /**  Absent profiles retain automatic discovery for existing projects. */
 export type CMakeSettings_Serialize = {
 	profiles?: CMakeProfile[] | null,
+};
+
+/**
+ *  What one function spent when called from another, as a call-graph profiler (cProfile)
+ *  records it. Sampling profilers leave [`Profile::calls`] empty; their callers and callees
+ *  come from the call tree.
+ */
+export type CallEdge = {
+	/**  Index into [`Profile::frames`]. */
+	caller: number,
+	callee: number,
+	/**  Weight spent in the callee itself on these calls. */
+	selfWeight: number | null,
+	/**  Weight of these calls, including what the callee called. */
+	total: number | null,
+	calls: number | null,
+	primitiveCalls: number | null,
 };
 
 export type CallHierarchy = {
@@ -5739,6 +5770,29 @@ export type DbSortKey = {
 /**  What introspection has read of a data source. */
 export type DbSourceCatalog = {
 	databases?: DbCatalogDatabase[],
+};
+
+/**  A user folder grouping data sources in one project's Database tree. */
+export type DbSourceFolder = DbSourceFolder_Serialize | DbSourceFolder_Deserialize;
+
+/**  A user folder grouping data sources in one project's Database tree. */
+export type DbSourceFolder_Deserialize = {
+	id: string,
+	name: string,
+	/**  Reserved for nested folders; the first UI version only creates root folders. */
+	parent?: string | null,
+	order: number,
+	sources: string[],
+};
+
+/**  A user folder grouping data sources in one project's Database tree. */
+export type DbSourceFolder_Serialize = {
+	id: string,
+	name: string,
+	/**  Reserved for nested folders; the first UI version only creates root folders. */
+	parent?: string | null,
+	order: number,
+	sources: string[],
 };
 
 /**  Connect through an SSH tunnel: the database host and port are reached from `host`. */
@@ -10542,6 +10596,10 @@ export type MethodStat = {
 	frame: number,
 	selfWeight: number | null,
 	total: number | null,
+	/**  Calls, when the profiler counts them (cProfile); sampling profilers don't. */
+	calls: number | null,
+	/**  Calls that were not recursive (`pstats`' primitive calls). */
+	primitiveCalls: number | null,
 };
 
 /**  Dependency entry of a module (Project Structure › Modules › Dependencies). */
@@ -11738,6 +11796,11 @@ export type Profile = {
 	nodes: ProfileNode[],
 	/**  Sorted by self weight, heaviest first. */
 	methods: MethodStat[],
+	/**
+	 *  Exact caller → callee totals of a call-graph profile; its call tree is then rebuilt
+	 *  from them, so below the first level it is an estimate. Empty for sampled profiles.
+	 */
+	calls: CallEdge[],
 };
 
 export type ProfileFrame = {
@@ -11789,8 +11852,12 @@ export type ProfileSpec =
  *  out when another one did.
  */
 { kind: "cpuProfiles"; dir: IpcPath; root: IpcPath } | 
-/**  One `.cpuprofile` the user opened (saved by `node --cpu-prof`, Chrome DevTools, CI). */
-{ kind: "cpuProfileFile"; path: IpcPath } | 
+/**
+ *  A snapshot file the user opened: a V8 `.cpuprofile` (`node --cpu-prof`, Chrome
+ *  DevTools, CI) or a `pstats` file (cProfile, profile, yappi), told apart by content.
+ *  Relative source files of a `pstats` file resolve against `root`, then its directory.
+ */
+{ kind: "snapshotFile"; path: IpcPath; root: IpcPath | null } | 
 /**
  *  Collapsed-stack files with extension `ext` in `dir`; relative frame files resolve
  *  against `base`. `jvm_root`: map JVM class frames to sources below it. For the
@@ -12074,6 +12141,29 @@ export type PypiPackage = {
 	latest: string,
 	/**  Releases with files to install, most recently uploaded first; yanked ones left out. */
 	versions: string[],
+};
+
+export type PytestFixtureAt = {
+	/**  The fixture name at the position, and the definition pytest uses for it. */
+	reference: PytestFixtureReference | null,
+	/**
+	 *  At a place a fixture name goes (a test's parameters, a `usefixtures` string): the
+	 *  fixtures visible there, nearest first.
+	 */
+	completions: PytestFixtureItem[] | null,
+};
+
+export type PytestFixtureItem = {
+	name: string,
+	/**  The file defining it. */
+	path: IpcPath,
+};
+
+export type PytestFixtureReference = {
+	name: string,
+	range: Range,
+	/**  None when no visible module defines it (`request`, a fixture from a hook). */
+	definition: Location | null,
 };
 
 /**  A class definition and the methods it declares. */

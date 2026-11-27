@@ -1074,6 +1074,8 @@ mod tests {
         assert_eq!(detect("shop/templates/shop/product_list.html"), "django-html");
         assert_eq!(detect("shop/templates/shop/email/order.txt"), "django-html");
         assert_eq!(detect("pages/promo.html"), "html");
+        // No `[debugger]` of its own: `find_config` would take it for debugpy instead of Python's.
+        assert!(reg.get(&LanguageId::new("django-html")).unwrap().debugger.is_none());
     }
 
     /// #4061: the project root is canonical; a template reached under another
