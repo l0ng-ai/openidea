@@ -669,6 +669,8 @@
   "Delete to Line Start": "刪除至行首",
   "Delete to Line End": "刪除至行尾",
   "Cut up to Line End": "剪下至行尾",
+  "Kill to Word Start": "剪下至詞首",
+  "Kill to Word End": "剪下至詞尾",
   "Hungry Backspace": "貪婪退格",
   "Swap Selection Boundaries": "交換選取範圍邊界",
   "Toggle Sticky Selection": "切換黏滯選取範圍",

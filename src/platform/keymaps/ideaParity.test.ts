@@ -85,6 +85,9 @@ describe("IDEA keymap parity", () => {
     ["code.deleteToLineStart", [], []],
     ["code.deleteToLineEnd", [], []],
     ["code.hungryBackspace", [], []],
+    // EditorKillToWordStart / End: only the Emacs keymap binds them.
+    ["code.killToWordStart", [], []],
+    ["code.killToWordEnd", [], []],
     // EditorSwapSelectionBoundaries has no shortcut.
     ["editor.swapSelectionBoundaries", [], []],
     // EditorToggleStickySelection has no shortcut.

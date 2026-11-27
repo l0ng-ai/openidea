@@ -62,6 +62,8 @@ The editor follows IntelliJ IDEA's behaviour and default keymap. Shortcuts below
 
 **Cut up to Line End** cuts from each caret to the end of its line, together with the line break when only whitespace is left (or the caret is already at the line end), so pressing it again on the same caret cuts the next line too; those repeated cuts collect into one clipboard entry. **Delete to Line Start** and **Delete to Line End** delete the same way without copying (to the line start, or the line break before the caret at the line start), or delete the selection. They have no default shortcut except in the Eclipse keymaps (`⇧⌘⌦` / `Ctrl+Shift+Delete` for Delete to Line End).
 
+**Kill to Word Start** and **Kill to Word End** cut from each caret back to the start of the previous word or on to the end of the next one, together with the whitespace and line breaks in between; with **Settings › Editor › General › Smart Keys › Use "CamelHumps" words** on they stop at humps (`parse|HTML|Document`). A selection is ignored. Repeated cuts at the same caret, and Cut up to Line End there, collect into one clipboard entry, the ones to the word start in front. They have no default shortcut.
+
 **Hungry Backspace** deletes all the spaces, tabs and line breaks before each caret in one go, up to the previous non-whitespace character; after anything else, or with a selection, it works like `⌫` / `Backspace`. It has no default shortcut.
 
 **Duplicate Entire Lines** copies every line touched by a caret or selection below itself, even when only part of a line is selected, and keeps the selection on the copy. It has no default shortcut; run it from **Find Action** or assign one in **Settings › Keymap**.

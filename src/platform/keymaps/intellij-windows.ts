@@ -107,6 +107,8 @@ export const intellijWindows: Record<string, string[]> = {
   "code.deleteToLineStart": [],
   "code.deleteToLineEnd": [],
   "code.cutLineEnd": [],
+  "code.killToWordStart": [],
+  "code.killToWordEnd": [],
   "code.hungryBackspace": [],
   "editor.swapSelectionBoundaries": [],
   "editor.toggleStickySelection": [],
