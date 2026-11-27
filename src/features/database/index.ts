@@ -47,6 +47,7 @@ import {
   inEditorResults,
   setInEditorResults,
   loadSources,
+  loadSourceFolders,
   connect,
   loadSchemas,
   loadDatabases,
@@ -130,14 +131,16 @@ function registerDatabaseWindow(): () => void {
     const seq = ++probe;
     sync(false);
     if (!useProject.getState().project) return;
-    call(commands.dbSources()).then(
-      (sources) => seq === probe && !useDatabase.getState().loaded && sync(sources.length > 0),
-      () => {},
-    );
+    Promise.resolve()
+      .then(() => call(commands.dbSources()))
+      .then(
+        (sources) => seq === probe && !useDatabase.getState().loaded && sync(sources.length > 0),
+        () => {},
+      );
   };
   check();
   const offSources = useDatabase.subscribe((s) => {
-    if (s.loaded) sync(s.sources.length > 0);
+    if (s.loaded) sync(s.sources.length > 0 || (s.foldersLoaded && s.folders.length > 0));
   });
   const offProject = useProject.subscribe((s, prev) => {
     if (s.project?.root !== prev.project?.root) check();
@@ -189,6 +192,7 @@ export function activate(): () => void {
     }),
     onIdeEvent("dbSourcesChanged", () => {
       void loadSources();
+      void loadSourceFolders();
     }),
     registerDatabaseWindow(),
     registerServiceView({
@@ -238,7 +242,9 @@ export function activate(): () => void {
       if (s.project?.root === prev.project?.root) return;
       useDatabase.setState({
         sources: [],
+        folders: [],
         loaded: false,
+        foldersLoaded: false,
         connected: new Set(),
         databases: {},
         catalogs: {},

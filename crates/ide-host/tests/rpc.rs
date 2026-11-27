@@ -394,6 +394,8 @@ async fn local_deployment_runs_on_the_project_host() {
         "http_curl",
         "http_environment_file",
         "http_variable_definitions",
+        "db_source_folders",
+        "db_save_source_folders",
         "db_sources",
         "db_save_sources",
         "db_set_password",
