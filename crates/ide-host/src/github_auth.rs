@@ -9,10 +9,10 @@
 //! resolve its token into [`ide_core::project_env`] (for both `project.root` and `.worktrees`).
 
 use crate::Project;
+use ide_agent::GhAuthAccount;
 use ide_core::cli_process::{CliTool, Decoding};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use specta::Type;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -26,20 +26,12 @@ const LOCAL_TIMEOUT: Duration = Duration::from_secs(5);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(6);
 const CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 
-/// An authenticated `github.com` account stored in GitHub CLI (`gh`).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct GhKeyringAccount {
-    pub login: String,
-    pub active: bool,
-}
-
 /// GitHub CLI accounts available on this machine and which one applies to the project.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct GhProjectAccountStatus {
     pub gh_installed: bool,
-    pub accounts: Vec<GhKeyringAccount>,
+    pub accounts: Vec<GhAuthAccount>,
     /// Value of `vcs.github.account` (`""` = Automatic).
     pub configured_account: String,
     /// Account login currently used (`configured_account` if signed in, else `gh`'s active account).
@@ -85,30 +77,6 @@ fn clean_gh_command(program: &Path, args: &[&str]) -> Command {
     cmd
 }
 
-/// Lists `(gh_installed, keyring_accounts)` on `github.com`, ignoring ambient token env vars.
-pub fn gh_keyring_accounts() -> (bool, Vec<GhKeyringAccount>) {
-    let Some(program) = find_gh_executable() else {
-        return (false, Vec::new());
-    };
-    if let Ok(out) =
-        GH_TOOL.run(clean_gh_command(&program, &["auth", "status", "--json", "hosts"]), LOCAL_TIMEOUT, None)
-    {
-        if let Some(accounts) = parse_gh_auth_status_json(&out.stdout) {
-            return (true, accounts);
-        }
-        if !out.stderr.contains("unknown flag: --json") {
-            return (true, Vec::new());
-        }
-    }
-    if let Ok(out) =
-        GH_TOOL.run(clean_gh_command(&program, &["auth", "status", "--hostname", "github.com"]), LOCAL_TIMEOUT, None)
-    {
-        let combined = format!("{}\n{}", out.stdout, out.stderr);
-        return (true, parse_gh_auth_status_text(&combined));
-    }
-    (true, Vec::new())
-}
-
 fn gh_token_for_account(program: &Path, login: &str) -> Option<String> {
     if !is_valid_github_login(login) {
         return None;
@@ -141,7 +109,7 @@ fn probe_repo_access(program: &Path, token: &str, owner: &str, name: &str) -> Re
     if out.stdout.trim() == "true" { RepoAccess::Push } else { RepoAccess::Read }
 }
 
-fn pick_best_account(candidates: &[(GhKeyringAccount, RepoAccess)]) -> Option<(&GhKeyringAccount, bool)> {
+fn pick_best_account(candidates: &[(GhAuthAccount, RepoAccess)]) -> Option<(&GhAuthAccount, bool)> {
     let active_access =
         candidates.iter().find(|(a, _)| a.active).map(|(_, access)| *access).unwrap_or(RepoAccess::None);
     // Prefer higher RepoAccess; break ties in favor of the globally active account.
@@ -200,12 +168,7 @@ fn primary_github_repo(project: &Project) -> Option<(String, String)> {
     None
 }
 
-fn auto_detect_account(
-    program: &Path,
-    accounts: &[GhKeyringAccount],
-    owner: &str,
-    repo: &str,
-) -> Option<(String, bool)> {
+fn auto_detect_account(program: &Path, accounts: &[GhAuthAccount], owner: &str, repo: &str) -> Option<(String, bool)> {
     // Fast path: the repository owner matches one of the signed-in accounts directly.
     if let Some(matched) = accounts.iter().find(|a| a.login.eq_ignore_ascii_case(owner)) {
         return Some((matched.login.clone(), !matched.active));
@@ -223,9 +186,9 @@ fn auto_detect_account(
         return None;
     }
 
-    let tokens: Vec<(GhKeyringAccount, Option<String>)> =
+    let tokens: Vec<(GhAuthAccount, Option<String>)> =
         accounts.iter().map(|acc| (acc.clone(), gh_token_for_account(program, &acc.login))).collect();
-    let results: Vec<(GhKeyringAccount, RepoAccess)> = std::thread::scope(|s| {
+    let results: Vec<(GhAuthAccount, RepoAccess)> = std::thread::scope(|s| {
         let handles: Vec<_> = tokens
             .into_iter()
             .map(|(acc, token)| {
@@ -250,7 +213,7 @@ fn auto_detect_account(
 /// Resolves global status when no project is open.
 pub fn global_status(configured_account: String) -> GhProjectAccountStatus {
     let configured_account = configured_account.trim().to_owned();
-    let (gh_installed, accounts) = gh_keyring_accounts();
+    let (gh_installed, accounts) = ide_agent::gh_authenticated_accounts();
     let effective_account = if !configured_account.is_empty() {
         accounts.iter().any(|a| a.login == configured_account).then(|| configured_account.clone())
     } else {
@@ -289,7 +252,7 @@ pub fn project_status(project: &Project) -> GhProjectAccountStatus {
     let Some(program) = find_gh_executable() else {
         return GhProjectAccountStatus { configured_account, ..GhProjectAccountStatus::default() };
     };
-    let (gh_installed, accounts) = gh_keyring_accounts();
+    let (gh_installed, accounts) = ide_agent::gh_authenticated_accounts();
     let active_login = accounts.iter().find(|a| a.active).or_else(|| accounts.first()).map(|a| a.login.clone());
 
     let effective_account = if !configured_account.is_empty() {
@@ -323,67 +286,6 @@ pub fn clear_project_env(project: &Project) {
     ide_core::project_env::remove_all(project.agents.worktrees_dir());
 }
 
-fn parse_gh_auth_status_json(raw: &str) -> Option<Vec<GhKeyringAccount>> {
-    let parsed: Value = serde_json::from_str(raw).ok()?;
-    let entries = parsed.get("hosts")?.get("github.com")?.as_array()?;
-    let mut out = Vec::new();
-    for entry in entries {
-        if entry.get("tokenSource").and_then(Value::as_str).is_some_and(|src| src.ends_with("_TOKEN") || src == "env") {
-            continue;
-        }
-        let state = entry.get("state").and_then(Value::as_str).unwrap_or("success");
-        if state != "success" {
-            continue;
-        }
-        let Some(login) = entry.get("login").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) else {
-            continue;
-        };
-        let active = entry.get("active").and_then(Value::as_bool).unwrap_or(false);
-        if let Some(existing) = out.iter_mut().find(|a: &&mut GhKeyringAccount| a.login == login) {
-            existing.active |= active;
-        } else {
-            out.push(GhKeyringAccount { login: login.to_owned(), active });
-        }
-    }
-    Some(out)
-}
-
-fn parse_gh_auth_status_text(raw: &str) -> Vec<GhKeyringAccount> {
-    let mut out: Vec<GhKeyringAccount> = Vec::new();
-    let mut current_login: Option<String> = None;
-    let mut current_env_sourced = false;
-    let mut current_active = false;
-
-    let flush = |out: &mut Vec<GhKeyringAccount>, login: &mut Option<String>, env_src: bool, active: bool| {
-        if let Some(l) = login.take()
-            && !env_src
-        {
-            if let Some(existing) = out.iter_mut().find(|a| a.login == l) {
-                existing.active |= active;
-            } else {
-                out.push(GhKeyringAccount { login: l, active });
-            }
-        }
-    };
-
-    for line in raw.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("✓ Logged in to github.com account ") {
-            flush(&mut out, &mut current_login, current_env_sourced, current_active);
-            let login = rest.split_whitespace().next().unwrap_or("").trim();
-            if !login.is_empty() {
-                current_login = Some(login.to_owned());
-                current_env_sourced = rest.contains("_TOKEN");
-                current_active = false;
-            }
-        } else if trimmed.starts_with("Active account:") {
-            current_active = trimmed.ends_with("true");
-        }
-    }
-    flush(&mut out, &mut current_login, current_env_sourced, current_active);
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,8 +316,8 @@ mod tests {
 
     #[test]
     fn picks_account_with_push_or_private_access_and_preserves_active_on_ties() {
-        let personal = GhKeyringAccount { login: "alice".into(), active: true };
-        let work = GhKeyringAccount { login: "alice-work".into(), active: false };
+        let personal = GhAuthAccount { login: "alice".into(), active: true };
+        let work = GhAuthAccount { login: "alice-work".into(), active: false };
 
         // Private org repo: personal gets 404 (None), work gets Push -> auto-detects work.
         let private_org = vec![(personal.clone(), RepoAccess::None), (work.clone(), RepoAccess::Push)];
@@ -434,25 +336,5 @@ mod tests {
         let (picked, auto) = pick_best_account(&oss).unwrap();
         assert_eq!(picked.login, "alice");
         assert!(!auto);
-    }
-
-    #[test]
-    fn parses_gh_auth_status_json_filtering_env_tokens() {
-        let raw = r#"{
-          "hosts": {
-            "github.com": [
-              {"state": "success", "active": true, "login": "env-bot", "tokenSource": "GITHUB_TOKEN"},
-              {"state": "success", "active": true, "login": "alice", "tokenSource": "keyring"},
-              {"state": "success", "active": false, "login": "alice-work", "tokenSource": "keyring"}
-            ]
-          }
-        }"#;
-        assert_eq!(
-            parse_gh_auth_status_json(raw).unwrap(),
-            vec![
-                GhKeyringAccount { login: "alice".into(), active: true },
-                GhKeyringAccount { login: "alice-work".into(), active: false },
-            ]
-        );
     }
 }

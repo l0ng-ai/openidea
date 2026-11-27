@@ -7724,16 +7724,10 @@ login: string | null } |
 /**  The project has no GitHub remote (or is not a git repository). */
 { kind: "notGitHub"; message: string } | { kind: "error"; message: string };
 
-/**  An authenticated `github.com` account stored in GitHub CLI (`gh`). */
-export type GhKeyringAccount = {
-	login: string,
-	active: boolean,
-};
-
 /**  GitHub CLI accounts available on this machine and which one applies to the project. */
 export type GhProjectAccountStatus = {
 	ghInstalled: boolean,
-	accounts: GhKeyringAccount[],
+	accounts: GhAuthAccount[],
 	/**  Value of `vcs.github.account` (`""` = Automatic). */
 	configuredAccount: string,
 	/**  Account login currently used (`configured_account` if signed in, else `gh`'s active account). */

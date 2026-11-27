@@ -400,7 +400,8 @@ fn parse_gh_auth_status_json(text: &str) -> Option<Vec<GhAuthAccount>> {
             if entry.state.as_deref().is_some_and(|s| s != "success") {
                 continue;
             }
-            if matches!(entry.token_source.as_deref(), Some("GITHUB_TOKEN" | "GH_TOKEN" | "COPILOT_GITHUB_TOKEN")) {
+            // Tokens from the environment (`GH_TOKEN`, `GITHUB_TOKEN`, …) are not keyring accounts.
+            if entry.token_source.as_deref().is_some_and(|source| source.ends_with("_TOKEN") || source == "env") {
                 continue;
             }
             if let Some(existing) = accounts.iter_mut().find(|a| a.login == login) {
@@ -420,7 +421,8 @@ fn parse_gh_auth_status_text(text: &str) -> Vec<GhAuthAccount> {
         let trimmed = line.trim();
         if let Some((_, rest)) = trimmed.split_once("Logged in to github.com account ") {
             let login = rest.split_whitespace().next().unwrap_or("").trim();
-            if !login.is_empty() {
+            current = None;
+            if !login.is_empty() && !rest.contains("_TOKEN") {
                 if let Some(idx) = accounts.iter().position(|a| a.login == login) {
                     current = Some(idx);
                 } else {
@@ -1723,6 +1725,8 @@ mod tests {
 
         let text = "\
 github.com
+  ✓ Logged in to github.com account env_user (GH_TOKEN)
+  - Active account: true
   ✓ Logged in to github.com account alice (keyring)
   - Active account: false
   ✓ Logged in to github.com account alice-work (keyring)
