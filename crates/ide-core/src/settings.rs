@@ -1451,6 +1451,9 @@ pub struct PythonSettings {
     /// Default test runner (Settings › Python › Testing): `auto` (pytest when the project uses
     /// it, else unittest), `pytest` or `unittest`.
     pub test_runner: String,
+    /// What Profile runs Python under (Settings › Python › Profiler): `auto` (py-spy where it
+    /// is installed and samples without root, else cProfile), `cprofile` or `py-spy`.
+    pub profiler: String,
     /// Show matplotlib figures of Python runs in the Plots tool window (the IDE sets `MPLBACKEND`
     /// unless the run sets it); off: matplotlib's own window.
     pub show_plots_in_tool_window: bool,
@@ -1467,6 +1470,7 @@ impl Default for PythonSettings {
             show_interpreter_paths: true,
             interpreter_paths: BTreeMap::new(),
             test_runner: "auto".into(),
+            profiler: "auto".into(),
             show_plots_in_tool_window: true,
         }
     }

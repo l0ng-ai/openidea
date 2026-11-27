@@ -58,8 +58,9 @@ export const commands = {
 	agentCustomSave: (input: CustomAgentInput) => typedError<null, IdeError>(__TAURI_INVOKE("agent_custom_save", { input })),
 	agentDelete: (task: string, removeWorktree: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("agent_delete", { task, removeWorktree })),
 	/**
-	 *  Entries of `task`'s conversation, or of its subagent `subagent`'s. Async so a long
-	 *  conversation is cloned and serialised off the main thread.
+	 *  Entries of `task`'s conversation, or of its subagent `subagent`'s. On the blocking pool:
+	 *  the first read of a saved conversation parses its task file, and a long one is cloned
+	 *  and serialised.
 	 */
 	agentEntries: (task: string, subagent: string | null) => typedError<AgentEntry[], IdeError>(__TAURI_INVOKE("agent_entries", { task, subagent })),
 	/**  Sessions of the project on this machine that no task holds yet, newest first. */
@@ -1222,6 +1223,24 @@ export const commands = {
 	 */
 	navInheritance: () => typedError<ClassInheritance[], IdeError>(__TAURI_INVOKE("nav_inheritance")),
 	/**
+	 *  Rename of the pytest fixture at `pos`: its definition, every place that gets it and the
+	 *  uses of those parameters in their functions. Cancellable.
+	 */
+	navPytestFixtureRename: (doc: DocId, pos: Pos, newName: string, request: RequestId) => typedError<WorkspaceEdit, IdeError>(__TAURI_INVOKE("nav_pytest_fixture_rename", { doc, pos, newName, request })),
+	/**
+	 *  Find Usages of the pytest fixture at `pos` (its definition, or a place asking for it): every
+	 *  test and fixture parameter, `usefixtures` and `getfixturevalue` string that gets it.
+	 *  None when `pos` names no fixture. Cancellable.
+	 */
+	navPytestFixtureUsages: (doc: DocId, pos: Pos, request: RequestId) => typedError<{
+	name: string,
+	definition: Location,
+	/**  Defined in the project (not by a plugin or pytest): it may be renamed. */
+	inProject: boolean,
+	/**  Every place that gets this fixture: parameters, `usefixtures` and `getfixturevalue` strings. */
+	usages: Location[],
+} | null, IdeError>(__TAURI_INVOKE("nav_pytest_fixture_usages", { doc, pos, request })),
+	/**
 	 *  pytest fixtures at `pos` of a Python document: the definition pytest uses for the fixture
 	 *  named there (a test's parameter, a `usefixtures` / `getfixturevalue` string), and the
 	 *  fixtures visible where a fixture name goes, for completion.
@@ -1498,7 +1517,7 @@ export const commands = {
 	 *  run that is gone, remote, or has no JVM with an attach listener.
 	 */
 	profilerGcBeforeStop: (run: RunId) => typedError<number, IdeError>(__TAURI_INVOKE("profiler_gc_before_stop", { run })),
-	/**  How to run `config` under a sampling profiler, or which profiler is missing. */
+	/**  How to run `config` under a profiler, or which profiler is missing. */
 	profilerPrepare: (config: RunConfig_Deserialize, mode: ProfileMode) => typedError<ProfilePrepared_Serialize, IdeError>(__TAURI_INVOKE("profiler_prepare", { config, mode })),
 	/**  The project open in this window (a settings window: its parent's), if any. */
 	projectCurrent: () => __TAURI_INVOKE<{
@@ -12226,6 +12245,15 @@ export type PytestFixtureReference = {
 	definition: Location | null,
 };
 
+export type PytestFixtureUsages = {
+	name: string,
+	definition: Location,
+	/**  Defined in the project (not by a plugin or pytest): it may be renamed. */
+	inProject: boolean,
+	/**  Every place that gets this fixture: parameters, `usefixtures` and `getfixturevalue` strings. */
+	usages: Location[],
+};
+
 /**  A class definition and the methods it declares. */
 export type PythonClassFacts = {
 	name: string,
@@ -12322,6 +12350,11 @@ export type PythonSettings = {
 	 *  it, else unittest), `pytest` or `unittest`.
 	 */
 	testRunner?: string,
+	/**
+	 *  What Profile runs Python under (Settings › Python › Profiler): `auto` (py-spy where it
+	 *  is installed and samples without root, else cProfile), `cprofile` or `py-spy`.
+	 */
+	profiler?: string,
 	/**
 	 *  Show matplotlib figures of Python runs in the Plots tool window (the IDE sets `MPLBACKEND`
 	 *  unless the run sets it); off: matplotlib's own window.

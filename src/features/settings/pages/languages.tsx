@@ -29,6 +29,9 @@ const DprintPage = lazyPage("languages.dprint", () => import("../languages/Forma
 const PythonTestingPage = lazyPage("python.testing", () =>
   import("../languages/PythonTestingPage").then((m) => m.PythonTestingPage),
 );
+const PythonProfilerPage = lazyPage("python.profiler", () =>
+  import("../languages/PythonProfilerPage").then((m) => m.PythonProfilerPage),
+);
 const DocstringsPage = lazyPage("python.docstrings", () =>
   import("../languages/DocstringsPage").then((m) => m.DocstringsPage),
 );
@@ -269,6 +272,15 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     order: 403.25,
     keywords: ["default test runner", "test runner", "pytest", "unittest", "testing", "integrated tools"],
     component: PythonTestingPage,
+  },
+  {
+    id: "python.profiler",
+    projectScope: true,
+    title: "Profiler",
+    group: LANGUAGES_GROUP,
+    order: 403.27,
+    keywords: ["profiler", "profile", "cprofile", "py-spy", "performance"],
+    component: PythonProfilerPage,
   },
   {
     id: "python.ruff",

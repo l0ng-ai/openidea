@@ -2,7 +2,7 @@
 import { create } from "zustand";
 import { Channel } from "@tauri-apps/api/core";
 import type { ClassifiedReference, ReferenceAccess, ReferenceKind, Location, References, RequestId } from "@/bindings";
-import { editorsFor } from "@/editor/api";
+import { contributedUsages, editorsFor } from "@/editor/api";
 import { clearLineTokens } from "@/editor/lineTokens";
 import { showPendingHint } from "@/editor/lsp/hint";
 import { incompleteNote } from "@/editor/lsp/lsp";
@@ -245,6 +245,12 @@ export async function fetchUsages(
   await caretSynced(c);
   const indexed = await synchronizeDocumentIndexes(c.path, "usages");
   if (c.view && c.view.state.doc !== before) throw new IpcError({ kind: "cancelled", message: "", data: null });
+  // Names the server doesn't connect (pytest fixtures): their provider answers instead.
+  const contributed = await contributedUsages({ doc: c.doc, path: c.path, pos: { line: c.line, col: c.col } }, request);
+  if (contributed) {
+    const lines = await readManyFileLines(contributed.map((l) => l.path));
+    return { groups: groupUsages(contributed, lines, []), note: null, librariesSkipped: false };
+  }
   let settled = false;
   const channel = new Channel<References>();
   channel.onmessage = (refs) => {
