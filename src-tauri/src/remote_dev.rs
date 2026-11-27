@@ -521,8 +521,8 @@ fn server_path(path: &str) -> bool {
 
 /// What [`local_server`] settled on.
 pub(crate) enum LocalServer {
-    /// A server binary on this machine and its [`build_id`].
-    Binary(std::path::PathBuf, String),
+    /// A server binary on this machine. Release downloads may have a reusable archive.
+    Binary { path: std::path::PathBuf, build: String, release_hash: Option<blake3::Hash> },
     /// No binary available (offline): this build of the version already on the host.
     Installed(String),
 }
@@ -538,10 +538,10 @@ pub(crate) async fn local_server(
 ) -> IdeResult<LocalServer> {
     // This version's server: this build, or the release download (kept per version, so an
     // upgraded app never reuses an older one).
-    let local = match local_server_binary(os, arch) {
-        Some(local) => local,
+    let (local, release) = match local_server_binary(os, arch) {
+        Some(local) => (local, false),
         None => match download_server(state, version, os, arch, progress).await {
-            Ok(local) => local,
+            Ok(local) => (local, true),
             // Offline: any build of this version already on the host will do, then a server put
             // in the old unversioned place by hand.
             Err(e) => {
@@ -564,7 +564,7 @@ pub(crate) async fn local_server(
                             e.message,
                             local.display()
                         );
-                        local
+                        (local, false)
                     }
                     None => {
                         return Err(IdeError::unavailable(format!(
@@ -581,13 +581,14 @@ pub(crate) async fn local_server(
         },
     };
     // One folder per build, so a rebuilt server of the same version is installed again.
-    let build = tokio::task::spawn_blocking({
+    let hash = tokio::task::spawn_blocking({
         let local = local.clone();
-        move || build_id(&local)
+        move || binary_hash(&local)
     })
     .await
     .map_err(|e| IdeError::internal(e.to_string()))??;
-    Ok(LocalServer::Binary(local, build))
+    let build = hash.to_hex()[..16].to_owned();
+    Ok(LocalServer::Binary { path: local, build, release_hash: release.then_some(hash) })
 }
 
 /// Makes sure this version of the server is installed on the host; returns its path.
@@ -604,10 +605,11 @@ async fn ensure_server(state: &AppState, session: &ide_ssh::Session, progress: A
     let mut lines = probe.lines().map(str::trim).filter(|l| !l.is_empty());
     let (os, arch) = platform(lines.next().unwrap_or_default());
     let installed: Vec<String> = lines.map(str::to_owned).collect();
-    let (local, build) = match local_server(state, version, &os, &arch, &installed, progress.clone()).await? {
-        LocalServer::Installed(bin) => return Ok(bin),
-        LocalServer::Binary(local, build) => (local, build),
-    };
+    let (local, build, release_hash) =
+        match local_server(state, version, &os, &arch, &installed, progress.clone()).await? {
+            LocalServer::Installed(bin) => return Ok(bin),
+            LocalServer::Binary { path, build, release_hash } => (path, build, release_hash),
+        };
     if let Some(bin) = installed.iter().find(|b| b.ends_with(&format!("/{build}/openidea-server"))) {
         return Ok(bin.to_string());
     }
@@ -624,9 +626,20 @@ async fn ensure_server(state: &AppState, session: &ide_ssh::Session, progress: A
     );
     let started = std::time::Instant::now();
     progress(RemoteStage::Uploading, Some(0.0));
-    session
-        .put_with_progress(&tmp, &tokio::fs::read(&local).await?, &|f| progress(RemoteStage::Uploading, Some(f)))
-        .await?;
+    let archive = if let Some(hash) = release_hash {
+        let local = local.clone();
+        tokio::task::spawn_blocking(move || ide_tools::server::matching_archive(&local, hash))
+            .await
+            .map_err(|e| IdeError::internal(e.to_string()))?
+    } else {
+        None
+    };
+    let report = |f| progress(RemoteStage::Uploading, Some(f));
+    if let Some(archive) = archive {
+        session.put_gzip_with_progress(&tmp, &archive, &report).await?;
+    } else {
+        session.put_with_progress(&tmp, &tokio::fs::read(&local).await?, &report).await?;
+    }
     tracing::info!("installed openidea-server on {} in {:?}", session.label(), started.elapsed());
     let q = ide_ssh::shell::quote;
     // Older builds of this version go (a running one keeps its open file).
@@ -646,21 +659,21 @@ async fn ensure_server(state: &AppState, session: &ide_ssh::Session, progress: A
     Ok(remote_bin)
 }
 
-/// A short content hash of the server binary (cached per path, size and time).
-fn build_id(path: &std::path::Path) -> IdeResult<String> {
-    static CACHE: Mutex<Option<(std::path::PathBuf, u64, std::time::SystemTime, String)>> = Mutex::new(None);
+/// The content hash of the server binary (cached per path, size and time).
+fn binary_hash(path: &std::path::Path) -> IdeResult<blake3::Hash> {
+    static CACHE: Mutex<Option<(std::path::PathBuf, u64, std::time::SystemTime, blake3::Hash)>> = Mutex::new(None);
     let meta = std::fs::metadata(path)?;
     let modified = meta.modified()?;
-    if let Some((p, len, time, id)) = &*CACHE.lock()
+    if let Some((p, len, time, hash)) = &*CACHE.lock()
         && p == path
         && *len == meta.len()
         && *time == modified
     {
-        return Ok(id.clone());
+        return Ok(*hash);
     }
-    let id = blake3::hash(&std::fs::read(path)?).to_hex()[..16].to_owned();
-    *CACHE.lock() = Some((path.to_path_buf(), meta.len(), modified, id.clone()));
-    Ok(id)
+    let hash = blake3::Hasher::new().update_reader(std::fs::File::open(path)?)?.finalize();
+    *CACHE.lock() = Some((path.to_path_buf(), meta.len(), modified, hash));
+    Ok(hash)
 }
 
 /// File › Remote Development: opens `path` on `target` (an SSH host, a WSL distribution, or a

@@ -340,7 +340,16 @@ impl Session {
         use std::io::Write as _;
         let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         gz.write_all(data)?;
-        let packed = gz.finish()?;
+        self.put_gzip_with_progress(remote, &gz.finish()?, progress).await
+    }
+
+    /// Sends an already compressed gzip stream; the remote file contains the decoded bytes.
+    pub async fn put_gzip_with_progress(
+        &self,
+        remote: &str,
+        packed: &[u8],
+        progress: &(dyn Fn(f64) + Send + Sync),
+    ) -> IdeResult<()> {
         let q = crate::shell::quote;
         let dir = crate::sftp::parent(remote).unwrap_or("/");
         let command = format!("mkdir -p {} && gzip -dc > {}", q(dir), q(remote));
