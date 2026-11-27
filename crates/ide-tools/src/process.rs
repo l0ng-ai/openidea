@@ -447,7 +447,7 @@ impl Http {
         self
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn gh_path(&self) -> Option<&Path> {
         self.gh.as_deref()
     }
