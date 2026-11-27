@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { DbColumnInfo } from "@/platform/ipc";
+import type { DbColumnInfo, DbDriver, DbIndexInfo } from "@/platform/ipc";
 import {
+  canAlterIndex,
+  canChangePrimaryKey,
+  createIndexSql,
+  createTableKeySql,
+  dropIndexSql,
+  indexDraftOf,
+  keyName,
+  keySupport,
+  type IndexDraft,
   grantMatrix,
   grantsSupported,
   alterTableSql,
@@ -208,6 +217,239 @@ describe("database object SQL", () => {
     ]);
     expect(alterTableSql("mysql", "app", "users", "users", p)).toEqual([
       "alter table app.users change column name name varchar(40) default '' not null;",
+    ]);
+  });
+});
+
+describe("keys and indexes in Modify Table (DataGrip)", () => {
+  const drivers: DbDriver[] = ["sqlite", "postgres", "mysql", "sqlServer", "clickhouse", "oracle", "snowflake", "jdbc"];
+  const schemaOf: Record<DbDriver, string> = {
+    sqlite: "main",
+    postgres: "public",
+    mysql: "app",
+    sqlServer: "dbo",
+    clickhouse: "default",
+    oracle: "APP",
+    snowflake: "APP",
+    jdbc: "app",
+  };
+  const index = (name: string, columns: string[], extra: Partial<DbIndexInfo> = {}): DbIndexInfo => ({
+    name,
+    unique: false,
+    columns,
+    ...extra,
+  });
+  const fresh = (
+    kind: IndexDraft["kind"],
+    name: string,
+    columns: string[],
+    unique = kind === "unique",
+  ): IndexDraft => ({
+    key: 100,
+    kind,
+    original: null,
+    name,
+    columns,
+    unique,
+    dropped: false,
+  });
+  /** `orders (id, code)` without a primary key, or keyed on `id`. */
+  const orders = (keyed: boolean) =>
+    [col("id", "int", { nullable: false, primaryKey: keyed }), col("code", "varchar(10)")].map(draftOf);
+
+  it("offers per engine only what its ALTER TABLE can do", () => {
+    const offered = Object.fromEntries(drivers.map((d) => [d, keySupport(d)]));
+    expect(offered).toEqual({
+      sqlite: { primaryKey: false, uniqueKey: false, index: true },
+      postgres: { primaryKey: true, uniqueKey: true, index: true },
+      mysql: { primaryKey: true, uniqueKey: true, index: true },
+      sqlServer: { primaryKey: true, uniqueKey: true, index: true },
+      clickhouse: { primaryKey: false, uniqueKey: false, index: false },
+      oracle: { primaryKey: true, uniqueKey: true, index: true },
+      snowflake: { primaryKey: true, uniqueKey: false, index: false },
+      jdbc: { primaryKey: false, uniqueKey: false, index: false },
+    });
+  });
+
+  it("adds a primary key to an existing table", () => {
+    const sql = (driver: DbDriver) => {
+      const d = orders(false);
+      d[0] = { ...d[0]!, primaryKey: true };
+      return alterTableSql(driver, schemaOf[driver], "orders", "orders", d, undefined, { indexes: [] });
+    };
+    expect(Object.fromEntries(drivers.map((d) => [d, sql(d)]))).toEqual({
+      sqlite: [],
+      postgres: ["alter table public.orders add constraint orders_pk primary key (id);"],
+      mysql: ["alter table app.orders add primary key (id);"],
+      sqlServer: ["alter table dbo.orders add constraint orders_pk primary key (id);"],
+      clickhouse: [],
+      oracle: ['alter table APP."orders" add constraint ORDERS_PK primary key ("id");'],
+      snowflake: ['alter table APP."orders" add constraint ORDERS_PK primary key ("id");'],
+      jdbc: [],
+    });
+  });
+
+  it("drops a primary key by name where the engine needs it, and changes one by dropping and adding it", () => {
+    const sql = (driver: DbDriver, primaryKeyName?: string) => {
+      const d = orders(true);
+      d[0] = { ...d[0]!, primaryKey: false };
+      return alterTableSql(driver, schemaOf[driver], "orders", "orders", d, undefined, { primaryKeyName, indexes: [] });
+    };
+    expect(sql("postgres", "orders_pkey")).toEqual(["alter table public.orders drop constraint orders_pkey;"]);
+    expect(sql("sqlServer", "PK__orders__3213E83F")).toEqual([
+      "alter table dbo.orders drop constraint PK__orders__3213E83F;",
+    ]);
+    expect(sql("mysql")).toEqual(["alter table app.orders drop primary key;"]);
+    expect(sql("oracle")).toEqual(['alter table APP."orders" drop primary key;']);
+    expect(sql("snowflake")).toEqual(['alter table APP."orders" drop primary key;']);
+    // Without the constraint's name there is nothing to drop it by: the key stays.
+    expect(sql("postgres")).toEqual([]);
+    expect(canChangePrimaryKey("postgres", orders(true))).toBe(false);
+    expect(canChangePrimaryKey("postgres", orders(true), "orders_pkey")).toBe(true);
+    expect(canChangePrimaryKey("postgres", orders(false))).toBe(true);
+    expect(canChangePrimaryKey("mysql", orders(true))).toBe(true);
+    expect(canChangePrimaryKey("sqlite", orders(false))).toBe(false);
+
+    const d = orders(true);
+    d[1] = { ...d[1]!, name: "sku", primaryKey: true, notNull: true };
+    expect(
+      alterTableSql("postgres", "public", "orders", "orders", d, undefined, {
+        primaryKeyName: "orders_pkey",
+        indexes: [],
+      }),
+    ).toEqual([
+      "alter table public.orders drop constraint orders_pkey;",
+      "alter table public.orders rename column code to sku;",
+      "alter table public.orders alter column sku set not null;",
+      "alter table public.orders add constraint orders_pk primary key (id, sku);",
+    ]);
+    // Renaming a key column keeps the key.
+    const renamed = orders(true);
+    renamed[0] = { ...renamed[0]!, name: "order_id" };
+    expect(alterTableSql("mysql", "app", "orders", "orders", renamed, undefined, { indexes: [] })).toEqual([
+      "alter table app.orders change column id order_id int not null;",
+    ]);
+  });
+
+  it("adds and drops unique keys", () => {
+    const add = (driver: DbDriver) =>
+      alterTableSql(driver, schemaOf[driver], "orders", "orders", orders(false), undefined, {
+        indexes: [fresh("unique", keyName(driver, "orders", "uk"), ["code"])],
+      });
+    expect(Object.fromEntries(drivers.map((d) => [d, add(d)]))).toEqual({
+      sqlite: [],
+      postgres: ["alter table public.orders add constraint orders_uk unique (code);"],
+      mysql: ["alter table app.orders add constraint orders_uk unique (code);"],
+      sqlServer: ["alter table dbo.orders add constraint orders_uk unique (code);"],
+      clickhouse: [],
+      oracle: ['alter table APP."orders" add constraint ORDERS_UK unique ("code");'],
+      snowflake: [],
+      jdbc: [],
+    });
+    const drop = (driver: DbDriver) => {
+      const d = indexDraftOf(index("orders_code_key", ["code"], { unique: true, key: "unique" }), 1)!;
+      return alterTableSql(driver, schemaOf[driver], "orders", "orders", orders(false), undefined, {
+        indexes: [{ ...d, dropped: true }],
+      });
+    };
+    expect(drop("postgres")).toEqual(["alter table public.orders drop constraint orders_code_key;"]);
+    expect(drop("sqlServer")).toEqual(["alter table dbo.orders drop constraint orders_code_key;"]);
+    expect(drop("oracle")).toEqual(['alter table APP."orders" drop constraint "orders_code_key";']);
+    // MySQL's unique key is an index.
+    expect(drop("mysql")).toEqual(["alter table app.orders drop index orders_code_key;"]);
+    // SQLite keeps a UNIQUE constraint's index for good.
+    expect(drop("sqlite")).toEqual([]);
+  });
+
+  it("creates and drops indexes, and keeps an existing one unless dropped", () => {
+    const create = (driver: DbDriver) =>
+      alterTableSql(driver, schemaOf[driver], "orders", "orders", orders(false), undefined, {
+        indexes: [fresh("index", "orders_code_index", ["code", "id"], true)],
+      });
+    expect(Object.fromEntries(drivers.map((d) => [d, create(d)]))).toEqual({
+      sqlite: ["create unique index orders_code_index on orders (code, id);"],
+      postgres: ["create unique index orders_code_index on public.orders (code, id);"],
+      mysql: ["create unique index orders_code_index on app.orders (code, id);"],
+      sqlServer: ["create unique index orders_code_index on dbo.orders (code, id);"],
+      clickhouse: [],
+      oracle: ['create unique index APP."orders_code_index" on APP."orders" ("code", "id");'],
+      snowflake: [],
+      jdbc: [],
+    });
+    const drop = (driver: DbDriver) => {
+      const d = indexDraftOf(index("orders_code", ["code"]), 1)!;
+      return alterTableSql(driver, schemaOf[driver], "orders", "orders", orders(false), undefined, {
+        indexes: [{ ...d, dropped: true }],
+      });
+    };
+    expect(Object.fromEntries(drivers.map((d) => [d, drop(d)]))).toEqual({
+      sqlite: ["drop index orders_code;"],
+      postgres: ["drop index public.orders_code;"],
+      mysql: ["drop index orders_code on app.orders;"],
+      sqlServer: ["drop index orders_code on dbo.orders;"],
+      clickhouse: [],
+      oracle: ['drop index APP."orders_code";'],
+      snowflake: [],
+      jdbc: [],
+    });
+    // The catalog doesn't read all of an index (predicate, expressions): an existing one is never rebuilt.
+    expect(
+      alterTableSql("postgres", "public", "orders", "orders", orders(false), undefined, {
+        indexes: [{ ...indexDraftOf(index("orders_code", ["code"]), 1)!, name: "renamed", unique: true }],
+      }),
+    ).toEqual([]);
+  });
+
+  it("drops keys and indexes before the column changes and adds them after, by the columns' new names", () => {
+    const d = orders(false);
+    d[0] = { ...d[0]!, dropped: true };
+    d[1] = { ...d[1]!, name: "sku" };
+    const old = { ...indexDraftOf(index("orders_id", ["id"]), 1)!, dropped: true };
+    expect(
+      alterTableSql("sqlite", "main", "orders", "items", d, undefined, {
+        indexes: [old, fresh("index", "items_sku", ["sku"])],
+      }),
+    ).toEqual([
+      "drop index orders_id;",
+      "alter table orders drop column id;",
+      "alter table orders rename column code to sku;",
+      "create index items_sku on orders (sku);",
+      "alter table orders rename to items;",
+    ]);
+  });
+
+  it("leaves the primary key's index to the columns, and tells which existing ones it can change", () => {
+    expect(indexDraftOf(index("orders_pkey", ["id"], { unique: true, key: "primary" }), 1)).toBeNull();
+    const uk = indexDraftOf(index("sqlite_autoindex_orders_1", ["code"], { unique: true, key: "unique" }), 1)!;
+    expect(uk.kind).toBe("unique");
+    expect(canAlterIndex("sqlite", uk)).toBe(false);
+    expect(canAlterIndex("postgres", uk)).toBe(true);
+    expect(canAlterIndex("sqlite", indexDraftOf(index("orders_code", ["code"]), 1)!)).toBe(true);
+  });
+
+  it("names indexes in their schema where the engine does, and drops SQL Server's within its table", () => {
+    const i = { name: "ix", unique: false, columns: ["a"] };
+    expect(createIndexSql("sqlite", "aux", "t", i)).toBe("create index aux.ix on t (a);");
+    expect(createIndexSql("postgres", "s", "t", i)).toBe("create index ix on s.t (a);");
+    expect(dropIndexSql("sqlServer", "dbo", "t", "ix")).toBe("drop index ix on dbo.t;");
+    expect(
+      dropSql(
+        "sqlServer",
+        { kind: "index", schema: "dbo", name: "ix", table: "t" },
+        { ifExists: true, cascade: false },
+      ),
+    ).toBe("drop index if exists ix on dbo.t;");
+  });
+
+  it("adds a new table's unique keys and indexes after its create table", () => {
+    expect(
+      createTableKeySql("postgres", "public", "orders", [
+        fresh("unique", "orders_uk", ["code"]),
+        fresh("index", "orders_index", ["id"], false),
+      ]),
+    ).toEqual([
+      "alter table public.orders add constraint orders_uk unique (code);",
+      "create index orders_index on public.orders (id);",
     ]);
   });
 });

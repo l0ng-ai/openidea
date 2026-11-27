@@ -4377,5 +4377,14 @@
   "Cannot install django-types": "Cannot install django-types",
   "Gutter": "Gutter",
   "Highlight modified lines in the gutter": "Highlight modified lines in the gutter",
-  "Highlight modified lines in error stripe on the scrollbar": "Highlight modified lines in error stripe on the scrollbar"
+  "Highlight modified lines in error stripe on the scrollbar": "Highlight modified lines in error stripe on the scrollbar",
+  "Unique": "Unique",
+  "Key columns": "Key columns",
+  "Add Unique Key": "Add Unique Key",
+  "Add Index": "Add Index",
+  "Drop Key": "Drop Key",
+  "Keep Key": "Keep Key",
+  "Drop Index": "Drop Index",
+  "Keep Index": "Keep Index",
+  "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite cannot drop the index of a primary key or unique constraint."
 }

@@ -393,6 +393,8 @@ async fn opening_a_table_reads_multi_column_keys_in_order() -> IdeResult<()> {
     let details = db.table_details("p", "oi_keys", "refs").await?;
     let indexes: Vec<_> = details.indexes.iter().map(|i| (i.name.as_str(), i.unique, i.columns.join(","))).collect();
     assert_eq!(indexes, [("refs_pkey", true, "id".into()), ("refs_yx", true, "y,x".into())]);
+    let keys: Vec<_> = details.indexes.iter().map(|i| i.key).collect();
+    assert_eq!(keys, [Some(ide_db::DbKeyKind::Primary), None]);
     let key = |k: &ide_db::ForeignKey| (k.columns.join(","), k.ref_table.clone(), k.ref_columns.join(","));
     assert_eq!(
         details.foreign_keys.iter().map(key).collect::<Vec<_>>(),

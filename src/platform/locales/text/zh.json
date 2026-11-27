@@ -10905,5 +10905,14 @@
   "manage.py Tasks": "manage.py 任务",
   "Install django-types to complete Django model fields and managers": "安装 django-types 以补全 Django 模型字段和管理器",
   "Installing django-types": "正在安装 django-types",
-  "Cannot install django-types": "无法安装 django-types"
+  "Cannot install django-types": "无法安装 django-types",
+  "Unique": "唯一",
+  "Key columns": "键列",
+  "Add Unique Key": "添加唯一键",
+  "Add Index": "添加索引",
+  "Drop Key": "删除键",
+  "Keep Key": "保留键",
+  "Drop Index": "删除索引",
+  "Keep Index": "保留索引",
+  "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite 无法删除主键或唯一约束的索引。"
 }

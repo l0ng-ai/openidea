@@ -5511,6 +5511,11 @@ export type DbIndexInfo = {
 	name: string,
 	unique: boolean,
 	columns: string[],
+	/**
+	 *  The key this index enforces; such an index is dropped with its constraint, not `drop index`.
+	 *  `None` for a plain index, and on engines that don't tell.
+	 */
+	key?: DbKeyKind | null,
 };
 
 /**  Schemas tab: the databases / schemas the tree shows. Names may use `*` and `?`. */
@@ -5575,6 +5580,9 @@ export type DbJdbcDriver_Serialize = {
 	className: string,
 	urlTemplate: string,
 };
+
+/**  A table key backed by an index. */
+export type DbKeyKind = "primary" | "unique";
 
 export type DbMysqlOptions = {
 	/**  Empty: the databases the dump names. */
