@@ -97,4 +97,13 @@ describe("MCP confirmations", () => {
     await handleMcpRequest(10, request);
     expect(mocks.respond).toHaveBeenCalledWith(10, false, "The command did not start");
   });
+  it("starts an agent's run configuration in the Run tool window and says whether it started", async () => {
+    const config = { id: "server", name: "Server", kind: "shell", command: "npm run dev" };
+    await handleMcpRequest(11, { type: "runConfiguration", config });
+    expect(mocks.execute).toHaveBeenCalledWith("run.mcpStart", config);
+    expect(mocks.respond).toHaveBeenCalledWith(11, true, null);
+    mocks.execute.mockRejectedValueOnce(new Error("The run did not start"));
+    await handleMcpRequest(12, { type: "runConfiguration", config });
+    expect(mocks.respond).toHaveBeenCalledWith(12, false, "The run did not start");
+  });
 });

@@ -353,6 +353,9 @@ async fn table_details_routines_and_completion_on_older_catalogs() -> IdeResult<
     assert_eq!(details.foreign_keys[0].ref_columns, ["region", "id"]);
     let orders = db.table_details("p", "oi_meta", "orders").await?;
     assert_eq!(orders.comment.as_deref(), Some("Customer's orders"));
+    let listed = db.tables("p", "oi_meta").await?;
+    let listed_orders = listed.iter().find(|table| table.name == "orders").expect("orders in the table list");
+    assert_eq!(listed_orders.comment.as_deref(), Some("Customer's orders"));
     let comments: Vec<_> = orders.columns.iter().map(|c| c.comment.as_deref()).collect();
     assert_eq!(comments, [None, None, Some("Free text")]);
     assert_eq!(details.comment, None);

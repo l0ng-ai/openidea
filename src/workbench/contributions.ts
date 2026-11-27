@@ -1238,6 +1238,9 @@ export interface FileDecoration {
   /** Display name and icon for a specialized file tab. The path still identifies the document. */
   tabTitle?: string;
   tabIcon?: string;
+  /** Display name and icon for a Project view row. The path still identifies the file or folder. */
+  label?: string;
+  icon?: string;
   /** Short badge text, e.g. a problem count. */
   badge?: string;
   tooltip?: string;

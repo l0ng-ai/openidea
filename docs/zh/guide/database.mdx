@@ -93,7 +93,7 @@ description: "连接 SQL 数据库、浏览架构、在查询控制台中执行�
 
 ## 浏览数据库
 
-树的结构为 数据源 › 数据库（PostgreSQL）› 架构 › `tables`、`views`、`materialized views`、`routines`、`sequences`。表下面有 `columns`、`keys`、`foreign keys`、`indexes` 和 `triggers`。节点在展开时才加载。在工具窗口的选项菜单中打开 **分别显示过程和函数** 可以把 `routines` 拆开。
+树的结构为 数据源 › 数据库（PostgreSQL）› 架构 › `tables`、`views`、`materialized views`、`routines`、`sequences`。表下面有 `columns`、`keys`、`foreign keys`、`indexes` 和 `triggers`。节点在展开时才加载。在工具窗口的选项菜单中打开 **分别显示过程和函数** 可以把 `routines` 拆开；**显示表注释** 在表名后显示灰色单行注释。
 
 双击表会编辑其数据，双击数据源会打开它的控制台，双击例程、序列或触发器会显示 DDL。在 **过滤对象** 中输入文字可以过滤树。
 
@@ -125,7 +125,7 @@ description: "连接 SQL 数据库、浏览架构、在查询控制台中执行�
 
 ## 查询控制台
 
-每个数据源都有一个查询控制台，它是保存在 IDE 数据目录中的 `.sql` 文件。可以用 **查询控制台**（`⌘⇧L` / `Ctrl+Shift+Q`）、从树中或通过 **工具 › Open Query Console** 打开。项目中任何可写的 `.sql` 文件也有同样的工具栏，绑定数据源后即可执行。
+每个数据源都有一个查询控制台，它是保存在 IDE 数据目录 `consoles/db` 下的 `.sql` 文件，并显示在 **临时文件和控制台** 的 **数据库控制台** 根节点下，按数据源名称分组。可以用 **查询控制台**（`⌘⇧L` / `Ctrl+Shift+Q`）、从树中或通过 **工具 › Open Query Console** 打开。项目中任何可写的 `.sql` 文件也有同样的工具栏，绑定数据源后即可执行。在 **最近的文件**（`⌘E` / `Ctrl+E`）中，控制台会显示所属数据源，例如 `console [Orders]`。
 
 控制台工具栏：
 

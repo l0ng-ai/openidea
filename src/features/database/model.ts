@@ -138,6 +138,22 @@ export function hasEdits(e: PendingEdits): boolean {
   return e.updates.size > 0 || e.deletes.size > 0 || e.inserts.length > 0;
 }
 
+/** Whether any of `rows` has a pending change. Rows from `loaded` on are the inserted ones. */
+export function rowsHaveEdits(e: PendingEdits, rows: readonly number[], loaded: number): boolean {
+  return rows.some((r) => (r >= loaded ? r - loaded < e.inserts.length : e.deletes.has(r) || !!e.updates.get(r)?.size));
+}
+
+/** `e` without the pending changes of `rows` (Revert Selected): their edits and deletes, and the inserted rows among them. */
+export function revertRows(e: PendingEdits, rows: readonly number[], loaded: number): PendingEdits {
+  const picked = new Set(rows);
+  const insertsGone = new Set(rows.filter((r) => r >= loaded).map((r) => r - loaded));
+  return {
+    updates: new Map([...e.updates].filter(([r]) => !picked.has(r))),
+    deletes: new Set([...e.deletes].filter((r) => !picked.has(r))),
+    inserts: e.inserts.filter((_, i) => !insertsGone.has(i)),
+  };
+}
+
 /** The DML requests for `edits` of a page with `columns` / `rows`, keyed by `primaryKey`. */
 export function buildRowEdits(
   columns: readonly string[],

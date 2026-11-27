@@ -1164,6 +1164,19 @@ it("shows a decoration's suffix after the root name, with icons and struck-out s
   await waitFor(() => expect(row("acme").textContent).not.toContain("main/"));
 });
 
+it("shows a decoration's display label and icon in place of the physical name", async () => {
+  const { row } = setup();
+  await waitFor(() => expect(row("src")).toBeTruthy());
+  act(() => setFileDecorations("test-label", new Map([[`${ROOT}/src`, { label: "Orders", icon: "db-postgres" }]])));
+  await waitFor(() => expect(row("Orders")).toBeTruthy());
+  const content = row("Orders").querySelector("[data-project-path]");
+  expect(content).toHaveAttribute("data-project-path", `${ROOT}/src`);
+  expect(content).toHaveAttribute("data-project-icon", "db-postgres");
+  expect(screen.queryByText("src")).not.toBeInTheDocument();
+  act(() => setFileDecorations("test-label", new Map()));
+  await waitFor(() => expect(row("src")).toBeTruthy());
+});
+
 it("marks file and folder symlinks with the link arrow, leaving real folders and files alone", async () => {
   fs = new MemoryFs(
     {
