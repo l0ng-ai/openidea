@@ -43,6 +43,8 @@ export function useDialogPlatform(override?: DialogPlatform): DialogPlatform {
   return override ?? dialogPlatformOf(os);
 }
 
+const MAC_CLOSE_BUTTONS: readonly DialogButton[] = [{ label: "Close", role: "cancel" }];
+
 const MAC_ORDER: Record<DialogButtonRole, number> = { cancel: -10, extra: 0, default: 100 };
 
 /**
@@ -216,7 +218,7 @@ function DialogInner({
   blockWorkbenchShortcuts = false,
   title,
   children,
-  buttons,
+  buttons: givenButtons,
   footerStart,
   onHelp,
   footer,
@@ -243,6 +245,10 @@ function DialogInner({
   const given = useGivenTx();
   if (typeof title === "string") title = given(title);
   const popup = asPopup || position === "top" || (title == null && !icon);
+  // A macOS sheet has no close button of its own: one without footer buttons gets a Close button
+  // so it can still be closed with the mouse.
+  const buttons =
+    platform === "mac" && !popup && !icon && !givenButtons?.length && !footer ? MAC_CLOSE_BUTTONS : givenButtons;
   const onCloseRef = useRef(onClose);
   const buttonsRef = useRef(buttons);
   const restoreFocusRef = useRef(restoreFocus);
@@ -462,7 +468,7 @@ function DialogInner({
           )
         ) : platform === "mac" ? (
           // A sheet over the window, as the dialog windows look: the title heads the content, no
-          // window buttons of its own (Esc and Cancel close it).
+          // window buttons of its own (Esc and Cancel or Close close it).
           <div className={clsx(styles.titleBar, styles.macTitleBar)} data-dialog-drag="" data-dialog-titlebar="">
             <span className={styles.title}>{title}</span>
           </div>
