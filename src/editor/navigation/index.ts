@@ -19,8 +19,9 @@ import { isVirtualUri } from "@/platform/virtualDocs";
 import { editorService } from "@/workbench/contributions";
 import { fileIconName } from "@/ui";
 import { registerRelatedProvider, relatedItems } from "@/editor/relatedProviders";
-import { gotoTestOrSubject, type TestNavDeps } from "./gotoTest";
+import { createTestFor, gotoTestOrSubject, type TestNavDeps } from "./gotoTest";
 import { componentFileItems } from "./componentFiles";
+import { createPythonTest } from "./pythonCreateTest";
 import { headerSourceItems } from "./headerSource";
 import { stubRelatedItems } from "./pythonStubs";
 import { projectPythonHierarchy, pythonSuperDeps } from "./pythonHierarchy";
@@ -156,6 +157,8 @@ function testDeps(view: EditorView, ctx: EditorDocContext): TestNavDeps {
       const outline = await call(commands.docOutline(ctx.doc));
       return topLevelTypeAt(outline, offsetToPos(view.state.doc, view.state.selection.main.head))?.name ?? null;
     },
+    createPythonTest: (req) =>
+      void createPythonTest(view, ctx, req).catch((e) => showHint(view, String(e), { tone: "error" })),
     createTest: ({ directory, name, extension }) =>
       void executeAction("templates.newFromTemplate", { directory, name, extension, kindId: "test" }),
     createRustTestModule: () => {
@@ -172,6 +175,16 @@ function testDeps(view: EditorView, ctx: EditorDocContext): TestNavDeps {
       view.focus();
     },
   };
+}
+
+async function createTest(view: EditorView) {
+  const ctx = docOf(view);
+  if (!ctx || isVirtualUri(ctx.path)) return;
+  try {
+    await createTestFor(ctx.path, testDeps(view, ctx));
+  } catch (e) {
+    if (!isCancelled(e)) showHint(view, e instanceof Error ? e.message : String(e), { tone: "error" });
+  }
 }
 
 async function gotoTest(view: EditorView) {
@@ -276,6 +289,9 @@ export function registerNavigationActions(): () => void {
   });
   const unregister = registerActions([
     editorAction("navigate.gotoTest", "Test", gotoTest, { keywords: ["go to test", "test subject", "create test"] }),
+    editorAction("navigate.createTest", "Create Test…", createTest, {
+      keywords: ["new test", "generate test", "pytest"],
+    }),
     editorAction("navigate.superMethod", "Super Method", superMethod, {
       keywords: ["go to super", "overridden", "parent"],
     }),
