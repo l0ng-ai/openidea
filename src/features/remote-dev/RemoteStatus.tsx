@@ -3,6 +3,7 @@ import { tx } from "@/platform/i18n";
 import type { RemoteSession } from "@/platform/ipc";
 import { useRemote } from "@/platform/remote";
 import { BarButton, Icon, showContextMenu, Spinner } from "@/ui";
+import { canMonitorRemoteHost } from "./resources";
 import styles from "./RemoteDev.module.css";
 
 const BADGE: Record<RemoteSession["target"]["kind"], string> = {
@@ -52,6 +53,7 @@ export function RemoteStatus() {
         e.preventDefault();
         showContextMenu(e, [
           { kind: "action", action: "remote.connect" },
+          ...(canMonitorRemoteHost(session) ? [{ kind: "action" as const, action: "remote.showResources" }] : []),
           { kind: "action", action: "remote.reloadEnvironment" },
           { kind: "separator" },
           { kind: "action", action: "remote.disconnect" },

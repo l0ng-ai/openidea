@@ -82,6 +82,17 @@ describe("validateWorkflow", () => {
     expect(inclusion("false")).toBe(true);
   });
 
+  it("keeps Ruff safe fixes on commit opt-in and separate from reformatting", () => {
+    expect(DEFAULT_WORKFLOW.vcs.commit.fixOnCommit).toBe(false);
+    expect(validateWorkflow({ vcs: { commit: { reformat: true } } }).vcs.commit.fixOnCommit).toBe(false);
+    expect(validateWorkflow({ vcs: { commit: { fixOnCommit: true } } }).vcs.commit).toMatchObject({
+      fixOnCommit: true,
+      reformat: false,
+      optimizeImports: false,
+    });
+    expect(validateWorkflow({ vcs: { commit: { fixOnCommit: "true" } } }).vcs.commit.fixOnCommit).toBe(false);
+  });
+
   it("keeps the double-click choice unset until it is made", () => {
     expect(DEFAULT_WORKFLOW.vcs.commit.doubleClickOpensDiff).toBeNull();
     expect(validateWorkflow(undefined).vcs.commit.doubleClickOpensDiff).toBeNull();

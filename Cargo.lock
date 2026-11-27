@@ -4519,6 +4519,7 @@ dependencies = [
  "ide-workspace",
  "ignore",
  "jsonschema",
+ "notify",
  "parking_lot 0.12.5",
  "quick-xml 0.42.0",
  "regex-lite",

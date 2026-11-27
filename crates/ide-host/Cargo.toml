@@ -76,6 +76,7 @@ tracing.workspace = true
 url = "2"
 tracing-subscriber.workspace = true
 parking_lot.workspace = true
+notify.workspace = true
 dunce.workspace = true
 dirs.workspace = true
 uuid.workspace = true

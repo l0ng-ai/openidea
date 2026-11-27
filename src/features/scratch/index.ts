@@ -9,7 +9,9 @@ import { useRemote } from "@/platform/remote";
 import { registerMenuGroup, registerOverlay, registerProjectViewRoot } from "@/workbench/contributions";
 import { ScratchChooserHost } from "./ScratchChooser";
 import { openChooser } from "./store";
-import { scratchBackend, scratchesAvailable, scratchesDir } from "./scratches";
+import { newScratchBuffer, scratchBackend, scratchesAvailable, scratchesDir } from "./scratches";
+
+export { newScratchBuffer };
 
 export const SCRATCHES_ROOT_LABEL = "Scratches";
 
@@ -70,6 +72,17 @@ export function activate(): () => void {
         keywords: ["scratch", "temporary file", "buffer"],
         when: "projectOpen",
         run: () => newScratchFile(),
+      },
+      {
+        id: "file.newScratchBuffer",
+        title: "New Scratch Buffer",
+        category: "File",
+        icon: "scratches",
+        keywords: ["scratch", "temporary file", "buffer", "plain text"],
+        when: "projectOpen",
+        run: async () => {
+          await newScratchBuffer();
+        },
       },
     ]),
   ];

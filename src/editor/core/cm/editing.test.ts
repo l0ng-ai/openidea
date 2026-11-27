@@ -16,6 +16,7 @@ import {
   startNewLineBefore,
   swapSelectionBoundaries,
   toggleCase,
+  transpose,
   unselectOccurrence,
 } from "./editing";
 import { batchLanguage, commentTokens, findLanguageDescription, loadSupport } from "./languages";
@@ -253,6 +254,140 @@ describe("cycle case", () => {
     const v = make("let a = 2|0;");
     expect(cycleCase(v)).toBe(false);
     expect(show(v)).toBe("let a = 2|0;");
+  });
+});
+
+describe("transpose", () => {
+  it("swaps the code points around a caret and moves it after the pair", () => {
+    const v = make("ab|cd");
+    expect(transpose(v)).toBe(true);
+    expect(show(v)).toBe("acb|d");
+    expect(v.state.selection.main.head).toBe(3);
+  });
+
+  it("swaps the last two code points at EOL without moving the caret", () => {
+    const v = make("abc|");
+    expect(transpose(v)).toBe(true);
+    expect(show(v)).toBe("acb|");
+    expect(v.state.selection.main.head).toBe(3);
+  });
+
+  it("does nothing at the start of the document", () => {
+    const v = make("|abc");
+    expect(transpose(v)).toBe(false);
+    expect(show(v)).toBe("|abc");
+  });
+
+  it("swaps across the preceding line break when the caret starts a line", () => {
+    const v = make("a\n|b");
+    expect(transpose(v)).toBe(true);
+    expect(show(v)).toBe("ab\n|");
+    expect(v.state.selection.main.head).toBe(3);
+  });
+
+  it("swaps a one-character line's text with its line break at EOL", () => {
+    const v = make("a\nx|");
+    expect(transpose(v)).toBe(true);
+    expect(show(v)).toBe("ax\n|");
+    expect(v.state.selection.main.head).toBe(3);
+  });
+
+  it("does nothing on a one-character first line at EOL", () => {
+    const v = make("x|");
+    expect(transpose(v)).toBe(false);
+    expect(show(v)).toBe("x|");
+  });
+
+  it("swaps the two code points before an empty line at EOL", () => {
+    const v = make("a\n|\nb");
+    expect(transpose(v)).toBe(true);
+    expect(show(v)).toBe("\na|\nb");
+    expect(v.state.selection.main.head).toBe(2);
+  });
+
+  it("treats non-BMP characters as single code points", () => {
+    const middle = make("ab|😀c");
+    expect(transpose(middle)).toBe(true);
+    expect(show(middle)).toBe("a😀b|c");
+    expect(middle.state.selection.main.head).toBe(4);
+
+    const end = make("a😀|");
+    expect(transpose(end)).toBe(true);
+    expect(show(end)).toBe("😀a|");
+    expect(end.state.selection.main.head).toBe(3);
+  });
+
+  it("swaps at every unselected caret and keeps the main caret", () => {
+    const v = make("ab|cd\nef|gh\nij|");
+    v.dispatch({ selection: EditorSelection.create(v.state.selection.ranges, 1) });
+    expect(transpose(v)).toBe(true);
+    expect(show(v)).toBe("acb|d\negf|h\nji|");
+    expect(v.state.selection.ranges).toHaveLength(3);
+    expect(v.state.selection.mainIndex).toBe(1);
+  });
+
+  it("applies adjacent caret swaps in caret order", () => {
+    const v = make("ab|cd|ef");
+    expect(transpose(v)).toBe(true);
+    expect(show(v)).toBe("acb|ed|f");
+    expect(v.state.selection.ranges.map((r) => r.head)).toEqual([3, 5]);
+  });
+
+  it("rotates selected texts from descending selection end and selects each replacement", () => {
+    const v = make("[a] [😀] [bc]");
+    v.dispatch({ selection: EditorSelection.create(v.state.selection.ranges, 2) });
+    expect(transpose(v)).toBe(true);
+    expect(show(v)).toBe("[bc] [a] [😀]");
+    expect(v.state.selection.ranges).toHaveLength(3);
+    expect(v.state.selection.mainIndex).toBe(2);
+    expect(v.state.selection.ranges.map((r) => v.state.sliceDoc(r.from, r.to))).toEqual(["bc", "a", "😀"]);
+  });
+
+  it("normalizes every rotated selection to a forward range", () => {
+    const v = make("ab cd");
+    v.dispatch({ selection: EditorSelection.create([EditorSelection.range(2, 0), EditorSelection.range(5, 3)], 1) });
+    expect(transpose(v)).toBe(true);
+    expect(v.state.doc.toString()).toBe("cd ab");
+    expect(v.state.selection.ranges.map((r) => [r.anchor, r.head])).toEqual([
+      [0, 2],
+      [3, 5],
+    ]);
+    expect(v.state.selection.mainIndex).toBe(1);
+  });
+
+  it("does nothing with only one selection", () => {
+    const v = make("[ab]");
+    expect(transpose(v)).toBe(false);
+    expect(show(v)).toBe("[ab]");
+  });
+
+  it("does nothing with mixed carets and selections", () => {
+    const v = make("[ab] c|d");
+    expect(transpose(v)).toBe(false);
+    expect(show(v)).toBe("[ab] c|d");
+  });
+
+  it.each(["ab|cd", "[ab] [cd]"])("does nothing in a read-only editor: %s", (marked) => {
+    const v = make(marked, EditorState.readOnly.of(true));
+    expect(transpose(v)).toBe(false);
+    expect(show(v)).toBe(marked);
+  });
+
+  it("moves the caret even when the swapped code points are equal", () => {
+    const v = make("aa|aa");
+    expect(transpose(v)).toBe(true);
+    expect(show(v)).toBe("aaa|a");
+    expect(v.state.selection.main.head).toBe(3);
+  });
+
+  it("undoes all caret swaps in one step", () => {
+    const v = make("ab|cd\nef|gh", history());
+    transpose(v);
+    const after = show(v);
+    expect(undo(v)).toBe(true);
+    expect(show(v)).toBe("ab|cd\nef|gh");
+    expect(redo(v)).toBe(true);
+    expect(show(v)).toBe(after);
   });
 });
 

@@ -320,3 +320,23 @@ async fn changing_selected_python_recreates_kernel_instead_of_reusing_old_enviro
     );
     manager.shutdown().await;
 }
+
+#[tokio::test]
+#[ignore = "requires OPENIDEA_TEST_PYTHON with real ipykernel"]
+async fn inspection_is_silent_and_never_starts_a_kernel() {
+    let root = tempfile::tempdir().unwrap();
+    let notebook = root.path().join("inspect.ipynb");
+    let python = python();
+    let manager = manager(root.path());
+    let expressions = || std::collections::HashMap::from([("v".to_owned(), "answer * 2".to_owned())]);
+    assert!(manager.inspect(&notebook, "", expressions()).await.unwrap().is_none());
+    let (result, _) = run(&manager, &notebook, &python, "answer = 21").await;
+    assert_eq!(result.unwrap().execution_count, Some(1));
+    let reply = manager.inspect(&notebook, "print('hidden')", expressions()).await.unwrap().unwrap();
+    assert_eq!(reply["v"]["status"], "ok");
+    assert_eq!(reply["v"]["data"]["text/plain"], "42");
+    let (result, outputs) = run(&manager, &notebook, &python, "answer").await;
+    assert_eq!(result.unwrap().execution_count, Some(2), "a silent request must not take an execution count");
+    assert!(outputs.iter().all(|o| o.content["text"].as_str().is_none_or(|text| !text.contains("hidden"))));
+    manager.shutdown().await;
+}

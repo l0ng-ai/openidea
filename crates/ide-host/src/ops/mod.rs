@@ -19,6 +19,7 @@ pub mod flutter;
 pub mod fs;
 pub mod heap;
 pub mod history;
+pub mod host_metrics;
 pub mod http;
 pub mod java;
 pub mod jvm_icons;
@@ -26,6 +27,7 @@ pub mod lsp;
 pub mod maven_placeholder;
 pub mod nav;
 pub mod notebook;
+mod plots;
 pub mod project;
 pub mod pytest_fixtures;
 mod python;
@@ -94,6 +96,7 @@ ide_command::domains!(
     fs: crate::ops::fs,
     heap: crate::ops::heap,
     history: crate::ops::history,
+    host_metrics: crate::ops::host_metrics,
     http: crate::ops::http,
     java: crate::ops::java,
     jvm_icons: crate::ops::jvm_icons,
