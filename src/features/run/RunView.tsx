@@ -3,7 +3,7 @@ import clsx from "clsx";
 import type { GroupImperativeHandle, Layout } from "react-resizable-panels";
 import type { RunConfig } from "@/platform/ipc";
 import type { RunTargetValid } from "@/platform/remoteSettings";
-import { useAgentRunSettings, useWorkflowSettings } from "@/platform/workflowSettings";
+import { setConsoleSoftWrap, useAgentRunSettings, useWorkflowSettings } from "@/platform/workflowSettings";
 import {
   EmptyState,
   Icon,
@@ -101,10 +101,9 @@ export function SessionPanel({
   const version = useRun((s) => s.versions[session.id] ?? 0);
   const rt = runtime(session.id);
   const [follow, setFollow] = useState(true);
-  // Settings › Console › Use soft wraps is the default; the toolbar toggle overrides it for this tab.
-  const defaultWrap = useWorkflowSettings((s) => s.console.softWrap);
-  const [wrapOverride, setWrapOverride] = useState<boolean | null>(null);
-  const softWrap = wrapOverride ?? defaultWrap;
+  // Settings › Console › Use soft wraps is shared by every run tab, so the toolbar toggle
+  // writes it instead of keeping a per-tab override that a tab switch would drop.
+  const softWrap = useWorkflowSettings((s) => s.console.softWrap);
   const [selectedTest, setSelectedTest] = useState<string | null>(null);
   const [findOpen, setFindOpen] = useState(false);
   const body = useRef<HTMLDivElement>(null);
@@ -186,7 +185,7 @@ export function SessionPanel({
   const overflowConsoleToggles = showLifecycle && compactToolbar && !rt.terminal;
   const consoleToggles = [
     { label: "Scroll to End", icon: "scroll-to-end", checked: follow, run: () => setFollow((v) => !v) },
-    { label: "Soft-Wrap", icon: "soft-wrap", checked: softWrap, run: () => setWrapOverride(!softWrap) },
+    { label: "Soft-Wrap", icon: "soft-wrap", checked: softWrap, run: () => void setConsoleSoftWrap(!softWrap) },
   ];
   // IDEA's console toolbar names Previous / Next Occurrence after what they step through here.
   const stackTraceActions = rt.tests
@@ -251,6 +250,7 @@ export function SessionPanel({
           findOpen={findOpen}
           onFindOpenChange={setFindOpen}
           cwd={cwd}
+          module={session.config.module}
           onClear={() => clearConsole(session.id)}
           // A test run's Previous / Next Occurrence go through its failed tests.
           occurrences={rt.tests ? undefined : showLifecycle ? "run" : SERVICES_WINDOW}
@@ -413,6 +413,7 @@ export function SessionPanel({
                 results={rt.tests}
                 version={version}
                 cwd={cwd}
+                module={session.config.module}
                 running={testsRunning}
                 name={session.config.name}
                 selected={selectedTest}

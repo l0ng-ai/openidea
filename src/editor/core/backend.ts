@@ -60,6 +60,8 @@ export interface DocBackend {
   setLineEnding(doc: DocId, lineEnding: LineEnding): Promise<void>;
   /** "Reload with Encoding" (`reload`) or "Convert to Encoding"; resolves to the new encoding and BOM state. */
   setEncoding(doc: DocId, encoding: string, reload: boolean): Promise<DocumentEncoding>;
+  /** Keeps the encoding the user chose for a project file in the project's settings, for the next time it opens. */
+  rememberEncoding?(doc: DocId): Promise<void>;
   /** Adds or removes the BOM on a UTF-8 document; the change is written on save. */
   setBom(doc: DocId, hasBom: boolean): Promise<DocumentEncoding>;
   outline(doc: DocId): Promise<OutlineItem[]>;
@@ -106,6 +108,7 @@ export const ipcBackend: DocBackend = {
   snapshot: (doc) => call(commands.docSnapshot(doc)),
   setLineEnding: async (doc, le) => void (await call(commands.docSetLineEnding(doc, le))),
   setEncoding: (doc, encoding, reload) => call(commands.docSetEncoding(doc, encoding, reload)),
+  rememberEncoding: async (doc) => void (await call(commands.docRememberEncoding(doc))),
   setBom: (doc, hasBom) => call(commands.docSetBom(doc, hasBom)),
   outline: (doc) => call(commands.docOutline(doc)),
   folding: (doc) => call(commands.docFolding(doc)),

@@ -23,7 +23,6 @@ import {
 } from "@codemirror/language";
 import { history, indentWithTab } from "@codemirror/commands";
 import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
-import { highlightSelectionMatches } from "@codemirror/search";
 import type { EditorConfigProps } from "@/bindings";
 import type { EditorSettings } from "@/platform/ipc";
 import { editorPrefs, lineCommentStyleFor, type EditorExtras } from "@/platform/editorSettings";
@@ -33,6 +32,7 @@ import { distractionFreeWidth, isDistractionFree } from "@/workbench/distraction
 import { openideaHighlightStyle } from "./highlight";
 import { openideaTheme } from "./theme";
 import { caretRowHighlight } from "./caretRow";
+import { selectionMatches } from "./selectionMatches";
 import { changeLane, overviewLane } from "./lanes";
 import { cornerInset } from "./cornerInset";
 import { foldingExtension } from "./folding";
@@ -259,7 +259,7 @@ export function heavyExtension(docLength: number, settings?: EditorSettings): Ex
     prefs.rainbowBrackets
       ? rainbowBrackets({ ...prefs.rainbowBracketKinds, colors: prefs.rainbowBracketColors, syntax: bracketSyntax() })
       : [],
-    prefs.codeEditing.highlightSelection ? highlightSelectionMatches({ minSelectionLength: 2, maxMatches: 500 }) : [],
+    prefs.codeEditing.highlightSelection ? selectionMatches({ minSelectionLength: 2, maxMatches: 500 }) : [],
   ];
 }
 

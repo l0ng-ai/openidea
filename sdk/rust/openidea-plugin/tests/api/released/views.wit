@@ -1,4 +1,4 @@
-package openidea:plugin@1.17.0;
+package openidea:plugin@1.18.0;
 
 /// Declarative views: tool windows declared
 /// under `[[contributes.views]]` and custom editors under
@@ -147,6 +147,12 @@ interface views {
     /// Opens or focuses a running session with this key; env is append-only.
     /// Only from a window command/event; the id receives one terminal-exited.
     open-terminal-session: func(key: string, title: string, cmd: command) -> result<string, error>;
+    /// `open-terminal-session` started in `cwd` (API 1.18): a directory of the invoking
+    /// window's project, relative to its root (`""` is the root). It must exist and stay
+    /// inside the project once symlinks are resolved; `invalid` otherwise. Trust and the
+    /// approved program are the project's, whatever the directory. A running session with
+    /// this key is focused as it is, without moving it.
+    open-terminal-session-in: func(key: string, title: string, cmd: command, cwd: string) -> result<string, error>;
     /// Writes to this plugin's running keyed terminal in the invoking window.
     write-terminal: func(key: string, text: string) -> result<_, error>;
     /// Opens the existing content editor protocol without a web view.

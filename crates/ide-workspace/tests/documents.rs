@@ -1735,3 +1735,130 @@ fn a_file_declared_utf8_that_is_not_utf8_is_decoded_with_the_project_encoding() 
 
     assert_eq!((doc.text.as_str(), doc.encoding.as_str()), ("// ação €\n", "iso-8859-15"));
 }
+
+/// `[editor.encodings.mappings]` as the host hands it over: project paths with their labels.
+fn encoding_mappings(f: &Fixture, entries: &[(&str, &str)]) {
+    let mut defaults = f.docs.file_defaults();
+    defaults.mappings = entries.iter().map(|(rel, label)| (in_root(f, rel), (*label).to_owned())).collect();
+    f.docs.set_file_defaults(defaults);
+}
+
+fn in_root(f: &Fixture, rel: &str) -> PathBuf {
+    rel.split('/').fold(f.root.clone(), |path, segment| path.join(segment))
+}
+
+#[test]
+fn encoding_mapping_of_a_file_survives_closing_and_reopening_it() {
+    let f = fixture();
+    let path = f.root.join("A.java");
+    fs::write(&path, "// ação\n").unwrap();
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "utf-8");
+    f.docs.set_encoding(doc.id, "iso-8859-15", true).unwrap();
+    let chosen = f.docs.snapshot(doc.id).unwrap();
+    assert_eq!(chosen.text, "// aÃ§Ã£o\n");
+    f.docs.close(doc.id);
+
+    encoding_mappings(&f, &[("A.java", "iso-8859-15")]);
+    let reopened = f.docs.open(&path).unwrap();
+    assert_eq!((reopened.encoding.as_str(), reopened.text.as_str()), ("iso-8859-15", chosen.text.as_str()));
+    // A later change on disk is read in the remembered encoding too.
+    fs::write(&path, b"// a\xe7\xe3o \xa4\n").unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    let reloaded = f.docs.snapshot(reopened.id).unwrap();
+    assert_eq!((reloaded.encoding.as_str(), reloaded.text.as_str()), ("iso-8859-15", "// ação €\n"));
+    assert_eq!(f.docs.load_file(&path).unwrap().encoding, "iso-8859-15", "closed-file readers agree");
+}
+
+#[test]
+fn encoding_mapping_of_a_file_to_utf8_holds_in_a_latin_project() {
+    let f = fixture();
+    latin_project(&f);
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+    encoding_mappings(&f, &[("A.java", "utf-8")]);
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "utf-8");
+    f.docs.edit(doc.id, doc.version, change(0, 0, "// é\n")).unwrap();
+    f.docs.save(doc.id).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), "// é\nclass A {}\n".as_bytes());
+}
+
+#[test]
+fn encoding_mapping_of_a_file_beats_editorconfig_and_a_folder_mapping_loses_to_it() {
+    let f = fixture();
+    let mut defaults = f.docs.file_defaults();
+    defaults.project_fallback = "gbk".into();
+    f.docs.set_file_defaults(defaults);
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.java]\ncharset = latin1\nend_of_line = crlf\n").unwrap();
+    fs::create_dir(f.root.join("src")).unwrap();
+    for name in ["src/A.java", "src/B.java", "src/notes.txt", "other.txt"] {
+        fs::write(in_root(&f, name), b"plain ascii\n").unwrap();
+    }
+    fs::write(in_root(&f, "src/new.txt"), b"").unwrap();
+    fs::write(in_root(&f, "src/latin.txt"), b"a\xe7\xe3o \xa4\n").unwrap();
+    encoding_mappings(&f, &[("src", "iso-8859-15"), ("src/A.java", "koi8-r")]);
+    let open = |name: &str| f.docs.open(&in_root(&f, name)).unwrap();
+
+    let file = open("src/A.java");
+    assert_eq!(file.encoding, "koi8-r", "the file's own mapping beats .editorconfig");
+    assert_eq!(file.line_ending, LineEnding::CrLf, ".editorconfig still sets the rest");
+    assert_eq!(open("src/B.java").encoding, "windows-1252", ".editorconfig beats the folder mapping");
+    assert_eq!(open("src/notes.txt").encoding, "iso-8859-15", "the folder mapping beats the project encoding");
+    assert_eq!(open("src/new.txt").encoding, "iso-8859-15", "a new file takes its folder's encoding");
+    assert_eq!(open("other.txt").encoding, "gbk");
+    let latin = open("src/latin.txt");
+    assert_eq!((latin.encoding.as_str(), latin.text.as_str()), ("iso-8859-15", "ação €\n"));
+}
+
+#[test]
+fn encoding_mapping_of_a_folder_is_left_out_where_editorconfig_sets_the_charset() {
+    let f = fixture();
+    let mut defaults = f.docs.file_defaults();
+    defaults.project_fallback = "gbk".into();
+    f.docs.set_file_defaults(defaults);
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.java]\ncharset = latin1\n").unwrap();
+    fs::create_dir(f.root.join("src")).unwrap();
+    let path = in_root(&f, "src/B.java");
+    fs::write(&path, b"// \xd6\xd0\n").unwrap();
+    let unmapped = f.docs.open(&path).unwrap();
+    f.docs.close(unmapped.id);
+
+    encoding_mappings(&f, &[("src", "koi8-r")]);
+    let mapped = f.docs.open(&path).unwrap();
+    assert_eq!((mapped.encoding, mapped.text), (unmapped.encoding, unmapped.text));
+    assert_eq!(f.docs.load_file(&path).unwrap().encoding, "windows-1252", "closed-file readers agree");
+}
+
+#[test]
+fn encoding_mapping_a_file_no_longer_decodes_in_falls_back_to_detection() {
+    let f = fixture();
+    latin_project(&f);
+    let path = f.root.join("A.java");
+    fs::write(&path, b"// a\xe7\xe3o\n").unwrap();
+    encoding_mappings(&f, &[("A.java", "utf-8")]);
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!((doc.encoding.as_str(), doc.text.as_str()), ("iso-8859-15", "// ação\n"));
+}
+
+#[test]
+fn without_encoding_mappings_files_open_as_before() {
+    let f = fixture();
+    let settings = ide_core::settings::Settings::default();
+    f.docs.set_file_defaults(ide_workspace::FileDefaults::from_settings(&settings, Some(&f.root)));
+    assert!(f.docs.file_defaults().mappings.is_empty());
+    for (name, bytes) in [
+        ("ascii.java", &b"class A {}\n"[..]),
+        ("utf8.java", "// ação\n".as_bytes()),
+        ("latin.java", &b"// a\xe7\xe3o de gra\xe7a, cora\xe7\xe3o\n"[..]),
+        ("empty.java", &b""[..]),
+    ] {
+        let path = f.root.join(name);
+        fs::write(&path, bytes).unwrap();
+        let detected = ide_vfs::load_text(&path).unwrap();
+        let doc = f.docs.open(&path).unwrap();
+        assert_eq!((doc.encoding, doc.text), (detected.encoding, detected.text), "{name}");
+    }
+}
