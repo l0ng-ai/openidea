@@ -191,6 +191,23 @@ const GENERAL = editorPage({
       ],
     },
     {
+      title: "Gutter",
+      items: [
+        {
+          t: "check",
+          key: `${P}.general.highlightModifiedLines`,
+          label: "Highlight modified lines in the gutter",
+          children: [
+            {
+              t: "check",
+              key: `${P}.general.highlightModifiedLinesInScrollbar`,
+              label: "Highlight modified lines in error stripe on the scrollbar",
+            },
+          ],
+        },
+      ],
+    },
+    {
       title: "Save Files",
       items: [
         {

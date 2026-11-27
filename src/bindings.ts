@@ -5512,6 +5512,11 @@ export type DbIndexInfo = {
 	name: string,
 	unique: boolean,
 	columns: string[],
+	/**
+	 *  The key this index enforces; such an index is dropped with its constraint, not `drop index`.
+	 *  `None` for a plain index, and on engines that don't tell.
+	 */
+	key?: DbKeyKind | null,
 };
 
 /**  Schemas tab: the databases / schemas the tree shows. Names may use `*` and `?`. */
@@ -5576,6 +5581,9 @@ export type DbJdbcDriver_Serialize = {
 	className: string,
 	urlTemplate: string,
 };
+
+/**  A table key backed by an index. */
+export type DbKeyKind = "primary" | "unique";
 
 export type DbMysqlOptions = {
 	/**  Empty: the databases the dump names. */
@@ -6906,6 +6914,10 @@ export type EditorGeneralSettings = {
 	removeTrailingBlankLines?: boolean,
 	/**  Copy as rich text (HTML with syntax colours) by default. */
 	richTextCopy?: boolean,
+	/**  Gutter › Highlight modified lines in the gutter: the VCS change bars next to the line numbers. */
+	highlightModifiedLines?: boolean,
+	/**  Gutter › Highlight modified lines in error stripe on the scrollbar (with `highlight_modified_lines`). */
+	highlightModifiedLinesInScrollbar?: boolean,
 };
 
 /**
@@ -9213,7 +9225,7 @@ export type JetBrainsSettings = {
 	entries: string[],
 	/**
 	 *  Entry name → text, for the files OpenIDEA reads: `colors/*.icls`, `keymaps/*.xml`,
-	 *  `codestyles/*.xml` and some of `options/`.
+	 *  `codestyles/*.xml`, `templates/*.xml` and some of `options/`.
 	 */
 	files: { [key in string]: string },
 };

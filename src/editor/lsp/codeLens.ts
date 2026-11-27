@@ -31,7 +31,7 @@ import { dedupeLocations } from "./navigation";
 import { overriddenMethods, overriddenReferences, type OutlineCache } from "./overriddenReferences";
 import { posToOffset } from "./positions";
 import { featureBackoff, onLspRefresh, onServerSettled } from "./availability";
-import { isNavigating, onNavigation } from "./foreground";
+import { inForeground, onForeground } from "./foreground";
 import { editorPrefs } from "@/platform/editorSettings";
 import { authorLabel, authorSummary, authorTooltip, blameFor, onBlameInvalidated } from "./authorLens";
 import { tx } from "@/platform/i18n";
@@ -184,7 +184,7 @@ class UsagesLensPlugin {
   private offChanges: () => void;
   private offNavigation: () => void;
   private skipped = false;
-  /** A pass was cut short or held back by a navigation, and runs once it is done. */
+  /** A pass was cut short or held back by a foreground request, and runs once it is done. */
   private yielded = false;
 
   constructor(private view: EditorView) {
@@ -201,10 +201,11 @@ class UsagesLensPlugin {
       this.refresh();
     });
     this.offBlame = onBlameInvalidated(() => this.refresh());
-    // Go to Declaration and the like go first: counts search the whole project on the same
-    // server, so in-flight ones are cancelled and asked again once the navigation is done.
-    this.offNavigation = onNavigation((navigating) => {
-      if (navigating) {
+    // Requests the user waits for go first (Go to Declaration, ⌥↵, a refactoring): counts search
+    // the whole project on the same server, so in-flight ones are cancelled and asked again once
+    // the user's request is done.
+    this.offNavigation = onForeground((foreground) => {
+      if (foreground) {
         if (!this.pending.size) return;
         this.cancel();
         this.yielded = true;
@@ -271,7 +272,7 @@ class UsagesLensPlugin {
     if (this.skipped) return;
     const doc = docOf(view);
     if (!doc) return;
-    if (isNavigating()) {
+    if (inForeground()) {
       this.yielded = true;
       return;
     }
@@ -312,7 +313,7 @@ class UsagesLensPlugin {
       // A base file is outlined once per pass, however many of its methods are overridden here.
       const outlines: OutlineCache = new Map([[doc.path, Promise.resolve(this.outline.items)]]);
       for (let i = 0; i < todo.length && !unavailable; i += CONCURRENCY) {
-        if (isNavigating()) {
+        if (inForeground()) {
           this.yielded = true;
           return;
         }

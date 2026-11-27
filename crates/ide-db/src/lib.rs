@@ -174,6 +174,30 @@ pub struct IndexInfo {
     pub name: String,
     pub unique: bool,
     pub columns: Vec<String>,
+    /// The key this index enforces; such an index is dropped with its constraint, not `drop index`.
+    /// `None` for a plain index, and on engines that don't tell.
+    #[serde(default)]
+    #[specta(optional)]
+    pub key: Option<DbKeyKind>,
+}
+
+/// A table key backed by an index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DbKeyKind {
+    Primary,
+    Unique,
+}
+
+impl DbKeyKind {
+    /// The [`sql::indexes`] key column: `p` (primary key), `u` (unique constraint).
+    fn from_catalog(v: Option<&str>) -> Option<Self> {
+        match v {
+            Some("p") => Some(Self::Primary),
+            Some("u") => Some(Self::Unique),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -1180,7 +1204,12 @@ impl DbManager {
             };
             match indexes.last_mut() {
                 Some(last) if last.name == name => last.columns.push(col),
-                _ => indexes.push(IndexInfo { name, unique: flag(&unique), columns: vec![col] }),
+                _ => indexes.push(IndexInfo {
+                    name,
+                    unique: flag(&unique),
+                    columns: vec![col],
+                    key: DbKeyKind::from_catalog(it.next().flatten().as_deref()),
+                }),
             }
         }
         let fk_rows = if matches!(driver, DbDriver::Clickhouse | DbDriver::Snowflake) {
