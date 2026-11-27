@@ -428,3 +428,18 @@ fn structural_ranges_switch_and_when_branches() {
     assert!(r.prev_statement.is_none());
     assert_eq!(r.next_statement.unwrap().range, span(src, "2 -> println(\"two\")"));
 }
+
+#[test]
+fn xml_comments_between_attributes_are_not_syntax_errors() {
+    let xml = lang("xml");
+    let errors = |src: &str| service().syntax_errors(&snap(&xml, src), &none()).unwrap().errors;
+    for src in [
+        "<config>\n  <a\n      x=\"1\"\n      <!--\n      y=\"2\"\n      -->\n  />\n</config>\n",
+        "<r a=\"1\" <!-- b=\"2\" --> c=\"3\">t</r>\n",
+    ] {
+        assert_eq!(errors(src), [], "{src}");
+    }
+    // An unclosed comment, and a tag left unterminated around a comment, are still errors.
+    assert!(!errors("<r a=\"1\" <!-- b=\"2\" />\n").is_empty());
+    assert!(!errors("<r>\n  <a x=\"1\" <!-- c -->\n</r>\n").is_empty());
+}

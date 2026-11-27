@@ -363,12 +363,22 @@ impl ClientHandler {
         if self.server.redirect_transient_diagnostics(&path, self.generation, params.version, &mut params.diagnostics) {
             return;
         }
+        let filters_text = self.server.name == crate::compose::SERVER || self.server.name == crate::xml_catalog::SERVER;
+        let text = filters_text
+            .then(|| mgr.docs.lock().values().find(|d| d.path == path).map(|d| d.text.as_str().to_owned()))
+            .flatten();
         if self.server.name == crate::compose::SERVER {
             // Maven resource-filtering placeholders (`@profileActive@`) parse as invalid
             // YAML but are replaced before the file is ever read: their parser error is noise.
-            let text = mgr.docs.lock().values().find(|d| d.path == path).map(|d| d.text.as_str().to_owned());
-            if let Some(text) = text {
-                params.diagnostics.retain(|d| !crate::maven_placeholder::false_positive(&text, d));
+            if let Some(text) = &text {
+                params.diagnostics.retain(|d| !crate::maven_placeholder::false_positive(text, d));
+            }
+        }
+        if self.server.name == crate::xml_catalog::SERVER {
+            // IDEA accepts a comment between a tag's attributes; LemMinX's parser does not,
+            // and reports the whole tag as unterminated. Keep its other diagnostics.
+            if let Some(text) = &text {
+                params.diagnostics.retain(|d| !crate::xml_comment::false_positive(text, d));
             }
         }
         if self.server.name == "jdtls"

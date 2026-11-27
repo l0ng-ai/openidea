@@ -85,6 +85,8 @@ pub struct Project {
     pub(crate) git_metadata: Option<Arc<ide_vcs::MetadataWatch>>,
     /// Picks up data sources edited on disk outside the Database tool window.
     _db_sources_watch: Option<ide_db::SourcesWatch>,
+    /// The Plots tool window's folder watch, started by the first Python run ([`crate::ops::plots`]).
+    pub(crate) plots_watch: Mutex<Option<notify::RecommendedWatcher>>,
     /// A LightEdit window's loose files ([`Host::open_light`]): global settings only,
     /// nothing indexed, no language servers, repositories or project services.
     pub light: bool,
@@ -713,6 +715,7 @@ impl Host {
             _scratch_watcher: scratch_watcher,
             git_metadata,
             _db_sources_watch: db_sources_watch,
+            plots_watch: Mutex::default(),
             files_events_active,
             light: false,
         });
@@ -983,6 +986,7 @@ impl Host {
             _scratch_watcher: None,
             git_metadata: None,
             _db_sources_watch: None,
+            plots_watch: Mutex::default(),
             files_events_active: Arc::new(AtomicBool::new(false)),
             light: true,
             root: dir,

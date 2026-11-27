@@ -43,6 +43,7 @@ import {
 } from "./syntaxFallback";
 import { tx } from "@/platform/i18n";
 import { synchronizeDocumentIndexes } from "@/workbench/contributions";
+import { contributedRename, type ContributedRename } from "@/editor/refactorProviders";
 
 async function applyEdit(view: EditorView, edit: WorkspaceEdit) {
   try {
@@ -97,6 +98,21 @@ export async function startRename(view: EditorView) {
   if (!current()) return;
   const head = view.state.selection.main.head;
   const pos = offsetToPos(view.state.doc, head);
+  // Names the server doesn't connect (pytest fixtures): their provider renames them.
+  const own = await contributedRename(view, head);
+  if (!current()) return;
+  if (own) {
+    if (own.refused) return showHint(view, own.refused);
+    const oldName = view.state.sliceDoc(own.from, own.to);
+    openPopup({
+      kind: "symbolRename",
+      title: tx`Rename '${oldName}'`,
+      initial: oldName,
+      themeClasses: view.themeClasses,
+      onSubmit: (newName) => void finishContributedRename(view, own, oldName, newName),
+    });
+    return;
+  }
   if (!(await prepareIndexes(view, doc.path)) || !current()) return;
   let range;
   try {
@@ -282,21 +298,57 @@ async function finishRename(view: EditorView, doc: EditorDocContext, pos: Pos, o
   }
   const { edit, incomplete } = renamed;
   const note = incomplete && incompleteNote(incomplete, oldName);
+  await presentRename(view, edit, oldName, newName, note || null, !!renamed.preview, async () => {
+    if (!(await hasSyntaxErrors(doc.doc))) return false;
+    const plan = await syntaxPlan(view, doc, pos);
+    if (!plan || plan.symbol.name !== oldName) return false;
+    await commitSyntaxRename(view, doc, plan, newName);
+    return true;
+  });
+}
+
+async function finishContributedRename(view: EditorView, own: ContributedRename, oldName: string, newName: string) {
+  if (!newName || newName === oldName) return;
+  if (renameRequest !== null) void commands.cancelRequest(renameRequest).catch(() => {});
+  const request = nextRequestId();
+  renameRequest = request;
+  let edit;
+  try {
+    await whenAllSynced();
+    edit = await own.edit(newName, request);
+    if (renameRequest !== request) return;
+  } catch (e) {
+    if (renameRequest !== request || isCancelled(e)) return;
+    reportLspError(view, e, true);
+    return;
+  } finally {
+    if (renameRequest === request) renameRequest = null;
+  }
+  await presentRename(view, edit, oldName, newName, null, false, async () => false);
+}
+
+/**
+ * Applies a rename's edit, after a preview when it spans several files or may have missed
+ * usages; `fallback` gets a chance when the edit changes nothing.
+ */
+async function presentRename(
+  view: EditorView,
+  edit: WorkspaceEdit,
+  oldName: string,
+  newName: string,
+  note: string | null,
+  preview: boolean,
+  fallback: () => Promise<boolean>,
+) {
   const summary = summarizeWorkspaceEdit(edit);
   if (!summary.files) {
-    if (await hasSyntaxErrors(doc.doc)) {
-      const plan = await syntaxPlan(view, doc, pos);
-      if (plan && plan.symbol.name === oldName) {
-        await commitSyntaxRename(view, doc, plan, newName);
-        return;
-      }
-    }
+    if (await fallback()) return;
     if (note) showHint(view, note, { tone: "warning" });
     else showHint(view, "Nothing to rename");
     return;
   }
   // An edit that may leave usages behind is never applied unseen.
-  if (!renamed.preview && !note && !needsPreview(summary)) {
+  if (!preview && !note && !needsPreview(summary)) {
     await applyEdit(view, edit);
     return;
   }

@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { useId, type ReactNode } from "react";
 import type { ExternalFormatter } from "@/bindings";
 import { IconButton, Input } from "@/ui";
 import { Row, Section, Select, Toggle } from "../components/Form";
@@ -33,7 +33,9 @@ interface FormatterPageProps {
   configurationDirectory?: boolean;
   autoLabel?: string;
   providerHint?: string;
+  saveLabel?: string;
   saveHint: string;
+  children?: ReactNode;
 }
 
 function FormatterPage({
@@ -44,7 +46,9 @@ function FormatterPage({
   configurationDirectory = false,
   autoLabel = "Automatic (language server first)",
   providerHint,
+  saveLabel = "Run on save",
   saveHint,
+  children,
 }: FormatterPageProps) {
   const id = useId();
   const [path, setPath] = useSetting<string>(`languages.${tool}.path`);
@@ -69,7 +73,8 @@ function FormatterPage({
             ]}
           />
         </Row>
-        <Toggle label="Run on save" checked={save} onChange={setSave} hint={saveHint} />
+        <Toggle label={saveLabel} checked={save} onChange={setSave} hint={saveHint} />
+        {children}
       </Section>
       {DEFAULT_LANGUAGES[tool].languages.length > 0 && (
         <Section title="Enabled languages">
@@ -174,6 +179,18 @@ export function DprintPage() {
   );
 }
 
+function RuffFixOnSave() {
+  const [fix, setFix] = useSetting<boolean>("languages.ruff.fixOnSave");
+  return (
+    <Toggle
+      label="Fix safe lint issues on save"
+      checked={fix}
+      onChange={setFix}
+      hint="Runs ruff check --fix-only on Python files when saving. This is separate from formatting and from Format on save."
+    />
+  );
+}
+
 export function RuffPage() {
   return (
     <FormatterPage
@@ -183,8 +200,11 @@ export function RuffPage() {
       pathHint="Auto: managed installation, then PATH. An explicit path overrides auto detection."
       configurationDirectory
       providerHint="Ruff reads the nearest pyproject.toml ([tool.ruff]), ruff.toml, or .ruff.toml. Use it before the language server when preferred."
-      saveHint="Run Ruff on save for enabled languages when it is the selected formatting provider."
-    />
+      saveLabel="Format on save"
+      saveHint="Run Ruff formatting on save for enabled languages when it is the selected formatting provider."
+    >
+      <RuffFixOnSave />
+    </FormatterPage>
   );
 }
 

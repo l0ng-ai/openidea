@@ -340,6 +340,18 @@ mod imp {
     const OPEN_ATTEMPTS: usize = 10;
     const OPEN_RETRY: Duration = Duration::from_millis(20);
 
+    /// WARNING: reading or writing the clipboard from two threads at once crashes the whole
+    /// process. `OpenClipboard(NULL)` does not keep the other threads of this process out, and
+    /// a second `GetClipboardData` can free the block the first thread is still reading, so
+    /// `GlobalSize` finds a corrupted heap and Windows ends the app with 0xc0000374 (#6388:
+    /// restoring a minimized window starts several reads). Every function below that opens the
+    /// clipboard holds this lock from before `OpenClipboard` until after `CloseClipboard`.
+    static CLIPBOARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock() -> std::sync::MutexGuard<'static, ()> {
+        CLIPBOARD.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     #[link(name = "user32")]
     unsafe extern "system" {
         fn OpenClipboard(owner: Handle) -> i32;
@@ -389,6 +401,7 @@ mod imp {
     }
 
     pub fn png() -> Option<Vec<u8>> {
+        let _clipboard = lock();
         if !open() {
             return None;
         }
@@ -405,6 +418,7 @@ mod imp {
     }
 
     pub fn text() -> Option<String> {
+        let _clipboard = lock();
         // Empty rather than None: a None falls back to the WebView, which prompts the user.
         if unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT) } == 0 {
             return Some(String::new());
@@ -447,6 +461,7 @@ mod imp {
     }
 
     pub fn files() -> std::io::Result<Vec<PathBuf>> {
+        let _clipboard = lock();
         if !open() {
             return Err(std::io::Error::last_os_error());
         }
@@ -528,6 +543,7 @@ mod imp {
     }
 
     pub fn set_text(text: &str, owner: usize) -> std::io::Result<()> {
+        let _clipboard = lock();
         let (memory, _) = global_text(text);
         if memory.is_null() {
             return Err(std::io::Error::last_os_error());
@@ -551,6 +567,7 @@ mod imp {
     }
 
     pub fn set_png(png: &[u8], owner: usize) -> std::io::Result<()> {
+        let _clipboard = lock();
         let dib = super::image::png_to_dib(png)?;
         let format = png_format();
         if format == 0 {
@@ -593,6 +610,7 @@ mod imp {
     }
 
     pub fn set_files(paths: &[PathBuf]) -> bool {
+        let _clipboard = lock();
         let bytes = encode(paths);
         if bytes.len() <= HEADER {
             return false;
@@ -921,6 +939,104 @@ mod tests {
         bytes.truncate(bytes.len() - 4);
         bytes.push(7);
         assert_eq!(unicode_text(&bytes), "héllo\r\n世界");
+    }
+
+    #[cfg(windows)]
+    const READ_TEXT: &str = "clipboard read test";
+
+    /// Reads the clipboard's text for 5 s from `threads` threads, one at a time when
+    /// `serialized`, in a child process: heap corruption ends a process, and the test
+    /// keeps the result. Replaces the clipboard with text and writes the earlier text
+    /// back afterwards; skipped where no clipboard can be written.
+    #[cfg(windows)]
+    fn reads_survive(test: &str, threads: usize, serialized: bool) {
+        use std::process::Command;
+        use std::sync::{Arc, Mutex};
+        use std::time::{Duration, Instant};
+        const STAGE: &str = "IDE_CLIPBOARD_READ_STAGE";
+        if std::env::var_os(STAGE).is_some() {
+            #[link(name = "kernel32")]
+            unsafe extern "system" {
+                fn WerSetFlags(flags: u32) -> i32;
+            }
+            // WER_FAULT_REPORTING_NO_UI: a crash ends the child instead of waiting on a dialog.
+            unsafe { WerSetFlags(0x20) };
+            let stop = Instant::now() + Duration::from_secs(5);
+            let turn = Arc::new(Mutex::new(()));
+            let readers: Vec<_> = (0..threads)
+                .map(|_| {
+                    let turn = turn.clone();
+                    std::thread::spawn(move || {
+                        let mut reads = 0usize;
+                        while Instant::now() < stop {
+                            let _turn = serialized.then(|| turn.lock().unwrap());
+                            // None: another reader kept the clipboard open through every retry.
+                            let read = text();
+                            assert!(matches!(read.as_deref(), None | Some(READ_TEXT)), "read {read:?}");
+                            reads += 1;
+                        }
+                        reads
+                    })
+                })
+                .collect();
+            let reads: usize = readers.into_iter().map(|reader| reader.join().unwrap()).sum();
+            println!("reads: {reads}");
+            return;
+        }
+        // The tests share the one clipboard: one at a time, so none rewrites it under another.
+        static SERIAL: Mutex<()> = Mutex::new(());
+        let _serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let earlier = text();
+        if let Err(error) = set_text(READ_TEXT, 0) {
+            eprintln!("skipped: the clipboard cannot be written here ({error})");
+            return;
+        }
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--test-threads=1", "--nocapture"])
+            .env(STAGE, "1")
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if Instant::now() > deadline {
+                let _ = child.kill();
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        if let Some(earlier) = earlier.filter(|earlier| !earlier.is_empty()) {
+            let _ = set_text(&earlier, 0);
+        }
+        let status = status.expect("the reads did not finish within 60 s");
+        assert!(
+            status.success(),
+            "clipboard reads ended the process: exit code {:#x}",
+            status.code().unwrap_or_default() as u32
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn text_reads_on_one_thread_do_not_corrupt_the_heap() {
+        reads_survive("tests::text_reads_on_one_thread_do_not_corrupt_the_heap", 1, false);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn text_reads_taking_turns_do_not_corrupt_the_heap() {
+        reads_survive("tests::text_reads_taking_turns_do_not_corrupt_the_heap", 8, true);
+    }
+
+    /// The project view reads the clipboard's text whenever a window gains focus, on
+    /// whichever worker thread the command lands, so restoring a minimized window can
+    /// start several reads at once (#6388).
+    #[cfg(windows)]
+    #[test]
+    fn concurrent_text_reads_do_not_corrupt_the_heap() {
+        reads_survive("tests::concurrent_text_reads_do_not_corrupt_the_heap", 8, false);
     }
 
     fn paths(list: &[&str]) -> Vec<PathBuf> {

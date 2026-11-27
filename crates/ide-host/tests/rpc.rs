@@ -80,14 +80,23 @@ async fn serves_projects_files_documents_search_and_runs() {
     assert_eq!(opened["name"], "demo");
     assert_eq!(opened["trusted"], false);
     invoke(&peer, "index_status", json!({})).await.unwrap();
+    let metrics = invoke(&peer, "host_metrics", json!({ "includeProcesses": true })).await.unwrap();
+    assert!(metrics["cpuCores"].as_u64().unwrap() >= 1);
+    assert_eq!(metrics["processes"][0]["label"], "Backend");
     assert_eq!(invoke(&peer, "lsp_servers", json!({})).await.unwrap(), json!([]));
     invoke(&peer, "lsp_resend_diagnostics", json!({})).await.unwrap();
     let files = invoke(&peer, "find_files", json!({"query": "main", "limit": 10})).await.unwrap();
     assert!(files.is_array());
-    for command in
-        ["build_sync", "run_start", "sdk_locate_tools", "notebook_execute", "debug_start", "agent_refresh_models"]
-    {
-        let error = invoke(&peer, command, json!({})).await.unwrap_err();
+    for (command, args) in [
+        ("build_sync", json!({})),
+        ("run_start", json!({})),
+        ("sdk_locate_tools", json!({})),
+        ("notebook_execute", json!({})),
+        ("debug_start", json!({})),
+        ("agent_refresh_models", json!({})),
+        ("host_end_process", json!({ "pid": 1 })),
+    ] {
+        let error = invoke(&peer, command, args).await.unwrap_err();
         assert!(error.message.contains("Restricted Mode"), "{command}: {error:?}");
     }
     let call = Invoke { window: "unknown".into(), cmd: "coverage_collect".into(), args: json!({}) };
