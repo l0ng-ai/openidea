@@ -111,9 +111,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-latest, windows-latest]
-    # Self-hosted runners (scripts/selfhost-runner) only for trusted events, and only while the
-    # SELFHOSTED_RUNNERS repository variable is 'true': runs-on cannot fall back when none is online.
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || matrix.os }}
+    # Self-hosted runners (scripts/selfhost-runner for Linux, a Mac with the macOS/ARM64 labels) only
+    # for trusted events, and only while the SELFHOSTED_RUNNERS repository variable is 'true':
+    # runs-on cannot fall back when none is online. Windows always runs GitHub-hosted.
+    runs-on: ${{ matrix.os != 'windows-latest' && vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && (matrix.os == 'macos-latest' && fromJSON('["self-hosted", "macOS", "ARM64"]') || fromJSON('["self-hosted", "openidea-selfhosted"]')) || matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v5
@@ -137,6 +138,12 @@ jobs:
         shell: bash
         run: |
           echo "CARGO_INCREMENTAL=1" >> "$GITHUB_ENV"
+          # The Linux runner containers set CARGO_TARGET_DIR; elsewhere keep it next to the checkout,
+          # which actions/checkout cleans on every run.
+          if [ -z "${CARGO_TARGET_DIR:-}" ]; then
+            CARGO_TARGET_DIR="$(dirname "$RUNNER_WORKSPACE")/cargo-target"
+            echo "CARGO_TARGET_DIR=$CARGO_TARGET_DIR" >> "$GITHUB_ENV"
+          fi
           size=$(du -sm "$CARGO_TARGET_DIR" 2>/dev/null | cut -f1 || true)
           if [ "${size:-0}" -gt 40000 ]; then
             echo "$CARGO_TARGET_DIR is ${size} MB; clearing it"
