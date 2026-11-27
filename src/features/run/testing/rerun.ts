@@ -14,9 +14,11 @@ import { goTestParts, withoutGoSelection } from "../goArguments";
 import { withMavenTests } from "../mavenTests";
 import { frameworkFor } from "./index";
 import { dotnetFilter } from "./dotnet";
+import { pytestNodeId } from "./pytest";
 import { cypressSelection } from "./cypress";
 import { playwrightProject, playwrightTitles } from "./playwright";
 import { withNodeTestNamePattern } from "./nodeTest";
+import { unittestRerunArgs } from "./pythonUnittest";
 import { nodeStatus, type TestNode, type TestResults } from "./results";
 
 /** Paths of failed tests: failed leaves, plus failed suites without any failed children reported. */
@@ -113,7 +115,7 @@ function playwrightArgs(config: RunConfig, paths: string[][]): string[] | null {
 }
 
 function pytestArgs(base: string[], paths: string[][]): string[] | null {
-  const ids = unique(paths.map((p) => p.join("::")));
+  const ids = unique(paths.map(pytestNodeId));
   if (!ids.length) return null;
   // Drop explicit test paths / -k expressions of the original run; keep options and `-m pytest` prefixes.
   const kept = dropFlag(base, ["-k"]).filter((a) => !/\.py(::|$)/.test(a) && !/^tests?\/?$/.test(a));
@@ -318,6 +320,9 @@ function builtinTestsConfig(config: RunConfig, paths: string[][], name: string):
       if (!tests) return null;
       return { ...config, ...tests, name, detected: true, env: { ...config.env } };
     }
+    case "python-unittest":
+      args = unittestRerunArgs(config.args, paths);
+      break;
     case "phpunit":
       args = phpunitArgs(config.args, { filter: phpunitFilter(paths) });
       break;

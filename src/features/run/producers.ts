@@ -22,7 +22,10 @@ import {
   allClosest,
   contextConfig,
   fileRole,
+  implicitPythonTests,
   projectPython,
+  PYTHON_KINDS,
+  pythonTestRunner,
   testBasesFor,
   testConfigFor,
   relToCwd as relativeToCwd,
@@ -445,7 +448,7 @@ function site(input: ContextInput): FileSite {
   const kinds: Record<string, string[]> = {
     js: ["npm", "deno", "bun", "node"],
     ts: ["npm", "deno", "bun", "node"],
-    python: ["python", "pytest", "django-test"],
+    python: PYTHON_KINDS,
     ruby: ["ruby", "rake", "rspec"],
     php: ["php", "phpunit", "composer"],
     zig: ["zig", "zig-application"],
@@ -522,7 +525,7 @@ function pythonCommand(input: ContextInput, env: ToolEnv, s: FileSite): { comman
   if (py) {
     // A venv-relative interpreter is relative to the project root.
     const owner = allClosest(
-      input.configs.filter((c) => ["python", "pytest", "django-test"].includes(c.kind)),
+      input.configs.filter((c) => PYTHON_KINDS.includes(c.kind)),
       relTo(input.path, input.root),
     )[0];
     const cwd = owner?.cwd ?? "";
@@ -1369,12 +1372,29 @@ export function produceDirectory(input: ContextInput): Produced | null {
   const js = closest(["npm", "bun", "deno"]);
   const ruby = marked && !js && rubyDirectory(closest, relToCwd, make, testsIn, root);
   if (ruby) return ruby;
-  const py = closest(["pytest"]);
+  // The chosen default test runner sets the other one's configurations aside (Autodetect keeps both).
+  const runner = pythonTestRunner();
+  const py = runner === "unittest" ? undefined : closest(["pytest"]);
   const django = closest(["django-test"]);
+  const unittest =
+    runner === "pytest"
+      ? undefined
+      : (closest(["unittest"]) ??
+        (!py &&
+        !django &&
+        allClosest(
+          input.configs.filter((c) => PYTHON_KINDS.includes(c.kind)),
+          rel,
+        ).length
+          ? implicitPythonTests(rel, [...input.configs], "unittest")
+          : undefined));
   const go = closest(["go"]);
   const cargo = closest(["cargo"]);
   if (cargo && /(^|\/)tests$/.test(rel) && !js && !py) return make(cargo, "All Tests", [...cargo.args, "--tests"]);
   if (py && (!js || /(^|\/)tests?$/.test(rel))) return make(py, testsIn, [...py.args, relToCwd(py)]);
+  // unittest discovers the folder's `test*.py` modules (the reporter adds `-t` inside a package).
+  if (unittest && (!js || /(^|\/)tests?$/.test(rel)) && relToCwd(unittest))
+    return make(unittest, testsIn, [...unittest.args, "discover", "-s", relToCwd(unittest)]);
   // Django runs a test package by its dotted label (`polls/tests` → `polls.tests`).
   if (django && !js && relToCwd(django)) {
     const tests = djangoTestsOf(django, [djangoLabel(relToCwd(django))]);

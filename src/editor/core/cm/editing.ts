@@ -37,6 +37,7 @@ import {
 import { SearchCursor } from "@codemirror/search";
 import { humpLeft, humpRight, wordStartLeft } from "../model/camelHumps";
 import { cycleIdentifierCase, wordSpan } from "../model/identifierCase";
+import { restartSticky } from "./stickySelection";
 
 type Node = ReturnType<ReturnType<typeof syntaxTree>["resolveInner"]>;
 
@@ -676,6 +677,7 @@ export const KEYWORD_BLOCK_LANGS = new Set([
   "ocaml.interface",
   "yaml",
   "markdown",
+  "mdx",
   "plaintext",
   "makefile",
   "cmake",
@@ -1153,6 +1155,7 @@ export const swapSelectionBoundaries: Command = (view) => {
       selection.ranges.map((r) => EditorSelection.range(r.head, r.anchor)),
       selection.mainIndex,
     ),
+    effects: restartSticky.of(null),
     scrollIntoView: true,
     userEvent: "select",
   });

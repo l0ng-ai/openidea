@@ -1227,12 +1227,43 @@ fn uses_pytest(root: &Path) -> bool {
     if read(&root.join("setup.cfg")).is_some_and(|s| s.contains("[tool:pytest]")) {
         return true;
     }
-    if read(&root.join("pyproject.toml")).is_some_and(|py| py.contains("pytest") || root.join("tests").is_dir()) {
+    // A `tests` folder alone means pytest unless its tests are the standard library's unittest.
+    if read(&root.join("pyproject.toml"))
+        .is_some_and(|py| py.contains("pytest") || (root.join("tests").is_dir() && !uses_unittest(root)))
+    {
         return true;
     }
     ["requirements.txt", "requirements-dev.txt", "requirements_dev.txt", "dev-requirements.txt"]
         .iter()
         .any(|f| read(&root.join(f)).is_some_and(|s| s.contains("pytest")))
+}
+
+/// Whether the project's test modules (`test*.py` at the root and in `tests/` / `test/`) use the
+/// standard library's unittest and none of them pytest.
+fn uses_unittest(root: &Path) -> bool {
+    let mut found = false;
+    for dir in [root.to_path_buf(), root.join("tests"), root.join("test")] {
+        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        // ponytail: the first 50 modules of each folder decide; enough to tell a project's style.
+        for entry in entries.flatten().take(50) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("test") || !name.ends_with(".py") {
+                continue;
+            }
+            let Some(text) = read(&entry.path()) else { continue };
+            if text
+                .lines()
+                .any(|l| l.trim_start().starts_with("import pytest") || l.trim_start().starts_with("from pytest"))
+            {
+                return false;
+            }
+            found |= text.lines().any(|l| {
+                let l = l.trim_start();
+                l.starts_with("import unittest") || l.starts_with("from unittest")
+            });
+        }
+    }
+    found
 }
 
 /// Python configurations of the project at `root`, a folder of the opened project `top`.
@@ -1280,6 +1311,11 @@ fn detect_python(top: &Path, root: &Path, out: &mut Vec<RunConfig>) {
     let own_pytest = matches!(env, PyEnv::Venv(ref v) if !v.starts_with("../")) && env.has_tool(root, "pytest");
     if uses_pytest(root) || own_pytest {
         out.push(py_config("pytest".into(), "pytest".into(), "pytest", env.tool(root, "pytest"), &[]).test());
+    } else if !root.join("manage.py").is_file() && uses_unittest(root) {
+        out.push(
+            py_config("unittest".into(), "python -m unittest".into(), "unittest", env.python(), &["-m", "unittest"])
+                .test(),
+        );
     }
     // After pytest: a project set up for pytest (pytest-django) keeps it as the default test runner.
     if root.join("manage.py").is_file() {

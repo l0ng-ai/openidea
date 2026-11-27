@@ -35,6 +35,9 @@ pub(crate) const SOURCES: &[(&str, &str)] = generators![
     "astro",
     "nestjs",
     "express",
+    "vue",
+    "expo",
+    "electron",
     // Systems
     "go",
     "rust",
