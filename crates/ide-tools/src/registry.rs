@@ -480,6 +480,17 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: NODE,
     },
     ToolSpec {
+        name: "mdx-language-server",
+        display: "MDX Language Server",
+        kind: LanguageServer,
+        commands: &["mdx-language-server"],
+        method: Method::Npm { packages: &["@mdx-js/language-server", TYPESCRIPT] },
+        fallback: None,
+        version: V,
+        homepage: "https://github.com/mdx-js/mdx-analyzer",
+        needs: NODE,
+    },
+    ToolSpec {
         name: "svelte-language-server",
         display: "Svelte Language Server",
         kind: LanguageServer,

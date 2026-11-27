@@ -22,6 +22,7 @@ pub mod libraries;
 pub mod locate;
 pub mod lombok;
 pub mod maven_profiles;
+mod mdx;
 mod npm;
 mod path_aliases;
 pub mod php;

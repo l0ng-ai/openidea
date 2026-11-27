@@ -1382,6 +1382,7 @@ impl Default for ExternalFormatterSettings {
             configuration_directory: String::new(),
             languages: [
                 "markdown",
+                "mdx",
                 "yaml",
                 "css",
                 "scss",

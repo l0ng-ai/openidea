@@ -969,6 +969,75 @@ async fn bundler_path_aliases_resolve_below_tsconfig_paths() {
     tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
 }
 
+const MDX_BUTTON: &str =
+    "export function Button(props: { label: string }) {\n  return <button>{props.label}</button>;\n}\n";
+const MDX_DOC: &str = "import { Button } from \"./Button\"\n\nexport const count = 2\n\n# Hello\n\n<Button label=\"hi\" />\n\n<Button label={count} />\n\n{count.toFixed()}\n";
+
+/// The MDX Language Server with the `typescript.tsdk` the launcher adds. Set
+/// `OPENIDEA_TEST_NPM_TOOLS` to a dir with `npm i @mdx-js/language-server
+/// typescript@6 @types/react`; the project is created inside it, so that it
+/// resolves the React types.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires @mdx-js/language-server, typescript and @types/react (OPENIDEA_TEST_NPM_TOOLS)"]
+async fn mdx_language_server_end_to_end() {
+    let tools = std::path::PathBuf::from(std::env::var("OPENIDEA_TEST_NPM_TOOLS").expect("OPENIDEA_TEST_NPM_TOOLS"));
+    let dir = tempfile::tempdir_in(&tools).unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::write(
+        root.join("tsconfig.json"),
+        "{\"compilerOptions\":{\"strict\":true,\"jsx\":\"react-jsx\",\"moduleResolution\":\"bundler\",\"module\":\"esnext\"},\"mdx\":{\"checkMdx\":true}}",
+    )
+    .unwrap();
+    let (button, file) = (root.join("Button.tsx"), root.join("doc.mdx"));
+    std::fs::write(&button, MDX_BUTTON).unwrap();
+    std::fs::write(&file, MDX_DOC).unwrap();
+
+    let mut mdx = LanguageRegistry::load(None).unwrap().get(&LanguageId::new("mdx")).unwrap();
+    let server = &mut mdx.language_servers[0];
+    server.command = tools.join("node_modules/.bin/mdx-language-server").to_string_lossy().into_owned();
+    let tsdk = tools.join("node_modules/typescript/lib").to_string_lossy().into_owned();
+    server.initialization_options.as_mut().unwrap()["typescript"]
+        .as_table_mut()
+        .unwrap()
+        .insert("tsdk".into(), toml::Value::String(tsdk));
+    let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![mdx]));
+    let doc = DocId::next();
+    mgr.did_open(doc, &file, &LanguageId::new("mdx"), 1, MDX_DOC);
+
+    // `Button` in `<Button label="hi" />`.
+    let hover = retry("hover", Duration::from_secs(90), || {
+        let mgr = mgr.clone();
+        async move { mgr.hover(doc, Pos::new(6, 3), Default::default()).await.ok().flatten() }
+    })
+    .await;
+    assert!(hover.contents.value.contains("label: string"), "{}", hover.contents.value);
+    let defs = mgr.goto(doc, Pos::new(6, 3), GotoKind::Definition).await.unwrap();
+    assert!(defs.iter().any(|d| d.path == button), "{defs:?}");
+
+    // Members of `count` inside `{…}`, and the imported component in JSX.
+    for (pos, label) in [(Pos::new(10, 7), "toFixed"), (Pos::new(6, 3), "Button")] {
+        retry(label, Duration::from_secs(30), || {
+            let mgr = mgr.clone();
+            async move {
+                let list = mgr.completion(doc, pos, None, Default::default()).await.ok()?;
+                list.items.iter().any(|i| i.label == label).then_some(())
+            }
+        })
+        .await;
+    }
+
+    // `label={count}`: number is not assignable to string.
+    retry("prop type error", Duration::from_secs(60), || {
+        let found = events.lock().iter().any(|e| {
+            matches!(e, IdeEvent::Diagnostics { path, items, .. }
+                if path == &file && items.iter().any(|d| d.range.start.line == 8 && d.message.contains("string")))
+        });
+        async move { found.then_some(()) }
+    })
+    .await;
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+}
+
 const NG_APP_TS: &str = "import { Component } from '@angular/core';\n\n@Component({\n  selector: 'app-root',\n  templateUrl: './app.html',\n})\nexport class App {\n  title = 'demo';\n}\n";
 const NG_APP_HTML: &str = "<h1>{{ title }}</h1>\n<p>{{ missing }}</p>\n";
 const NG_INLINE_TS: &str = "import { Component } from '@angular/core';\n\n@Component({\n  selector: 'app-inline',\n  template: `<b>{{ count }}</b>`,\n})\nexport class Inline {\n  count = 1;\n}\n";

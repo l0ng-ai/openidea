@@ -9,6 +9,7 @@ import styles from "./Sdk.module.css";
 
 const names: Record<string, string> = {
   markdown: "Markdown",
+  mdx: "MDX",
   yaml: "YAML",
   css: "CSS",
   scss: "SCSS",
