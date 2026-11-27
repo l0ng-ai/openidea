@@ -197,7 +197,7 @@ async function insertOption(tsconfig: string): Promise<boolean> {
 }
 
 /** Adds `cmkOptions` to `tsconfig` once the user confirms, then has vtsls load the plugin. */
-async function enable(tsconfig: string, rel: string) {
+export async function enable(tsconfig: string, rel: string) {
   notifications().expire?.(hintKey(tsconfig));
   const ok = await confirm({
     title: "Enable CSS Modules Kit",
@@ -214,9 +214,9 @@ async function enable(tsconfig: string, rel: string) {
     });
     return;
   }
-  // Installing reconfigures vtsls; otherwise restart it to read the tsconfig.json again.
+  // The tsconfig.json change reconfigures vtsls: it restarts once, with the plugin, and takes the
+  // open stylesheets. Without the plugin nothing changes until the install, which does the same.
   if (await pluginMissing()) await installTool(TOOL);
-  else await call(commands.lspRestartNamed("vtsls")).catch(() => {});
 }
 
 const hintKey = (tsconfig: string) => `css-modules-kit:${tsconfig}`;

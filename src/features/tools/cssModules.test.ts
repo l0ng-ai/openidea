@@ -1,12 +1,32 @@
-import { describe, expect, it } from "vitest";
-import {
-  cmkOptionsInsertion,
-  cmkState,
-  effectiveCmkState,
-  localExtends,
-  stripJsonc,
-  usesCssModules,
-} from "./cssModules";
+import { describe, expect, it, vi } from "vitest";
+
+const ok = <T>(data: T) => ({ status: "ok" as const, data });
+const ipc = vi.hoisted(() => ({
+  docOpen: vi.fn(),
+  applyWorkspaceEdit: vi.fn(),
+  docSave: vi.fn(),
+  docClose: vi.fn(),
+  lspRestartNamed: vi.fn(),
+}));
+vi.mock("@/platform/ipc", async (orig) => {
+  const real = await orig<typeof import("@/platform/ipc")>();
+  return { ...real, commands: { ...real.commands, ...ipc } };
+});
+vi.mock("@/workbench/messages", () => ({ confirm: async () => true }));
+vi.mock("@/workbench/contributions", async (orig) => ({
+  ...(await orig<object>()),
+  notifications: () => ({ notify: vi.fn(), expire: vi.fn() }),
+}));
+const store = vi.hoisted(() => ({ status: "installed", installTool: vi.fn(async () => null) }));
+vi.mock("./store", () => ({
+  installTool: store.installTool,
+  refreshTools: async () => {},
+  toolByName: () => ({ status: store.status }),
+  useTools: { getState: () => ({ loaded: true }) },
+}));
+
+const { cmkOptionsInsertion, cmkState, effectiveCmkState, enable, localExtends, stripJsonc, usesCssModules } =
+  await import("./cssModules");
 
 const insert = (text: string) => {
   const edit = cmkOptionsInsertion(text)!;
@@ -60,5 +80,33 @@ describe("CSS Modules Kit hint", () => {
     expect(usesCssModules("/p/src/Button.tsx", "import s from './Button.module.css';")).toBe(true);
     expect(usesCssModules("/p/src/Button.tsx", "import './app.css';")).toBe(false);
     expect(usesCssModules("/p/README.md", "Button.module.css")).toBe(false);
+  });
+
+  it("enables through the document and saves it, restarting nothing itself", async () => {
+    // tsconfig.json open with an unsaved change: the edit goes into that text, then it is saved.
+    const text = '{\n  "compilerOptions": {},\n  "exclude": ["dist"]\n}\n';
+    const calls: string[] = [];
+    ipc.docOpen.mockImplementation(async () => (calls.push("open"), ok({ id: 7, text, dirty: true })));
+    ipc.applyWorkspaceEdit.mockImplementation(async () => (calls.push("edit"), ok(null)));
+    ipc.docSave.mockImplementation(async () => (calls.push("save"), ok(null)));
+    ipc.docClose.mockImplementation(async () => (calls.push("close"), ok(null)));
+    const run = async (status: string) => {
+      calls.length = 0;
+      store.status = status;
+      store.installTool.mockClear();
+      await enable("/p/tsconfig.json", "tsconfig.json");
+      await Promise.resolve();
+      expect(calls).toEqual(["open", "edit", "save", "close"]);
+      const [edit] = ipc.applyWorkspaceEdit.mock.lastCall!;
+      expect(edit.files[0].edits[0]).toEqual({
+        range: { start: { line: 0, col: 1 }, end: { line: 0, col: 1 } },
+        new_text: '\n  "cmkOptions": { "enabled": true },',
+      });
+      // The tsconfig.json change reconfigures vtsls once; the install, when needed, does too.
+      expect(ipc.lspRestartNamed).not.toHaveBeenCalled();
+      expect(store.installTool).toHaveBeenCalledTimes(status === "missing" ? 1 : 0);
+    };
+    await run("installed");
+    await run("missing");
   });
 });

@@ -3738,3 +3738,35 @@ fn css_files_reach_vtsls_only_once_css_modules_kit_is_installed() {
     assert_eq!(servers.len(), css.len() - 1);
     assert!(servers.iter().all(|c| c.name != "vtsls"));
 }
+
+#[test]
+fn css_modules_kit_stays_the_ides_copy_when_the_project_declares_or_installs_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (root, tools, data) = (tmp.path().join("app"), tmp.path().join("tools"), tmp.path().join("data"));
+    std::fs::create_dir_all(root.join("node_modules/@css-modules-kit/ts-plugin")).unwrap();
+    std::fs::create_dir_all(root.join("node_modules/project-plugin")).unwrap();
+    let tsconfig = |plugins: &str| {
+        format!(r#"{{ "compilerOptions": {{ "plugins": [{plugins}] }}, "cmkOptions": {{ "enabled": true }} }}"#)
+    };
+    std::fs::write(root.join("tsconfig.json"), tsconfig(r#"{ "name": "@css-modules-kit/ts-plugin" }"#)).unwrap();
+    let mut cfg = server("vtsls");
+    cfg.tsserver_project = true;
+    // In the host's order: the global plugins, then the tsconfig's.
+    assert!(crate::apply::configure_css_modules(&mut cfg, &root, Some(&tools)));
+    assert!(!crate::apply::configure_tsconfig_plugins(&mut cfg, &root, &data), "no probe location for it");
+    let init = |cfg: &LanguageServerConfig| serde_json::to_value(cfg.initialization_options.as_ref().unwrap()).unwrap();
+    let plugins = init(&cfg).pointer("/vtsls/tsserver/globalPlugins").unwrap().as_array().unwrap().clone();
+    assert_eq!(plugins.len(), 1);
+    assert_eq!(plugins[0]["location"], tools.to_string_lossy().as_ref());
+    // Next to another declared plugin, the probe location holds that one only.
+    std::fs::write(
+        root.join("tsconfig.json"),
+        tsconfig(r#"{ "name": "@css-modules-kit/ts-plugin" }, { "name": "project-plugin" }"#),
+    )
+    .unwrap();
+    assert!(crate::apply::configure_tsconfig_plugins(&mut cfg, &root, &data));
+    let paths = init(&cfg).pointer("/typescript/tsserver/pluginPaths").unwrap().as_array().unwrap().clone();
+    let location = Path::new(paths[0].as_str().unwrap());
+    assert!(location.join("node_modules/project-plugin").exists());
+    assert!(!location.join("node_modules/@css-modules-kit").exists());
+}
