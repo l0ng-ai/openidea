@@ -5,7 +5,7 @@ import { useTx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { EmptyState, T } from "@/ui";
 import { maybeEditorService } from "@/workbench/contributions";
-import { existingNotebookSession, type NotebookSession } from "./session";
+import { existingNotebookSession, onNotebookSessionsChange, type NotebookSession } from "./session";
 import styles from "./VariablesView.module.css";
 
 const activePath = () => maybeEditorService()?.activeInput?.()?.path ?? null;
@@ -22,7 +22,8 @@ function notebookPath(): string | null {
 
 function useNotebook(): NotebookSession | null {
   const path = useSyncExternalStore(subscribeActive, notebookPath);
-  return (path && existingNotebookSession(path)) || null;
+  // A restored notebook tab is active before its session exists.
+  return useSyncExternalStore(onNotebookSessionsChange, () => (path && existingNotebookSession(path)) || null);
 }
 
 export function VariablesView() {
