@@ -78,7 +78,7 @@ jobs:
     name: Changes
     # Self-hosted runners (scripts/selfhost-runner) only for trusted events, and only while the
     # SELFHOSTED_RUNNERS repository variable is 'true': runs-on cannot fall back when none is online.
-    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted-light"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       pull-requests: read
