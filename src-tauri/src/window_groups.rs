@@ -16,6 +16,11 @@ mod frames;
 
 type Group = ide_workspace::window_groups::WindowGroup;
 
+fn is_project_window(app: &AppHandle, label: &str) -> bool {
+    let state = app.state::<AppState>();
+    state.remote_dev.get(label).is_some() || state.project(label).is_ok_and(|p| !p.light)
+}
+
 #[derive(Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowTab {
@@ -34,23 +39,41 @@ pub fn current(app: &AppHandle, caller: &str) -> Vec<WindowTab> {
         .iter()
         .filter_map(|label| {
             let window = app.get_webview_window(label)?;
-            let project = host.project(label).ok();
-            let name = project.as_ref().map(|p| ide_host::ops::project::info(p).display_name).unwrap_or_else(|| {
-                // Taken its launch but not finished opening: name the tab after that project.
-                state
-                    .pending(label)
-                    .and_then(|launch| launch.project)
-                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                    .unwrap_or_else(|| window.title().unwrap_or_default())
-            });
-            Some(WindowTab {
-                label: label.clone(),
-                name,
-                root: project.map(|p| p.root.clone().into()),
-                current: label == caller,
-            })
+            let (name, root) = if let Some(c) = host.remote_dev.get(label) {
+                let loc = crate::remote_dev::remote_location(&c.target, &c.root);
+                (window.title().unwrap_or_default(), Some(PathBuf::from(loc).into()))
+            } else if let Ok(p) = host.project(label) {
+                (ide_host::ops::project::info(&p).display_name, Some(p.root.clone().into()))
+            } else if let Some(launch) = state.pending(label) {
+                if let Some(remote) = launch.remote {
+                    let loc = crate::remote_dev::remote_location(&remote.target, &remote.path);
+                    let name = remote
+                        .path
+                        .trim_end_matches('/')
+                        .rsplit('/')
+                        .next()
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| window.title().unwrap_or_default());
+                    (name, Some(PathBuf::from(loc).into()))
+                } else {
+                    let name = launch
+                        .project
+                        .as_ref()
+                        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                        .unwrap_or_else(|| window.title().unwrap_or_default());
+                    (name, launch.project)
+                }
+            } else {
+                (window.title().unwrap_or_default(), None)
+            };
+            Some(WindowTab { label: label.clone(), name, root, current: label == caller })
         })
         .collect()
+}
+
+pub(crate) fn notify_changed(app: &AppHandle) {
+    changed(app);
 }
 
 fn changed(app: &AppHandle) {
@@ -116,10 +139,9 @@ pub fn join(app: &AppHandle, anchor: &str, new_window: &str) -> IdeResult<()> {
 }
 
 pub fn merge(app: &AppHandle, caller: &str) -> IdeResult<()> {
-    let members = windows::project_window_labels(app)
-        .into_iter()
-        .filter(|label| app.state::<AppState>().project(label).is_ok_and(|p| !p.light))
-        .collect::<Vec<_>>();
+    let all_windows = windows::project_window_labels(app);
+    let members =
+        ide_workspace::window_groups::merge_candidates(&all_windows, caller, |label| is_project_window(app, label));
     if members.len() < 2 || !members.iter().any(|label| label == caller) {
         return Err(IdeError::invalid("Open at least two project windows to create a window group"));
     }
@@ -129,7 +151,51 @@ pub fn merge(app: &AppHandle, caller: &str) -> IdeResult<()> {
             window.set_fullscreen(false).map_err(|e| IdeError::internal(e.to_string()))?;
         }
     }
-    app.state::<WindowsState>().groups.lock().merge(members, caller)?;
+    // If a member is currently grouped with a window outside `members` (e.g. a non-project
+    // window), separate it from that native/frame group before merging.
+    let state = app.state::<WindowsState>();
+    let member_set: HashSet<&str> = members.iter().map(String::as_str).collect();
+    let (split_members, leftover_survivors): (Vec<String>, Vec<String>) = {
+        let groups = state.groups.lock();
+        let mut split = Vec::new();
+        let mut survivors = Vec::new();
+        for group in groups.groups() {
+            let has_in = group.members.iter().any(|m| member_set.contains(m.as_str()));
+            let has_out = group.members.iter().any(|m| !member_set.contains(m.as_str()));
+            if has_in && has_out {
+                for m in &group.members {
+                    if member_set.contains(m.as_str()) {
+                        split.push(m.clone());
+                    }
+                }
+                if member_set.contains(group.selected.as_str())
+                    && let Some(survivor) = group.members.iter().find(|m| !member_set.contains(m.as_str()))
+                {
+                    survivors.push(survivor.clone());
+                }
+            }
+        }
+        (split, survivors)
+    };
+    #[cfg(target_os = "macos")]
+    {
+        let _ = &leftover_survivors;
+        for label in &split_members {
+            if let Some(window) = app.get_webview_window(label) {
+                crate::macos::move_tab_to_new_window(&window).map_err(|e| IdeError::internal(e.to_string()))?;
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = &split_members;
+        for label in &leftover_survivors {
+            if let Some(window) = app.get_webview_window(label) {
+                let _ = window.show();
+            }
+        }
+    }
+    state.groups.lock().merge(members, caller)?;
     select(app, caller, caller)
 }
 

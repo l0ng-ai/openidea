@@ -91,7 +91,7 @@ Changelists group local changes without touching Git. The default list is called
 The gear button (**Commit Options**) next to **Commit** has:
 
 - **Author:** to commit as someone else (`Name <email>`), and **Sign-off commit**.
-- **Commit Checks**: **Reformat code**, **Optimize imports**, **Cleanup** (applies fix-all code actions) and **Run Git hooks** (off adds `--no-verify`).
+- **Commit Checks**: **Reformat code**, **Optimize imports**, **Cleanup** (applies fix-all code actions), **Fix Ruff safe lint issues** (`ruff check --fix-only` on Python files before composing the commit, separate from formatting) and **Run Git hooks** (off adds `--no-verify`).
 - **Advanced Commit Checks**: **Analyze code** (errors and warnings from the language servers) and **Check TODO** (matches from **Settings › Editor › TODO** in changed lines).
 
 Create named TODO filters in **Settings › Editor › TODO**. Choose one from **Configure** beside **Check TODO** to check only its patterns. The Commit tool window and TODO tool window save their selections separately for each project. **Review TODOs** opens a tab in the TODO tool window with every finding and a preview of the checked content. Open a finding to jump to its source or diff. If a selected file cannot be checked, the result lists the file and the reason so you can address it before retrying.
@@ -247,6 +247,7 @@ Turn on **Combine stashes and shelves in one tab** in the Git settings to show b
 ## Blame and history
 
 - **Annotate with Git Blame** shows author and date per line in the gutter (also from the gutter's context menu). Click an entry to open the commit in the log. **Show inline blame for the current line** in the Git settings shows the author at the end of the caret line; a click on it opens the commit unless **Open the commit when the inline blame is clicked** is off.
+- **Options › Colors** in the gutter's context menu tints the gutter by **Author**, by **Order** of changes (the default) or not at all (**Hide**) in every annotated editor.
 - **Options › Names** in the gutter's context menu shows authors as **Initials**, **Last Name** (the default), **First Name** or **Full Name** in every annotated editor.
 - **Annotate Revision** in an annotated line's menu opens the file as it was at that commit, annotated, next to the working copy. A file renamed since then is read under its name at that commit.
 - **Annotate Previous Revision** in an annotated line's menu opens the file as it was before that commit, annotated, next to the commit's version.

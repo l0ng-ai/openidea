@@ -507,6 +507,8 @@ export function nodeMenu(
         ]
       : []),
   ];
+  // Group By Staging State hides the lists, but its files still belong to one (#6422).
+  const inChangelist = !staging && nodes.some((n) => n.changelist || n.group === "staged" || n.group === "unstaged");
   // The staging menu operates on the index. A change list can commit or move individual files.
   const primary: MenuItem[] = staging
     ? [...stageActions, stash, ...rollback, ...fileActions]
@@ -518,7 +520,8 @@ export function nodeMenu(
           run: () => commitFiles(paths),
         },
         ...rollback,
-        ...(nodes.some((n) => n.changelist)
+        // Group By Staging State hides the lists, but its files still belong to one, as in IDEA (#6422).
+        ...(inChangelist
           ? [
               {
                 kind: "action" as const,
@@ -588,6 +591,7 @@ export function nodeMenu(
     { label: "Copy File Name", icon: "copy", run: () => copyChangePaths(nodes, "name") },
     ...(staging ? [] : [{ kind: "separator" as const }, ...fileActions, ...stageActions]),
     { kind: "separator" },
+    ...(inChangelist ? [{ kind: "action" as const, action: "vcs.changelist.new" }] : []),
     ...(canExportPatch ? [{ kind: "action" as const, action: "vcs.createPatch", arg: patchSelection }] : []),
     ...(canExportPatch ? [{ kind: "action" as const, action: "vcs.copyPatch", arg: patchSelection }] : []),
     { kind: "action", action: "vcs.shelve", arg: paths },

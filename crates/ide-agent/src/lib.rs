@@ -764,6 +764,13 @@ struct TaskState {
 }
 
 impl TaskState {
+    fn change_status(&mut self, status: AgentStatus, error: Option<String>) {
+        self.task.retry = None;
+        self.task.status = status;
+        self.task.error = error;
+        self.task.updated_ms = now_ms();
+    }
+
     fn snapshot(&self) -> AgentTask {
         let mut task = self.task.clone();
         if let Some(pending) = &self.pending_model
@@ -3027,16 +3034,8 @@ impl Task {
         }
     }
 
-    fn change_status(&self, status: AgentStatus, error: Option<String>) {
-        let mut s = self.state.lock();
-        s.task.retry = None;
-        s.task.status = status;
-        s.task.error = error;
-        s.task.updated_ms = now_ms();
-    }
-
     fn set_status(&self, status: AgentStatus, error: Option<String>) {
-        self.change_status(status, error);
+        self.state.lock().change_status(status, error);
         // Saved first: whoever reacts to the status change finds it on disk.
         self.persist();
         self.emit_task();
@@ -3045,7 +3044,7 @@ impl Task {
     /// `Running` again after the agent started or a request was answered: the turn's next stop
     /// saves what changed, and the turn start saved the message that began it.
     fn resume_running(self: &Arc<Self>) {
-        self.change_status(AgentStatus::Running, None);
+        self.state.lock().change_status(AgentStatus::Running, None);
         self.persist_soon();
         self.emit_task();
     }
@@ -4572,20 +4571,20 @@ impl Task {
     /// Records the answer to the request at `entry`; the turn runs on once nothing else waits.
     /// Saved before it returns, which is before the agent is told: a restart after that keeps the answer.
     fn settle(self: &Arc<Self>, entry: usize, chosen: String) {
-        {
+        let resumed = {
             let mut s = self.state.lock();
             if let Some(AgentEntry::Permission { chosen: answer, .. }) =
                 s.history.conversation.main.entries.get_mut(entry)
             {
                 *answer = Some(chosen);
             }
-        }
+            let resumed = s.task.status == AgentStatus::NeedsInput && self.permissions.lock().is_empty();
+            if resumed {
+                s.change_status(AgentStatus::Running, None);
+            }
+            resumed
+        };
         self.mark_dirty([(None, entry)]);
-        let still_asking = !self.permissions.lock().is_empty();
-        let resumed = !still_asking && self.state.lock().task.status == AgentStatus::NeedsInput;
-        if resumed {
-            self.change_status(AgentStatus::Running, None);
-        }
         self.persist();
         if resumed {
             self.emit_task();

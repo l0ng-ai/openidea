@@ -368,9 +368,9 @@ export const commands = {
 	dbDropDatabase: (id: string, database: string, statement: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_drop_database", { id, database, statement })),
 	/**  What made the dump at `path` and whether it creates its own database (from its first bytes). */
 	dbDumpInfo: (path: string) => typedError<DbDumpInfo, IdeError>(__TAURI_INVOKE("db_dump_info", { path })),
-	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number, schema: string | null, cellLimit: number | null) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows, schema, cellLimit })),
-	dbExecuteStream: (request: RequestId, id: string, statements: SqlStatement[], maxRows: number, schema: string | null, cellLimit: number | null, onProgress: Channel<ExecutionEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("db_execute_stream", { request, id, statements, maxRows, schema, cellLimit, onProgress })),
-	dbExplain: (request: RequestId, id: string, statement: string, schema: string | null) => typedError<DbPlanNode[], IdeError>(__TAURI_INVOKE("db_explain", { request, id, statement, schema })),
+	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number, schema: string | null, cellLimit: number | null, console: string | null) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows, schema, cellLimit, console })),
+	dbExecuteStream: (request: RequestId, id: string, statements: SqlStatement[], maxRows: number, schema: string | null, cellLimit: number | null, onProgress: Channel<ExecutionEvent>, console: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_execute_stream", { request, id, statements, maxRows, schema, cellLimit, onProgress, console })),
+	dbExplain: (request: RequestId, id: string, statement: string, schema: string | null, console: string | null) => typedError<DbPlanNode[], IdeError>(__TAURI_INVOKE("db_explain", { request, id, statement, schema, console })),
 	/**
 	 *  Writes exported result data (CSV, JSON, SQL…) to `path`. Stays in the
 	 *  desktop shell: the path comes from a local save dialog, and a remote
@@ -382,6 +382,7 @@ export const commands = {
 	dbJdbcDriverClasses: (jars: string[]) => typedError<string[], IdeError>(__TAURI_INVOKE("db_jdbc_driver_classes", { jars })),
 	dbJdbcDrivers: () => typedError<DbJdbcDriver_Serialize[], IdeError>(__TAURI_INVOKE("db_jdbc_drivers")),
 	dbObjectDdl: (id: string, schema: string, kind: DbObjectKind, name: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_object_ddl", { id, schema, kind, name })),
+	dbReleaseConsole: (console: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_release_console", { console })),
 	/**  Closes what the pages of a result keep open on the server (its result tab was closed). */
 	dbReleaseResult: (id: string, statement: string, schema: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_release_result", { id, statement, schema })),
 	dbRemoveHistory: (id: string, texts: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_remove_history", { id, texts })),
@@ -390,7 +391,7 @@ export const commands = {
 	 *  Row `row` (from 0) of the result of `statement`, whole: what a page of a run with a
 	 *  `cell_limit` shows cut short.
 	 */
-	dbResultRow: (request: RequestId, id: string, statement: SqlStatement, row: number, schema: string | null) => typedError<DbQueryResult, IdeError>(__TAURI_INVOKE("db_result_row", { request, id, statement, row, schema })),
+	dbResultRow: (request: RequestId, id: string, statement: SqlStatement, row: number, schema: string | null, console: string | null) => typedError<DbQueryResult, IdeError>(__TAURI_INVOKE("db_result_row", { request, id, statement, row, schema, console })),
 	dbRetainCatalog: (id: string, databases: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("db_retain_catalog", { id, databases })),
 	/**
 	 *  Runs `job` against target `id` and streams the tool's output; returns its exit code. Stays
@@ -1517,7 +1518,7 @@ export const commands = {
 	 *  run that is gone, remote, or has no JVM with an attach listener.
 	 */
 	profilerGcBeforeStop: (run: RunId) => typedError<number, IdeError>(__TAURI_INVOKE("profiler_gc_before_stop", { run })),
-	/**  How to run `config` under a sampling profiler, or which profiler is missing. */
+	/**  How to run `config` under a profiler, or which profiler is missing. */
 	profilerPrepare: (config: RunConfig_Deserialize, mode: ProfileMode) => typedError<ProfilePrepared_Serialize, IdeError>(__TAURI_INVOKE("profiler_prepare", { config, mode })),
 	/**  The project open in this window (a settings window: its parent's), if any. */
 	projectCurrent: () => __TAURI_INVOKE<{
@@ -1698,6 +1699,10 @@ export const commands = {
 	replaceInFiles: (request: RequestId, query: SearchQuery, replacement: string, preserveCase: boolean, targets: ReplaceTarget[], allInScope: boolean, onEvent: Channel<ReplaceEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("replace_in_files", { request, query, replacement, preserveCase, targets, allInScope, onEvent })),
 	/**  Before / after text of `path` for Replace › Preview (unsaved buffer included). */
 	replacePreview: (query: SearchQuery, replacement: string, preserveCase: boolean, path: string, only: Pos[] | null) => typedError<ReplacePreview, IdeError>(__TAURI_INVOKE("replace_preview", { query, replacement, preserveCase, path, only })),
+	/**  Apply Ruff's safe lint fixes (`ruff check --fix-only`) to the current unsaved Python document. */
+	ruffFix: (doc: DocId) => typedError<TextEdit[], IdeError>(__TAURI_INVOKE("ruff_fix", { doc })),
+	/**  Apply Ruff's safe lint fixes to a Python text snapshot without writing the file. */
+	ruffFixText: (path: string, text: string) => typedError<TextEdit[], IdeError>(__TAURI_INVOKE("ruff_fix_text", { path, text })),
 	runApplicationBuild: (config: RunConfig_Deserialize, module: string) => typedError<RunConfig_Serialize, IdeError>(__TAURI_INVOKE("run_application_build", { config, module })),
 	runApplicationPublish: (config: RunConfig_Deserialize, classPaths: string[], mainClass: string) => typedError<null, IdeError>(__TAURI_INVOKE("run_application_publish", { config, classPaths, mainClass })),
 	/**  Kept temporary configurations with the current settings applied. */
@@ -4797,6 +4802,8 @@ export type CommitSettings = {
 	reformat?: boolean,
 	optimizeImports?: boolean,
 	cleanup?: boolean,
+	/**  Apply Ruff's safe lint fixes before composing the commit, independently of formatting. */
+	fixOnCommit?: boolean,
 	blankLineAfterSubject?: boolean,
 	limitSubject?: boolean,
 	subjectLimit?: number,
@@ -5505,6 +5512,11 @@ export type DbIndexInfo = {
 	name: string,
 	unique: boolean,
 	columns: string[],
+	/**
+	 *  The key this index enforces; such an index is dropped with its constraint, not `drop index`.
+	 *  `None` for a plain index, and on engines that don't tell.
+	 */
+	key?: DbKeyKind | null,
 };
 
 /**  Schemas tab: the databases / schemas the tree shows. Names may use `*` and `?`. */
@@ -5569,6 +5581,9 @@ export type DbJdbcDriver_Serialize = {
 	className: string,
 	urlTemplate: string,
 };
+
+/**  A table key backed by an index. */
+export type DbKeyKind = "primary" | "unique";
 
 export type DbMysqlOptions = {
 	/**  Empty: the databases the dump names. */
@@ -6899,6 +6914,10 @@ export type EditorGeneralSettings = {
 	removeTrailingBlankLines?: boolean,
 	/**  Copy as rich text (HTML with syntax colours) by default. */
 	richTextCopy?: boolean,
+	/**  Gutter › Highlight modified lines in the gutter: the VCS change bars next to the line numbers. */
+	highlightModifiedLines?: boolean,
+	/**  Gutter › Highlight modified lines in error stripe on the scrollbar (with `highlight_modified_lines`). */
+	highlightModifiedLinesInScrollbar?: boolean,
 };
 
 /**
@@ -7290,6 +7309,8 @@ export type ExternalFormatterSettings = {
 	/**  Prefer this formatter even when a language server offers formatting. */
 	prefer?: boolean,
 	runOnSave?: boolean,
+	/**  Ruff only: apply safe lint fixes (`ruff check --fix-only`) on save, independently of formatting. */
+	fixOnSave?: boolean,
 };
 
 /**  A session on this machine that no task holds yet. */
@@ -9204,7 +9225,7 @@ export type JetBrainsSettings = {
 	entries: string[],
 	/**
 	 *  Entry name → text, for the files OpenIDEA reads: `colors/*.icls`, `keymaps/*.xml`,
-	 *  `codestyles/*.xml` and some of `options/`.
+	 *  `codestyles/*.xml`, `templates/*.xml` and some of `options/`.
 	 */
 	files: { [key in string]: string },
 };
@@ -12350,6 +12371,11 @@ export type PythonSettings = {
 	 *  it, else unittest), `pytest` or `unittest`.
 	 */
 	testRunner?: string,
+	/**
+	 *  What Profile runs Python under (Settings › Python › Profiler): `auto` (py-spy where it
+	 *  is installed and samples without root, else cProfile), `cprofile` or `py-spy`.
+	 */
+	profiler?: string,
 	/**
 	 *  Show matplotlib figures of Python runs in the Plots tool window (the IDE sets `MPLBACKEND`
 	 *  unless the run sets it); off: matplotlib's own window.

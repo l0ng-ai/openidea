@@ -1,4 +1,4 @@
-/** The "Profile" executor: runs a configuration under a sampling profiler, then opens the snapshot. */
+/** The "Profile" executor: runs a configuration under a profiler, then opens the snapshot. */
 import { executeAction } from "@/platform/actions";
 import { call, commands, isTauri, type ProfileMode, type ProfilerInstall, type RunConfig } from "@/platform/ipc";
 import {
@@ -7,7 +7,7 @@ import {
   type ExecutorLaunch,
   type RunExecutorContribution,
 } from "@/workbench/contributions";
-import { allocationProfilerSupports, profilerSupports } from "./model";
+import { allocationProfilerSupports, profilerSupports, treeNotice } from "./model";
 import { addSnapshot } from "./store";
 import { tx } from "@/platform/i18n";
 
@@ -91,7 +91,7 @@ async function prepare(config: RunConfig, mode: ProfileMode): Promise<ExecutorLa
       void (async () => {
         try {
           const profile = await call(commands.profilerCollect(spec));
-          addSnapshot(config.name, profile, mode === "liveObjects" ? liveNotice(stopped) : null);
+          addSnapshot(config.name, profile, mode === "liveObjects" ? liveNotice(stopped) : treeNotice(profile));
           try {
             toolWindowService().show("profiler", true);
           } catch {
