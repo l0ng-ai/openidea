@@ -62,7 +62,7 @@ Not supported:
 - JaCoCo XML report
 - Cobertura XML report (`coverage xml` of coverage.py, and other tools); relative file names resolve against its `<sources>`
 - SimpleCov `.resultset.json`
-- coverage.py data file (`.coverage`); choosing one `.coverage.*` file of a parallel run imports all of them. It is read by coverage.py in the project's interpreter, run in the project directory, so the project must be trusted and the project's coverage configuration applies (`[paths]`, excluded lines). Your data files are not changed. In the macOS file chooser, press `⌘⇧.` to show these hidden files.
+- coverage.py data file (`.coverage`); choosing one `.coverage.*` file of a parallel run imports all of them. It is read by coverage.py in the project's interpreter, run in the nearest folder above the data file that has a coverage.py configuration (else the project directory), so the project must be trusted and the project's coverage configuration applies (`[paths]`, `relative_files`, excluded lines; `fail_under` doesn't block the import). Your data files are not changed. In the macOS file chooser, press `⌘⇧.` to show these hidden files.
 
 File paths recorded on another machine are mapped into the project by their longest matching suffix. The import notification says how many files of the report are not in the project.
 

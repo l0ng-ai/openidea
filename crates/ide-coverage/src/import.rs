@@ -63,6 +63,12 @@ pub fn import(path: &Path, root: &Path) -> IdeResult<CoverageSuite> {
                 .map_err(|e| IdeError::invalid(format!("{}: {e}", path.display())))?;
             acc.finish("JaCoCo")
         }
+        None if text.starts_with("!coverage.py: This is a private format") => {
+            return Err(IdeError::invalid(format!(
+                "{} is coverage.py 4 data, which current coverage.py can't read. Import the output of `coverage xml` instead.",
+                path.display()
+            )));
+        }
         None => {
             return Err(IdeError::invalid(format!(
                 "{} is not an lcov tracefile, Go cover profile, JaCoCo or Cobertura XML report or SimpleCov resultset",
@@ -214,6 +220,9 @@ mod tests {
         assert!(import(&tmp.path().join("missing"), &root).is_err());
         std::fs::write(&report, "nothing").unwrap();
         assert!(import(&report, &root).is_err());
+        std::fs::write(&report, "!coverage.py: This is a private format, don't read it directly!{\"lines\":{}}")
+            .unwrap();
+        assert!(import(&report, &root).unwrap_err().to_string().contains("coverage.py 4 data"));
     }
 
     /// `coverage xml` (coverage.py 7.17, `--branch`) of a project checked out on a CI runner.
