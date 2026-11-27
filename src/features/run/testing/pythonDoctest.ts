@@ -33,13 +33,14 @@ const moduleOf = (file: string) =>
 /**
  * `args` running the objects whose examples are at `paths` (tree paths) in place of the run's own
  * targets: `file::Object`, or the whole file for its module docstring or a module that failed to load.
+ * An object named like the end of the module's name (`money` in `shop/money.py`) reruns the whole file.
  */
 export function doctestRerunArgs(args: readonly string[], paths: readonly string[][]): string[] | null {
   const at = doctestAt(args);
   if (at < 0) return null;
-  const targets = paths.map(([file, owner]) =>
-    !owner || owner === moduleOf(file!) || owner === moduleOf(file!).split(".").pop() ? file! : `${file}::${owner}`,
-  );
+  // The module's own docstring: its dotted name, from the working directory or a source root (`src/`).
+  const isModule = (file: string, owner: string) => `.${moduleOf(file)}`.endsWith(`.${owner}`);
+  const targets = paths.map(([file, owner]) => (!owner || isModule(file!, owner) ? file! : `${file}::${owner}`));
   // Options stay; the run's own files and objects go.
   const options = args.slice(at + 2).filter((a, i, all) => a.startsWith("-") || all[i - 1] === "-o");
   // A whole file already runs its objects.
