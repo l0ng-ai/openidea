@@ -1,3 +1,4 @@
+import type { EditorView } from "@codemirror/view";
 import { expect, ipcCalls, stubDesktop, test } from "./fixtures";
 
 const alpha = "/dev/acme-api/inventory/console.sql";
@@ -101,8 +102,12 @@ test("follows the active SQL console and preserves the selected client when anot
   await expect(panel.getByRole("gridcell", { name: "Beta row", exact: true })).toBeVisible();
   await panel.getByRole("button", { name: "Open Client in Editor" }).click();
   const editor = page.locator(".cm-editor:visible .cm-content[contenteditable=true]");
+  const consoleText = () =>
+    editor.evaluate((el) =>
+      (el as HTMLElement & { cmTile: { view: EditorView } }).cmTile.view.state.doc.toString().trimEnd(),
+    );
   await expect(editor).toBeFocused();
-  await expect(editor).toHaveText("select 'Beta'");
+  await expect.poll(consoleText).toBe("select 'Beta'");
   expect(await ipcCalls(page, "db_execute")).toHaveLength(2);
 
   await open(alpha);
@@ -122,7 +127,7 @@ test("follows the active SQL console and preserves the selected client when anot
 
   await client.press("Escape");
   await expect(editor).toBeFocused();
-  await expect(editor).toHaveText("select 'Alpha'");
+  await expect.poll(consoleText).toBe("select 'Alpha'");
   await expect(client).toHaveText("console.sql · Retail SQLite");
   await expect(panel.getByRole("gridcell", { name: "Beta row", exact: true })).toBeVisible();
   expect(await ipcCalls(page, "db_execute")).toHaveLength(2);
