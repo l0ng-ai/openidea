@@ -16,6 +16,7 @@ import {
   beginNew,
   beginRename,
   copyPaths,
+  copyReferences,
   copySelection,
   delegate,
   deleteSelection,
@@ -430,6 +431,15 @@ export function registerProjectActions(): () => void {
     copyPath("relative", "project.copyRelativePath", "Copy Path From Content Root"),
     copyPath("name", "project.copyFileName", "Copy File Name"),
     copyPath("source", "project.copySourceRootPath", "Copy Path From Source Root"),
+    {
+      id: "project.copyReference",
+      title: "Copy Reference",
+      category: "Project View",
+      when: OPEN,
+      keyWhen: FOCUS,
+      keywords: ["fqn", "qualified name", "clipboard"],
+      run: ({ arg }) => copyReferences(nodesFrom(arg)),
+    },
     {
       id: "project.revealInFinder",
       title: revealInFileManagerLabel(),

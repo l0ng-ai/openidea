@@ -23,6 +23,7 @@ import {
   type DbObjectKind,
   type DbPlanNode,
   type DbSchemaObjects,
+  type DbSourceFolder,
   type DbQueryResult,
   type DbStatementOutcome,
   type DbTableDetails,
@@ -57,7 +58,7 @@ import {
   splitTarget,
   targetOf,
 } from "./model";
-import { tableFolder, type DbNode } from "./nodes";
+import { nodeTarget, tableFolder, type DbNode } from "./nodes";
 import { SQL_LANGUAGE } from "./sqlLanguage";
 import { TABLE_KIND, type TableRef } from "./tableInput";
 import type { DiagramData } from "./erDiagram";
@@ -146,6 +147,8 @@ export type DialogState =
   /** Rename a data source (`object` null) or a schema object of target `id`. */
   | { kind: "rename"; id: string; object: DbObjectRef | null }
   | { kind: "renameDatabase"; id: string; database: string }
+  /** New or rename a user data source folder; `sources` joins them when creating. */
+  | { kind: "sourceFolder"; folder: DbSourceFolder | null; sources?: string[] }
   /** Confirm Drop / Truncate, with a preview of the statement. */
   | { kind: "drop"; id: string; object: DbObjectRef }
   | { kind: "truncate"; id: string; schema: string; table: string }
@@ -203,7 +206,9 @@ export type StatementProgress = Exclude<ExecutionEvent, { type: "done" }>;
 
 interface DatabaseState {
   sources: DataSource[];
+  folders: DbSourceFolder[];
   loaded: boolean;
+  foldersLoaded: boolean;
   /** Connected targets (see `splitTarget`). */
   connected: Set<string>;
   /** Targets or whole sources deactivated until the next deliberate database operation. */
@@ -306,7 +311,9 @@ const initialViewOptions = readViewOptions();
 
 export const useDatabase = create<DatabaseState>(() => ({
   sources: [],
+  folders: [],
   loaded: false,
+  foldersLoaded: false,
   connected: new Set(),
   pausedConsoleMetadata: new Set(),
   databases: {},
@@ -505,6 +512,131 @@ export async function loadSources(): Promise<void> {
   }
 }
 
+export async function loadSourceFolders(): Promise<void> {
+  if (!useProject.getState().project) return;
+  const current = projectRequest();
+  try {
+    const folders = await call(commands.dbSourceFolders());
+    if (current()) useDatabase.setState({ folders, foldersLoaded: true });
+  } catch (e) {
+    if (!current()) return;
+    useDatabase.setState({ folders: [], foldersLoaded: true });
+    if (!message(e).includes("is not available remotely")) {
+      notifications().notify({
+        level: "error",
+        title: "Cannot read data source folders",
+        body: message(e),
+        key: "db-folders",
+      });
+    }
+  }
+}
+
+async function saveSourceFolders(folders: DbSourceFolder[], failure: string): Promise<boolean> {
+  const current = projectRequest();
+  try {
+    await call(commands.dbSaveSourceFolders(folders));
+    if (!current()) return false;
+    useDatabase.setState({ folders });
+    return true;
+  } catch (e) {
+    if (current())
+      notifications().notify({
+        level: "error",
+        title: failure,
+        body: message(e),
+        key: "db-folders",
+      });
+    return false;
+  }
+}
+
+function withoutSources(folders: DbSourceFolder[], sourceIds: ReadonlySet<string>): DbSourceFolder[] {
+  return folders.map((folder) => ({
+    ...folder,
+    sources: folder.sources.filter((source) => !sourceIds.has(source)),
+  }));
+}
+
+export async function createSourceFolder(name: string, sourceIds: readonly string[] = []): Promise<string | null> {
+  const clean = name.trim();
+  if (!clean) return null;
+  const folders = useDatabase.getState().folders;
+  const names = new Set(folders.map((folder) => folder.name.toLocaleLowerCase()));
+  let unique = clean;
+  for (let n = 2; names.has(unique.toLocaleLowerCase()); n++) unique = `${clean} (${n})`;
+  const id = `folder-${newSourceId()}`;
+  const members = [...new Set(sourceIds)].filter((source) =>
+    useDatabase.getState().sources.some((entry) => entry.id === source),
+  );
+  const next = withoutSources(folders, new Set(members));
+  next.push({
+    id,
+    name: unique,
+    order: folders.reduce((max, folder) => Math.max(max, folder.order), -1) + 1,
+    sources: members,
+  });
+  if (!(await saveSourceFolders(next, "Cannot create the data source folder"))) return null;
+  expandSourceFolder(id);
+  return id;
+}
+
+export async function renameSourceFolder(id: string, name: string): Promise<boolean> {
+  const clean = name.trim();
+  if (!clean) return false;
+  const folders = useDatabase.getState().folders;
+  if (!folders.some((folder) => folder.id === id)) return false;
+  const names = new Set(folders.filter((folder) => folder.id !== id).map((folder) => folder.name.toLocaleLowerCase()));
+  let unique = clean;
+  for (let n = 2; names.has(unique.toLocaleLowerCase()); n++) unique = `${clean} (${n})`;
+  return saveSourceFolders(
+    folders.map((folder) => (folder.id === id ? { ...folder, name: unique } : folder)),
+    "Cannot rename the data source folder",
+  );
+}
+
+export async function deleteSourceFolder(id: string): Promise<boolean> {
+  const folders = useDatabase.getState().folders;
+  if (!folders.some((folder) => folder.id === id)) return false;
+  return saveSourceFolders(
+    folders.filter((folder) => folder.id !== id),
+    "Cannot delete the data source folder",
+  );
+}
+
+export async function removeSourceFolder(folder: DbSourceFolder): Promise<void> {
+  const ok = await confirm({
+    title: "Delete Data Source Folder",
+    message: tx`Delete folder '${folder.name}'? Its data sources move back to the root.`,
+    ok: "Delete",
+    icon: "warning",
+  });
+  if (!ok) return;
+  await deleteSourceFolder(folder.id);
+}
+
+export async function moveSourcesToFolder(sourceIds: readonly string[], folderId: string | null): Promise<boolean> {
+  const ids = new Set(sourceIds);
+  const folders = withoutSources(useDatabase.getState().folders, ids);
+  if (folderId) {
+    const folder = folders.find((candidate) => candidate.id === folderId);
+    if (!folder) return false;
+    const valid = [...ids].filter((source) =>
+      useDatabase.getState().sources.some((candidate) => candidate.id === source),
+    );
+    folder.sources = [...folder.sources, ...valid];
+  }
+  const saved = await saveSourceFolders(folders, "Cannot move the data sources");
+  if (saved && folderId) expandSourceFolder(folderId);
+  return saved;
+}
+
+function expandSourceFolder(id: string) {
+  useDatabase.setState((state) => ({
+    treeExpanded: new Set(state.treeExpanded).add(`source-folder:${id}`),
+  }));
+}
+
 /** Drops cached metadata of target `id` (refresh, disconnect); a data source id drops all its databases. */
 function forget(id: string) {
   invalidateDatabaseRequests(id);
@@ -602,17 +734,61 @@ export async function renameSource(id: string, name: string): Promise<void> {
   await saveSource({ ...src, name: name.trim() }, undefined);
 }
 
-/** Removes the data source after asking (Database tree › Drop on a source). */
-export async function removeSource(source: DataSource): Promise<void> {
+/** Removes data sources after one confirmation (Database tree › Drop on a source). */
+export async function removeSources(sources: readonly DataSource[]): Promise<void> {
+  const unique = [...new Map(sources.flatMap((source) => (source.id ? [[source.id, source] as const] : []))).values()];
+  if (!unique.length) return;
+  const one = unique.length === 1;
+  const count = unique.length;
+  const names = unique
+    .slice(0, 8)
+    .map((source) => source.name)
+    .join("\n");
+  const n = count - 8;
+  const more = n > 0 ? `\n${tx`and ${n} more`}` : "";
   const ok = await confirm({
-    title: "Remove Data Source",
-    message: tx`Remove data source '${source.name}'? Its query console file stays on disk.`,
+    title: one ? "Remove Data Source" : "Remove Data Sources",
+    message: one
+      ? tx`Remove data source '${unique[0]!.name}'? Its query console file stays on disk.`
+      : tx`Remove ${count} data sources? Their query console files stay on disk.\n\n${names}${more}`,
     ok: "Remove",
   });
   if (!ok) return;
-  const id = source.id ?? "";
-  if (connectedTargets(id).length) await disconnect(id);
-  await deleteSource(id);
+  const ids = new Set(unique.map((source) => source.id!));
+  const current = projectRequest();
+  const mutations = unique.map((source) => sourceMutation(source.id!));
+  try {
+    await Promise.all([...ids].filter((id) => connectedTargets(id).length).map((id) => disconnect(id)));
+    await call(commands.dbSaveSources(useDatabase.getState().sources.filter((source) => !ids.has(source.id ?? ""))));
+    if (!current() || mutations.some((unchanged) => !unchanged())) return;
+    for (const id of ids) forget(id);
+    await loadSources();
+    if (!current()) return;
+    useDatabase.setState((s) => {
+      const removed = (node: DbNode) => {
+        const target = nodeTarget(node);
+        return !!target && ids.has(splitTarget(target).id);
+      };
+      const selectedNodes = s.selectedNodes.filter((node) => !removed(node));
+      const selectedNode = s.selectedNode && !removed(s.selectedNode) ? s.selectedNode : null;
+      return {
+        selectedNode,
+        selectedSource: selectedNode ? nodeTarget(selectedNode) : null,
+        selectedNodes,
+      };
+    });
+  } catch (e) {
+    notifications().notify({
+      level: "error",
+      title: one ? "Cannot remove the data source" : "Cannot remove the data sources",
+      body: message(e),
+    });
+  }
+}
+
+/** Removes one data source after asking. */
+export async function removeSource(source: DataSource): Promise<void> {
+  await removeSources([source]);
 }
 
 export async function deleteSource(id: string): Promise<void> {

@@ -7,7 +7,7 @@
 import type { ReactNode } from "react";
 import { tx, txPart } from "@/platform/i18n";
 import { call, commands, type RunConfig, type RunImport, type RunImportSource, type SkipReason } from "@/platform/ipc";
-import { notifications } from "@/workbench/contributions";
+import { notifications, useRunConfigTypes } from "@/workbench/contributions";
 import { loadConfigs, useRun } from "./store";
 
 /** The dialog's link for `source`. */
@@ -121,6 +121,16 @@ export function importSummary(result: RunImport): {
 export async function importConfigs(source: RunImportSource, draft: readonly RunConfig[]): Promise<RunConfig[] | null> {
   try {
     const result = await call(commands.runImportConfigs(source, [...draft]));
+    const types = useRunConfigTypes.getState().types;
+    await Promise.all(
+      result.imported.map(async (entry) => {
+        const prepare = types.get(entry.config.kind)?.prepareImport;
+        if (!prepare) return;
+        const { config, unmapped } = await prepare(entry.config);
+        entry.config = config;
+        entry.ignored.push(...(unmapped ?? []));
+      }),
+    );
     notifications().notify({ group: "run", key: "run-import", ...importSummary(result) });
     return result.imported.map((c) => c.config);
   } catch (e) {
