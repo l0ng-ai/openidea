@@ -159,8 +159,10 @@ export function syncFile(path: string): Promise<void> {
 }
 
 async function sendFile(path: string) {
-  if (!isTauri() || useProject.getState().project?.trusted === false) return;
-  const { byFile, muted } = useBreakpoints.getState();
+  // After the project closes, the files it had breakpoints in are rescheduled with empty lists;
+  // the backend no longer has the project to clear them in.
+  const { root, byFile, muted } = useBreakpoints.getState();
+  if (!isTauri() || root === null || useProject.getState().project?.trusted === false) return;
   const list = byFile[path] ?? [];
   sent.set(
     path,
