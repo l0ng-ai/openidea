@@ -153,6 +153,50 @@ it("ignores color-like HTML text while previewing inline styles", () => {
   expect(swatches.map((swatch) => swatch.getAttribute("title"))).toEqual(["#abc"]);
 });
 
+it("previews named colors in HTML styles and quoted colors in embedded scripts by code rules", () => {
+  const swatchTitles = (doc: string, language: "html" | "vue") => {
+    view?.destroy();
+    view = new EditorView({
+      state: EditorState.create({
+        doc,
+        extensions: [
+          language === "html" ? html() : vue(),
+          colorPreviewGutter({ doc: 1, path: `/p/a.${language}`, language, uiMode: null, readOnly: false }),
+        ],
+      }),
+      parent: document.body,
+    });
+    return [...view.dom.querySelectorAll(".cm-openidea-gutter-colors .cm-gutterElement span[title]")].map((swatch) =>
+      swatch.getAttribute("title"),
+    );
+  };
+  expect(
+    swatchTitles(
+      [
+        "<style>",
+        "h1 { color: white; }",
+        "</style>",
+        "<script>",
+        '  const data = [{ "name": "aliceblue", "code": "#f0f8ff" }];',
+        "  // see #123 and #add",
+        "  class A { #fab = 1; f() { return this.#fab; } }",
+        "  const c = cond ? a : red;",
+        "  const d = { color: red };",
+        "</script>",
+        '<div style="background: red;color:blue;"></div>',
+        "<p onclick=\"paint('#abc')\">red: blue</p>",
+      ].join("\n"),
+      "html",
+    ),
+  ).toEqual(["white", "#f0f8ff", "red", "#abc"]);
+  expect(
+    swatchTitles(
+      '<script setup>\nconst accent = "#1b766c";\n</script>\n<template><b style="color: red">x</b></template>',
+      "vue",
+    ),
+  ).toEqual(["#1b766c", "red"]);
+});
+
 it("updates a CSS literal from alpha and hex fields and ignores invalid input", async () => {
   view = new EditorView({
     state: EditorState.create({

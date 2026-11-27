@@ -22,7 +22,7 @@ export interface ColorMatch {
 
 /** Style sheet languages: named colors and unquoted hex values are colors there. */
 const STYLE_SHEETS = new Set(["css", "scss", "sass", "less", "stylus", "postcss"]);
-/** Markup that embeds style sheets (`<style>`, `style="…"`): unquoted hex values too. */
+/** Markup that embeds style sheets (`<style>`, `style="…"`): unquoted hex values and names too. */
 const MARKUP = new Set(["html", "vue", "svelte", "astro", "xml", "xhtml"]);
 export const isMarkupLanguage = (language: string): boolean => MARKUP.has(language);
 /** Languages whose hex colors put the alpha first: `#AARRGGBB` / `#ARGB` (XAML). */
@@ -52,6 +52,16 @@ const NAME_PREFIX = /[\w.#$@-]/;
 const JAVA_INT =
   /\bnew\s+(?:(?:java\.awt|javax\.swing\.plaf)\.)?(?:Color|ColorUIResource)\s*\(\s*(0[xX][0-9a-fA-F]{1,8})\s*\)/g;
 
+/**
+ * Whether `line` before `from` reads `property: value…` (`/:\s*(?:\S+\s+)*$/`). Only the text after
+ * the last colon is tested: a line of markup has many words, and testing the whole prefix for each
+ * was quadratic.
+ */
+function afterPropertyColon(line: string, from: number): boolean {
+  const colon = line.lastIndexOf(":", from - 1);
+  return colon >= 0 && /^\s*(?:\S+\s+)*$/.test(line.slice(colon + 1, from));
+}
+
 /** Global keywords and words that are valid colors but say nothing about one. */
 const NOT_COLORS = new Set(["inherit", "initial", "unset", "revert", "currentcolor", "transparent"]);
 
@@ -77,10 +87,10 @@ export function findColors(line: string, language: string, isColorName: (word: s
     if (format === "name") {
       // A property value (`color: red`), not a property, selector or at-rule.
       if (
-        !sheet ||
+        !looseHex ||
         (from > 0 && NAME_PREFIX.test(line[from - 1]!)) ||
         NOT_COLORS.has(text.toLowerCase()) ||
-        !/:\s*(?:\S+\s+)*$/.test(line.slice(0, from))
+        !afterPropertyColon(line, from)
       )
         continue;
       if (!isColorName(text)) continue;
