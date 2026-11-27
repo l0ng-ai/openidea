@@ -93,6 +93,18 @@ pub async fn notebook_interrupt(host: &Host, window: &str, id: String) -> IdeRes
         .map_err(|error| IdeError::internal(error.to_string()))?
 }
 
+#[command(trust = trusted)]
+pub async fn notebook_variables(
+    host: &Host,
+    window: &str,
+    id: String,
+) -> IdeResult<Option<Vec<crate::notebook::NotebookVariable>>> {
+    let notebooks = host.project(window)?.notebooks.clone();
+    tokio::spawn(async move { notebooks.variables(&id).await })
+        .await
+        .map_err(|error| IdeError::internal(error.to_string()))?
+}
+
 #[allow(clippy::too_many_arguments)]
 #[command(trust = trusted)]
 pub async fn notebook_execute(
@@ -162,4 +174,5 @@ ide_command::domain!(
     notebook_restart,
     notebook_save,
     notebook_undo,
+    notebook_variables,
 );

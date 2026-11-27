@@ -842,6 +842,16 @@ export const commands = {
 	 */
 	historyRestore: (path: string, id: string) => typedError<null, IdeError>(__TAURI_INVOKE("history_restore", { path, id })),
 	/**
+	 *  Ends a child process started by this OpenIDEA host (language server, run, terminal,
+	 *  debug adapter or agent) and its descendants; refuses processes outside this host's tree.
+	 */
+	hostEndProcess: (pid: number) => typedError<boolean, IdeError>(__TAURI_INVOKE("host_end_process", { pid })),
+	/**
+	 *  Snapshot of host-wide resource counters (CPU, memory, network, disk) and, when
+	 *  `include_processes` is true, the process breakdown of OpenIDEA and top host processes.
+	 */
+	hostMetrics: (includeProcesses: boolean) => typedError<HostMetrics, IdeError>(__TAURI_INVOKE("host_metrics", { includeProcesses })),
+	/**
 	 *  Convert to cURL and Copy: request `index` of `text` (the editor buffer of `path`), with
 	 *  the variables of `env` substituted, as a cURL command.
 	 */
@@ -1239,6 +1249,7 @@ export const commands = {
 	notebookRestart: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_restart", { id })),
 	notebookSave: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_save", { id })),
 	notebookUndo: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_undo", { id })),
+	notebookVariables: (id: string) => typedError<NotebookVariable[] | null, IdeError>(__TAURI_INVOKE("notebook_variables", { id })),
 	openProject: (path: string) => typedError<ProjectInfo_Serialize, IdeError>(__TAURI_INVOKE("open_project", { path })),
 	/**  Files and folders that continue `prefix`, a path being typed in `from`. */
 	pathCompletions: (from: IpcPath, prefix: string) => typedError<PathCompletion[], IdeError>(__TAURI_INVOKE("path_completions", { from, prefix })),
@@ -8420,6 +8431,46 @@ export type HistoryTip = {
 	commit: string,
 };
 
+/**  Snapshot of host-wide CPU, memory, network, disk and process usage. */
+export type HostMetrics = {
+	/**  Overall CPU utilization across all logical cores (`0..=100`); `null` on the first sample. */
+	cpuPercent: number | null,
+	/**  Logical CPU cores available to this host or container. */
+	cpuCores: number,
+	/**  Unix 1m, 5m, 15m load averages; `null` on Windows. */
+	loadAverage: [(number | null), (number | null), (number | null)] | null,
+	/**  Host or container memory in use, in bytes. */
+	memoryUsedBytes: number | null,
+	/**  Total physical (or container limit) memory, in bytes. */
+	memoryTotalBytes: number | null,
+	/**  Bytes/s received across non-loopback network interfaces; `null` on the first sample or unsupported OS. */
+	netRxBytesPerSec: number | null,
+	/**  Bytes/s sent across non-loopback network interfaces; `null` on the first sample or unsupported OS. */
+	netTxBytesPerSec: number | null,
+	/**  Bytes/s read from block storage; `null` on the first sample or unsupported OS. */
+	diskReadBytesPerSec: number | null,
+	/**  Bytes/s written to block storage; `null` on the first sample or unsupported OS. */
+	diskWriteBytesPerSec: number | null,
+	/**  Free bytes available to the user on the project volume (or `$HOME` fallback). */
+	diskAvailableBytes: number | null,
+	/**  Total capacity in bytes of the project volume (or `$HOME` fallback). */
+	diskTotalBytes: number | null,
+	/**  Uptime of the backend process in milliseconds. */
+	uptimeMs: number | null,
+	/**  OpenIDEA backend, language servers, runs, terminals, debug adapters and agents (`includeProcesses = true`). */
+	processes: ProcessMemory[],
+	/**  Highest-usage processes on the host outside OpenIDEA's own process tree (`includeProcesses = true`). */
+	externalProcesses: HostProcess[],
+};
+
+/**  One process outside OpenIDEA's own process tree on the host (read-only in the UI). */
+export type HostProcess = {
+	pid: number,
+	name: string,
+	cpuPercent: number | null,
+	memoryBytes: number | null,
+};
+
 /**  What triggered a hot reload; `flutter debug_adapter` takes it as `reason`. */
 export type HotReloadReason = "manual" | "save";
 
@@ -10774,6 +10825,13 @@ export type NotebookSnapshot = {
 	nbformatMinor: number,
 	metadata: unknown,
 	cells: NotebookCell[],
+};
+
+/**  One row of the Jupyter Variables tool window. */
+export type NotebookVariable = {
+	name: string,
+	type: string,
+	value: string,
 };
 
 /**  A notification button that runs one of the publishing plugin's commands. */

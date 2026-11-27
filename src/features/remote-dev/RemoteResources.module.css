@@ -1,0 +1,351 @@
+.pill {
+  gap: var(--space-1-5);
+  font-variant-numeric: tabular-nums;
+}
+
+.meter {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: var(--space-0-5);
+  height: 12px;
+  padding: 1px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--border-strong) 45%, transparent);
+  flex: none;
+}
+
+.meterTrack {
+  position: relative;
+  width: 3px;
+  height: 10px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--fg-faint) 35%, transparent);
+  overflow: hidden;
+}
+
+.meterFill {
+  position: absolute;
+  inset: auto 0 0 0;
+  border-radius: 1px;
+  background: var(--fg-muted);
+  transition: height 180ms ease-out;
+}
+
+.levelWarn {
+  color: var(--warning);
+}
+
+.levelDanger {
+  color: var(--danger);
+}
+
+.meterFillWarn {
+  background: var(--warning);
+}
+
+.meterFillDanger {
+  background: var(--danger);
+}
+
+.pillText {
+  font-size: var(--fs-small);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 4px;
+  height: 15px;
+  border-radius: var(--radius-small);
+  font-size: var(--fs-tiny);
+  background: color-mix(in srgb, var(--warning) 18%, transparent);
+  color: var(--warning);
+}
+
+.badgeDanger {
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
+  color: var(--danger);
+}
+
+/* Popover dashboard */
+.panel {
+  width: 420px;
+  max-height: min(560px, calc(100vh - 64px));
+  overflow-y: auto;
+  padding: 8px 0 6px;
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+  color: var(--fg);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 2px 12px 8px;
+}
+
+.hostInfo {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1-5);
+  min-width: 0;
+  flex: 1;
+}
+
+.hostTitle {
+  font-weight: 600;
+  color: var(--fg-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uptime {
+  color: var(--fg-subtle);
+  font-size: var(--fs-tiny);
+  flex: none;
+}
+
+.rttBadge {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  border: 1px solid var(--border-popup);
+  font-family: var(--font-mono);
+  font-size: var(--fs-tiny);
+  color: var(--fg-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.rttWarn {
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 45%, var(--border-popup));
+}
+
+.rttDanger {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border-popup));
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+  padding: 0 12px 8px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  background: var(--bg-elev);
+  border: 1px solid var(--border-popup);
+  min-width: 0;
+}
+
+.cardTop {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-1-5);
+  min-width: 0;
+}
+
+.cardTitle {
+  flex: none;
+  font-size: var(--fs-tiny);
+  color: var(--fg-subtle);
+}
+
+.cardValue {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--fg-strong);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.cardSub {
+  font-size: var(--fs-tiny);
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sparkline {
+  width: 100%;
+  height: 28px;
+  display: block;
+  margin-top: 2px;
+}
+
+.sparkStroke {
+  fill: none;
+  stroke: var(--info);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.sparkArea {
+  fill: color-mix(in srgb, var(--info) 18%, transparent);
+}
+
+.sparkWarn .sparkStroke {
+  stroke: var(--warning);
+}
+
+.sparkWarn .sparkArea {
+  fill: color-mix(in srgb, var(--warning) 20%, transparent);
+}
+
+.sparkDanger .sparkStroke {
+  stroke: var(--danger);
+}
+
+.sparkDanger .sparkArea {
+  fill: color-mix(in srgb, var(--danger) 22%, transparent);
+}
+
+.capacityTrack {
+  width: 100%;
+  height: 5px;
+  margin-top: 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--fg-faint) 30%, transparent);
+  overflow: hidden;
+}
+
+.capacityFill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--info);
+}
+
+.capacityWarn {
+  background: var(--warning);
+}
+
+.capacityDanger {
+  background: var(--danger);
+}
+
+/* Process breakdown (matches perf.module.css layout) */
+.section {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-popup);
+}
+
+.columns {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 2px 4px 4px 12px;
+  font-size: var(--fs-tiny);
+  color: var(--fg-subtle);
+}
+
+.columnsTitle {
+  flex: 1;
+}
+
+.groupRow,
+.processRow {
+  display: flex;
+  align-items: center;
+  min-height: var(--h-list-row);
+  padding: 0 4px 0 12px;
+  gap: var(--space-2);
+}
+
+.indented {
+  padding-left: 22px;
+}
+
+.groupTitle {
+  flex: 1;
+  color: var(--fg-emphasis);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowLabel {
+  flex: 1;
+  color: var(--fg-secondary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail {
+  margin-left: 6px;
+  color: var(--fg-subtle);
+}
+
+.metricCol {
+  flex: none;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--fg-emphasis);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.cpu,
+.memory {
+  flex: none;
+  text-align: right;
+}
+
+.cpu {
+  width: 48px;
+}
+
+.memory {
+  width: 64px;
+}
+
+.end {
+  flex: none;
+  display: flex;
+  justify-content: center;
+  width: 20px;
+}
+
+.end button {
+  opacity: 0;
+}
+
+.processRow:hover .end button,
+.end button:focus-visible {
+  opacity: 1;
+}
+
+.error {
+  padding: 4px 12px;
+  color: var(--danger);
+  font-size: var(--fs-small);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1-5);
+  margin-top: 4px;
+  padding: 6px 12px 2px;
+  border-top: 1px solid var(--border-popup);
+}
