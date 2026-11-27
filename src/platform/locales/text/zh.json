@@ -1740,6 +1740,7 @@
   "Data type": "数据类型",
   "Database": "数据库",
   "Database actions": "数据库操作",
+  "Database Consoles": "数据库控制台",
   "Database output": "数据库输出",
   "Database:": "数据库：",
   "Date": "日期",
@@ -3226,6 +3227,8 @@
   "Restores the active saved layout, or the default layout when none is active.": "恢复当前选中的已保存布局；没有选中的布局时恢复默认布局。",
   "Restore Defaults": "恢复默认值",
   "Restore Rows": "恢复行",
+  "Revert Selected": "还原所选",
+  "Copy Aggregation Result": "复制聚合结果",
   "Restore Size": "恢复大小",
   "Maximize Editor": "最大化编辑器",
   "Restore detected roots": "恢复检测到的根",
@@ -10782,5 +10785,6 @@
   "tests.test_models": "tests.test_models",
   "unittest": "unittest",
   "1 file of the report is not in this project.": "报告中有 1 个文件不在此项目中。",
-  "{count} files of the report are not in this project.": "报告中有 {count} 个文件不在此项目中。"
+  "{count} files of the report are not in this project.": "报告中有 {count} 个文件不在此项目中。",
+  "Show Table Comments": "显示表注释"
 }

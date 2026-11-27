@@ -127,7 +127,10 @@ mod tests {
     fn schema(name: &str, tables: &[&str]) -> CatalogSchema {
         CatalogSchema {
             name: name.into(),
-            tables: tables.iter().map(|t| TableInfo { name: (*t).into(), kind: DbTableKind::Table }).collect(),
+            tables: tables
+                .iter()
+                .map(|t| TableInfo { name: (*t).into(), kind: DbTableKind::Table, comment: None })
+                .collect(),
         }
     }
 

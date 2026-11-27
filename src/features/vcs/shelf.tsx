@@ -17,8 +17,8 @@ import type {
   ShelfDiffFile,
 } from "@/bindings";
 import { setContext } from "@/platform/context";
-import { shortcutLabel } from "@/platform/keymap";
-import { openDiff, openVcsDiff, withChain, type DiffData } from "./diffInput";
+import { bindingsFor, normalizeBinding, registerKeyClaim, shortcutLabel } from "@/platform/keymap";
+import { openDiff, openVcsDiff, withChain, workingDiffData, type DiffData } from "./diffInput";
 import { showCreatePatchForShelf } from "./patches";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
@@ -174,7 +174,9 @@ function filesBelow<F>(node: FileTreeNode<F>, out: F[] = []): F[] {
 /**
  * A checkable tree of changed files under the repository's node, grouped by directory (Shelve,
  * Unshelve, Create Patch), as IDEA's changes tree: a directory's box checks or clears every file
- * below it and shows a dash when only some are included.
+ * below it and shows a dash when only some are included. With `diffOf`, double-click, Enter and
+ * Show Diff open a file's diff (the tree's files as the chain) and Space toggles the selected rows,
+ * as in IDEA's changes browsers.
  */
 function ChangeChecklist<F>({
   files,
@@ -187,6 +189,7 @@ function ChangeChecklist<F>({
   onChange,
   label,
   className,
+  diffOf,
 }: {
   files: readonly F[];
   keyOf: (f: F) => string;
@@ -199,13 +202,48 @@ function ChangeChecklist<F>({
   onChange: (next: Set<string>) => void;
   label: string;
   className?: string;
+  diffOf?: (file: F) => DiffData;
 }) {
   const tree: FileTreeNode<F>[] = [
     { key: "r:", name: rootName, file: null, children: buildFileTree(files, relPath), count: files.length },
   ];
   const [expanded, setExpanded] = useState<ReadonlySet<string> | null>(null);
-  const toggle = (node: FileTreeNode<F>) => {
-    const below = filesBelow(node);
+  const [rows, setRows] = useState<ReadonlySet<string>>(new Set());
+  const content = useRef<HTMLDivElement>(null);
+  const showDiff =
+    diffOf &&
+    ((file: F) => {
+      const chain = filesBelow(tree[0]!);
+      const items = chain.map(diffOf);
+      void import("./diffDialog").then(({ openDiffDialog }) => {
+        if (content.current?.isConnected) openDiffDialog(withChain(items, chain.indexOf(file)));
+      });
+    });
+  const selectedNodes = () => {
+    const out: FileTreeNode<F>[] = [];
+    const walk = (list: readonly FileTreeNode<F>[]) => {
+      for (const n of list) {
+        if (rows.has(n.key)) out.push(n);
+        walk(n.children);
+      }
+    };
+    walk(tree);
+    return out;
+  };
+  useEffect(() => {
+    if (!showDiff) return;
+    return registerKeyClaim((event, stroke) => {
+      if (!(event.target instanceof Node) || !content.current?.contains(event.target)) return false;
+      if (!bindingsFor("vcs.showDiff").some((binding) => normalizeBinding(binding) === stroke)) return false;
+      event.preventDefault();
+      event.stopPropagation();
+      const file = [...selectedNodes(), tree[0]!].flatMap((n) => filesBelow(n))[0];
+      if (file) showDiff(file);
+      return true;
+    });
+  });
+  const toggle = (...nodes: FileTreeNode<F>[]) => {
+    const below = nodes.flatMap((n) => filesBelow(n));
     const include = !below.every((f) => selected.has(keyOf(f)));
     const next = new Set(selected);
     for (const f of below) {
@@ -215,7 +253,18 @@ function ChangeChecklist<F>({
     onChange(next);
   };
   return (
-    <div className={clsx(styles.fileTree, className)}>
+    <div
+      ref={content}
+      className={clsx(styles.fileTree, className)}
+      onKeyDownCapture={(e) => {
+        if (!showDiff || e.key !== " " || e.metaKey || e.ctrlKey || e.altKey) return;
+        const nodes = selectedNodes();
+        if (!nodes.length) return;
+        e.preventDefault();
+        e.stopPropagation();
+        toggle(...nodes);
+      }}
+    >
       <Tree<FileTreeNode<F>>
         roots={tree}
         getKey={(n) => n.key}
@@ -224,7 +273,13 @@ function ChangeChecklist<F>({
         isExpandable={(n) => !n.file}
         expanded={expanded ?? new Set(dirKeys(tree))}
         onExpandedChange={setExpanded}
-        onActivate={toggle}
+        selected={rows}
+        onSelectionChange={setRows}
+        onActivate={(n, e) => {
+          if (!showDiff) toggle(n);
+          // A double-click on the box only toggles it, through its own clicks.
+          else if (n.file && !(e.target instanceof Element && e.target.closest("label"))) showDiff(n.file);
+        }}
         aria-label={label}
         className={styles.fileTreeView}
         renderNode={(n) => {
@@ -260,12 +315,15 @@ export function FileChecklist({
   onChange,
   label,
   className,
+  diffSide,
 }: {
   files: readonly FileStatus[];
   selected: ReadonlySet<string>;
   onChange: (next: Set<string>) => void;
   label: string;
   className?: string;
+  /** The side a file's diff shows: Rollback Unstaged Changes compares the index with the working copy. */
+  diffSide?: "unstaged";
 }) {
   const root = useVcs((s) => s.root) ?? "";
   return (
@@ -279,6 +337,7 @@ export function FileChecklist({
       onChange={onChange}
       label={label}
       className={className}
+      diffOf={(f) => workingDiffData(f.path, undefined, diffSide, f)}
     />
   );
 }

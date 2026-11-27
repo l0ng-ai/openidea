@@ -57,6 +57,7 @@ async fn assert_metadata_is_text(db: &DbManager) -> IdeResult<()> {
         assert!(schemas.iter().any(|n| n == s), "{s} missing from {schemas:?}");
         let tables = db.tables("m", s).await?;
         assert_eq!(tables.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["用户"], "tables of {s}");
+        assert_eq!(tables[0].comment.as_deref(), Some("用户表"));
         let d = db.table_details("m", s, "用户").await?;
         let cols: Vec<_> = d.columns.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(cols, ["id", "name", "raw"]);
