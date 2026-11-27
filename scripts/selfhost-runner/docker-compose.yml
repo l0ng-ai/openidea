@@ -7,6 +7,8 @@ services:
     restart: unless-stopped
     deploy:
       replicas: ${RUNNER_COUNT:-4}
+    # Docker's 64 MB default /dev/shm starves Chromium: e2e pages render slowly enough to time out.
+    shm_size: 2gb
 
     environment:
       RUNNER_SCOPE: repo
