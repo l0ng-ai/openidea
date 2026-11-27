@@ -44,6 +44,9 @@ pub struct PytestFixtureUse {
     pub class: Option<String>,
     /// The fixture whose parameter this is: `def tasks(tasks)` asks for the next `tasks` outward.
     pub in_fixture: Option<String>,
+    /// For a parameter: the names in the function's body that read it (attribute names and
+    /// keyword argument names left out), which a rename of the fixture renames too.
+    pub body: Vec<Range>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,6 +61,11 @@ impl PytestModule {
     /// The use whose name covers `pos` (its end included, where a caret after the name sits).
     pub fn use_at(&self, pos: Pos) -> Option<&PytestFixtureUse> {
         self.uses.iter().find(|u| u.range.start <= pos && pos <= u.range.end)
+    }
+
+    /// The fixture whose name (function name or `name=` string) covers `pos`.
+    pub fn definition_at(&self, pos: Pos) -> Option<usize> {
+        self.fixtures.iter().position(|f| f.selection.start <= pos && pos <= f.selection.end)
     }
 
     /// The slot holding `pos`.
@@ -220,14 +228,37 @@ fn function(
         if (i == 0 && class.is_some() && (param_name == "self" || param_name == "cls")) || skip.contains(&param_name) {
             continue;
         }
+        let body = def.child_by_field_name("body").map(|b| reads_of(b, &param_name, text, idx)).unwrap_or_default();
         out.uses.push(PytestFixtureUse {
             name: param_name,
             range: idx.range(ident.start_byte(), ident.end_byte()),
             kind: PytestFixtureUseKind::Parameter,
             class: class.map(str::to_owned),
             in_fixture: fixture.is_some().then(|| fixture_name.clone()),
+            body,
         });
     }
+}
+
+/// The identifiers `name` in `body`, except attribute names (`x.name`) and keyword argument
+/// names (`f(name=…)`). A nested function that rebinds the name is not told apart.
+fn reads_of(body: Node, name: &str, text: &str, idx: &LineIndex) -> Vec<Range> {
+    let mut out = Vec::new();
+    let mut cursor = body.walk();
+    visit(&mut cursor, &mut |n| {
+        if n.kind() != "identifier" || text.get(n.byte_range()) != Some(name) {
+            return;
+        }
+        let field_of = |parent: Node, field: &str| parent.child_by_field_name(field).is_some_and(|c| c.id() == n.id());
+        if let Some(parent) = n.parent()
+            && ((parent.kind() == "attribute" && field_of(parent, "attribute"))
+                || (parent.kind() == "keyword_argument" && field_of(parent, "name")))
+        {
+            return;
+        }
+        out.push(idx.range(n.start_byte(), n.end_byte()));
+    });
+    out
 }
 
 /// `Some(None)` for `@pytest.fixture` / `@fixture(...)`, `Some(Some((name, range)))` with a
@@ -314,7 +345,14 @@ fn fixture_call(call: Node, text: &str, idx: &LineIndex, out: &mut PytestModule)
         let Some((name, range)) = string_content(arg, text, idx) else { continue };
         out.slots.push(PytestFixtureSlot { range, class: class.clone() });
         if !name.is_empty() {
-            out.uses.push(PytestFixtureUse { name, range, kind, class: class.clone(), in_fixture: None });
+            out.uses.push(PytestFixtureUse {
+                name,
+                range,
+                kind,
+                class: class.clone(),
+                in_fixture: None,
+                body: Vec::new(),
+            });
         }
     }
 }
@@ -497,6 +535,15 @@ class TestTasks:
         let visible: Vec<&str> =
             visible_fixtures(&layers, None).iter().map(|&(l, f)| layers[l].fixtures[f].name.as_str()).collect();
         assert_eq!(visible, ["tasks", "client", "db", "tmp_path"]);
+    }
+
+    #[test]
+    fn a_parameter_knows_its_reads_in_the_body() {
+        let m = module("def test_a(tasks):\n    tasks.add(tasks=tasks)\n    other.tasks = len(tasks)\n");
+        let u = &m.uses[0];
+        let reads: Vec<(u32, u32)> = u.body.iter().map(|r| (r.start.line, r.start.col)).collect();
+        assert_eq!(reads, [(1, 4), (1, 20), (2, 22)]);
+        assert_eq!(m.definition_at(Pos::new(0, 6)), None);
     }
 
     #[test]

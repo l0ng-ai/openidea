@@ -2899,6 +2899,10 @@ jdk = "jetbrains"                          # optional: only those VM options on 
   the agent and its `vmOptions`; the grant and jar pin are the same. Without
   `java.agent` the IDE says so instead of launching, and a configuration on a
   run target is refused the same way.
+  A plugin's own command can start a configuration through its executor with
+  `commands.execute("pluginExecutor.<plugin id>.run", <configuration id>)` (`.debug` to
+  debug; needs `ide.commands`). A `services.context` or `services.toolbar` command can
+  pass its own argument as it came: the first selected service's configuration runs.
 
   ```toml
   [[contributes.javaAgents]]
