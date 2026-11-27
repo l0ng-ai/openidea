@@ -54,11 +54,13 @@ describe("saved workspace references", () => {
       { id: "a", name: "Sales", alias: "europe" },
       { id: "b", name: "SALES", alias: "asia" },
     ];
-    expect(workspaceSourceResolver(sources)("sales")).toBeUndefined();
+    expect(workspaceSourceResolver(sources)("sales")).toBeNull();
     expect(workspaceSourceResolver(sources)("Sales", true)?.id).toBe("a");
     expect(workspaceSourceAliasError(sources)).toBeNull();
     expect(workspaceSourceResolver(sources)("ASIA")?.id).toBe("b");
-    expect(() => workspaceJoinQuery(pair("sales", "asia"), workspaceSourceResolver(sources))).toThrow(/ambiguous/);
+    expect(() => workspaceJoinQuery(pair("sales", "asia"), workspaceSourceResolver(sources))).toThrow(
+      /Multiple sources/,
+    );
   });
   it.each(["events", "right", "two words", "a.b", "#crm", "1crm"])(
     "rejects conflicting or invalid optional alias %s",

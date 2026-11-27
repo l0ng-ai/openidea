@@ -47,13 +47,13 @@ export function workspaceSourceResolver(
   if (bindings?.sourceAliases) {
     const available = new Set(sources.map((source) => source.id));
     for (const [id, alias] of Object.entries(bindings.sourceAliases)) {
-      if (alias.trim() && !available.has(id)) folded.set(alias.trim().toLowerCase(), null);
+      if (alias.trim() && !available.has(id)) folded.delete(alias.trim().toLowerCase());
     }
   }
   return (name: string, quoted = false) => {
-    if (quoted) return exact.get(name) ?? undefined;
+    if (quoted) return exact.get(name);
     const key = name.toLowerCase();
-    return legacy.has(key) ? legacy.get(key) : (folded.get(key) ?? undefined);
+    return legacy.has(key) ? legacy.get(key) : folded.get(key);
   };
 }
 
@@ -116,7 +116,9 @@ function parseJoin(
     const quoted = tokens[cursor]?.kind === "quoted";
     const name = identifier();
     const source = resolveSource(name, quoted);
-    if (!source) throw new Error(tx`Unknown or ambiguous workspace source: ${name}.`);
+    if (source === null)
+      throw new Error(tx`Multiple sources match ${name}. Set a unique SQL alias in Workspace Settings.`);
+    if (!source) throw new Error(tx`Data source ${name} is unavailable. Type # to see available sources.`);
     need(".");
     const parts = [identifier()];
     while (take(".")) {
