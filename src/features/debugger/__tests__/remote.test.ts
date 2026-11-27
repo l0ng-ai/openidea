@@ -74,8 +74,8 @@ describe("remote debug configuration types", () => {
     });
     expect(missingParams(configOf(type, { port: "abc" }), type).port).toBeDefined();
     // PHP Remote Debug has no host: php-debug listens itself, Xdebug connects to it.
-    if (type.fields.some((f) => f.key === "host"))
-      expect(missingParams(configOf(type, { host: "" }), type)).toEqual({ host: "Host is required" });
+    const host = type.fields.find((f) => f.key === "host");
+    if (host) expect(missingParams(configOf(type, { host: "" }), type)).toEqual({ host: `${host.label} is required` });
   });
 
   it("Remote JVM Debug defaults to attaching to localhost:5005", () => {
@@ -155,6 +155,43 @@ describe("remote attach requests", () => {
       debugServer: "[::1]:5678",
       pathMappings: [{ localRoot: "/p/svc", remoteRoot: "/app" }],
     });
+  });
+
+  it("Python Debug Server listens on loopback for a local program, everywhere for another machine", () => {
+    const listen = (params: Record<string, string>) =>
+      JSON.parse(remoteAttachConfig(configOf(remote.pythonDebugServerType, params), "/p")!.extraJson!);
+    const l = remoteAttachConfig(configOf(remote.pythonDebugServerType), "/p")!;
+    expect(l).toMatchObject({ adapter: "debugpy", request: "attach", cwd: "/p" });
+    expect(JSON.parse(l.extraJson!)).toEqual({
+      listen: { host: "127.0.0.1", port: 5678 },
+      redirectOutput: true,
+      justMyCode: expect.any(Boolean),
+    });
+    expect(listen({ host: "::1", port: "5679" }).listen).toEqual({ host: "127.0.0.1", port: 5679 });
+    expect(listen({ host: "host.docker.internal", remoteRoot: "/app" })).toMatchObject({
+      listen: { host: "0.0.0.0", port: 5678 },
+      pathMappings: [{ localRoot: "/p", remoteRoot: "/app" }],
+    });
+  });
+
+  it("Python Debug Server shows the line the program connects with", () => {
+    const field = remote.pythonDebugServerType.fields.find((f) => f.key === "hint")!;
+    expect(field.control).toBe("output");
+    expect(field.value!({ host: "host.docker.internal", port: "5679" })).toBe(
+      'import debugpy; debugpy.connect(("host.docker.internal", 5679)); debugpy.wait_for_client()',
+    );
+    expect(remote.debugpyConnectLine({ host: 'a"b' })).toContain('connect(("a\\"b", 5678))');
+  });
+
+  it("Python Debug Server says it waits for a connection until the program connects, and listens again", () => {
+    const rc = configOf(remote.pythonDebugServerType, { port: "5679" });
+    expect(remoteWaitingNote(rc, false, true)).toBe(
+      "Waiting for process connection on localhost:5679…\n" +
+        'Add to the program: import debugpy; debugpy.connect(("localhost", 5679)); debugpy.wait_for_client()',
+    );
+    expect(remoteWaitingNote(rc)).toBeNull();
+    expect(remote.listensAgain(rc)).toBe(true);
+    expect(REMOTE_TYPES.filter((t) => remote.listensAgain(configOf(t)))).toEqual([remote.pythonDebugServerType]);
   });
 
   it("Attach to Godot connects to the editor's debug adapter for the project", () => {

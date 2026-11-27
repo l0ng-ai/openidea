@@ -142,6 +142,7 @@ Python 调试使用 debugpy。开始调试时如果缺少 debugpy，OpenIDEA 会
 - 调试 `manage.py` 时会开启 debugpy 的 Django 支持。
 - **附加到进程…**（`⌥⇧F5` / `Ctrl+Alt+F5`）会在 **Python (debugpy)** 分组下列出本机的 Python 进程。
 - **Python 远程调试 (debugpy)** 配置可以附加到用 `python -m debugpy --listen` 启动的进程，本机或远程机器都可以，并支持本地与远程根目录映射。
+- **Python 调试服务器** 配置方向相反：由 IDE 监听，程序用 `import debugpy; debugpy.connect(("localhost", 5678)); debugpy.wait_for_client()` 连接进来，也可以从容器或其他机器连接。程序所在环境要安装与 IDE 调试器相同版本的 debugpy，版本不同时调试控制台会给出警告。
 
 相关选项：
 

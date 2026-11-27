@@ -863,6 +863,21 @@ export function activate(): () => void {
         run: ({ arg }) => startAgentRun(arg as AgentRunRequest),
       },
       {
+        id: "run.mcpStart",
+        title: "Run Configuration for an Agent",
+        description:
+          "Starts the configuration the MCP server's `execute_run_configuration` prepared (before launch tasks done) in a Run tool window tab; throws when it did not start.",
+        category: "Run",
+        hidden: true,
+        when: "projectOpen",
+        run: async ({ arg }) => {
+          const session = await startRun(arg as import("@/bindings").RunConfig, undefined, undefined, {
+            prepared: true,
+          });
+          if (!session || session.status === "failed") throw new Error("The run did not start");
+        },
+      },
+      {
         id: "run.pluginStart",
         title: "Run Plugin Configuration",
         category: "Run",

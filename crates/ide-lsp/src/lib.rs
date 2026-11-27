@@ -352,6 +352,9 @@ fn user_did_open(server: &Server, run: &Running, path: &Path, uri: &lsp::Uri, pa
 /// No target for `feature`: names the running servers that lack it, so the UI can
 /// tell "the server can't do this" from "no server is running" (the UI's
 /// `unavailableText` matches the "… doesn't support …" wording).
+/// vscode-css-language-server, which lists a selector's own rule among its references.
+const CSS_SERVER: &str = "vscode-css-language-server";
+
 fn unsupported(servers: &[Arc<Server>], feature: &str) -> IdeError {
     let running: Vec<&str> = servers.iter().filter(|s| s.running().is_some()).map(|s| s.name.as_str()).collect();
     if running.is_empty() {
@@ -2332,9 +2335,13 @@ impl LspManager {
             }
         });
         // The Angular server lists the declaration even when not asked to: the one
-        // the definition at `pos` points to is taken out of its answer.
+        // the definition at `pos` points to is taken out of its answer. So does the CSS server
+        // with a selector's own rule (`.button`), always: where CSS Modules Kit defines the class
+        // name (`button`), vtsls lists the declaration itself when asked.
         let declarations = async {
-            if include_declaration || !targets.iter().any(|t| t.server.name == angular::SERVER) {
+            let listed =
+                |t: &Target| (t.server.name == angular::SERVER && !include_declaration) || t.server.name == CSS_SERVER;
+            if !targets.iter().any(listed) {
                 return Vec::new();
             }
             let defining = self.ready_targets(&snap.servers, |c| c.has("definitionProvider")).await;
@@ -2351,6 +2358,14 @@ impl LspManager {
                     let mut locs: Vec<Location> = w.first.into_iter().chain(w.second.into_iter().flatten()).collect();
                     if t.server.name == angular::SERVER {
                         locs.retain(|l| !declarations.contains(l));
+                    } else if t.server.name == CSS_SERVER {
+                        let overlaps = |a: &Location, b: &Location| {
+                            a.path == b.path
+                                && a.uri == b.uri
+                                && a.range.start <= b.range.end
+                                && b.range.start <= a.range.end
+                        };
+                        locs.retain(|l| !declarations.iter().any(|d| overlaps(d, l)));
                     }
                     self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
                     self.note_arduino_sources(&t.server, &locs);
@@ -2922,6 +2937,11 @@ impl LspManager {
             let prepared = join_all(targets.iter().map(|t| self.prepare_rename_on(snap, t, pos))).await;
             let able: Vec<&Target> =
                 targets.iter().zip(prepared).filter(|(_, r)| matches!(r, Ok(Some(_)))).map(|(t, _)| t).collect();
+            // CSS Modules Kit (vtsls) renames a class in the stylesheet and its scripts; the CSS
+            // server's own edit replaces the whole selector (`.button`) and would drop the dot.
+            if able.iter().any(|t| t.server.name == "vtsls") {
+                return able.into_iter().filter(|t| t.server.name != CSS_SERVER).collect();
+            }
             if !able.is_empty() {
                 return able;
             }

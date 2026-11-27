@@ -75,6 +75,8 @@ pub(crate) struct Session {
     pub jdwp_port: std::sync::OnceLock<u16>,
     /// The attach goes through the listen-mode relay of [`crate::jdwp::listen_for_jvm`].
     pub listen_relay: AtomicBool,
+    /// A Python Debug Server session whose program's debugpy version is checked on its first stop.
+    pub(crate) debugpy_version_unchecked: AtomicBool,
     pub suspended: Suspension,
     /// Pids signalled for the current stop: the reported pid and everything it started (an
     /// adapter may report the launcher shell, whose child is the program).
@@ -316,6 +318,7 @@ impl Session {
             jvm_pid: AtomicI64::new(0),
             jdwp_port: std::sync::OnceLock::new(),
             listen_relay: AtomicBool::new(false),
+            debugpy_version_unchecked: AtomicBool::new(false),
             suspended: Suspension::default(),
             stop_pids: parking_lot::Mutex::new(Vec::new()),
             #[cfg(windows)]
@@ -854,6 +857,11 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
                     all_threads_stopped: all,
                 });
             });
+            if let Some(thread) = int("threadId")
+                && s.debugpy_version_unchecked.swap(false, Ordering::AcqRel)
+            {
+                tokio::spawn(crate::debugpy::check_version(s.clone(), thread));
+            }
         }
         "continued" => {
             let all = body.get("allThreadsContinued").and_then(Value::as_bool);
