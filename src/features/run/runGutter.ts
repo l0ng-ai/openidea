@@ -87,6 +87,7 @@ async function launch(target: RunTarget, path: string, debug: boolean, content: 
 export function targetTitle(t: RunTarget): string {
   if (t.kind === "generate") return tx`Run Go Generate`;
   if (t.kind === "main") return "Run";
+  if (t.doctest) return "Run doctests";
   if (t.kind === "suite") return "Run tests";
   return "Run test";
 }

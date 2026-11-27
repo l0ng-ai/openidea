@@ -82,6 +82,12 @@ pub fn import(path: &Path, root: &Path) -> IdeResult<CoverageSuite> {
     Ok(suite)
 }
 
+/// Reads a coverage.py data file (see [`crate::is_data_file`]) with the coverage.py of `python`,
+/// run in `root`; `out` is an empty scratch directory. Blocking.
+pub fn import_data(path: &Path, root: &Path, python: &Path, out: &Path) -> IdeResult<CoverageSuite> {
+    crate::coveragepy::import(path, root, python, out)
+}
+
 /// Whether `dir` exists, without asking again below a directory known to be missing: every
 /// lookup under macOS's `/home` (autofs) takes tens of milliseconds, and CI reports
 /// (`/home/runner/work/…`) name thousands of files there.

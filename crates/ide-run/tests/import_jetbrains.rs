@@ -304,6 +304,13 @@ fn workspace_run_manager_skips_templates_and_temporary_configurations() {
       <option name="_new_targetType" value="&quot;PATH&quot;" />
       <method v="2" />
     </configuration>
+    <configuration name="Doctests" type="tests" factoryName="Doctests">
+      {PY_COMMON}
+      <option name="_new_additionalArguments" value="&quot;-o ELLIPSIS&quot;" />
+      <option name="_new_target" value="&quot;$PROJECT_DIR$/shop/money.py&quot;" />
+      <option name="_new_targetType" value="&quot;PATH&quot;" />
+      <method v="2" />
+    </configuration>
     <configuration name="Unittest case" type="tests" factoryName="Unittests">
       {PY_COMMON}
       <option name="_new_additionalArguments" value="&quot;-f&quot;" />
@@ -328,7 +335,10 @@ fn workspace_run_manager_skips_templates_and_temporary_configurations() {
     );
     let r = import_from(dir.path(), &[]);
     let names: Vec<&str> = r.imported.iter().map(|c| c.config.name.as_str()).collect();
-    assert_eq!(names, ["App", "Unit", "Case", "Path params", "Custom", "Unittests in tests", "Unittest case", "dev"]);
+    assert_eq!(
+        names,
+        ["App", "Unit", "Case", "Path params", "Custom", "Unittests in tests", "Doctests", "Unittest case", "dev"]
+    );
 
     let app = get(&r, "App");
     // `$USER_HOME$` is this machine's: the configuration goes to run.local.toml.
@@ -357,6 +367,9 @@ fn workspace_run_manager_skips_templates_and_temporary_configurations() {
     assert!(unittests.is_test);
     assert_eq!(unittests.args, s(&["-m", "unittest", "discover", "-s", "tests", "-p", "check_*.py"]));
     assert_eq!(get(&r, "Unittest case").args, s(&["-m", "unittest", "tests.test_money.RoundTests", "-f"]));
+    let doctests = get(&r, "Doctests");
+    assert_eq!(doctests.kind, "doctest");
+    assert_eq!(doctests.args, s(&["-m", "doctest", "-o", "ELLIPSIS", "shop/money.py"]));
     assert_eq!(reason(&r, "Main"), &SkipReason::UnsupportedType { type_: "JUnit".into() });
 
     let dev = get(&r, "dev");
