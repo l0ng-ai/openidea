@@ -9,9 +9,10 @@ OpenIDEA 通过 [GitHub CLI](https://cli.github.com)（`gh`）对接 GitHub：�
 
 <Steps>
   <Step title="安装 gh">
-    安装 GitHub CLI。OpenIDEA 依次在 `OPENIDEA_GH`（完整路径）、`PATH`，以及
-    `/opt/homebrew/bin`、`/usr/local/bin`、`/usr/bin`、`/snap/bin`（macOS/Linux）或 `C:\Program Files\GitHub
-    CLI\gh.exe`（Windows）中查找。
+    安装 GitHub CLI：可以直接点击 OpenIDEA 里的 **安装 GitHub CLI** 按钮（位于 **拉取请求** 工具窗口、**克隆仓库 ›
+    GitHub**、**设置 › 智能体 › GitHub Copilot** 或 **设置 › 语言与框架 › 语言服务器 › 其他工具**），也可以手动安装。
+    OpenIDEA 依次在 `OPENIDEA_GH`（完整路径）、`PATH`（包含 IDE 管理的工具目录），以及 `/opt/homebrew/bin`、
+    `/usr/local/bin`、`/usr/bin`、`/snap/bin`（macOS/Linux）或 `C:\Program Files\GitHub CLI\gh.exe`（Windows）中查找。
   </Step>
   <Step title="登录">
     在终端运行 `gh auth login`。未登录时打开 **拉取请求** 工具窗口，会显示 **未登录 GitHub** 和 **运行 gh auth login**
@@ -20,6 +21,9 @@ OpenIDEA 通过 [GitHub CLI](https://cli.github.com)（`gh`）对接 GitHub：�
   <Step title="打开带 GitHub 远程的项目">
     项目需要有一个指向 `github.com` 的 Git 远程。只有一个 GitHub 远程时自动连接；有多个时，工具窗口会让你选择
     **仓库**，选择按项目记住。之后要切换，可在工具窗口的 `⋮` 菜单中选 **更改仓库或账户…**。
+
+    当 `gh` 中登录了多个 `github.com` 账户时，**自动**模式沿用 `gh` 当前的活动账户，不会在项目环境中设置 `GH_TOKEN`。在 **设置 › 版本控制 › GitHub** 和 **拉取请求** 标题栏中，OpenIDEA 会根据仓库远程提示匹配的账户（**对此项目使用 `<login>`**），也可以手动为项目指定账户（保存在 `.openidea/settings.toml`）。显式选择账户后，OpenIDEA 会将该账户的 `GH_TOKEN` 传递给此项目中启动的进程（终端、智能体、Git、拉取请求和运行配置），而不会改动全局的 `gh auth switch` 状态。
+
   </Step>
 </Steps>
 

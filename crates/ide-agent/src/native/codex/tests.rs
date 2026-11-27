@@ -456,6 +456,90 @@ fn failures_are_classified() {
 }
 
 #[test]
+fn failed_turns_preserve_codex_error_diagnostics() {
+    let policy = json!({
+        "message": "This content was flagged for possible cybersecurity risk.",
+        "additionalDetails": "Contact support if this is unexpected.",
+        "codexErrorInfo": "cyberPolicy"
+    });
+    let expected = "This content was flagged for possible cybersecurity risk.\nContact support if this is unexpected.\nCodex error: cyberPolicy";
+    for (turn_error, last_error) in [(policy.clone(), None), (Value::Null, Some(policy.clone()))] {
+        let failure = stop_reason(&json!({ "status": "failed", "error": turn_error }), last_error, None).unwrap_err();
+        assert_eq!(failure.code, codes::INTERNAL_ERROR);
+        assert_eq!(failure.message, expected);
+    }
+    // A completed turn's own error wins over an older error notification.
+    let failure = stop_reason(
+        &json!({ "status": "failed", "error": policy }),
+        Some(json!({ "message": "An earlier retry failed.", "codexErrorInfo": "other" })),
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(failure.message, expected);
+}
+
+#[test]
+fn failed_turn_diagnostics_include_string_and_structured_error_codes() {
+    for (value, expected) in [
+        (
+            json!({ "message": "Context is full.", "codexErrorInfo": "contextWindowExceeded" }),
+            "Context is full.\nCodex error: contextWindowExceeded",
+        ),
+        (
+            json!({ "message": "The stream disconnected.", "codexErrorInfo": { "responseStreamDisconnected": { "httpStatusCode": 502 } } }),
+            "The stream disconnected.\nCodex error: responseStreamDisconnected (HTTP 502)",
+        ),
+        (
+            json!({ "message": "Failed\nbecause", "additionalDetails": "because", "codexErrorInfo": null }),
+            "Failed\nbecause",
+        ),
+        (
+            json!({ "message": "  ", "additionalDetails": "  Details  ", "codexErrorInfo": "cyberPolicy" }),
+            "Codex failed\nDetails\nCodex error: cyberPolicy",
+        ),
+        (json!({ "message": "Failed", "codexErrorInfo": "" }), "Failed"),
+        (json!({}), "Codex failed"),
+    ] {
+        assert_eq!(error_message(&value), expected);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn policy_failure_is_forwarded_over_acp_with_its_original_diagnostics() {
+    for notification_only in [false, true] {
+        let mut transcript = load(Scenario::UsageLimit.file());
+        let policy = json!({
+            "message": "This content was flagged for possible cybersecurity risk.",
+            "additionalDetails": "Contact support if this is unexpected.",
+            "codexErrorInfo": "cyberPolicy"
+        });
+        for (out, frame) in &mut transcript.frames {
+            if *out {
+                continue;
+            }
+            match frame["method"].as_str() {
+                Some("error") => frame["params"]["error"] = policy.clone(),
+                Some("turn/completed") => {
+                    frame["params"]["turn"]["error"] = if notification_only { Value::Null } else { policy.clone() }
+                }
+                _ => {}
+            }
+        }
+        let (results, _client, _frames, _meta, _codex) = replay_transcript(Scenario::Simple, transcript).await;
+        match result(&results, "prompt") {
+            Err(RpcError::Server { code, message, .. }) => {
+                assert_eq!(*code, codes::INTERNAL_ERROR);
+                assert_eq!(
+                    message,
+                    "This content was flagged for possible cybersecurity risk.\nContact support if this is unexpected.\nCodex error: cyberPolicy"
+                );
+            }
+            response => panic!("the failed turn must reach the task as an error, got {response:?}"),
+        }
+    }
+}
+
+#[test]
 fn approvals_offer_what_codex_offers_and_always_a_decline() {
     let params = json!({"availableDecisions": ["accept",
         {"acceptWithExecpolicyAmendment": {"execpolicy_amendment": ["/bin/bash", "-lc", "make"]}},

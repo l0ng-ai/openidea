@@ -1,9 +1,14 @@
 import { renderHook } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import { _resetI18nForTests, setLocale } from "@/platform/i18n";
-import { useAgentErrorText } from "./loginHint";
+import { isSignInErrorMessage, useAgentErrorText } from "./loginHint";
 
 afterEach(() => _resetI18nForTests());
+
+it("recognizes IDE sign-in guidance messages", () => {
+  expect(isSignInErrorMessage("GitHub Copilot needs you to sign in. Run `copilot login` in a terminal.")).toBe(true);
+  expect(isSignInErrorMessage("Agent says: authentication failed")).toBe(false);
+});
 
 it.each([
   ["Run `cursor-agent login` in a terminal.", "在终端中运行 `cursor-agent login`。"],

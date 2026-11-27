@@ -744,6 +744,27 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
     );
   });
 
+  it("checks the SQL after binding parameters and submits only the confirmed text", async () => {
+    const text = "DELETE FROM t WHERE :condition";
+    let accept!: (value: boolean) => void;
+    const answer = vi.fn(() => new Promise<boolean>((resolve) => (accept = resolve)));
+    const pending = executeConsole("a.sql", text, 0, text.length, undefined, undefined, answer);
+    await vi.waitFor(() => expect(useDatabase.getState().dialog?.kind).toBe("params"));
+    const dialog = useDatabase.getState().dialog;
+    if (dialog?.kind !== "params") throw new Error("Expected parameter dialog");
+    useDatabase.setState({ dialog: null });
+    dialog.resolve({ ":condition": "1=1" });
+    await vi.waitFor(() => expect(answer).toHaveBeenCalledOnce());
+    expect(backend.execute).not.toHaveBeenCalled();
+    expect(answer).toHaveBeenCalledWith(
+      { text, from: 0, to: text.length },
+      expect.objectContaining({ kind: "delete", reason: "always-true", from: 0, to: text.length }),
+    );
+    accept(true);
+    await pending;
+    expect(backend.execute.mock.calls[0]?.[2]).toEqual([{ text: "DELETE FROM t WHERE 1=1", from: 0, to: text.length }]);
+  });
+
   it("replaces the console's result in place with a fresh tab, leaving other consoles' results", async () => {
     await runIn("a.sql", "SELECT 1");
     await runIn("b.sql", "SELECT b");

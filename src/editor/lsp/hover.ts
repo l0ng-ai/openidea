@@ -44,7 +44,7 @@ import { basename } from "@/platform/project";
 import { iconNode } from "@/ui/iconNode";
 import { applyCodeAction, quickFixesAt } from "./intentions";
 import { editorPrefs } from "@/platform/editorSettings";
-import { CONTRIBUTED_HOVER, contributedAtAll, type ContributedHover } from "@/editor/api";
+import { CONTRIBUTED_HOVER, contributedAtAll, contributedProblemsAt, type ContributedHover } from "@/editor/api";
 import { navigationModifierHeld, onNavigationModifier, pointerTarget } from "@/platform/navigationModifier";
 import { languageSemantics } from "./semantic";
 import { cssVariableHover } from "./cssVariables";
@@ -108,10 +108,14 @@ function diagnosticAction(label: string, shortcut: string | undefined, run: () =
   return button;
 }
 
-function renderDiagnostics(view: EditorView, diags: PlacedDiagnostic[]): HTMLElement {
+interface HoverProblem extends PlacedDiagnostic {
+  contributed: boolean;
+}
+
+function renderDiagnostics(view: EditorView, diags: HoverProblem[]): HTMLElement {
   const box = document.createElement("div");
   box.className = "cm-lsp-hover-diagnostics";
-  for (const { diagnostic: d, from, to } of diags) {
+  for (const { diagnostic: d, from, to, contributed } of diags) {
     const row = document.createElement("div");
     row.className = `cm-lsp-diag cm-lsp-diag-${d.severity}`;
     row.appendChild(
@@ -125,6 +129,10 @@ function renderDiagnostics(view: EditorView, diags: PlacedDiagnostic[]): HTMLEle
     msg.className = "cm-lsp-diag-message";
     msg.textContent = d.message;
     row.appendChild(msg);
+    if (contributed) {
+      box.appendChild(row);
+      continue;
+    }
     if (d.source) {
       const src = document.createElement("span");
       src.className = "cm-lsp-diag-source";
@@ -182,7 +190,15 @@ export function hoverCard(children: HTMLElement[]): HTMLElement {
 /** Problems always; quick documentation per Settings › Editor › Code Editing. */
 export async function hoverSource(view: EditorView, pos: number) {
   if (hoverYields()) return null;
-  const diags = diagnosticsAt(view, pos);
+  const diags: HoverProblem[] = [
+    ...contributedProblemsAt(view.state, pos).map(({ from, to, severity, message }) => ({
+      from,
+      to,
+      diagnostic: { from, to, severity, message },
+      contributed: true,
+    })),
+    ...diagnosticsAt(view, pos).map((d) => ({ ...d, contributed: false })),
+  ];
   let hover: Hover | null = null;
   if (editorPrefs().codeEditing.quickDocOnHover)
     try {

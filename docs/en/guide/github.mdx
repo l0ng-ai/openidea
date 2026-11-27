@@ -9,9 +9,11 @@ OpenIDEA works with GitHub through the [GitHub CLI](https://cli.github.com) (`gh
 
 <Steps>
   <Step title="Install gh">
-    Install the GitHub CLI. OpenIDEA looks for it in `OPENIDEA_GH` (a full path), then on `PATH`, then in
-    `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/snap/bin` (macOS/Linux) or `C:\Program Files\GitHub CLI\gh.exe`
-    (Windows).
+    Install the GitHub CLI, either from OpenIDEA's **Install GitHub CLI** button (in the **Pull Requests** tool window,
+    **Clone Repository › GitHub**, **Settings › Agents › GitHub Copilot**, or **Settings › Languages & Frameworks ›
+    Language Servers › Other Tools**) or manually. OpenIDEA looks for it in `OPENIDEA_GH` (a full path), then on `PATH`
+    (including IDE-managed tools), then in `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/snap/bin` (macOS/Linux)
+    or `C:\Program Files\GitHub CLI\gh.exe` (Windows).
   </Step>
   <Step title="Sign in">
     Run `gh auth login` in a terminal. If you open the **Pull Requests** tool window while signed out, it shows **Not
@@ -22,6 +24,14 @@ OpenIDEA works with GitHub through the [GitHub CLI](https://cli.github.com) (`gh
     The project needs a Git remote on `github.com`. With one GitHub remote, OpenIDEA connects to it automatically. With
     several, the tool window asks you to pick a **Repository**; the choice is remembered per project. To switch later,
     use **Change Repository or Account…** in the tool window's `⋮` menu.
+
+    When multiple `github.com` accounts are signed into `gh`, **Automatic** uses `gh`'s own active account without
+    setting `GH_TOKEN`. In **Settings › Version Control › GitHub** and in the **Pull Requests** header, OpenIDEA can
+    suggest a matching account for the repository (**Use `<login>` for this project**) or let you choose one
+    explicitly (saved in `.openidea/settings.toml`). Choosing an account passes its `GH_TOKEN` to processes started in
+    that project (terminals, agents, Git, Pull Requests, and run configurations) without changing your global
+    `gh auth switch` selection.
+
   </Step>
 </Steps>
 

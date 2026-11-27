@@ -72,6 +72,10 @@ smoke! {
     astro: "astro", [], ["npm", "run", "build"];
     nestjs: "nestjs", [], ["npm", "run", "build"];
     express: "express", [], ["node", "--check", "index.js"];
+    vue: "vue", [("router", "true"), ("pinia", "true"), ("vitest", "true"), ("eslint", "true")], ["npm", "run", "build"];
+    expo: "expo", [], ["npx", "tsc", "--noEmit"];
+    electron: "electron", [], ["npx", "tsc", "--noEmit"];
+    electron_pnpm: "electron", [("pm", "pnpm")], ["pnpm", "exec", "tsc", "--noEmit"];
     html: "html", [], [];
     go: "go", [], ["go", "build", "./..."];
     rust: "rust", [], ["cargo", "build", "-q"];

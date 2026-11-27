@@ -815,6 +815,67 @@ describe("modified ranges", () => {
   });
 });
 
+describe("save reliability", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("clears the touched ranges when a clean model is reused", async () => {
+    const { manager } = setup({ "/p/a.txt": "abc" });
+    const model = await manager.acquire("/p/a.txt");
+    model.modified.ranges = [[0, 2]];
+    expect(await manager.acquire("/p/a.txt")).toBe(model);
+    expect(model.modified.ranges).toEqual([]);
+    manager.stop();
+  });
+
+  it("keeps the ranges of a dirty model that is reopened", async () => {
+    const { manager } = setup({ "/p/a.txt": "abc" });
+    const model = await manager.acquire("/p/a.txt");
+    model.setMeta({ dirty: true });
+    model.modified.ranges = [[0, 2]];
+    await manager.acquire("/p/a.txt");
+    expect(model.modified.ranges).toEqual([[0, 2]]);
+    manager.stop();
+  });
+
+  it("keeps the document dirty when its touched ranges cannot be mapped", async () => {
+    const { manager } = setup({ "/p/a.txt": "abc" });
+    const model = await manager.acquire("/p/a.txt");
+    const slot = new EditorSlot(model, "t1", host);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(model.modified, "add").mockImplementation(() => {
+      throw new RangeError("stale range");
+    });
+    slot.dispatchLocal({ changes: { from: 0, insert: "x" }, userEvent: "input.type" });
+    expect(model.getMeta().dirty).toBe(true);
+    slot.dispose();
+    manager.stop();
+  });
+
+  it("writes the buffer when its dirty flag was lost but an edit is still pending", async () => {
+    const { backend, manager } = setup({ "/p/a.txt": "abc\n" });
+    const model = await manager.acquire("/p/a.txt");
+    const slot = new EditorSlot(model, "t1", host);
+    slot.dispatchLocal({ changes: { from: 4, insert: "d" }, userEvent: "input.type" });
+    model.setMeta({ dirty: false });
+    await model.save("explicit");
+    expect(backend.files.get("/p/a.txt")).toBe("abc\nd\n");
+    slot.dispose();
+    manager.stop();
+  });
+
+  it("routes backend dirty events to every model sharing a document", async () => {
+    const { backend, manager, frame } = setup({ "/p/a.txt": "abc" });
+    const model = await manager.acquire("/p/a.txt");
+    const twin = manager.adopt(await backend.open("/p/a.txt"));
+    const slot = new EditorSlot(model, "t1", host);
+    slot.dispatchLocal({ changes: { from: 3, insert: "d" }, userEvent: "input.type" });
+    await frame();
+    expect(twin.getMeta().dirty).toBe(true);
+    slot.dispose();
+    manager.stop();
+  });
+});
+
 describe("save cleanup", () => {
   it("keeps the caret line and untouched lines", () => {
     const state = EditorState.create({ doc: "a  \nb  \nc  " });

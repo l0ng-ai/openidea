@@ -13,7 +13,13 @@ import {
   type MenuGroupContext,
 } from "@/workbench/contributions";
 import { activateSettingsPages } from "./settingsPages";
-import { insertLiveTemplate, surroundTarget, surroundWith, templateEditorExtension } from "./editor";
+import {
+  insertLiveTemplate,
+  saveAsLiveTemplate,
+  surroundTarget,
+  surroundWith,
+  templateEditorExtension,
+} from "./editor";
 import { ChooserHost } from "./popup/Chooser";
 import { NewFileDialogHost, openNewFileDialog } from "./files/NewFileDialog";
 import { defaultDirectory } from "./files/create";
@@ -213,6 +219,17 @@ export function activate(): () => void {
           if (!editor) return;
           const target = await surroundTarget(editor.view, editor.ctx);
           if (activeEditor()?.view === editor.view) surroundWith(editor.view, target, true);
+        },
+      },
+      {
+        id: "code.saveAsLiveTemplate",
+        title: "Save as Live Template…",
+        category: "Tools",
+        when: "textEditorActive && editorHasSelection && (editorFocus || !toolWindowFocus)",
+        keywords: ["snippet", "template", "selection"],
+        run: () => {
+          const view = activeEditor()?.view;
+          if (view) saveAsLiveTemplate(view);
         },
       },
       {

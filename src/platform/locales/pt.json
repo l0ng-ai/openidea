@@ -112,6 +112,7 @@
   "menu.code.overrideMethods": "Sobrescrever métodos…",
   "menu.code.implementMethods": "Implementar métodos…",
   "menu.code.insertLiveTemplate": "Inserir modelo dinâmico…",
+  "menu.code.saveAsLiveTemplate": "Salvar como modelo dinâmico…",
   "menu.code.moveLineDown": "Mover linha para baixo",
   "menu.code.moveLineUp": "Mover linha para cima",
   "menu.code.optimizeImports": "Otimizar imports",

@@ -41,6 +41,7 @@ interface TestFilters {
   showIgnored: boolean;
   showDurations: boolean;
   selectFirstFailed: boolean;
+  trackRunning: boolean;
   sortAlphabetically: boolean;
   sortByDuration: boolean;
 }
@@ -54,6 +55,7 @@ export function loadTestFilters(): TestFilters {
       showIgnored: v.showIgnored !== false,
       showDurations: v.showDurations !== false,
       selectFirstFailed: v.selectFirstFailed === true,
+      trackRunning: v.trackRunning !== false,
       sortAlphabetically: v.sortAlphabetically === true && v.sortByDuration !== true,
       sortByDuration: v.sortByDuration === true,
     };
@@ -63,6 +65,7 @@ export function loadTestFilters(): TestFilters {
       showIgnored: true,
       showDurations: true,
       selectFirstFailed: false,
+      trackRunning: true,
       sortAlphabetically: false,
       sortByDuration: false,
     };
@@ -155,6 +158,19 @@ function suiteIds(nodes: readonly TestNode[], out: Set<string> = new Set()): Set
   return out;
 }
 
+/** Tests still running, in tree order, with the suites above them. */
+function runningTests(
+  nodes: readonly TestNode[],
+  ancestors: TestNode[] = [],
+  out: Array<{ node: TestNode; ancestors: TestNode[] }> = [],
+) {
+  for (const n of nodes) {
+    if (n.children.length > 0) runningTests(n.children, [...ancestors, n], out);
+    else if (nodeStatus(n) === "running") out.push({ node: n, ancestors });
+  }
+  return out;
+}
+
 function filterTree(nodes: readonly TestNode[], keep: (n: TestNode) => boolean): TestNode[] {
   const out: TestNode[] = [];
   for (const n of nodes) {
@@ -183,6 +199,8 @@ export interface TestTreeViewProps {
   results: TestResults;
   version: number;
   cwd: string;
+  /** The run's owning module, which picks between same-named files of a multi-module build. */
+  module?: string | null;
   selected: string | null;
   onSelect: (id: string | null) => void;
   running: boolean;
@@ -202,6 +220,7 @@ export function TestTreeView({
   results,
   version,
   cwd,
+  module,
   selected,
   onSelect,
   running,
@@ -213,7 +232,15 @@ export function TestTreeView({
   rerunAutomatically,
 }: TestTreeViewProps) {
   const [filters, setFilters] = useState(loadTestFilters);
-  const { showPassed, showIgnored, showDurations, selectFirstFailed, sortAlphabetically, sortByDuration } = filters;
+  const {
+    showPassed,
+    showIgnored,
+    showDurations,
+    selectFirstFailed,
+    trackRunning,
+    sortAlphabetically,
+    sortByDuration,
+  } = filters;
   const toggle = (key: keyof TestFilters) =>
     setFilters((f) => {
       const next = { ...f, [key]: !f[key] };
@@ -238,13 +265,13 @@ export function TestTreeView({
 
   const jumpToSource = (n: TestNode) => {
     const target = n.location ?? firstLocated(n)?.location;
-    if (target) void openTarget(target, cwd, true);
+    if (target) void openTarget(target, cwd, true, module);
   };
 
   // The agents feature's action: the failure becomes a draft the user reviews and sends.
   const diagnose = async (n: TestNode, name: string) => {
     const located = n.location ?? firstLocated(n)?.location;
-    const path = located ? await resolveTarget(located, cwd).catch(() => null) : null;
+    const path = located ? await resolveTarget(located, cwd, module).catch(() => null) : null;
     // Rust's `left` / `right` don't say which side is expected; the output excerpt shows them as written.
     const parsed = parseComparison(n.output);
     const comparison = parsed?.labels ? null : parsed;
@@ -345,6 +372,8 @@ export function TestTreeView({
     testTree.toggleDurations = () => toggle("showDurations");
     testTree.selectFirstFailed = selectFirstFailed;
     testTree.toggleSelectFirstFailed = () => toggle("selectFirstFailed");
+    testTree.trackRunning = trackRunning;
+    testTree.toggleTrackRunning = () => toggle("trackRunning");
     return () => {
       testTree.expandAll = null;
       testTree.collapseAll = null;
@@ -353,6 +382,8 @@ export function TestTreeView({
       testTree.toggleDurations = null;
       testTree.selectFirstFailed = null;
       testTree.toggleSelectFirstFailed = null;
+      testTree.trackRunning = null;
+      testTree.toggleTrackRunning = null;
     };
   });
 
@@ -372,6 +403,23 @@ export function TestTreeView({
   useEffect(() => {
     if (firstFailed) tree.current?.reveal(firstFailed.key);
   }, [firstFailed]);
+
+  // Track Running Test: while the run is in progress, select each test as it starts, as IDEA does.
+  const started = useMemo(() => (running ? runningTests(roots) : []), [roots, running]);
+  const [startedIds, setStartedIds] = useState<ReadonlySet<string>>(new Set());
+  const [tracked, setTracked] = useState<{ key: string } | null>(null);
+  if (started.length !== startedIds.size || started.some((t) => !startedIds.has(t.node.id))) {
+    setStartedIds(new Set(started.map((t) => t.node.id)));
+    const latest = trackRunning ? started.findLast((t) => !startedIds.has(t.node.id)) : undefined;
+    if (latest) {
+      if (latest.ancestors.some((a) => !effectiveExpanded.has(a.id)))
+        setExpanded(new Set([...effectiveExpanded, ...latest.ancestors.map((a) => a.id)]));
+      setTracked({ key: latest.node.id });
+    }
+  }
+  useEffect(() => {
+    if (tracked) tree.current?.reveal(tracked.key);
+  }, [tracked]);
   const hasSuites = roots.some((n) => n.children.length > 0);
 
   // Previous / Next Failed Test (⌘⌥↑ / ⌘⌥↓): like IDEA, stops at the first / last failure instead of wrapping.
@@ -379,7 +427,7 @@ export function TestTreeView({
     const step = tree.current?.selectOccurrence(dir);
     if (!step) return null;
     const n = step.node as TestNode;
-    if (n.location) void openTarget(n.location, cwd, focus);
+    if (n.location) void openTarget(n.location, cwd, focus, module);
     return step;
   });
   const hasPrevFailed = findOccurrence(roots, selected, -1, treeModel) !== null;
@@ -494,6 +542,7 @@ export function TestTreeView({
               icon: "settings",
               submenu: [
                 { kind: "action", action: "run.toggleTestDurations" },
+                { kind: "action", action: "run.toggleTrackRunningTest" },
                 { kind: "action", action: "run.toggleSelectFirstFailedTest" },
               ],
             },

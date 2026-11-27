@@ -7,6 +7,7 @@
 import type { RunConfig } from "@/platform/ipc";
 import type { RunConfigTypeContribution } from "@/workbench/contributions";
 import { formatArgs, parseArgs } from "./configs";
+import { customCommandVisible, interpreterField } from "./pythonTypes";
 
 /** A Django project: it has a Django tests configuration (detected from `manage.py`, or made in the form). */
 export const hasDjangoTests = (configs: readonly RunConfig[]) => configs.some((c) => c.kind === "django-test");
@@ -61,6 +62,7 @@ export const djangoTestType: RunConfigTypeContribution = {
   defaults: { command: "python3" },
   debugAdapter: "debugpy",
   fields: [
+    interpreterField,
     {
       key: "command",
       label: "Command",
@@ -68,6 +70,7 @@ export const djangoTestType: RunConfigTypeContribution = {
       placeholder: "python3",
       required: true,
       hint: "e.g. python3, .venv/bin/python, uv, poetry",
+      visible: customCommandVisible,
     },
     {
       key: "runnerArgs",
