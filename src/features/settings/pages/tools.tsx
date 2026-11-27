@@ -354,6 +354,113 @@ function TerminalFont() {
 }
 
 // ---------------------------------------------------------------------------
+// Agents › Chat
+
+function ChatTextFont() {
+  const [useUi, setUseUi] = useSetting<boolean>("agents.chatUseUiFont");
+  const [family, setFamily] = useSetting<string>("agents.chatFontFamily");
+  const [fallback, setFallback] = useSetting<string>("agents.chatFontFallback");
+  const [size, setSize] = useSetting<number>("agents.chatFontSize");
+  const matched = useLabelMatch("Use interface font");
+  return (
+    <>
+      <div className={clsx(styles.inlineRow, matched && styles.matched)}>
+        <Checkbox checked={useUi} onChange={setUseUi} label={<SearchLabel text="Use interface font" />} />
+        <span className={styles.note}>
+          <T>configured in</T>{" "}
+          <PageLink page="appearance">
+            <T>Appearance</T>
+          </PageLink>
+        </span>
+      </div>
+      <div className={terminalStyles.families}>
+        <Row label="Font" stacked disabled={useUi}>
+          <FontPicker value={family} onChange={setFamily} disabled={useUi} label="Chat font" />
+        </Row>
+        <Row label="Fallback font" stacked hint="Used for characters the main font lacks." disabled={useUi}>
+          <FontPicker value={fallback} onChange={setFallback} allowEmpty disabled={useUi} label="Chat fallback font" />
+        </Row>
+      </div>
+      <div className={terminalStyles.metrics}>
+        <Row label="Size" disabled={useUi}>
+          <NumberInput
+            value={size}
+            onChange={setSize}
+            {...L.agentChatFontSize}
+            step={1}
+            unit="px"
+            disabled={useUi}
+            aria-label="Chat font size"
+          />
+        </Row>
+      </div>
+    </>
+  );
+}
+
+function ChatCodeFont() {
+  const [useDefault, setUseDefault] = useSetting<boolean>("agents.codeUseDefaultFont");
+  const [family, setFamily] = useSetting<string>("agents.codeFontFamily");
+  const [fallback, setFallback] = useSetting<string>("agents.codeFontFallback");
+  const [size, setSize] = useSetting<number>("agents.codeFontSize");
+  const matched = useLabelMatch("Use default code font");
+  const monoMatched = useLabelMatch("Show only monospaced fonts");
+  const [monoSetting, setMonoOnly] = useSetting<boolean>("editor.onlyMonospacedFonts");
+  const monoOnly = monoSetting !== false;
+  return (
+    <>
+      <div className={clsx(styles.inlineRow, matched && styles.matched)}>
+        <Checkbox checked={useDefault} onChange={setUseDefault} label={<SearchLabel text="Use default code font" />} />
+        <span className={styles.note}>JetBrains Mono</span>
+      </div>
+      <div className={terminalStyles.families}>
+        <Row label="Font" stacked disabled={useDefault}>
+          <span className={terminalStyles.fontPicker}>
+            <FontPicker
+              value={family}
+              onChange={setFamily}
+              monoOnly={monoOnly}
+              disabled={useDefault}
+              label="Chat code font"
+            />
+            <span className={monoMatched ? styles.matched : undefined}>
+              <Checkbox
+                checked={monoOnly}
+                onChange={setMonoOnly}
+                disabled={useDefault}
+                label={<SearchLabel text="Show only monospaced fonts" />}
+              />
+            </span>
+          </span>
+        </Row>
+        <Row label="Fallback font" stacked hint="Used for characters the main font lacks." disabled={useDefault}>
+          <FontPicker
+            value={fallback}
+            onChange={setFallback}
+            allowEmpty
+            disabled={useDefault}
+            label="Chat code fallback font"
+          />
+        </Row>
+      </div>
+      <div className={terminalStyles.metrics}>
+        <Row label="Size" disabled={useDefault}>
+          <NumberInput
+            value={size}
+            onChange={setSize}
+            {...L.agentCodeFontSize}
+            step={1}
+            unit="px"
+            disabled={useDefault}
+            aria-label="Chat code font size"
+          />
+        </Row>
+      </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Actions on Save
 
 const SAVE_ACTIONS = [
@@ -805,6 +912,7 @@ export const TOOLS_PAGES: PageSpec[] = [
       "permission",
       "bypass",
       "width",
+      "font",
     ],
     sections: [
       {
@@ -876,6 +984,28 @@ export const TOOLS_PAGES: PageSpec[] = [
             key: "agents.showCost",
             label: "Session cost",
             hint: "As the agent reports it, at API pricing.",
+          },
+        ],
+      },
+      {
+        title: "Font",
+        options: [
+          {
+            kind: "custom",
+            label: "Use interface font",
+            keywords: ["Chat text", "Font", "Fallback font", "Size"],
+            component: ChatTextFont,
+          },
+        ],
+      },
+      {
+        title: "Code Font",
+        options: [
+          {
+            kind: "custom",
+            label: "Use default code font",
+            keywords: ["Code", "Font", "Fallback font", "Size", "Show only monospaced fonts", "monospace"],
+            component: ChatCodeFont,
           },
         ],
       },

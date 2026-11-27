@@ -11,6 +11,8 @@ interface TestRecord {
   path: string[];
   status: "passed" | "failed" | "skipped";
   ms?: number;
+  /** Where `line` is, when `path` doesn't start with the file (Python's unittest names modules). */
+  file?: string;
   /** 1-based declaration line and column. */
   line?: number;
   col?: number;
@@ -30,11 +32,12 @@ export function recordsParser(): TestOutputParser {
       }
       if (!Array.isArray(r.path) || !r.path.length) return [];
       const events: TestEvent[] = [{ type: "result", path: r.path, status: r.status, durationMs: r.ms }];
-      if (r.line !== undefined && r.path.length > 1)
+      const file = r.file ?? (r.path.length > 1 ? r.path[0] : undefined);
+      if (r.line !== undefined && file)
         events.push({
           type: "location",
           path: r.path,
-          location: { path: r.path[0]!, line: r.line, col: r.col, resolve: "path" },
+          location: { path: file, line: r.line, col: r.col, resolve: "path" },
         });
       for (const text of r.error?.split("\n") ?? []) events.push({ type: "output", path: r.path, line: text });
       return events;

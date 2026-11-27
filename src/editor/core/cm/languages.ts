@@ -715,6 +715,7 @@ const KEYWORD_OPEN =
 const NO_INDENT_LANGS = new Set([
   "plaintext",
   "markdown",
+  "mdx",
   "asciidoc",
   "restructuredtext",
   "log",

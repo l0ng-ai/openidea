@@ -99,6 +99,20 @@ pub struct AgentSettings {
     pub smooth_text: bool,
     /// Conversations and the composer expand to the full width of the pane instead of staying in a centred column.
     pub fit_window_width: bool,
+    /// Chat text follows the interface font (Appearance › Use custom font).
+    pub chat_use_ui_font: bool,
+    /// Chat text family when it does not follow the interface font.
+    pub chat_font_family: String,
+    /// Covers characters the chat font lacks.
+    pub chat_font_fallback: String,
+    pub chat_font_size: u32,
+    /// Code in chat follows the built-in code font.
+    pub code_use_default_font: bool,
+    /// Code family when it does not follow the built-in code font.
+    pub code_font_family: String,
+    /// Covers characters the code font lacks.
+    pub code_font_fallback: String,
+    pub code_font_size: u32,
     #[serde(deserialize_with = "or_default")]
     #[specta(type = ThinkingDisplay)]
     pub thinking: ThinkingDisplay,
@@ -145,6 +159,14 @@ impl Default for AgentSettings {
             show_cost: false,
             smooth_text: true,
             fit_window_width: false,
+            chat_use_ui_font: true,
+            chat_font_family: "Inter".into(),
+            chat_font_fallback: String::new(),
+            chat_font_size: 13,
+            code_use_default_font: true,
+            code_font_family: "JetBrains Mono".into(),
+            code_font_fallback: String::new(),
+            code_font_size: 13,
             thinking: ThinkingDisplay::Auto,
             tool_calls: ToolCallDisplay::Grouped,
             expand_tool_output: false,
@@ -1426,6 +1448,9 @@ pub struct PythonSettings {
     /// Folders the user added to an interpreter's `sys.path` (All Interpreters › Show Paths),
     /// by interpreter executable; absolute or `~/`.
     pub interpreter_paths: BTreeMap<String, Vec<String>>,
+    /// Default test runner (Settings › Python › Testing): `auto` (pytest when the project uses
+    /// it, else unittest), `pytest` or `unittest`.
+    pub test_runner: String,
 }
 
 impl Default for PythonSettings {
@@ -1438,6 +1463,7 @@ impl Default for PythonSettings {
             hide_other_project_interpreters: false,
             show_interpreter_paths: true,
             interpreter_paths: BTreeMap::new(),
+            test_runner: "auto".into(),
         }
     }
 }

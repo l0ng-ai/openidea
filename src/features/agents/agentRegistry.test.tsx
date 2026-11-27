@@ -10,7 +10,9 @@ import type {
   RegistryAgent,
   RequestId,
 } from "@/bindings";
-import { IpcError } from "@/platform/ipc";
+import { IpcError, commands as ipcCommands } from "@/platform/ipc";
+import * as openUrlMod from "@/platform/openUrl";
+import { disableRemote, enableRemote } from "@/platform/remote";
 import { setLocale, tx } from "@/platform/i18n";
 import { iconMarkup } from "@/ui/icons";
 import { MessagesHost } from "@/workbench/messages";
@@ -425,6 +427,7 @@ class FakeCommands implements CommandsBackend {
   loginSpawn?: CommandsBackend["loginSpawn"];
   ghLoginSpawn?: CommandsBackend["ghLoginSpawn"];
   refreshModels?: CommandsBackend["refreshModels"];
+  previewCopilotModels?: CommandsBackend["previewCopilotModels"];
   chooseExecutable = vi.fn(async () => "/chosen/agent");
   saveCustom = vi.fn(async () => {});
   setAdditionalArgs = vi.fn<CommandsBackend["setAdditionalArgs"]>();
@@ -648,7 +651,8 @@ describe("Built-in executable overrides", () => {
     fireEvent.click(account);
     fireEvent.click(await screen.findByRole("option", { name: "alice-work" }));
     expect(account).toHaveTextContent("alice-work");
-    expect(screen.getByText("Click Apply to load the models available for the selected account.")).toBeInTheDocument();
+    expect(commands.savedEnv).toEqual([]);
+    expect(apply()).toBeEnabled();
 
     await act(async () => fireEvent.click(apply()));
 
@@ -664,7 +668,7 @@ describe("Built-in executable overrides", () => {
     expect(JSON.stringify(commands.savedEnv)).not.toMatch(/gho_|ghp_|token/i);
   });
 
-  it("hides stale Copilot models until authenticated and reloads per-account models after Apply", async () => {
+  it("hides stale Copilot models until authenticated and previews per-account models immediately on switch", async () => {
     const staleModel: AgentProvider["config"][number] = {
       id: "model",
       name: "Model",
@@ -713,6 +717,15 @@ describe("Built-in executable overrides", () => {
         error: null,
       };
     });
+    commands.previewCopilotModels = vi.fn(async (account) => ({
+      provider: "copilot",
+      config: [account === "alice-work" ? staleModel : personalModel],
+      thoughtLevels: {},
+      refreshing: false,
+      refreshedAtMs: Date.now(),
+      retryAtMs: null,
+      error: null,
+    }));
     commands.list = [
       {
         ...claudeProvider("copilot"),
@@ -732,24 +745,29 @@ describe("Built-in executable overrides", () => {
     await screen.findByText("Sign in above to view and choose models available for this account.");
     expect(screen.queryByRole("button", { name: "Model" })).toBeNull();
 
-    // Selecting `alice` stages the switch and asks for Apply before showing models.
+    // Selecting `alice` immediately previews `alice`'s subscription models before Apply, while keeping Apply enabled.
     const account = screen.getByRole("button", { name: "GitHub account" });
     fireEvent.click(account);
     fireEvent.click(await screen.findByRole("option", { name: "alice" }));
-    expect(screen.getByText("Click Apply to load the models available for the selected account.")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Model" })).toBeNull();
-
-    // Applying loads `alice`'s subscription models.
-    await act(async () => fireEvent.click(apply()));
     const modelButton = await screen.findByRole("button", { name: "Model" });
     expect(modelButton).toHaveTextContent("Agent's default (Claude Sonnet 4.5)");
+    expect(commands.previewCopilotModels).toHaveBeenCalledWith("alice", null);
+    expect(commands.savedEnv).toEqual([]);
+    expect(apply()).toBeEnabled();
 
-    // Switching to `alice-work` and applying loads its own subscription models.
+    // Switching to `alice-work` immediately previews `alice-work`'s subscription models too.
     fireEvent.click(screen.getByRole("button", { name: "GitHub account" }));
     fireEvent.click(await screen.findByRole("option", { name: "alice-work" }));
-    expect(screen.queryByRole("button", { name: "Model" })).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("Agent's default (Gemini 4 Neon)"),
+    );
+    expect(commands.previewCopilotModels).toHaveBeenCalledWith("alice-work", null);
+    expect(commands.savedEnv).toEqual([]);
+
+    // Applying saves the staged account without losing the loaded models.
     await act(async () => fireEvent.click(apply()));
-    expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("Agent's default (Gemini 4 Neon)");
+    expect(commands.savedEnv).toEqual([["copilot", { OPENIDEA_COPILOT_GITHUB_ACCOUNT: "alice-work" }]]);
+    expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("Agent's default (Gemini 4 Neon)");
   });
 
   it("runs in-IDE Sign In and Add account PTY dialogs and selects the newly added gh account", async () => {
@@ -857,6 +875,96 @@ describe("Built-in executable overrides", () => {
         expect(screen.getByRole("button", { name: "GitHub account" })).toHaveTextContent("alice-work"),
       );
     } finally {
+      provideEmbeddedTerminal(undefined);
+    }
+  });
+
+  it("surfaces a device-code banner in Sign In dialog, copies locally, opens browser, and advances remote gh login", async () => {
+    provideEmbeddedTerminal(async () => ({
+      write: vi.fn(),
+      clear: vi.fn(),
+      focus: vi.fn(),
+      fit: vi.fn(),
+      dispose: vi.fn(),
+    }));
+    const openSpy = vi.spyOn(openUrlMod, "openExternalUrl").mockResolvedValue();
+    const termWriteSpy = vi.spyOn(ipcCommands, "termWrite").mockResolvedValue({ status: "ok", data: null });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    enableRemote({
+      target: { kind: "ssh", configId: "devbox" } as never,
+      root: "/home/alice/repo",
+      host: "devbox",
+      os: "linux",
+      commands: ["agent_gh_login_spawn", "term_write", "term_resize", "term_kill"],
+    });
+    let onLoginEvent: ((e: AgentLoginEvent) => void) | null = null;
+    try {
+      const commands = new FakeCommands();
+      commands.ghLoginSpawn = vi.fn(async (_cols, _rows, cb) => {
+        onLoginEvent = cb;
+        return 202;
+      });
+      commands.copilotAuthStatus = vi.fn<() => Promise<CopilotAuthStatus>>().mockResolvedValue({
+        authenticated: false,
+        login: null,
+        authType: null,
+        statusMessage: null,
+        ghInstalled: true,
+        ghAccounts: [],
+      });
+      commands.list = [
+        {
+          ...claudeProvider("copilot"),
+          id: "copilot",
+          name: "GitHub Copilot",
+          command: "copilot --headless --no-auto-update --stdio",
+          defaultProgram: "copilot",
+          loginHint: "Run `copilot login` in a terminal.",
+          installed: true,
+          canSignIn: true,
+          commandReadOnlyReason: "registry",
+        },
+      ];
+      await openCommands(commands, vi.fn(), "GitHub Copilot");
+
+      fireEvent.click(await screen.findByRole("button", { name: "Add account…" }));
+      expect(await screen.findByRole("dialog", { name: "Sign In to GitHub CLI" })).toBeInTheDocument();
+      await waitFor(() => expect(commands.ghLoginSpawn).toHaveBeenCalled());
+
+      act(() => {
+        onLoginEvent?.({
+          type: "output",
+          data: "! First copy your one-time code: \u001b[1mWDJB-MJHT\u001b[0m\r\nPress Enter to open https://github.com/login/device in your browser... ",
+        });
+      });
+
+      const banner = await screen.findByRole("region", { name: "Device verification code" });
+      expect(within(banner).getByText("WDJB-MJHT")).toBeInTheDocument();
+      expect(within(banner).getByText("github.com/login/device")).toBeInTheDocument();
+
+      await act(async () => {
+        fireEvent.click(within(banner).getByRole("button", { name: "Copy Code & Open Browser" }));
+      });
+
+      expect(writeText).toHaveBeenCalledWith("WDJB-MJHT");
+      expect(openSpy).toHaveBeenCalledWith("https://github.com/login/device");
+      expect(termWriteSpy).toHaveBeenCalledWith(202, "\r");
+      expect(within(banner).getByRole("button", { name: "Copied" })).toBeInTheDocument();
+
+      // Clicking again does not send a second Enter for the same code.
+      termWriteSpy.mockClear();
+      await act(async () => {
+        fireEvent.click(within(banner).getByRole("button", { name: "Copy Code & Open Browser" }));
+      });
+      expect(termWriteSpy).not.toHaveBeenCalled();
+    } finally {
+      disableRemote();
+      openSpy.mockRestore();
+      termWriteSpy.mockRestore();
       provideEmbeddedTerminal(undefined);
     }
   });

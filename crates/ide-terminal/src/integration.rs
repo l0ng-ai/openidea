@@ -89,11 +89,22 @@ const FISH_INIT: &str = concat!(
 
 const POWERSHELL_INIT: &str = r#"$openideaClearHost = (Get-Command Clear-Host).ScriptBlock; $openideaClearHandler = { & $openideaClearHost @args; [Console]::Write([char]27 + ']133;OpenIDEA;ClearScrollback' + [char]7) }.GetNewClosure(); Set-Item Function:global:Clear-Host -Value $openideaClearHandler"#;
 
-/// Directory holding the generated startup files (written on demand).
+/// Directory holding the generated startup files (written on demand). Keyed by the scripts'
+/// content as well as the version, so builds with different scripts (a dev build next to a
+/// release, two checkouts on one machine) never rewrite each other's files under a starting shell.
 fn scripts_dir() -> PathBuf {
-    std::env::temp_dir().join(format!("openidea-shell-integration-{}", env!("CARGO_PKG_VERSION")))
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    (ZSHENV, ZPROFILE, ZSHRC, ZLOGIN, BASHRC).hash(&mut hasher);
+    std::env::temp_dir().join(format!(
+        "openidea-shell-integration-{}-{:016x}",
+        env!("CARGO_PKG_VERSION"),
+        hasher.finish()
+    ))
 }
 
+/// Writes through a temporary file and a rename, so a shell (or another process doing the
+/// same) never reads a half-written script.
 fn write_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
     if std::fs::read_to_string(path).is_ok_and(|c| c == content) {
         return Ok(());
@@ -101,7 +112,14 @@ fn write_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, content)
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_file_name(format!(".{name}.{}.{n}.tmp", std::process::id()));
+    std::fs::write(&tmp, content)?;
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }
 
 /// Adjusts how `shell` is started so it reports its cwd. `args` are the
