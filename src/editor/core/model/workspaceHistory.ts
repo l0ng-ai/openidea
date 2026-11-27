@@ -1,8 +1,16 @@
 /** Workspace edits contribute history markers; their text patches never enter local history. */
 import { invertedEffects, isolateHistory, redo, undo } from "@codemirror/commands";
-import { EditorState, Prec, StateEffect, type Transaction, type Extension } from "@codemirror/state";
+import { EditorState, Prec, StateEffect, Transaction, type Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
-import { _emitWorkspaceEditHistory, _provideWorkspaceHistory, isExternalChange } from "@/editor/api";
+import {
+  _emitWorkspaceEditHistory,
+  _provideWorkspaceHistory,
+  isExternalChange,
+  settleWorkspaceEdit,
+  workspaceEditFollowUps,
+  workspaceEditMarker,
+  type WorkspaceEditFollowUp,
+} from "@/editor/api";
 import { editorsFollowAppliedMoves, reversedMoves, withEditorsFollowing } from "@/editor/fileMoves";
 import { call, commands, onIdeEvent, type FileMove } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
@@ -25,6 +33,8 @@ export class WorkspaceHistory {
   private project = useProject.getState().project;
   private busy = false;
   private moving = false;
+  /** Reverting or reapplying a refactoring's follow-up edits while `busy`. */
+  private following = false;
 
   constructor(
     private synced: () => Promise<void>,
@@ -116,13 +126,16 @@ export class WorkspaceHistory {
         }
         return null;
       }),
-      EditorState.changeFilter.of((tr) => !this.busy || isExternalChange(tr)),
+      EditorState.changeFilter.of((tr) => !this.busy || this.following || isExternalChange(tr)),
     ];
   }
 
   private mark(target: WorkspaceHistoryTarget, id: number) {
     target.dispatch(
-      target.state().update({ effects: marker.of({ id, redo: true }), annotations: isolateHistory.of("full") }),
+      target.state().update({
+        effects: marker.of({ id, redo: true }),
+        annotations: [isolateHistory.of("full"), workspaceEditMarker.of(id)],
+      }),
     );
   }
 
@@ -143,9 +156,46 @@ export class WorkspaceHistory {
     return result;
   }
 
+  /** The follow-up edits each affected editor recorded for refactoring `id`. */
+  private followUps(id: number, paths: string[]): Array<[WorkspaceHistoryTarget, WorkspaceEditFollowUp]> {
+    const out: Array<[WorkspaceHistoryTarget, WorkspaceEditFollowUp]> = [];
+    for (const target of this.targets) {
+      if (!this.affects(paths, target.path)) continue;
+      const state = target.state();
+      for (const lookup of state.facet(workspaceEditFollowUps)) {
+        const followUp = lookup(state, id);
+        if (followUp) {
+          out.push([target, followUp]);
+          break;
+        }
+      }
+    }
+    return out;
+  }
+
+  /** Applies a follow-up edit (or its revert) as a local, synced edit outside the undo history. */
+  private applyFollowUp(target: WorkspaceHistoryTarget, changes: WorkspaceEditFollowUp["changes"]) {
+    if (target.state().doc.length !== changes.length) return;
+    this.following = true;
+    try {
+      target.dispatch(
+        target.state().update({ changes, annotations: Transaction.addToHistory.of(false), scrollIntoView: false }),
+      );
+    } finally {
+      this.following = false;
+    }
+  }
+
   async run(id: number, forward = false, source?: WorkspaceHistoryTarget): Promise<void> {
     if (this.busy) throw new Error("A refactoring history operation is in progress");
+    if (!source) {
+      // Finish an in-place rename still open after the refactoring: its edits become follow-ups.
+      for (const target of this.targets)
+        target.dispatch(target.state().update({ effects: settleWorkspaceEdit.of(id) }));
+      await Promise.resolve();
+    }
     this.busy = true;
+    let reverted: Array<[WorkspaceHistoryTarget, WorkspaceEditFollowUp]> = [];
     try {
       // Yield before reading a source: its marker transaction is still being built.
       await this.synced();
@@ -157,15 +207,29 @@ export class WorkspaceHistory {
       for (const target of targets)
         if (!this.step(target, id, forward))
           throw new Error("Undo newer editor changes before undoing this refactoring");
+      const followUps = this.followUps(id, record.paths);
+      if (!forward) {
+        // The backend restores the files only while they hold the refactoring's own text.
+        for (const [target, followUp] of followUps)
+          if (!target.state().doc.eq(followUp.end))
+            throw new Error("Undo newer editor changes before undoing this refactoring");
+        for (const [target, followUp] of followUps) this.applyFollowUp(target, followUp.revert);
+        reverted = followUps;
+        await this.synced();
+      }
       await withEditorsFollowing(
         async () => {
           await call(forward ? commands.redoWorkspaceEdit(id) : commands.undoWorkspaceEdit(id));
+          reverted = [];
           await this.synced();
           for (const target of targets) {
             if (!this.targets.has(target)) continue;
             const tr = this.step(target, id, forward);
             if (tr) target.dispatch(tr);
           }
+          if (forward)
+            for (const [target, followUp] of followUps)
+              if (this.targets.has(target)) this.applyFollowUp(target, followUp.changes);
           // Editors reopened at moved paths build their history from the record: settle it first.
           record.undone = !forward;
         },
@@ -174,6 +238,9 @@ export class WorkspaceHistory {
       );
       _emitWorkspaceEditHistory({ id, undone: record.undone });
     } catch (error) {
+      // A refused backend restore puts the follow-up edits back as well.
+      for (const [target, followUp] of reverted)
+        if (this.targets.has(target)) this.applyFollowUp(target, followUp.changes);
       // A refused backend restore must leave the initiating editor's history intact.
       if (source && this.targets.has(source)) {
         const tr = this.step(source, id, !forward);

@@ -87,13 +87,18 @@ description: "连接 SQL 数据库、浏览架构、在查询控制台中执行�
 ### 配置和密码保存在哪里
 
 - 项目数据源：项目中的 `.openidea/data-sources.toml`。
+- 数据源文件夹：项目中的 `.openidea/data-source-folders.toml`。
 - 全局数据源：IDE 数据目录下的 `data-sources.toml`（见 [数据目录](/zh/reference/data-directories)）。
 - 项目打开时，可以手动或让编码代理编辑这些文件：数据库工具窗口会自动读取改动，设置被修改或被删除的数据源的连接会被关闭。
 - 密码从不写入这些文件。保存的密码放在操作系统凭据存储中（钥匙串、Windows 凭据管理器或 Secret Service）；未保存的密码只在本次会话的内存中，连接时会询问。
 
 ## 浏览数据库
 
-树的结构为 数据源 › 数据库（PostgreSQL）› 架构 › `tables`、`views`、`materialized views`、`routines`、`sequences`。表下面有 `columns`、`keys`、`foreign keys`、`indexes` 和 `triggers`。节点在展开时才加载。在工具窗口的选项菜单中打开 **分别显示过程和函数** 可以把 `routines` 拆开。
+树的结构为 数据源 › 数据库（PostgreSQL）› 架构 › `tables`、`views`、`materialized views`、`routines`、`sequences`。表下面有 `columns`、`keys`、`foreign keys`、`indexes` 和 `triggers`。节点在展开时才加载。在工具窗口的选项菜单中打开 **分别显示过程和函数** 可以把 `routines` 拆开；**显示表注释** 在表名后显示灰色单行注释。
+
+用 `Shift` 或 `⌘`/`Ctrl` 选择多个数据源后，可以一次刷新、停用或删除；右键菜单会显示操作数量。
+
+**新建 › 文件夹…** 创建数据源文件夹；把选中的数据源拖到文件夹，或使用 **移动到文件夹**，即可分组。删除文件夹只会把数据源移回根层级，不会删除数据源。
 
 双击表会编辑其数据，双击数据源会打开它的控制台，双击例程、序列或触发器会显示 DDL。在 **过滤对象** 中输入文字可以过滤树。
 
@@ -125,7 +130,7 @@ description: "连接 SQL 数据库、浏览架构、在查询控制台中执行�
 
 ## 查询控制台
 
-每个数据源都有一个查询控制台，它是保存在 IDE 数据目录中的 `.sql` 文件。可以用 **查询控制台**（`⌘⇧L` / `Ctrl+Shift+Q`）、从树中或通过 **工具 › Open Query Console** 打开。项目中任何可写的 `.sql` 文件也有同样的工具栏，绑定数据源后即可执行。
+每个数据源都有一个查询控制台，它是保存在 IDE 数据目录 `consoles/db` 下的 `.sql` 文件，并显示在 **临时文件和控制台** 的 **数据库控制台** 根节点下，按数据源名称分组。可以用 **查询控制台**（`⌘⇧L` / `Ctrl+Shift+Q`）、从树中或通过 **工具 › Open Query Console** 打开。项目中任何可写的 `.sql` 文件也有同样的工具栏，绑定数据源后即可执行。在 **最近的文件**（`⌘E` / `Ctrl+E`）中，控制台会显示所属数据源，例如 `console [Orders]`。
 
 控制台工具栏：
 
