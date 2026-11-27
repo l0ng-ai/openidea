@@ -251,6 +251,7 @@ export function SessionPanel({
           findOpen={findOpen}
           onFindOpenChange={setFindOpen}
           cwd={cwd}
+          module={session.config.module}
           onClear={() => clearConsole(session.id)}
           // A test run's Previous / Next Occurrence go through its failed tests.
           occurrences={rt.tests ? undefined : showLifecycle ? "run" : SERVICES_WINDOW}
@@ -413,6 +414,7 @@ export function SessionPanel({
                 results={rt.tests}
                 version={version}
                 cwd={cwd}
+                module={session.config.module}
                 running={testsRunning}
                 name={session.config.name}
                 selected={selectedTest}
