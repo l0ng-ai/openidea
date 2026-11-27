@@ -271,12 +271,12 @@ impl ClickhousePool {
             () = self.0.closed.cancelled() => return Err(IdeError::new(ErrorKind::Io, "ClickHouse connection is closed")),
             session = self.0.session.lock() => session,
         };
+        let client = self.client()?;
         if session.id.is_none() && session_set_statement(sql) {
             return Err(IdeError::invalid(
                 "Standalone SET needs a ClickHouse HTTP session. Set use_http_session=true in Advanced or use query-level SETTINGS where applicable.",
             ));
         }
-        let client = self.client()?;
         let query_id = uuid::Uuid::new_v4().to_string();
         let request = self.request(&client, &query_id, skip.saturating_add(max_rows), &session).body(sql.to_owned());
         let started = Instant::now();
