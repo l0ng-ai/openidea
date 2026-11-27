@@ -14,7 +14,7 @@ import { copySelectionOnKeyDown, copyText } from "@/ui/selectableText";
 import { EmptyState, IconButton, showContextMenu, T, type MenuItem } from "@/ui";
 import { formatBinding, hasPrimaryModifier, hostBinding, registerKeyClaim } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
-import { useWorkflowSettings } from "@/platform/workflowSettings";
+import { setConsoleSoftWrap, useWorkflowSettings } from "@/platform/workflowSettings";
 import { useConsoleFont } from "@/platform/consoleFont";
 import { spanStyle } from "@/ui/ansi";
 import { logLineColor } from "@/ui/logColors";
@@ -151,12 +151,10 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
     fontWeight: consoleFont.weight,
     ["--fw-code-bold" as string]: String(consoleFont.boldWeight),
   };
-  // Settings › Console › Use soft wraps is the default; the toggle overrides it for this console.
-  const defaultWrap = useWorkflowSettings((s) => s.console.softWrap);
+  // Settings › Console › Use soft wraps is shared by every console; the toolbar toggle writes it.
+  const softWrap = useWorkflowSettings((s) => s.console.softWrap);
   const logColors = useWorkflowSettings((s) => s.console.logColors);
   const consoleRules = compileConsoleRules(useConsoleRules((s) => s.providers));
-  const [wrapOverride, setWrapOverride] = useState<boolean | null>(null);
-  const softWrap = wrapOverride ?? defaultWrap;
   const [widest] = useState(() => new WidestColumns());
   const columns = useMemo(() => widest.measure(lines ?? []), [widest, lines]);
   const programmatic = useRef(false);
@@ -440,7 +438,12 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
           onClick={() => (findOpen ? closeFind() : openFind())}
         />
         <IconButton icon="scroll-to-end" title="Scroll to End" pressed={follow} onClick={() => setFollow((v) => !v)} />
-        <IconButton icon="soft-wrap" title="Soft-Wrap" pressed={softWrap} onClick={() => setWrapOverride(!softWrap)} />
+        <IconButton
+          icon="soft-wrap"
+          title="Soft-Wrap"
+          pressed={softWrap}
+          onClick={() => void setConsoleSoftWrap(!softWrap)}
+        />
         <IconButton icon="trash" title="Clear Console" onClick={() => clearConsole(session.id)} />
       </div>
       <div className={styles.console}>

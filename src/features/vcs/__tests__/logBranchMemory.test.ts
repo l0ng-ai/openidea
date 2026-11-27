@@ -16,8 +16,12 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 import {
   emptyFilters,
   initLogBranchFilter,
+  logState,
+  openLogTab,
   rememberedLogBranches,
+  renameBranchInLogFilters,
   resolveLogBranches,
+  selectGitTab,
   setLogBranches,
   useGitLog,
 } from "../logStore";
@@ -109,5 +113,40 @@ describe("Git Log branch filter memory", () => {
     initLogBranchFilter();
     expect(useGitLog.getState().filters.branches).toEqual(["dev"]);
     expect(useGitLog.getState().branchScope).toBe("/mem-multi/backend");
+  });
+});
+
+describe("renameBranchInLogFilters", () => {
+  it("renames the branch in the shown filter and the repository's memory", async () => {
+    project("/mem-rename");
+    initLogBranchFilter();
+    setLogBranches(["feature"]);
+    await vi.waitFor(() => expect(useGitLog.getState().loading).toBe(false));
+    renameBranchInLogFilters("/mem-rename", "feature", "renamed");
+    expect(useGitLog.getState().filters.branches).toEqual(["renamed"]);
+    expect(rememberedLogBranches("/mem-rename")).toEqual(["renamed"]);
+  });
+
+  it("rewrites parked views and Log: branch tabs, leaving other branches alone", () => {
+    project("/mem-rename-tabs");
+    openLogTab("branch", "feature");
+    openLogTab("branch", "other");
+    selectGitTab("log");
+    useGitLog.setState({ filters: { ...emptyFilters(), branches: ["feature", "main"] } });
+    renameBranchInLogFilters("/mem-rename-tabs", "feature", "renamed");
+    expect(useGitLog.getState().filters.branches).toEqual(["renamed", "main"]);
+    expect(logState("branch:1").filters.branches).toEqual(["renamed"]);
+    expect(logState("branch:2").filters.branches).toEqual(["other"]);
+    expect(useGitLog.getState().logTabs.map((t) => t.target)).toEqual(["renamed", "other"]);
+  });
+
+  it("does not touch unrelated filters or tabs", () => {
+    project("/mem-rename-keep");
+    useGitLog.setState({ filters: { ...emptyFilters(), branches: ["main"] } });
+    useGitLog.setState({ logTabs: [{ id: "branch:1", kind: "branch", target: "main" }] });
+    renameBranchInLogFilters("/mem-rename-keep", "feature", "renamed");
+    expect(useGitLog.getState().filters.branches).toEqual(["main"]);
+    expect(useGitLog.getState().logTabs[0]!.target).toBe("main");
+    expect(rememberedLogBranches("/mem-rename-keep")).toBeUndefined();
   });
 });

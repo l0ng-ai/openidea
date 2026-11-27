@@ -19,7 +19,7 @@ import { showContextMenu } from "@/ui/Menu";
 import { clearProblems, installProblemsEvents, problemsReport, useProblems } from "./problemsStore";
 import { installProblemDecorations } from "./decorations";
 import { ProblemsTabs, ProblemsView, useProblemsHeaderMenu } from "./ProblemsView";
-import { UsagesTabs, UsagesView, useUsagesHeaderMenu } from "./UsagesView";
+import { UsagesTabs, UsagesView, canExportUsages, exportUsagesToTextFile, useUsagesHeaderMenu } from "./UsagesView";
 import { UsagesPopup } from "./UsagesPopup";
 import {
   findUsages,
@@ -165,6 +165,18 @@ export function activate(): () => void {
         icon: "rerun",
         when: "projectOpen && activeToolWindow == 'usages'",
         run: rerunActiveUsages,
+      },
+      {
+        // IDEA's ExportToTextFile in the Find tool window.
+        id: "usages.exportToTextFile",
+        title: "Export to Text File…",
+        description: "Save the Find Usages results as a text file",
+        category: "Find",
+        icon: "export",
+        when: "projectOpen && activeToolWindow == 'usages'",
+        keywords: ["usages", "results", "save", "report", "txt"],
+        enabled: canExportUsages,
+        run: exportUsagesToTextFile,
       },
       {
         id: "find.showUsageResults",
