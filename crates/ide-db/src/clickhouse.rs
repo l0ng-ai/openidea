@@ -359,6 +359,11 @@ impl ClickhousePool {
             return Err(IdeError::cancelled());
         }
         let client = self.client()?;
+        if session.id.is_none() && session_set_statement(sql) {
+            return Err(IdeError::invalid(
+                "Standalone SET needs a ClickHouse HTTP session. Set use_http_session=true in Advanced or use query-level SETTINGS where applicable.",
+            ));
+        }
         let query_id = uuid::Uuid::new_v4().to_string();
         let request = self.request(&client, &query_id, skip.saturating_add(max_rows), session).body(sql.to_owned());
         let started = Instant::now();
@@ -683,6 +688,13 @@ fn reserved_setting(name: &str) -> bool {
         )
 }
 
+fn session_set_statement(mut sql: &str) -> bool {
+    let mut next_is =
+        |word: &str| crate::split::clickhouse_keyword(&mut sql).is_some_and(|part| part.eq_ignore_ascii_case(word));
+    // SET DEFAULT ROLE persists a user's default roles outside the current session.
+    next_is("SET") && !(next_is("DEFAULT") && next_is("ROLE"))
+}
+
 fn transaction_statement(sql: &str) -> bool {
     let mut sql = sql.trim_start();
     loop {
@@ -917,6 +929,71 @@ mod tests {
                 assert_eq!(query_value(&request_url(&request), "database"), None);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn stateless_session_settings_are_refused_before_sending() {
+        let (port, requests) = server(vec![("200 OK", "", ONE), ("200 OK", "", ONE), ("200 OK", "", "")]).await;
+        let source = DataSource { properties: vec![property("use_http_session", "false")], ..source(port) };
+        let pool = Pool::connect(&source, None, None).await.unwrap();
+        let cancel = CancellationToken::new();
+        for statement in [
+            "SET log_comment='openidea-test'",
+            "-- leading\n/* outer /* nested */ tail */ SeT `log_comment`='a;b', max_threads=1",
+            "# leading\nSET ROLE NONE",
+            "SET profile='test'",
+            "SET TIME ZONE 'UTC'",
+        ] {
+            let error = pool.execute(statement, 1, &cancel).await.expect_err("stateless SET must fail locally");
+            assert_eq!(error.kind, ErrorKind::InvalidInput);
+            assert!(error.message.contains("use_http_session=true"), "{error}");
+            assert!(error.message.contains("query-level SETTINGS"), "{error}");
+        }
+        let stopped = CancellationToken::new();
+        stopped.cancel();
+        assert_eq!(
+            pool.execute("SET log_comment='not sent'", 1, &stopped).await.unwrap_err().kind,
+            ErrorKind::Cancelled
+        );
+
+        // A query-level setting and a persistent role change both still reach the server.
+        let select = "SELECT 'SET;' LIMIT 1 SETTINGS log_comment='local' FORMAT JSONCompactEachRowWithNamesAndTypes";
+        pool.execute(select, 1, &cancel).await.unwrap();
+        let default_role = "SET /* persistent */ DEFAULT # on login\n ROLE NONE TO fixture_user";
+        pool.execute(default_role, 0, &cancel).await.unwrap();
+        let requests = requests.await.unwrap();
+        assert!(requests[0].ends_with("SELECT 1"));
+        assert!(requests[1].ends_with(select));
+        assert!(requests[2].ends_with(default_role));
+        assert!(requests.iter().all(|request| query_value(&request_url(request), "session_id").is_none()));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the disposable ClickHouse fixture on loopback"]
+    async fn clickhouse_live_http_session_settings() -> IdeResult<()> {
+        let port = std::env::var("OPENIDEA_CLICKHOUSE_SET_PORT").unwrap().parse().unwrap();
+        let cancel = CancellationToken::new();
+        let read = "SELECT concat('[', getSetting('log_comment'), ']') LIMIT 1";
+        for (session, expected) in [("false", "[]"), ("true", "[openidea-test]")] {
+            let source = DataSource {
+                user: "set_fixture".into(),
+                properties: vec![property("use_http_session", session)],
+                ..source(port)
+            };
+            let pool = Pool::connect(&source, None, None).await?;
+            let result = pool.execute("SET log_comment='openidea-test'", 1, &cancel).await;
+            if session == "true" {
+                result?;
+            } else {
+                let error = result.unwrap_err();
+                assert_eq!(error.kind, ErrorKind::InvalidInput);
+                assert!(error.message.contains("use_http_session=true"), "{error}");
+                let local = format!("{read} SETTINGS log_comment='one-query'");
+                assert_eq!(pool.execute(&local, 1, &cancel).await?.rows, [vec![Some("[one-query]".into())]]);
+            }
+            assert_eq!(pool.execute(read, 1, &cancel).await?.rows, [vec![Some(expected.into())]]);
+        }
+        Ok(())
     }
 
     #[tokio::test]
