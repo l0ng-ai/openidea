@@ -4338,5 +4338,7 @@
   "Issue link {text}": "Issue link {text}",
   "Commit link {text}": "Commit link {text}",
   "Link {text}": "Link {text}",
-  "Transpose": "Transpose"
+  "Transpose": "Transpose",
+  "New Scratch Buffer": "New Scratch Buffer",
+  "Cannot create scratch buffer": "Cannot create scratch buffer"
 }
