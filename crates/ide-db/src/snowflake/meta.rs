@@ -113,7 +113,11 @@ pub(crate) async fn tables(pool: &SnowflakePool, schema: &str) -> IdeResult<Vec<
     Ok(shown
         .records()
         .filter_map(|r| {
-            Some(TableInfo { name: r.get("name")?.to_owned(), kind: table_kind(r.get("kind").unwrap_or("TABLE")) })
+            Some(TableInfo {
+                name: r.get("name")?.to_owned(),
+                kind: table_kind(r.get("kind").unwrap_or("TABLE")),
+                comment: r.get("comment").filter(|comment| !comment.is_empty()).map(str::to_owned),
+            })
         })
         .collect())
 }
@@ -238,7 +242,11 @@ pub(crate) async fn catalog(pool: &SnowflakePool, database: &str) -> IdeResult<V
         let (Some(&index), Some(name)) = (at.get(r.get("schema_name").unwrap_or_default()), r.get("name")) else {
             continue;
         };
-        out[index].tables.push(TableInfo { name: name.to_owned(), kind: table_kind(r.get("kind").unwrap_or("TABLE")) });
+        out[index].tables.push(TableInfo {
+            name: name.to_owned(),
+            kind: table_kind(r.get("kind").unwrap_or("TABLE")),
+            comment: r.get("comment").filter(|comment| !comment.is_empty()).map(str::to_owned),
+        });
     }
     for schema in &mut out {
         schema.tables.sort_by(|a, b| a.name.cmp(&b.name));

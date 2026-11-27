@@ -43,6 +43,29 @@ describe("findColors", () => {
     expect([css!.argb, cssColor(css!)]).toEqual([undefined, "#FF2B5797"]);
   });
 
+  it("reads java.awt.Color's int constructor as RGB", () => {
+    const [color, ui, sevenDigits] = findColors(
+      "c = new Color(0xFF00FF); d = new javax.swing.plaf.ColorUIResource( 0x0be881 ); e = new ColorUIResource(0xfffbe7c);",
+      "java",
+      isName,
+    );
+    expect([color, ui, sevenDigits].map((c) => c && [c.text, c.format, cssColor(c)])).toEqual([
+      ["0xFF00FF", "int", "#ff00ff"],
+      ["0x0be881", "int", "#0be881"],
+      // Color(int) reads the low 24 bits.
+      ["0xfffbe7c", "int", "#ffbe7c"],
+    ]);
+    expect(texts('new Color(0x112233); // "#fff"', "java")).toEqual(["0x112233", "#fff"]);
+    // Other overloads, other literals and other classes or languages are not this constructor.
+    expect(
+      texts(
+        "new Color(0x10, 0x20, 0x30); new Color(0x80ff0000, true); new Color(0xFF_00_FF); new Color(0xFFL); new Font(0x10); int x = 0xFF00FF; new com.badlogic.gdx.graphics.Color(0x00ff00ff);",
+        "java",
+      ),
+    ).toEqual([]);
+    expect(texts("val c = Color(0xFF00FF); new Color(0xFF00FF)", "kotlin")).toEqual([]);
+  });
+
   it("leaves prose alone", () => {
     expect(texts("Fixed in #123, color `#fff`", "markdown")).toEqual([]);
   });
@@ -69,6 +92,14 @@ describe("formatColor", () => {
     expect(formatColor([18, 52, 86, 1], argb("#FF2B5797"))).toBe("#FF123456");
     expect(formatColor([18, 52, 86, 0.5], argb("#ff2b5797"))).toBe("#80123456");
     expect(formatColor([255, 0, 0, 0.6], argb("#8F00"))).toBe("#9F00");
+  });
+
+  it("writes a Java int color back as 0x hex in its case, dropping alpha", () => {
+    expect(formatColor([18, 52, 86, 1], match("0xFF00FF", "int"))).toBe("0x123456");
+    expect(formatColor([171, 205, 239, 1], match("0XFF00FF", "int"))).toBe("0XABCDEF");
+    expect(formatColor([171, 205, 239, 0.5], match("0xff00ff", "int"))).toBe("0xabcdef");
+    // Digits above the low 24 bits are not read by Color(int) and stay as written.
+    expect(formatColor([18, 52, 86, 1], match("0xfffbe7c", "int"))).toBe("0xf123456");
   });
 
   it("keeps a function's name and separators", () => {

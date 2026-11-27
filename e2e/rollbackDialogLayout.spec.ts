@@ -51,6 +51,27 @@ test("Rollback fits a short window and scopes its options to checked files", asy
   const deleteCopies = dialog.getByRole("checkbox", { name: "Delete local copies of added files" });
   const rollback = dialog.getByRole("button", { name: "Rollback", exact: true });
   await expect(status).toHaveText("1 added16 modified1 deleted");
+
+  // Double-click shows the file's diff over Rollback and leaves its box alone; closing it comes back.
+  // Let the dialog's open animation finish so both clicks land on the same row.
+  await dialog.evaluate((el) => Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished)));
+  await tree.getByTitle("ledger/merchant-settlement-batch-1.txt", { exact: true }).dblclick();
+  const diff = page.getByRole("dialog", { name: "merchant-settlement-batch-1.txt (HEAD ↔ Your version)" });
+  await expect(diff).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(diff).toBeHidden();
+  await expect(dialog).toBeVisible();
+  await expect(tree).toBeFocused();
+  await expect(status).toHaveText("1 added16 modified1 deleted");
+  // Space toggles the selected row, also right after clicking its box.
+  await page.keyboard.press("Space");
+  await expect(status).toHaveText("1 added15 modified1 deleted");
+  await page.keyboard.press("Space");
+  await expect(status).toHaveText("1 added16 modified1 deleted");
+  await tree.getByRole("checkbox", { name: "Include merchant-settlement-batch-1.txt", exact: true }).click();
+  await expect(status).toHaveText("1 added15 modified1 deleted");
+  await page.keyboard.press("Space");
+  await expect(status).toHaveText("1 added16 modified1 deleted");
   await expect(deleteCopies).toBeEnabled();
   await expect(deleteCopies).not.toBeChecked();
   await deleteCopies.check();
