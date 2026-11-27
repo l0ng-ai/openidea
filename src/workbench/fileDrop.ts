@@ -35,11 +35,19 @@ export function dropOwnedAt(x: number, y: number): boolean {
   return !!document.elementFromPoint(x, y)?.closest(`[${OWNER_ATTR}]`);
 }
 
+/**
+ * Tauri hands out native paths (`E:\code\a.sql`); the editor keys documents and tabs by the
+ * POSIX-style spelling the project tree, Ctrl+P and the restored session use, so opening the
+ * native spelling would create a second model (and a second tab) for an already open file.
+ */
+const editorPath = (path: string) => (/^[A-Za-z]:\\/.test(path) ? path.replace(/\\/g, "/") : path);
+
 /** Opens the dropped files (the last one focused), then the first dropped folder as a project. */
 export async function openDropped(paths: readonly string[], deps: FileDropDeps): Promise<void> {
-  const kinds = await Promise.all(paths.map((p) => deps.isDir(p).catch(() => false)));
-  const files = paths.filter((_, i) => !kinds[i]);
-  const dir = paths.find((_, i) => kinds[i]);
+  const editorPaths = paths.map(editorPath);
+  const kinds = await Promise.all(editorPaths.map((p) => deps.isDir(p).catch(() => false)));
+  const files = editorPaths.filter((_, i) => !kinds[i]);
+  const dir = editorPaths.find((_, i) => kinds[i]);
   for (const [i, path] of files.entries()) {
     // oxlint-disable-next-line no-await-in-loop -- tabs open in drop order so the last dropped file is focused
     await deps.openFile(path, i === files.length - 1).catch((e) => console.warn(`could not open ${path}`, e));
