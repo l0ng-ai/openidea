@@ -91,6 +91,7 @@ impl Timeline {
                     diffs: Vec::new(),
                     started_ms: Some(crate::now_ms()),
                     ended_ms: None,
+                    command: None,
                 };
                 let index = match self.tools.get(&id) {
                     Some(&i) => {
@@ -154,7 +155,7 @@ impl Timeline {
     }
 
     fn merge_tool(&mut self, index: usize, update: &Value) {
-        let AgentEntry::Tool { title, kind, status, locations: locs, output, images, diffs, ended_ms, .. } =
+        let AgentEntry::Tool { title, kind, status, locations: locs, output, images, diffs, ended_ms, command, .. } =
             &mut self.entries[index]
         else {
             return;
@@ -170,6 +171,11 @@ impl Timeline {
             if matches!(s, AgentToolStatus::Completed | AgentToolStatus::Failed) && ended_ms.is_none() {
                 *ended_ms = Some(crate::now_ms());
             }
+        }
+        if let Some(raw) = update.pointer("/rawInput/command").or_else(|| update.pointer("/rawInput/cmd"))
+            && let Some(cmd) = crate::security::command_from_value(raw)
+        {
+            *command = Some(crate::shell_script(&cmd).unwrap_or(cmd));
         }
         if update.get("locations").is_some_and(Value::is_array) {
             *locs = locations(update.get("locations"));
@@ -469,6 +475,34 @@ mod tests {
         }
         assert!(t.apply(&update).changed.is_empty());
         assert!(matches!(&t.entries[0], AgentEntry::Question { chosen: Some(answer), .. } if answer == "One"));
+    }
+
+    #[test]
+    fn an_execute_call_keeps_the_command_from_its_structured_input() {
+        let mut t = Timeline::default();
+        let command = |t: &Timeline, i: usize| match &t.entries[i] {
+            AgentEntry::Tool { command, .. } => command.clone(),
+            _ => panic!(),
+        };
+        t.apply(&json!({"sessionUpdate": "tool_call", "toolCallId": "a", "title": "Run command", "kind": "execute",
+            "rawInput": {"command": "python hello_world.py"}}));
+        assert_eq!(command(&t, 0).as_deref(), Some("python hello_world.py"));
+        // An argv array whose shell wraps the script, sent with a later update.
+        t.apply(&json!({"sessionUpdate": "tool_call", "toolCallId": "b", "title": "Run command", "kind": "execute"}));
+        assert_eq!(command(&t, 1), None);
+        t.apply(&json!({"sessionUpdate": "tool_call_update", "toolCallId": "b",
+            "rawInput": {"cmd": ["bash", "-lc", "cargo test -p ide-agent"]}}));
+        assert_eq!(command(&t, 1).as_deref(), Some("cargo test -p ide-agent"));
+        // One shell line, unwrapped as the permission card does.
+        t.apply(&json!({"sessionUpdate": "tool_call", "toolCallId": "c", "kind": "execute",
+            "rawInput": {"command": "/bin/zsh -lc 'node hello.js'"}}));
+        assert_eq!(command(&t, 2).as_deref(), Some("node hello.js"));
+        // A later update without one keeps it; tasks saved before the field load without it.
+        t.apply(&json!({"sessionUpdate": "tool_call_update", "toolCallId": "c", "status": "completed"}));
+        assert_eq!(command(&t, 2).as_deref(), Some("node hello.js"));
+        let mut old = serde_json::to_value(&t.entries[2]).unwrap();
+        old.as_object_mut().unwrap().remove("command");
+        assert!(matches!(serde_json::from_value(old).unwrap(), AgentEntry::Tool { command: None, .. }));
     }
 
     #[test]

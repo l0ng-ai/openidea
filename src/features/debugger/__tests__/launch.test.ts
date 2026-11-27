@@ -247,6 +247,7 @@ describe("run config → launch config", () => {
       // Django renders its own templates: `jinja` would make debugpy read them as Jinja2.
       expect(debug("python3", ["manage.py", "runserver"])).toMatchObject({ django: true });
       expect(debug("python3", ["manage.py", "runserver"]).jinja).toBeUndefined();
+      expect(debug("uv", ["run", "django-admin", "runserver"]).jinja).toBeUndefined();
     } finally {
       useBreakpoints.setState({ byFile: {} });
     }
@@ -284,6 +285,15 @@ describe("run config → launch config", () => {
 
     const django = debug("pdm", ["run", "python", "manage.py", "runserver"]);
     expect(extra(django)).toMatchObject({ django: true, python: ["pdm", "run", "python"] });
+    // Django templates' breakpoints need `django: true` however Django is started (#6370).
+    expect(extra(debug("uv", ["run", "python", "-m", "django", "runserver"]))).toMatchObject({
+      module: "django",
+      django: true,
+    });
+    const admin = debug("uv", ["run", "django-admin", "runserver"]);
+    expect(extra(admin)).toMatchObject({ module: "django", django: true });
+    expect(admin.args).toEqual(["runserver"]);
+    expect(extra(debug("python3", ["-m", "app"])).django).toBeUndefined();
 
     // The manager's own options stay with it; `uv run app.py` / `-m app` start Python directly (#5874).
     const withOptions = debug("uv", ["run", "--with", "rich", "--no-sync", "main.py", "-v"]);
