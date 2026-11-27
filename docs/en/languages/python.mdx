@@ -142,6 +142,7 @@ Python debugging uses debugpy. If it is missing when you start a debug session, 
 - Debugging `manage.py` enables Django support in debugpy.
 - **Attach to Process…** (`⌥⇧F5` / `Ctrl+Alt+F5`) lists local Python processes under **Python (debugpy)**.
 - The **Python Remote Debug (debugpy)** configuration attaches to a process started with `python -m debugpy --listen`, locally or on another machine, with local and remote root mapping.
+- The **Python Debug Server** configuration works the other way round: the IDE listens and the program connects with `import debugpy; debugpy.connect(("localhost", 5678)); debugpy.wait_for_client()`, from a container or another machine too. Install the IDE debugger's debugpy version where the program runs; the Debug console warns when they differ.
 
 Options:
 

@@ -10751,5 +10751,13 @@
   "tests.test_models": "tests.test_models",
   "unittest": "unittest",
   "1 file of the report is not in this project.": "报告中有 1 个文件不在此项目中。",
-  "{count} files of the report are not in this project.": "报告中有 {count} 个文件不在此项目中。"
+  "{count} files of the report are not in this project.": "报告中有 {count} 个文件不在此项目中。",
+  "Python Debug Server": "Python 调试服务器",
+  "Listen for a Python program that connects to the debugger with debugpy.connect": "监听通过 debugpy.connect 连接到调试器的 Python 程序",
+  "IDE host name": "IDE 主机名",
+  "The address the program connects to. For any host but localhost the IDE listens on all network interfaces, where anyone who reaches the port can connect": "程序连接的地址。主机不是 localhost 时，IDE 在所有网络接口上监听，能访问该端口的任何人都可以连接",
+  "Add to the program": "添加到程序中",
+  "pip install debugpy where the program runs, the same version as the IDE's debugger": "在程序运行的环境中 pip install debugpy，版本与 IDE 的调试器相同",
+  "Waiting for process connection on {address}…": "正在 {address} 上等待进程连接…",
+  "Add to the program: {line}": "添加到程序中：{line}"
 }
