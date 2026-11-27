@@ -4,6 +4,7 @@ import type {
   DbColumnInfo,
   DbForeignKey,
   DbIndexInfo,
+  DbSourceFolder,
   DbObjectKind as DbSchemaObjectKind,
   DbPackageInfo,
   DbRoutineInfo,
@@ -68,6 +69,7 @@ interface InTable {
 export type DbNode =
   | { kind: "workspace"; key: string }
   | { kind: "source"; key: string; source: DataSource }
+  | { kind: "sourceFolder"; key: string; folder: DbSourceFolder }
   /** A database of a PostgreSQL / SQL Server host; `id` is its connection target. */
   | { kind: "database"; key: string; id: string; name: string; current: boolean }
   | { kind: "schema"; key: string; id: string; schema: string }
@@ -90,6 +92,7 @@ export type DbNode =
 export function nodeTarget(n: DbNode): string | null {
   if (n.kind === "workspace") return null;
   if (n.kind === "source") return n.source.id ?? null;
+  if (n.kind === "sourceFolder" || n.kind === "message") return null;
   if ("id" in n && typeof n.id === "string") return n.id;
   return n.key.split("/")[0] ?? null;
 }
