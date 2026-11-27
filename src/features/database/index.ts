@@ -61,6 +61,7 @@ import {
   openHistory,
   openSourceDialog,
   useDatabase,
+  watchClickhouseConsoles,
   watchIdleConnections,
 } from "./store";
 
@@ -324,6 +325,7 @@ export function activate(): () => void {
         setFileDecorations("database", consoleDecorations(s));
     }),
     () => setFileDecorations("database", new Map()),
+    watchClickhouseConsoles(),
     watchIdleConnections(),
     installTableEditorFocus(),
     installValueEditorActions(),

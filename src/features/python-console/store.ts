@@ -1,6 +1,7 @@
 /** The Python Console's process: the project interpreter running console.py on the Run process host. */
 import { Channel } from "@tauri-apps/api/core";
 import { create } from "zustand";
+import { pickManage } from "@/features/django/manage";
 import { call, commands, onIdeEvent, type OutputChunk, type RunConfig, type RunId } from "@/platform/ipc";
 import { windowLabel } from "@/platform/auxWindow";
 import { dirname, useProject } from "@/platform/project";
@@ -75,8 +76,9 @@ function next() {
 
 function onMessage(message: ConsoleMessage) {
   if ("ready" in message) {
-    const { version, ipython } = message.ready;
-    useConsole.setState({ header: ipython ? `Python ${version} (${ipython})` : `Python ${version}`, status: "idle" });
+    const { version, ipython, django } = message.ready;
+    const extras = [ipython, django && `Django ${django}`].filter(Boolean).join(", ");
+    useConsole.setState({ header: extras ? `Python ${version} (${extras})` : `Python ${version}`, status: "idle" });
   } else {
     useConsole.setState({ variables: message.done.variables, status: "idle" });
   }
@@ -86,7 +88,18 @@ function onMessage(message: ConsoleMessage) {
 /** Run ids of this window's consoles: a reloaded page finds the ones its previous load left running. */
 const PREFIX = `python-console:${windowLabel()}:`;
 
-function config(python: string, cwd: string): RunConfig {
+/** The settings module `manage.py` sets as DJANGO_SETTINGS_MODULE. */
+export const settingsModule = (manage: string) =>
+  /DJANGO_SETTINGS_MODULE["']\s*,\s*["']([\w.]+)["']/.exec(manage)?.[1] ?? null;
+
+/** In a Django project the console runs where manage.py is, with Django set up (PyCharm's Django Console). */
+async function django(): Promise<{ cwd: string; settings: string } | null> {
+  const manage = pickManage((await call(commands.findFilesNamed("manage.py")).catch(() => [])).map(String));
+  const settings = manage && settingsModule((await call(commands.fsReadText(manage)).catch(() => null)) ?? "");
+  return manage && settings ? { cwd: dirname(manage), settings } : null;
+}
+
+function config(python: string, cwd: string, settings?: string): RunConfig {
   return {
     id: `${PREFIX}${crypto.randomUUID()}`,
     name: "Python Console",
@@ -95,7 +108,7 @@ function config(python: string, cwd: string): RunConfig {
     command: python,
     args: ["-u", "-c", DRIVER],
     cwd,
-    env: {},
+    env: settings ? { OPENIDEA_DJANGO_SETTINGS: settings } : {},
     detected: true,
     isTest: false,
     debugAdapter: null,
@@ -135,7 +148,9 @@ export async function startConsole() {
       }
       // "system" chunks echo the command line, which is the driver's source here.
     };
-    const info = await call(commands.runStart(config(python, root), channel, null));
+    const site = await django();
+    if (mine !== generation) return;
+    const info = await call(commands.runStart(config(python, site?.cwd ?? root, site?.settings), channel, null));
     if (mine !== generation) void call(commands.runStop(info.id)).catch(() => {});
     else {
       runId = info.id;

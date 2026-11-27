@@ -133,7 +133,7 @@ describe("cut cells", () => {
     const [full] = await loadCells(tab, [{ row: 1, col: 1 }]);
     expect(full).toBe(whole);
     // Page 2 of 10 rows: the second row of the page is row 21 of the result.
-    expect(backend.resultRow).toHaveBeenCalledWith(expect.any(Number), "pg", tab.outcome.statement, 21, "public");
+    expect(backend.resultRow).toHaveBeenCalledWith(expect.any(Number), "pg", tab.outcome.statement, 21, "public", null);
     expect(cellOf(r, 1, 1)).toBe(whole);
     expect(cutLength(r, 1, 1)).toBeNull();
     expect(hasCutCells(r)).toBe(false);
@@ -218,7 +218,7 @@ describe("cut cells", () => {
     expect(backend.resultRow).not.toHaveBeenCalled();
     expect(backend.execute).toHaveBeenCalledTimes(1);
     // The page is read whole (no cell limit) from its own first row.
-    expect(backend.execute.mock.calls[0]!.slice(3)).toEqual([20, 12, "public", null]);
+    expect(backend.execute.mock.calls[0]!.slice(3)).toEqual([20, 12, "public", null, null]);
     expect(hasCutCells(r)).toBe(false);
   });
 });
