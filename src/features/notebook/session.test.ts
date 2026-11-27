@@ -119,18 +119,40 @@ describe("shared notebook mutation session", () => {
     expect(session.cellOfUri("vscode-notebook-cell:/p/a.ipynb#cell-a")).toBe("cell-a");
     expect(session.cellOfUri("vscode-notebook-cell:/p/a.ipynb#other")).toBeNull();
 
-    // Typing keeps the same cells: no refetch.
+    // Typing keeps the same cells and the same documents: nothing is republished.
     session.edit({ type: "setSource", cell: "cell-a", source: "changed" });
     await session.settled();
     expect(m.read().cells[0]!.source).toBe("changed");
-    expect(cellDocs).toHaveBeenCalledTimes(1);
+    expect(session.getState().cellDocs.get("cell-a")?.doc).toBe(100);
 
     const added = { ...m.read().cells[0]!, id: "cell-b", source: "" };
     m.replace({ ...m.read(), version: m.read().version + 1, cells: [...m.read().cells, added] });
     session.edit({ type: "setSource", cell: "cell-a", source: "again" });
     await session.settled();
     await vi.waitFor(() => expect(session.getState().cellDocs.get("cell-b")?.doc).toBe(101));
-    expect(cellDocs).toHaveBeenCalledTimes(2);
+  });
+
+  it("picks up a new DocId the backend hands the same cell", async () => {
+    // A restarted language server, or a reopened notebook, gives a cell a new DocId while its
+    // id and source stay the same. Keeping the old one made formatting answer
+    // "DocId#N is not open".
+    const m = model();
+    let base = 100;
+    const cellDocs = vi.fn(async () =>
+      m
+        .read()
+        .cells.filter((cell) => cell.cellType === "code")
+        .map((cell) => ({ cell: cell.id, doc: base, uri: `vscode-notebook-cell:/p/a.ipynb#${cell.id}` })),
+    );
+    m.backend.cellDocs = cellDocs;
+    const session = new NotebookSession("/p/a.ipynb", m.backend, true);
+    await session.load();
+    await vi.waitFor(() => expect(session.getState().cellDocs.get("cell-a")?.doc).toBe(100));
+
+    base = 200;
+    session.edit({ type: "setSource", cell: "cell-a", source: "changed" });
+    await session.settled();
+    await vi.waitFor(() => expect(session.getState().cellDocs.get("cell-a")?.doc).toBe(200));
   });
 
   it("asks the editor to show a revealed location", () => {

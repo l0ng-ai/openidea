@@ -731,6 +731,38 @@ async fn reformat_uses_the_formatter_chain_and_preserves_a_dirty_buffer() {
     assert!(p.documents.is_dirty(doc.id).unwrap());
 }
 
+/// Answers `execute_run_configuration`'s window requests the way the Run tool window does:
+/// starts the configuration in a tab and says whether it started. Returns what it started.
+fn config_run_window(h: &Harness) -> Arc<std::sync::Mutex<Vec<ide_run::RunConfig>>> {
+    let started = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (host, events, out) = (h.host.clone(), h.events.clone(), started.clone());
+    tokio::spawn(async move {
+        let mut handled = std::collections::HashSet::new();
+        loop {
+            let request = events.lock().unwrap().iter().find_map(|e| match e {
+                IdeEvent::McpRequest { id, request: ide_core::event::McpUiRequest::RunConfiguration { config } }
+                    if !handled.contains(id) =>
+                {
+                    Some((*id, config.clone()))
+                }
+                _ => None,
+            });
+            let Some((id, config)) = request else {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                continue;
+            };
+            handled.insert(id);
+            let config: ide_run::RunConfig = serde_json::from_value(config).unwrap();
+            out.lock().unwrap().push(config.clone());
+            let result =
+                ide_host::ops::run::run_start(&host, "main", config, ide_host::ops::Channel::new(|_| {}), None).await;
+            let error = result.err().map(|e| e.message);
+            let _ = host.mcp_requests.answer("main", id, error.is_none(), error);
+        }
+    });
+    started
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn execute_reports_output_exit_code_and_requires_confirmation() {
     let h = Harness::new();
@@ -765,6 +797,7 @@ async fn execute_reports_output_exit_code_and_requires_confirmation() {
     assert!(error.contains("denied by the user"));
     assert!(h.host.processes.list().is_empty());
     h.events.lock().unwrap().clear();
+    let tabs = config_run_window(&h);
     let run = h.json("execute_run_configuration", json!({"configurationName":"MCP test","timeout":10000}));
     let allow = async {
         let id = h.request().await;
@@ -773,6 +806,39 @@ async fn execute_reports_output_exit_code_and_requires_confirmation() {
     let (result, ()) = tokio::join!(run, allow);
     assert_eq!(result["exitCode"], 7);
     assert!(result["output"].as_str().unwrap().contains("captured-output"));
+    // It ran in a Run tool window tab, as the user's Run would.
+    let tabs = tabs.lock().unwrap();
+    assert_eq!(tabs.len(), 1);
+    assert_eq!(tabs[0].name, "MCP test");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_project_without_a_window_runs_a_configuration_on_its_own() {
+    let h = Harness::new();
+    h.trust().await;
+    let config = ide_run::RunConfig {
+        id: "test".into(),
+        name: "MCP test".into(),
+        kind: "shell".into(),
+        command: if cfg!(windows) { "echo windowless& exit 3" } else { "echo windowless; exit 3" }.into(),
+        args: vec![],
+        cwd: None,
+        env: Default::default(),
+        detected: false,
+        is_test: false,
+        debug_adapter: None,
+        allow_parallel: false,
+        extras: Default::default(),
+    };
+    ide_run::save_user_configs(&h.root, &[config]).unwrap();
+    h.host
+        .global_settings
+        .set(ide_workspace::SettingsScope::Global, "mcpServer.runWithoutConfirmation", json!(true))
+        .unwrap();
+    let result = h.json("execute_run_configuration", json!({"configurationName":"MCP test","timeout":10000})).await;
+    assert_eq!(result["exitCode"], 3, "{result}");
+    assert!(result["output"].as_str().unwrap().contains("windowless"));
+    assert!(!h.events.lock().unwrap().iter().any(|e| matches!(e, IdeEvent::McpRequest { .. })), "nothing asked");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -795,6 +861,7 @@ async fn a_configuration_left_running_is_stopped_by_its_run_id() {
     };
     ide_run::save_user_configs(&h.root, &[config]).unwrap();
     h.host.mcp_requests.set_ready("main", true);
+    let _tabs = config_run_window(&h);
     let run = h.json("execute_run_configuration", json!({"configurationName":"Server","waitForExit":false}));
     let allow = async {
         let id = h.request().await;

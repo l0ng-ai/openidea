@@ -213,6 +213,8 @@ impl Host {
                 crate::ts_code_style::configure(cfg, server_root, &effective);
                 ide_sdk::apply::configure_vue_module_resolution(cfg, &data_dir);
                 ide_sdk::apply::configure_path_aliases(cfg, server_root, &data_dir);
+                let css_modules = ide_tools::managed_npm_plugin(&data_dir, "css-modules-kit");
+                ide_sdk::apply::configure_css_modules(cfg, server_root, css_modules.as_deref());
                 // After the global plugins: they keep the IDE's copies.
                 ide_sdk::apply::configure_tsconfig_plugins(cfg, server_root, &data_dir);
                 let container_python = effective.languages.python.run_target().is_some();
@@ -364,8 +366,13 @@ impl Host {
         }
         {
             let settings = settings.clone();
+            let data_dir = self.local_data_dir.clone();
             lsp.set_servers_hook(Box::new(move |language, defined| {
-                ide_sdk::apply::language_servers(language.as_str(), defined, &settings.effective())
+                let mut servers = ide_sdk::apply::language_servers(language.as_str(), defined, &settings.effective());
+                if language.as_str() == "css" && ide_tools::managed_npm_plugin(&data_dir, "css-modules-kit").is_none() {
+                    ide_sdk::apply::drop_css_modules_route(&mut servers);
+                }
+                servers
             }));
         }
         {
@@ -1048,9 +1055,8 @@ fn db_sources_watch(
         let Some(db) = weak.upgrade() else { return };
         let sink = sink.clone();
         runtime.spawn(async move {
-            if db.reconcile_sources().await {
-                sink.emit(IdeEvent::DbSourcesChanged);
-            }
+            db.reconcile_sources().await;
+            sink.emit(IdeEvent::DbSourcesChanged);
         });
     }))
     .inspect_err(|e| tracing::warn!("{}", e.message))

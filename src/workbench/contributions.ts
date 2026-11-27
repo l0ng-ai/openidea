@@ -1238,6 +1238,9 @@ export interface FileDecoration {
   /** Display name and icon for a specialized file tab. The path still identifies the document. */
   tabTitle?: string;
   tabIcon?: string;
+  /** Display name and icon for a Project view row. The path still identifies the file or folder. */
+  label?: string;
+  icon?: string;
   /** Short badge text, e.g. a problem count. */
   badge?: string;
   tooltip?: string;
@@ -1892,6 +1895,12 @@ export interface RunConfigTypeContribution {
   terminal?: boolean;
   /** Adjusts what is launched right before it starts (e.g. the environment selecting a Docker daemon). */
   prepareLaunch?(config: RunConfig): Promise<RunConfig>;
+  /**
+   * Completes a configuration imported from another IDE's files (e.g. a server name resolved
+   * to this machine's connection); `unmapped`: what it could not carry over, reported with the
+   * import's ignored settings.
+   */
+  prepareImport?(config: RunConfig): Promise<{ config: RunConfig; unmapped?: string[] }>;
   /**
    * Only Debug applies: the configuration attaches a debugger and launches no process
    * (Remote JVM Debug, Go Remote). `commandLine` returns null.

@@ -24,7 +24,8 @@ function profile(mode: ProfileMode, total: number): Profile {
       { frame: 1, total, selfWeight: 0, children: [2] },
       { frame: 2, total, selfWeight: total, children: [] },
     ],
-    methods: [{ frame: 2, selfWeight: total, total }],
+    methods: [{ frame: 2, selfWeight: total, total, calls: null, primitiveCalls: null }],
+    calls: [],
   };
 }
 
@@ -131,5 +132,41 @@ describe("ProfilerView", () => {
     render(<ProfilerTabs />);
     const labels = screen.getAllByRole("tab").map((t) => t.textContent);
     expect(labels).toEqual(["App · Live Objects", "App · Allocations", "App"]);
+  });
+
+  it("lists call counts and the callers and callees of the selected method", () => {
+    const cpu = profile("cpu", 100);
+    addSnapshot("work.pstats", {
+      ...cpu,
+      profiler: "cProfile",
+      methods: [
+        { frame: 1, selfWeight: 0, total: 100, calls: 1, primitiveCalls: 1 },
+        { frame: 2, selfWeight: 100, total: 100, calls: 8361, primitiveCalls: 1 },
+      ],
+      calls: [{ caller: 1, callee: 2, selfWeight: 100, total: 100, calls: 1, primitiveCalls: 1 }],
+    });
+    useProfiler.setState({ tab: "methods" });
+    render(<ProfilerView />);
+    const list = screen.getByRole("table", { name: "Method list" });
+    expect(within(list).getByRole("columnheader", { name: "Calls" })).toBeInTheDocument();
+    expect(within(list).getByText("8,361/1")).toBeInTheDocument();
+    expect(screen.queryByRole("table", { name: "Callers" })).toBeNull();
+
+    fireEvent.click(within(list).getByText("Main.work"));
+    const callers = screen.getByRole("table", { name: "Callers" });
+    expect(within(callers).getByText("Main.run")).toBeInTheDocument();
+    expect(within(screen.getByRole("table", { name: "Callees" })).getByText("None")).toBeInTheDocument();
+
+    // A caller selects that method in the list.
+    fireEvent.click(within(callers).getByText("Main.run"));
+    expect(within(list).getByText("Main.run").closest("tr")).toHaveAttribute("aria-selected", "true");
+    expect(within(screen.getByRole("table", { name: "Callees" })).getByText("Main.work")).toBeInTheDocument();
+  });
+
+  it("shows no call counts for a sampled profile", () => {
+    addSnapshot("App", profile("cpu", 100));
+    useProfiler.setState({ tab: "methods" });
+    render(<ProfilerView />);
+    expect(screen.queryByRole("columnheader", { name: "Calls" })).toBeNull();
   });
 });

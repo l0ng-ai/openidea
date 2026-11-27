@@ -114,6 +114,7 @@ db_connect                                   trusted            project_host bin
 db_connected                                 trusted            project_host bindings sync
 db_console_path                              always             project_host bindings sync
 db_consoles                                  always             project_host bindings sync
+db_consoles_dir                              always             project_host bindings sync
 db_create_database                           trusted            project_host bindings async
 db_database_catalog                          trusted            project_host bindings async
 db_databases                                 trusted            project_host bindings async
@@ -137,6 +138,7 @@ db_result_row                                trusted            project_host bin
 db_retain_catalog                            trusted            project_host bindings async
 db_run_tool                                  trusted            desktop      bindings async
 db_save_jdbc_driver                          trusted            project_host bindings sync
+db_save_source_folders                       trusted            project_host bindings sync
 db_save_source_visibility                    trusted            project_host bindings async
 db_save_sources                              trusted            project_host bindings async
 db_saved_catalog                             trusted            project_host bindings async
@@ -147,6 +149,7 @@ db_session_context                           trusted            project_host bin
 db_set_manual_commit                         trusted            project_host bindings async
 db_set_password                              trusted            project_host bindings async
 db_set_ssh_secret                            trusted            project_host bindings async
+db_source_folders                            trusted            project_host bindings sync
 db_sources                                   trusted            project_host bindings sync
 db_statements                                trusted            project_host bindings sync
 db_table_details                             trusted            project_host bindings async
@@ -413,6 +416,7 @@ lsp_semantic_tokens                          trusted            project_host bin
 lsp_servers                                  always             project_host bindings sync
 lsp_signature_help                           trusted            project_host bindings async
 lsp_signature_info                           trusted            project_host bindings async
+lsp_snapshot_completion                      trusted            project_host bindings async
 lsp_snapshot_diagnostics                     trusted            project_host bindings async
 lsp_source_action_text                       trusted            project_host bindings async
 lsp_type_hierarchy                           trusted            project_host bindings async

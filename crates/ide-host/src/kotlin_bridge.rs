@@ -2,7 +2,7 @@
 
 use ide_build::kotlin_bridge::{self, Outcome, ProjectLibraries};
 use ide_core::event::NotifyLevel;
-use ide_core::{CancellationToken, Diagnostic, IdeEvent, Pos, Range, Severity, SharedSink};
+use ide_core::{CancellationToken, Diagnostic, IdeEvent, Pos, Range, Severity, SharedSink, TaskId};
 use ide_lsp::LspManager;
 use ide_workspace::SettingsStore;
 use ide_workspace::documents::DocumentObserver;
@@ -223,9 +223,15 @@ impl KotlinBridge {
             let staging = directory.clone();
             let root = self.root.clone();
             let token = cancel.clone();
-            let result =
-                tokio::task::spawn_blocking(move || kotlin_bridge::build(&root, &model, &bundle, &staging, &token))
-                    .await;
+            // The build runs Maven over the Kotlin modules, which can take a minute: it shows in
+            // the status bar and can be stopped there (the next saved change builds again).
+            let task = BuildTask::start(self.sink.clone(), &cancel);
+            let progress = task.reporter();
+            let result = tokio::task::spawn_blocking(move || {
+                kotlin_bridge::build(&root, &model, &bundle, &staging, &token, &progress)
+            })
+            .await;
+            drop(task);
             if !self.revision.lock().current(generation) || self.lifetime.is_cancelled() {
                 remove_directory(directory).await;
                 continue;
@@ -306,6 +312,58 @@ impl KotlinBridge {
     }
 }
 
+/// The status bar's background task for one bridge build; ends when dropped.
+struct BuildTask {
+    id: TaskId,
+    sink: SharedSink,
+    _cancel: ide_core::task::CancelHandle,
+}
+
+impl BuildTask {
+    const TITLE: &str = "Compiling Kotlin for Java";
+
+    fn start(sink: SharedSink, cancel: &CancellationToken) -> Self {
+        let id = TaskId::next();
+        let cancel = cancel.clone();
+        let handle = ide_core::task::on_cancel(id, move || cancel.cancel());
+        let task = Self { id, sink, _cancel: handle };
+        task.emit(None, None, false);
+        task
+    }
+
+    fn emit(&self, message: Option<String>, fraction: Option<f32>, done: bool) {
+        self.sink.emit(IdeEvent::Task {
+            id: self.id,
+            title: Self::TITLE.into(),
+            message,
+            fraction,
+            done,
+            cancellable: !done,
+        });
+    }
+
+    /// Forwards Maven's progress to the task.
+    fn reporter(&self) -> impl Fn(&str, Option<f32>) + Send + Sync + 'static {
+        let (id, sink) = (self.id, self.sink.clone());
+        move |message: &str, fraction| {
+            sink.emit(IdeEvent::Task {
+                id,
+                title: Self::TITLE.into(),
+                message: Some(message.to_owned()),
+                fraction,
+                done: false,
+                cancellable: true,
+            })
+        }
+    }
+}
+
+impl Drop for BuildTask {
+    fn drop(&mut self) {
+        self.emit(None, None, true);
+    }
+}
+
 /// The error text of a failed bridge build, and whether to notify about it. Compiler errors
 /// in the user's own Kotlin already show in its editor and stay in Problems; only a build
 /// that failed without one (Maven itself, a missing plugin) is worth a notification.
@@ -368,6 +426,41 @@ impl DocumentObserver for KotlinBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_build_shows_as_a_cancellable_background_task() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink: SharedSink = Arc::new({
+            let events = events.clone();
+            move |e: IdeEvent| events.lock().push(e)
+        });
+        let cancel = CancellationToken::new();
+        let task = BuildTask::start(sink, &cancel);
+        let progress = task.reporter();
+        progress("Building app 1.0 [2/3]", Some(0.5));
+        assert!(ide_core::task::cancel(task.id), "the status bar can stop it");
+        assert!(cancel.is_cancelled());
+        drop(task);
+        let seen: Vec<_> = events
+            .lock()
+            .iter()
+            .map(|e| match e {
+                IdeEvent::Task { title, message, fraction, done, cancellable, .. } => {
+                    assert_eq!(title, "Compiling Kotlin for Java");
+                    (message.clone(), *fraction, *done, *cancellable)
+                }
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (None, None, false, true),
+                (Some("Building app 1.0 [2/3]".into()), Some(0.5), false, true),
+                (None, None, true, false),
+            ]
+        );
+    }
 
     #[test]
     fn target_package_directory_does_not_trigger() {
