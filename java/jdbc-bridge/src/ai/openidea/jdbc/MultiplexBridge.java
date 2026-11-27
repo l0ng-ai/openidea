@@ -26,6 +26,9 @@ final class MultiplexBridge {
     private final ConcurrentMap<Integer, Session> sessions = new ConcurrentHashMap<>();
     // Closing drivers still count towards the cap until their Connection.close returns.
     private final Set<Session> live = ConcurrentHashMap.newKeySet();
+    // Reserve before large writes and encodings, not while JDBC executes. This keeps
+    // frame copies and encoding temporaries within the 192 MiB JVM's headroom.
+    private final Semaphore largeReplies = new Semaphore(1, true);
     private volatile List<String> settings;
     private final AtomicBoolean stopping = new AtomicBoolean();
 
@@ -160,9 +163,9 @@ final class MultiplexBridge {
     private void schedule(Session session, OpenIdeaJdbc.Work work, List<String> fields,
                           boolean open, List<String> options) {
         session.worker.execute(() -> {
-            try {
+            try (var buffer = new ReplyBuffer(largeReplies)) {
                 var answer = session.jdbc.reply(work, fields,
-                    args -> session.id == SERVICE ? OpenIdeaJdbc.connect(args) : connect(options));
+                    args -> session.id == SERVICE ? OpenIdeaJdbc.connect(args) : connect(options), buffer);
                 if (open) {
                     if (session.jdbc.connection == null) retire(session);
                     else if (session.id == SERVICE) settings = options;

@@ -21,6 +21,7 @@ public final class OpenIdeaJdbc {
         if (available < 0 || (value != null && value.length() > available))
             throw new IOException("JDBC result exceeds 16 MiB; select fewer or smaller values");
         if (value == null) { out.writeInt(-1); return; }
+        ReplyBuffer.beforeEncoding(out, Integer.BYTES + 3 * value.length());
         byte[] data = value.getBytes(StandardCharsets.UTF_8);
         if (data.length > available) throw new IOException("JDBC result exceeds 16 MiB; select fewer or smaller values");
         out.writeInt(data.length);
@@ -230,6 +231,7 @@ public final class OpenIdeaJdbc {
                         if (t == Types.BINARY || t == Types.VARBINARY || t == Types.LONGVARBINARY || t == Types.BLOB) {
                             byte[] b = rs.getBytes(c);
                             if (b != null && b.length > (LIMIT - out.size()) / 2) throw new IOException("JDBC binary value exceeds the result limit");
+                            if (b != null) ReplyBuffer.beforeEncoding(out, Integer.BYTES + 2 + 2 * b.length);
                             text(out, b == null ? null : "0x" + HexFormat.of().formatHex(b));
                         } else {
                             text(out, rs.getString(c));
@@ -294,8 +296,12 @@ public final class OpenIdeaJdbc {
     }
 
     ByteArrayOutputStream reply(Work work, List<String> a, OpenConnection opener) throws IOException {
-        var buffer = new ByteArrayOutputStream();
-        var reply = new DataOutputStream(buffer);
+        return reply(work, a, opener, new ByteArrayOutputStream());
+    }
+
+    ByteArrayOutputStream reply(Work work, List<String> a, OpenConnection opener,
+                                ByteArrayOutputStream buffer) throws IOException {
+        var reply = ReplyBuffer.writer(buffer);
         String op = a.remove(0);
         try {
             reply.writeBoolean(true);
@@ -357,8 +363,9 @@ public final class OpenIdeaJdbc {
             }
             if (!op.equals("query") && !op.equals("page")) end(reply, false, -1);
         } catch (Exception | LinkageError e) {
-            buffer = new ByteArrayOutputStream();
-            reply = new DataOutputStream(buffer);
+            if (buffer instanceof ReplyBuffer bounded) bounded.reset();
+            else buffer = new ByteArrayOutputStream();
+            reply = ReplyBuffer.writer(buffer);
             reply.writeBoolean(false);
             if ((e instanceof ClassNotFoundException || e instanceof NoClassDefFoundError)
                     && e.getMessage() != null && e.getMessage().matches("[A-Za-z0-9_.$/]+")) {

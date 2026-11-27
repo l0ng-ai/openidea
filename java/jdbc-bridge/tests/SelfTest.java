@@ -17,6 +17,7 @@ import java.util.logging.Logger;
 public class SelfTest {
     public static class Fixture implements Driver {
         private static final CountDownLatch releaseCancellation = new CountDownLatch(1);
+        private static final String LARGE_CELL = "x".repeat(16 * 1024);
         private boolean readonly;
         private boolean dropped;
         private int changes;
@@ -71,12 +72,39 @@ public class SelfTest {
             });
         }
 
+        static ResultSet largeRows(boolean fail) {
+            int[] rows = {0};
+            var metadata = proxy(ResultSetMetaData.class, (p, m, a) -> switch (m.getName()) {
+                case "getColumnCount" -> 1;
+                case "getColumnLabel" -> "payload";
+                case "getColumnTypeName" -> "VARCHAR";
+                case "getColumnType" -> Types.VARCHAR;
+                default -> throw new SQLFeatureNotSupportedException();
+            });
+            return proxy(ResultSet.class, (p, m, a) -> switch (m.getName()) {
+                case "next" -> {
+                    if (++rows[0] == 6 && fail) throw new SQLException("large result failed while reading");
+                    yield rows[0] <= 990;
+                }
+                case "getMetaData" -> metadata;
+                case "getString" -> LARGE_CELL;
+                case "close" -> null;
+                default -> throw new SQLFeatureNotSupportedException();
+            });
+        }
+
         Statement statement() {
             var stop = new CountDownLatch(1);
             var slowCancel = new AtomicBoolean();
+            boolean[] failLargeRows = {false};
             return proxy(Statement.class, (p, m, a) -> switch (m.getName()) {
                 case "execute" -> {
                     String sql = (String) a[0];
+                    if (sql.equals("large rows") || sql.equals("large error")) {
+                        failLargeRows[0] = sql.equals("large error");
+                        System.err.println("large query started");
+                        yield true;
+                    }
                     if (sql.equals("write marker")) Files.writeString(started, "once\n", StandardOpenOption.APPEND);
                     if (sql.equals("release cancel gate")) releaseCancellation.countDown();
                     if (sql.equals("wait for cancel gate")) slowCancel.set(true);
@@ -101,6 +129,7 @@ public class SelfTest {
                     stop.countDown();
                     yield null;
                 }
+                case "getResultSet" -> largeRows(failLargeRows[0]);
                 case "getUpdateCount" -> changes;
                 case "close" -> null;
                 default -> throw new SQLFeatureNotSupportedException();
@@ -160,8 +189,11 @@ public class SelfTest {
         return message;
     }
 
-    static Process start(String java, boolean multiplex) throws IOException {
-        var command = new ArrayList<>(List.of(java, "--enable-native-access=ALL-UNNAMED", "-cp", System.getProperty("java.class.path"),
+    static Process start(String java, boolean multiplex, String... jvmOptions) throws IOException {
+        var command = new ArrayList<String>();
+        command.add(java);
+        command.addAll(List.of(jvmOptions));
+        command.addAll(List.of("--enable-native-access=ALL-UNNAMED", "-cp", System.getProperty("java.class.path"),
             OpenIdeaJdbc.class.getName()));
         if (multiplex) command.add("--multiplex");
         return new ProcessBuilder(command).start();
@@ -302,6 +334,64 @@ public class SelfTest {
         }
     }
 
+    static void boundedReplies(String java) throws Exception {
+        var child = start(java, true, "-Xmx192m");
+        try (var out = new DataOutputStream(child.getOutputStream());
+             var in = new DataInputStream(child.getInputStream());
+             var log = child.errorReader()) {
+            sendOn(out, 500, 0, "open", Fixture.class.getName(), "jdbc:fixture:", "", "", "false");
+            expect(in, 500, 1);
+            int largeQueries = 16;
+            for (int i = 1; i <= largeQueries + 1; i++) {
+                sendOn(out, 500 + i, i, "open");
+                expect(in, 500 + i, 1);
+            }
+            for (int i = 1; i <= largeQueries; i++)
+                sendOn(out, 600 + i, i, "query", "large rows", "0", "1000");
+            for (int i = 0; i < largeQueries; i++)
+                assert log.lines().anyMatch("large query started"::equals);
+            sendOn(out, 700, largeQueries + 1, "query", "small reply", "0", "1");
+            sendOn(out, 701, largeQueries + 1); // Stale cancel still produces its tagged acknowledgement.
+            // Back up stdout while the workers assemble their responses. The parent
+            // drains the payloads in place rather than retaining the test data.
+            Thread.sleep(300);
+            Set<Long> replies = new HashSet<>();
+            int smallAt = -1, ackAt = -1;
+            for (int i = 0; i < largeQueries + 2; i++) {
+                long id = in.readLong();
+                int length = in.readInt();
+                assert replies.add(id);
+                if (id == 701) {
+                    assert length == 0;
+                    ackAt = i;
+                    continue;
+                }
+                assert length > 0 && length <= OpenIdeaJdbc.LIMIT;
+                assert in.readBoolean() : "JDBC result did not finish: " + id;
+                in.skipNBytes(length - 1);
+                if (id == 700) {
+                    assert length < 1024;
+                    smallAt = i;
+                } else {
+                    assert id > 600 && id <= 600 + largeQueries && length > 15 * 1024 * 1024;
+                }
+            }
+            assert smallAt >= 0 && smallAt < largeQueries + 1;
+            assert ackAt >= 0 && ackAt < largeQueries + 1;
+            sendOn(out, 702, 0, "valid");
+            expect(in, 702, 1);
+            sendOn(out, 703, 1, "query", "large error", "0", "1000");
+            expect(in, 703, 0);
+            sendOn(out, 704, 2, "query", "large rows", "0", "1000");
+            assert in.readLong() == 704;
+            int length = in.readInt();
+            assert length > 15 * 1024 * 1024 && in.readBoolean();
+            in.skipNBytes(length - 1); // The failed encoding released its reply reservation.
+        } finally {
+            child.destroyForcibly().waitFor();
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         var boundary = new DataOutputStream(OutputStream.nullOutputStream());
         OpenIdeaJdbc.text(boundary, "x".repeat(OpenIdeaJdbc.LIMIT - 14));
@@ -353,5 +443,6 @@ public class SelfTest {
         multiplex(java);
         capacity(java);
         brokenStreams(java);
+        boundedReplies(java);
     }
 }
