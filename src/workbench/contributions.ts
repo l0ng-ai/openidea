@@ -171,6 +171,11 @@ export interface EditorKindContribution {
   /** The input that shows this tab where it is now when Back returns to it, e.g. a diff at its caret. */
   navigationInput?(input: EditorInput): EditorInput;
   /**
+   * Whether Back/Forward can still navigate to this input (`open`: a tab with its key is open).
+   * Defaults to true; return false to skip deleted tasks or closed ephemeral sessions.
+   */
+  canNavigate?(input: EditorInput, open: boolean): boolean;
+  /**
    * "Open in New Window" on its tabs: moves the tab to a lightweight window of this project
    * (`EditorService.openInWindow`) with whatever state it carries. False when it stayed here.
    */
@@ -701,6 +706,8 @@ export async function openFileExternally(path: string): Promise<boolean> {
 export interface TextEditorWrapperContribution {
   keepAlive?: boolean;
   id: string;
+  /** Yields to any other wrapper matching the file (a plugin's editor for `*.diagram.svg`). */
+  fallback?: boolean;
   matches(path: string): boolean;
   component: ComponentType<{ path: string; tabId: string; children: ReactNode; actionsInTabs?: boolean }>;
   /** Layout controls in the tab strip; the wrapper supplies a floating fallback when tabs are hidden. */
@@ -728,8 +735,13 @@ export function textEditorWrapperFor(
   wrappers: ReadonlyMap<string, TextEditorWrapperContribution>,
   path: string,
 ): TextEditorWrapperContribution | undefined {
-  for (const w of wrappers.values()) if (w.matches(path)) return w;
-  return undefined;
+  let fallback: TextEditorWrapperContribution | undefined;
+  for (const w of wrappers.values()) {
+    if (!w.matches(path)) continue;
+    if (!w.fallback) return w;
+    fallback ??= w;
+  }
+  return fallback;
 }
 
 /**
@@ -1226,6 +1238,9 @@ export interface FileDecoration {
   /** Display name and icon for a specialized file tab. The path still identifies the document. */
   tabTitle?: string;
   tabIcon?: string;
+  /** Display name and icon for a Project view row. The path still identifies the file or folder. */
+  label?: string;
+  icon?: string;
   /** Short badge text, e.g. a problem count. */
   badge?: string;
   tooltip?: string;
@@ -1832,14 +1847,22 @@ export interface RunConfigTypeField {
   rows?: number;
   placeholder?: string;
   options?: ReadonlyArray<{ value: string; label: string; detail?: string }>;
-  /** A `select`'s further options, read when the form shows it (installed JDKs, build modules). */
-  loadOptions?(): Promise<ReadonlyArray<{ value: string; label: string; detail?: string }>>;
+  /**
+   * A `select`'s further options, read when the form shows it and when its value changes
+   * (installed JDKs, build modules); `value` is the current one.
+   */
+  loadOptions?(value: string): Promise<ReadonlyArray<{ value: string; label: string; detail?: string }>>;
   /** Values offered while typing (e.g. the scripts of detected configurations). */
   suggestions?(configs: readonly RunConfig[], params: Readonly<Record<string, string>>): string[];
   required?: boolean;
   visible?(params: Readonly<Record<string, string>>): boolean;
-  /** An `output` field's text. */
+  /**
+   * An `output` field's text; for a `select`, the value it shows when that is worked out
+   * from other params (with `set` writing them back).
+   */
   value?(params: Readonly<Record<string, string>>): string;
+  /** The params after choosing `value`, for a field that stands for other params (see `value`). */
+  set?(value: string, params: Readonly<Record<string, string>>): Record<string, string>;
   /** Why a non-empty value is invalid, or null. */
   validate?(value: string, params: Readonly<Record<string, string>>): string | null;
   /** Shown under the control. */
@@ -1874,6 +1897,12 @@ export interface RunConfigTypeContribution {
   terminal?: boolean;
   /** Adjusts what is launched right before it starts (e.g. the environment selecting a Docker daemon). */
   prepareLaunch?(config: RunConfig): Promise<RunConfig>;
+  /**
+   * Completes a configuration imported from another IDE's files (e.g. a server name resolved
+   * to this machine's connection); `unmapped`: what it could not carry over, reported with the
+   * import's ignored settings.
+   */
+  prepareImport?(config: RunConfig): Promise<{ config: RunConfig; unmapped?: string[] }>;
   /**
    * Only Debug applies: the configuration attaches a debugger and launches no process
    * (Remote JVM Debug, Go Remote). `commandLine` returns null.

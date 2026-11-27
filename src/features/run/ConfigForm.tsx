@@ -61,6 +61,7 @@ import { PluginArgsInput } from "./PluginArgsInput";
 import { pluginOwnedConfig } from "./pluginArgsCompletion";
 import { useBuildModel } from "@/platform/buildModel";
 import { COMPOUND, formParams, terminalApplies, withParams } from "./types";
+import { frameworkFor } from "./testing";
 import { TomcatSettings } from "./TomcatSettings";
 import { toolWindowTitle } from "@/workbench/toolwindows/title";
 import styles from "./Run.module.css";
@@ -109,6 +110,7 @@ export type OptionId =
   | "openToolWindow"
   | "focusToolWindow"
   | "isTest"
+  | "watch"
   | "emulateTerminal";
 
 const VALUE_OPTIONS: ReadonlySet<OptionId> = new Set([
@@ -131,13 +133,14 @@ const OPTION_LABELS: Record<OptionId, string> = {
   openToolWindow: "Open run/debug tool window when started",
   focusToolWindow: "Focus run/debug tool window when started",
   isTest: "Show results in the test runner",
+  watch: "Watch for changes",
   emulateTerminal: "Emulate terminal in output console",
 };
 
 const OPTION_GROUPS: ReadonlyArray<{ label: string; options: OptionId[]; process: boolean }> = [
   { label: "Operating System", options: ["allowParallel", "stdinFile", "envFiles", "emulateTerminal"], process: true },
   { label: "Logs", options: ["outputFile", "showOnStdout", "showOnStderr"], process: true },
-  { label: "Test", options: ["isTest"], process: true },
+  { label: "Test", options: ["isTest", "watch"], process: true },
   {
     label: "Before Launch",
     options: ["buildPolicy", "beforeLaunch", "openToolWindow", "focusToolWindow"],
@@ -170,6 +173,8 @@ export function optionSet(config: RunConfig, id: OptionId, openByDefault: boolea
       return !!config.focusToolWindow;
     case "isTest":
       return config.isTest;
+    case "watch":
+      return !!config.watch;
     case "emulateTerminal":
       return !!config.emulateTerminal;
   }
@@ -200,6 +205,8 @@ export function optionPatch(id: OptionId, on: boolean): Partial<RunConfig> {
       return { focusToolWindow: on };
     case "isTest":
       return on ? { isTest: true, emulateTerminal: false } : { isTest: false };
+    case "watch":
+      return { watch: on };
     case "emulateTerminal":
       return { emulateTerminal: on };
   }
@@ -398,6 +405,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   };
 
   const terminal = terminalApplies(config, type);
+  const watchApplies = config.isTest && frameworkFor(config) === "js";
   // A terminal has no separate input file: the two options exclude each other.
   const blocked = (id: OptionId) =>
     (id === "emulateTerminal" && isShown("stdinFile")) || (id === "stdinFile" && !!config.emulateTerminal);
@@ -408,7 +416,8 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
         (id) =>
           (!compound || id === "beforeLaunch") &&
           (id !== "emulateTerminal" || terminal || !!config.emulateTerminal) &&
-          (id !== "buildPolicy" || buildPolicyApplies(config)),
+          (id !== "buildPolicy" || buildPolicyApplies(config)) &&
+          (id !== "watch" || watchApplies),
       )
       .map((id): MenuItem => ({
         label: OPTION_LABELS[id],
@@ -498,6 +507,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
       "openToolWindow",
       "focusToolWindow",
       "isTest",
+      "watch",
     ] as const
   ).filter(
     (id) => (!noProcess || id === "openToolWindow" || id === "focusToolWindow") && optionSet(config, id, openByDefault),
@@ -608,7 +618,9 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
                     params={params}
                     all={all}
                     invalid={!!errors[f.key]}
-                    onChange={(v) => setParam(f.key, v)}
+                    onChange={(v) =>
+                      f.set ? onChange(withParams(config, f.set(v, params), type)) : setParam(f.key, v)
+                    }
                   />
                 </Field>
               ))
@@ -911,6 +923,12 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
             </div>
           )}
 
+          {config.watch && watchApplies && !noProcess && (
+            <div className={styles.notice}>
+              <T>Debug runs the tests once, without watching.</T>
+            </div>
+          )}
+
           {!noProcess && !template && (
             <div className={styles.editPreview}>
               <span className={styles.chooserMuted}>
@@ -955,24 +973,26 @@ function TypeField({
   const root = useProject((s) => s.project?.root ?? null);
   const listId = `run-field-${field.key}`;
   const [loaded, setLoaded] = useState<ReadonlyArray<{ value: string; label: string; detail?: string }>>([]);
+  // A select that stands for other params shows the value worked out from them.
+  const shown = field.control === "select" && field.value ? field.value(params) : value;
   useEffect(() => {
     let live = true;
     void field
-      .loadOptions?.()
+      .loadOptions?.(shown)
       .then((options) => live && setLoaded(options))
       .catch(() => {});
     return () => {
       live = false;
     };
-  }, [field]);
+  }, [field, shown]);
   if (field.control === "output") return <OutputField label={field.label} text={field.value?.(params) ?? ""} />;
   if (field.control === "select") {
     // Loaded options are detected data (JDKs, build modules), not catalog text.
     const options: SelectOption[] = [...(field.options ?? []), ...loaded.map((o) => ({ ...o, verbatim: true }))];
-    if (value && !options.some((o) => o.value === value)) options.push({ value, label: value, verbatim: true });
+    if (shown && !options.some((o) => o.value === shown)) options.push({ value: shown, label: shown, verbatim: true });
     return (
       <Select
-        value={value || (options[0]?.value ?? "")}
+        value={shown || (options[0]?.value ?? "")}
         options={options}
         onChange={onChange}
         aria-label={field.label}

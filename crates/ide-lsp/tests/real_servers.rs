@@ -881,6 +881,346 @@ async fn vue_hybrid_mode_end_to_end() {
     }
 }
 
+/// The path-alias tsserver plugin (`ide-sdk/src/path-aliases.js`) on vtsls: a Vite alias the
+/// tsconfig doesn't define resolves, completes and isn't reported; one it defines keeps the
+/// tsconfig's target. Set `OPENIDEA_TEST_NPM_TOOLS` to a dir with `npm i @vtsls/language-server typescript@6`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires @vtsls/language-server (OPENIDEA_TEST_NPM_TOOLS)"]
+async fn bundler_path_aliases_resolve_below_tsconfig_paths() {
+    let tools = std::path::PathBuf::from(std::env::var("OPENIDEA_TEST_NPM_TOOLS").expect("OPENIDEA_TEST_NPM_TOOLS"));
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
+    let slash = |p: &Path| p.to_string_lossy().replace('\\', "/");
+    for dir in ["src", "own", "plugin/node_modules/openidea-path-aliases"] {
+        std::fs::create_dir_all(root.join(dir)).unwrap();
+    }
+    // What the settings hook writes for `alias: { '@': path.resolve(__dirname, 'src') }`.
+    let plugin = root.join("plugin/node_modules/openidea-path-aliases");
+    std::fs::write(plugin.join("index.js"), include_str!("../../ide-sdk/src/path-aliases.js")).unwrap();
+    let src = slash(&root.join("src"));
+    let paths = serde_json::json!({ slash(&root): { "@": [src], "@/*": [format!("{src}/*")] } });
+    std::fs::write(plugin.join("paths.json"), paths.to_string()).unwrap();
+    std::fs::write(root.join("package.json"), "{\"name\":\"app\",\"private\":true}").unwrap();
+    let tsconfig = |paths: &str| {
+        format!(
+            "{{\"compilerOptions\":{{\"strict\":true,\"module\":\"ESNext\",\"moduleResolution\":\"Bundler\"{paths}}},\"include\":[\"src\"]}}"
+        )
+    };
+    std::fs::write(root.join("tsconfig.json"), tsconfig("")).unwrap();
+    std::fs::write(root.join("src/a.ts"), "export const answer = 42;\n").unwrap();
+    std::fs::write(root.join("own/a.ts"), "export const answer = 1;\n").unwrap();
+    let main = root.join("src/main.ts");
+    let text = "import { answer } from '@/a';\nimport '@/';\nconst n: number = answer + '';\n";
+    std::fs::write(&main, text).unwrap();
+    let init = serde_json::json!({ "vtsls": { "tsserver": { "globalPlugins": [{
+        "name": "openidea-path-aliases",
+        "location": root.join("plugin").to_string_lossy(),
+        "enableForWorkspaceTypeScriptVersions": true,
+    }] } } });
+    let ts = || lang("typescript", "ts", npm_server(&tools, "vtsls", "vtsls", Some(init.clone())));
+
+    let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![ts()]));
+    let doc = DocId::next();
+    mgr.did_open(doc, &main, &LanguageId::new("typescript"), 1, text);
+    let defs = retry("definition through the alias", Duration::from_secs(90), || {
+        let mgr = mgr.clone();
+        let a = root.join("src/a.ts");
+        // The syntax server answers with the import itself until the project is loaded.
+        async move {
+            mgr.goto(doc, Pos::new(0, 10), GotoKind::Definition).await.ok().filter(|d| d.iter().any(|d| d.path == a))
+        }
+    })
+    .await;
+    assert_eq!(defs.len(), 1);
+    retry("path completion after @/", Duration::from_secs(30), || {
+        let mgr = mgr.clone();
+        async move {
+            let list = mgr.completion(doc, Pos::new(1, 10), Some("/".into()), Default::default()).await.ok()?;
+            list.items.iter().any(|i| i.label == "a" || i.label == "a.ts").then_some(())
+        }
+    })
+    .await;
+    // The deliberate type error is reported; the aliased import is not.
+    let diagnostics = retry("diagnostics", Duration::from_secs(30), || {
+        let found = events.lock().iter().rev().find_map(|e| match e {
+            IdeEvent::Diagnostics { path, items, .. } if path == &main && !items.is_empty() => Some(items.clone()),
+            _ => None,
+        });
+        async move { found }
+    })
+    .await;
+    assert!(diagnostics.iter().all(|d| !d.message.contains("Cannot find module")), "{diagnostics:?}");
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+
+    // The tsconfig's own `@/*` wins.
+    std::fs::write(root.join("tsconfig.json"), tsconfig(",\"paths\":{\"@/*\":[\"./own/*\"]}")).unwrap();
+    let (mgr, _events) = manager(&root, LanguageRegistry::from_configs(vec![ts()]));
+    let doc = DocId::next();
+    mgr.did_open(doc, &main, &LanguageId::new("typescript"), 1, text);
+    let defs = retry("definition through the tsconfig paths", Duration::from_secs(90), || {
+        let mgr = mgr.clone();
+        let own = root.join("own/a.ts");
+        async move {
+            mgr.goto(doc, Pos::new(0, 10), GotoKind::Definition).await.ok().filter(|d| d.iter().any(|d| d.path == own))
+        }
+    })
+    .await;
+    assert_eq!(defs.len(), 1);
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+}
+
+/// CSS Modules Kit (`@css-modules-kit/ts-plugin`) on vtsls, which serves the `.module.css`
+/// files too (`languages: ["css"]`): definition and completion from TSX, references and rename
+/// from the stylesheet (#6071), with the settings hook's own plugin configuration. Exactly the
+/// IDE's copy loads, once: also when the project has the package in its `node_modules`, and when
+/// its tsconfig declares it in `compilerOptions.plugins` (#6336's probe location leaves it out,
+/// and tsserver resolves the declared name from the global plugin's location). Set
+/// `OPENIDEA_TEST_NPM_TOOLS` to a dir with `npm i @vtsls/language-server typescript@6 @css-modules-kit/ts-plugin@1.4.2`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires @vtsls/language-server and @css-modules-kit/ts-plugin (OPENIDEA_TEST_NPM_TOOLS)"]
+async fn css_modules_kit_navigates_between_tsx_and_module_css() {
+    let tools = std::path::PathBuf::from(std::env::var("OPENIDEA_TEST_NPM_TOOLS").expect("OPENIDEA_TEST_NPM_TOOLS"));
+    // (the project has its own package, its tsconfig declares the plugin)
+    for (project_copy, declared) in [(false, false), (true, false), (true, true)] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("package.json"), "{\"name\":\"app\",\"private\":true}").unwrap();
+        if project_copy {
+            // Says so in every file if it is ever loaded.
+            let package = root.join("node_modules/@css-modules-kit/ts-plugin");
+            std::fs::create_dir_all(&package).unwrap();
+            std::fs::write(package.join("package.json"), r#"{"name":"@css-modules-kit/ts-plugin","version":"0.0.1"}"#)
+                .unwrap();
+            std::fs::write(package.join("index.js"), DIAGNOSTIC_PLUGIN.replace("NAME", "'the project copy'")).unwrap();
+        }
+        let plugins = if declared { r#", "plugins": [{ "name": "@css-modules-kit/ts-plugin" }]"# } else { "" };
+        std::fs::write(
+            root.join("tsconfig.json"),
+            format!(
+                "{{\n  // JSON with comments\n  \"compilerOptions\": {{ \"strict\": true, \"jsx\": \"preserve\", \"module\": \"ESNext\", \"moduleResolution\": \"Bundler\"{plugins} }},\n  \"include\": [\"src\"],\n  \"cmkOptions\": {{ \"enabled\": true }}\n}}\n"
+            ),
+        )
+        .unwrap();
+        let css_path = root.join("src/Button.module.css");
+        let css = ".button { color: red; }\n.label { color: blue; }\n";
+        std::fs::write(&css_path, css).unwrap();
+        let tsx_path = root.join("src/Button.tsx");
+        let tsx =
+            "import styles from './Button.module.css';\nexport const a = styles.button;\nexport const b = styles.";
+        std::fs::write(&tsx_path, tsx).unwrap();
+        let mut vtsls = npm_server(&tools, "vtsls", "vtsls", None);
+        vtsls.tsserver_project = true;
+        assert!(ide_sdk::apply::configure_css_modules(&mut vtsls, &root, Some(&tools)));
+        let data = tempfile::tempdir().unwrap();
+        // The plugin is the IDE's global one: no probe location for it.
+        assert!(!ide_sdk::apply::configure_tsconfig_plugins(&mut vtsls, &root, data.path()));
+        let registry = LanguageRegistry::from_configs(vec![
+            lang("typescriptreact", "tsx", vtsls.clone()),
+            lang("css", "css", vtsls),
+        ]);
+        let (mgr, events) = manager(&root, registry);
+        let tsx_doc = DocId::next();
+        mgr.did_open(tsx_doc, &tsx_path, &LanguageId::new("typescriptreact"), 1, tsx);
+        let css_doc = DocId::next();
+        mgr.did_open(css_doc, &css_path, &LanguageId::new("css"), 1, css);
+        assert_eq!(mgr.servers().iter().filter(|s| s.name == "vtsls").count(), 1, "one vtsls for both");
+        let case = format!("project copy: {project_copy}, declared: {declared}");
+
+        // `styles.button` → `.button`.
+        let defs = retry("definition in the stylesheet", Duration::from_secs(90), || {
+            let (mgr, css_path) = (mgr.clone(), css_path.clone());
+            async move {
+                let defs = mgr.goto(tsx_doc, Pos::new(1, 26), GotoKind::Definition).await.ok()?;
+                defs.iter().any(|d| d.path == css_path).then_some(defs)
+            }
+        })
+        .await;
+        assert_eq!(defs.len(), 1, "{case}: {defs:?}");
+        assert_eq!((defs[0].range.start.line, defs[0].range.start.col), (0, 1), "{case}");
+        let list = retry("class name completion", Duration::from_secs(30), || {
+            let mgr = mgr.clone();
+            async move {
+                let list = mgr.completion(tsx_doc, Pos::new(2, 24), Some(".".into()), Default::default()).await.ok()?;
+                list.items.iter().any(|i| i.label == "label").then_some(list)
+            }
+        })
+        .await;
+        let labels: Vec<&str> =
+            list.items.iter().map(|i| i.label.as_str()).filter(|l| ["button", "label"].contains(l)).collect();
+        assert_eq!(labels.len(), 2, "{case}: each class once, {labels:?}");
+
+        // `.button` in the stylesheet → its use in the component, once.
+        let refs = retry("references from the stylesheet", Duration::from_secs(30), || {
+            let (mgr, tsx_path) = (mgr.clone(), tsx_path.clone());
+            async move {
+                let refs = mgr
+                    .references_streaming(css_doc, Pos::new(0, 3), false, true, false, Default::default(), None)
+                    .await
+                    .ok()?;
+                Some(refs.locations).filter(|l| l.iter().any(|l| l.path == tsx_path))
+            }
+        })
+        .await;
+        assert_eq!(refs.len(), 1, "{case}: {refs:?}");
+        assert_eq!((refs[0].path.to_path_buf(), refs[0].range.start.line), (tsx_path.clone(), 1), "{case}");
+        let renamed = mgr.rename(css_doc, Pos::new(0, 3), "primary".into(), Default::default()).await.unwrap().edit;
+        assert_eq!(edited_lines(&renamed, &css_path), [0], "{case}");
+        assert_eq!(edited_lines(&renamed, &tsx_path), [1], "{case}");
+        // The component's diagnostics are in: the plugins have run on it.
+        retry("diagnostics of the component", Duration::from_secs(30), || {
+            let found =
+                events.lock().iter().any(|e| matches!(e, IdeEvent::Diagnostics { path, .. } if path == &tsx_path));
+            async move { found.then_some(()) }
+        })
+        .await;
+        let project_copy_loaded = events.lock().iter().any(|e| {
+            matches!(e, IdeEvent::Diagnostics { items, .. } if items.iter().any(|d| d.message.contains("the project copy")))
+        });
+        assert!(!project_copy_loaded, "{case}");
+        tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+    }
+}
+
+const MDX_BUTTON: &str =
+    "export function Button(props: { label: string }) {\n  return <button>{props.label}</button>;\n}\n";
+const MDX_DOC: &str = "import { Button } from \"./Button\"\n\nexport const count = 2\n\n# Hello\n\n<Button label=\"hi\" />\n\n<Button label={count} />\n\n{count.toFixed()}\n";
+
+/// The MDX Language Server with the `typescript.tsdk` the launcher adds. Set
+/// `OPENIDEA_TEST_NPM_TOOLS` to a dir with `npm i @mdx-js/language-server
+/// typescript@6 @types/react`; the project is created inside it, so that it
+/// resolves the React types.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires @mdx-js/language-server, typescript and @types/react (OPENIDEA_TEST_NPM_TOOLS)"]
+async fn mdx_language_server_end_to_end() {
+    let tools = std::path::PathBuf::from(std::env::var("OPENIDEA_TEST_NPM_TOOLS").expect("OPENIDEA_TEST_NPM_TOOLS"));
+    let dir = tempfile::tempdir_in(&tools).unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::write(
+        root.join("tsconfig.json"),
+        "{\"compilerOptions\":{\"strict\":true,\"jsx\":\"react-jsx\",\"moduleResolution\":\"bundler\",\"module\":\"esnext\"},\"mdx\":{\"checkMdx\":true}}",
+    )
+    .unwrap();
+    let (button, file) = (root.join("Button.tsx"), root.join("doc.mdx"));
+    std::fs::write(&button, MDX_BUTTON).unwrap();
+    std::fs::write(&file, MDX_DOC).unwrap();
+
+    let mut mdx = LanguageRegistry::load(None).unwrap().get(&LanguageId::new("mdx")).unwrap();
+    let server = &mut mdx.language_servers[0];
+    server.command = tools.join("node_modules/.bin/mdx-language-server").to_string_lossy().into_owned();
+    let tsdk = tools.join("node_modules/typescript/lib").to_string_lossy().into_owned();
+    server.initialization_options.as_mut().unwrap()["typescript"]
+        .as_table_mut()
+        .unwrap()
+        .insert("tsdk".into(), toml::Value::String(tsdk));
+    let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![mdx]));
+    let doc = DocId::next();
+    mgr.did_open(doc, &file, &LanguageId::new("mdx"), 1, MDX_DOC);
+
+    // `Button` in `<Button label="hi" />`.
+    let hover = retry("hover", Duration::from_secs(90), || {
+        let mgr = mgr.clone();
+        async move { mgr.hover(doc, Pos::new(6, 3), Default::default()).await.ok().flatten() }
+    })
+    .await;
+    assert!(hover.contents.value.contains("label: string"), "{}", hover.contents.value);
+    let defs = mgr.goto(doc, Pos::new(6, 3), GotoKind::Definition).await.unwrap();
+    assert!(defs.iter().any(|d| d.path == button), "{defs:?}");
+
+    // Members of `count` inside `{…}`, and the imported component in JSX.
+    for (pos, label) in [(Pos::new(10, 7), "toFixed"), (Pos::new(6, 3), "Button")] {
+        retry(label, Duration::from_secs(30), || {
+            let mgr = mgr.clone();
+            async move {
+                let list = mgr.completion(doc, pos, None, Default::default()).await.ok()?;
+                list.items.iter().any(|i| i.label == label).then_some(())
+            }
+        })
+        .await;
+    }
+
+    // Markdown headings come from the server too (marksman skips `.mdx` by default).
+    let symbols = mgr.document_symbols(doc).await.unwrap().unwrap();
+    assert!(symbols.iter().any(|s| s.name.contains("Hello")), "{symbols:?}");
+
+    // `label={count}`: number is not assignable to string.
+    retry("prop type error", Duration::from_secs(60), || {
+        let found = events.lock().iter().any(|e| {
+            matches!(e, IdeEvent::Diagnostics { path, items, .. }
+                if path == &file && items.iter().any(|d| d.range.start.line == 8 && d.message.contains("string")))
+        });
+        async move { found.then_some(()) }
+    })
+    .await;
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+}
+
+/// A tsserver plugin reporting `from <name>` at the start of every file.
+const DIAGNOSTIC_PLUGIN: &str = "module.exports = () => ({ create(info) {\n  const ls = info.languageService;\n  const proxy = Object.create(null);\n  for (const k of Object.keys(ls)) proxy[k] = (...a) => ls[k](...a);\n  proxy.getSemanticDiagnostics = (f) => [...ls.getSemanticDiagnostics(f), { file: ls.getProgram().getSourceFile(f), start: 0, length: 1, messageText: 'from ' + NAME, category: 1, code: 99001 }];\n  return proxy;\n} });\n";
+
+/// tsconfig `compilerOptions.plugins` load from the project's `node_modules` with vtsls' own
+/// TypeScript through the probe location `configure_tsconfig_plugins` writes (#6336); one that
+/// isn't installed is skipped, and the IDE's global plugins keep loading their own copies,
+/// also when the project has a package of the same name. Set `OPENIDEA_TEST_NPM_TOOLS` to a
+/// dir with `npm i @vtsls/language-server typescript@5`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires @vtsls/language-server (OPENIDEA_TEST_NPM_TOOLS)"]
+async fn tsconfig_plugins_load_from_the_project_with_the_bundled_typescript() {
+    let tools = std::path::PathBuf::from(std::env::var("OPENIDEA_TEST_NPM_TOOLS").expect("OPENIDEA_TEST_NPM_TOOLS"));
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
+    // Outside the project: a probe location resolves plugins from its ancestors' node_modules too.
+    let ide = tempfile::tempdir().unwrap();
+    let ide = dunce::canonicalize(ide.path()).unwrap();
+    let plugin = |dir: &Path, name: &str, says: &str| {
+        let dir = dir.join("node_modules").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("index.js"), DIAGNOSTIC_PLUGIN.replace("NAME", &format!("'{says}'"))).unwrap();
+    };
+    plugin(&root, "project-plugin", "project-plugin");
+    plugin(&root, "global-plugin", "the project's global-plugin");
+    plugin(&ide, "global-plugin", "global-plugin");
+    std::fs::write(root.join("package.json"), "{\"name\":\"app\",\"private\":true}").unwrap();
+    let plugins = r#"[{"name":"not-installed"},{"name":"project-plugin"}]"#;
+    std::fs::write(root.join("tsconfig.json"), format!("{{\"compilerOptions\":{{\"plugins\":{plugins}}}}}")).unwrap();
+    let main = root.join("main.ts");
+    let text = "export const n: number = 1;\n";
+    std::fs::write(&main, text).unwrap();
+    let global = serde_json::json!({ "vtsls": { "tsserver": { "globalPlugins": [{
+        "name": "global-plugin",
+        "location": ide.to_string_lossy(),
+        "enableForWorkspaceTypeScriptVersions": true,
+    }] } } });
+
+    for configured in [false, true] {
+        let mut server = npm_server(&tools, "vtsls", "vtsls", Some(global.clone()));
+        server.tsserver_project = true;
+        if configured {
+            assert!(ide_sdk::apply::configure_tsconfig_plugins(&mut server, &root, &ide.join("data")));
+        }
+        let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![lang("typescript", "ts", server)]));
+        let doc = DocId::next();
+        mgr.did_open(doc, &main, &LanguageId::new("typescript"), 1, text);
+        let mut messages = retry("the plugins' diagnostics", Duration::from_secs(90), || {
+            let found = events.lock().iter().rev().find_map(|e| match e {
+                IdeEvent::Diagnostics { path, items, .. } if path == &main && !items.is_empty() => {
+                    Some(items.iter().map(|d| d.message.clone()).collect::<Vec<_>>())
+                }
+                _ => None,
+            });
+            async move { found }
+        })
+        .await;
+        messages.sort();
+        let expected: &[&str] =
+            if configured { &["from global-plugin", "from project-plugin"] } else { &["from global-plugin"] };
+        assert_eq!(messages, expected);
+        let crashed = matches!(last_status(&events, "vtsls"), Some((ServerStatus::Crashed, _)));
+        assert!(!crashed, "{:?}", last_status(&events, "vtsls"));
+        tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+    }
+}
+
 const NG_APP_TS: &str = "import { Component } from '@angular/core';\n\n@Component({\n  selector: 'app-root',\n  templateUrl: './app.html',\n})\nexport class App {\n  title = 'demo';\n}\n";
 const NG_APP_HTML: &str = "<h1>{{ title }}</h1>\n<p>{{ missing }}</p>\n";
 const NG_INLINE_TS: &str = "import { Component } from '@angular/core';\n\n@Component({\n  selector: 'app-inline',\n  template: `<b>{{ count }}</b>`,\n})\nexport class Inline {\n  count = 1;\n}\n";
@@ -1335,5 +1675,83 @@ async fn jdtls_build_reports_cross_module_errors_in_open_and_closed_files() {
         async move { found.then_some(()) }
     })
     .await;
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+}
+
+/// Indented Sass through the built-in `sass` definition: completion, Go to
+/// Declaration and hover across `@use`, and syntax errors as diagnostics.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires some-sass-language-server on PATH"]
+async fn some_sass_indented_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let theme = root.join("_theme.sass");
+    std::fs::write(
+        &theme,
+        "/// Brand colour\n$brand: #336699\n\n/// Rounded corners\n@mixin rounded($r: 4px)\n  border-radius: $r\n",
+    )
+    .unwrap();
+    let main = root.join("main.sass");
+    let source = "@use \"theme\"\n\n.button\n  color: theme.$brand\n  +theme.rounded(2px)\n";
+    std::fs::write(&main, source).unwrap();
+    let sass = LanguageRegistry::load(None).unwrap().get(&LanguageId::new("sass")).unwrap();
+    let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![sass]));
+    let doc = DocId::next();
+    mgr.did_open(doc, &main, &LanguageId::new("sass"), 1, source);
+    let name = "some-sass-language-server";
+    retry("some-sass ready", Duration::from_secs(30), || {
+        let status = last_status(&events, name);
+        if let Some((ServerStatus::Crashed | ServerStatus::Missing | ServerStatus::Misconfigured, msg)) = &status {
+            panic!("some-sass failed: {msg:?}");
+        }
+        async move { matches!(status, Some((ServerStatus::Ready | ServerStatus::Busy, _))).then_some(()) }
+    })
+    .await;
+
+    // `theme.$brand` and the `+theme.rounded` mixin, both in `_theme.sass`.
+    for (pos, line) in [(Pos::new(3, 17), 1), (Pos::new(4, 10), 4)] {
+        let defs = retry("definition", Duration::from_secs(30), || {
+            let mgr = mgr.clone();
+            async move { mgr.goto(doc, pos, GotoKind::Definition).await.ok().filter(|d| !d.is_empty()) }
+        })
+        .await;
+        assert_eq!((defs[0].path.to_path_buf(), defs[0].range.start.line), (theme.clone(), line), "{pos:?}");
+    }
+    // The `@use` path is a document link, which Go to Declaration follows.
+    let links = mgr.document_links(doc).await.unwrap();
+    assert!(
+        links
+            .iter()
+            .any(|l| l.range.start.line == 0 && l.path.as_ref().map(|p| p.to_path_buf()) == Some(theme.clone())),
+        "{links:?}"
+    );
+    let hover = mgr.hover(doc, Pos::new(3, 17), Default::default()).await.unwrap().unwrap();
+    assert!(hover.contents.value.contains("#336699") && hover.contents.value.contains("Brand colour"));
+    let hover = mgr.hover(doc, Pos::new(4, 10), Default::default()).await.unwrap().unwrap();
+    assert!(hover.contents.value.contains("Rounded corners"), "{}", hover.contents.value);
+
+    // `$` lists the module's variables, `+` its mixins.
+    let edited = format!("{source}  margin: theme.$\n  +theme.\n");
+    mgr.did_change(
+        doc,
+        2,
+        &[AppliedChange { range: Range::point(Pos::new(5, 0)), text: edited[source.len()..].into() }],
+        &|| unreachable!(),
+    );
+    let labels = |list: ide_lsp::types::CompletionList| list.items.into_iter().map(|i| i.label).collect::<Vec<_>>();
+    let vars = labels(mgr.completion(doc, Pos::new(5, 16), Some("$".into()), Default::default()).await.unwrap());
+    assert!(vars.iter().any(|l| l.contains("$brand")), "{vars:?}");
+    let mixins = labels(mgr.completion(doc, Pos::new(6, 9), Some(".".into()), Default::default()).await.unwrap());
+    assert!(mixins.iter().any(|l| l.contains("rounded")), "{mixins:?}");
+
+    let errors = retry("diagnostics", Duration::from_secs(30), || {
+        let found = events.lock().iter().rev().find_map(|event| match event {
+            IdeEvent::Diagnostics { source, items, .. } if source == name && !items.is_empty() => Some(items.clone()),
+            _ => None,
+        });
+        async move { found }
+    })
+    .await;
+    assert!(errors.iter().any(|d| d.range.start.line >= 5), "{errors:?}");
     tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
 }

@@ -1251,6 +1251,7 @@ pub async fn remote_invoke(
                 c.channels.lock().insert(own, (on_channel.clone(), id));
                 if (batch_execution && name == "onProgress")
                     || (cmd == "vcs_watch_commit_messages" && name == "onMessages")
+                    || cmd.starts_with("docker_")
                 {
                     finite_channel = Some(own);
                 }
@@ -1529,6 +1530,7 @@ mod tests {
                 settings: Default::default(),
                 workspace: None,
                 unity: None,
+                unreal: None,
             })
             .unwrap())
         }

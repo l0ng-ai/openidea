@@ -10,11 +10,14 @@
 //! | Python | `py-spy record --format raw` | collapsed stacks |
 //! | JVM applications | async-profiler agent (`JAVA_TOOL_OPTIONS`) | collapsed stacks |
 //! | native / `cargo run` (Linux) | `perf record -g`, then `perf script` | perf script text |
+//!
+//! Saved snapshots open too: V8 `.cpuprofile` files and cProfile / profile `pstats` files.
 
 mod formats;
 mod jvm;
 mod live;
 mod plan;
+mod pstats;
 mod tree;
 
 pub use live::gc_before_stop;
@@ -83,6 +86,27 @@ pub struct MethodStat {
     pub frame: u32,
     pub self_weight: f64,
     pub total: f64,
+    /// Calls, when the profiler counts them (cProfile); sampling profilers don't.
+    pub calls: Option<f64>,
+    /// Calls that were not recursive (`pstats`' primitive calls).
+    pub primitive_calls: Option<f64>,
+}
+
+/// What one function spent when called from another, as a call-graph profiler (cProfile)
+/// records it. Sampling profilers leave [`Profile::calls`] empty; their callers and callees
+/// come from the call tree.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CallEdge {
+    /// Index into [`Profile::frames`].
+    pub caller: u32,
+    pub callee: u32,
+    /// Weight spent in the callee itself on these calls.
+    pub self_weight: f64,
+    /// Weight of these calls, including what the callee called.
+    pub total: f64,
+    pub calls: f64,
+    pub primitive_calls: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -99,6 +123,9 @@ pub struct Profile {
     pub nodes: Vec<ProfileNode>,
     /// Sorted by self weight, heaviest first.
     pub methods: Vec<MethodStat>,
+    /// Exact caller → callee totals of a call-graph profile; its call tree is then rebuilt
+    /// from them, so below the first level it is an estimate. Empty for sampled profiles.
+    pub calls: Vec<CallEdge>,
 }
 
 /// Where a prepared run's profile will be, and how to read it.
@@ -109,6 +136,10 @@ pub enum ProfileSpec {
     /// ran no code of `root` (the package manager of an npm script) are left
     /// out when another one did.
     CpuProfiles { dir: IpcPath, root: IpcPath },
+    /// A snapshot file the user opened: a V8 `.cpuprofile` (`node --cpu-prof`, Chrome
+    /// DevTools, CI) or a `pstats` file (cProfile, profile, yappi), told apart by content.
+    /// Relative source files of a `pstats` file resolve against `root`, then its directory.
+    SnapshotFile { path: IpcPath, root: Option<IpcPath> },
     /// Collapsed-stack files with extension `ext` in `dir`; relative frame files resolve
     /// against `base`. `jvm_root`: map JVM class frames to sources below it. For the
     /// allocation modes the last frame of a JVM stack is the allocated type.
@@ -171,6 +202,39 @@ pub fn collect(spec: &ProfileSpec) -> IdeResult<Profile> {
                 return Err(nothing_recorded("no .cpuprofile was written"));
             }
             Ok(b.finish("node --cpu-prof", "ms", ProfileMode::Cpu))
+        }
+        ProfileSpec::SnapshotFile { path, root } => {
+            let path: &Path = path.as_ref();
+            let name =
+                path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+            let bytes = std::fs::read(path).map_err(|e| IdeError::invalid(format!("Cannot read {name}: {e}")))?;
+            let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+            // The content decides (`node --cpu-prof-name=cpu.prof` writes JSON); the extension only
+            // names what a file that is neither failed to be.
+            let json = bytes.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'{');
+            if pstats::looks_like_pstats(&bytes) || (!json && matches!(ext.as_str(), "pstats" | "pstat" | "prof")) {
+                let bases: Vec<&Path> = root.iter().map(|r| r.as_ref()).chain(path.parent()).collect();
+                let profile = pstats::read(&bytes, &bases, "cProfile")
+                    .map_err(|e| IdeError::invalid(format!("{name} is not a cProfile snapshot ({e}).")))?;
+                if profile.methods.is_empty() {
+                    return Err(IdeError::invalid(format!("{name} has no calls.")));
+                }
+                return Ok(profile);
+            }
+            let text = String::from_utf8_lossy(&bytes);
+            formats::add_cpuprofile(&mut b, &text)
+                .map_err(|e| IdeError::invalid(format!("{name} is not a V8 CPU profile ({e}).")))?;
+            if b.is_empty() {
+                return Err(IdeError::invalid(format!("{name} has no samples.")));
+            }
+            let mut profile = b.finish("V8 CPU profile", "ms", ProfileMode::Cpu);
+            // A profile recorded on another machine (CI) names files that aren't here.
+            for f in &mut profile.frames {
+                if f.file.as_ref().is_some_and(|p| !p.is_file()) {
+                    (f.file, f.line) = (None, None);
+                }
+            }
+            Ok(profile)
         }
         ProfileSpec::Folded { profiler, dir, ext, base, jvm_root, mode } => {
             for f in files_with_ext(dir, ext) {
@@ -249,6 +313,76 @@ mod tests {
         assert_eq!(p.mode, ProfileMode::Allocations);
         assert_eq!(p.total, 1024.0);
         assert!(p.frames.iter().any(|f| f.name == "byte[]" && f.kind == ProfileFrameKind::AllocatedType));
+    }
+
+    #[test]
+    fn an_opened_cpuprofile_keeps_only_local_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("index.js");
+        std::fs::write(&src, "").unwrap();
+        let url = |p: &Path| format!("file://{}", p.display()).replace('\\', "/");
+        let json = format!(
+            r#"{{"nodes":[
+            {{"id":1,"callFrame":{{"functionName":"(root)","url":"","lineNumber":-1}},"children":[2,3]}},
+            {{"id":2,"callFrame":{{"functionName":"here","url":"{}","lineNumber":3}}}},
+            {{"id":3,"callFrame":{{"functionName":"onCi","url":"file:///home/runner/work/app/x.js","lineNumber":1}}}}],
+            "samples":[2,3,2],"timeDeltas":[0,1000,1000]}}"#,
+            url(&src)
+        );
+        let path = dir.path().join("CPU.cpuprofile");
+        std::fs::write(&path, json).unwrap();
+        let p = collect(&ProfileSpec::SnapshotFile { path: path.into(), root: None }).unwrap();
+        assert_eq!((p.unit.as_str(), p.mode), ("ms", ProfileMode::Cpu));
+        let frame = |name: &str| p.frames.iter().find(|f| f.name == name).unwrap();
+        assert_eq!(frame("here").file.as_deref(), Some(src.as_path()));
+        assert_eq!(frame("here").line, Some(3));
+        assert_eq!((frame("onCi").file.as_ref(), frame("onCi").line), (None, None));
+    }
+
+    #[test]
+    fn an_opened_file_that_is_no_cpuprofile_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        for (file, text, says) in [
+            ("notes.cpuprofile", "hello", "is not a V8 CPU profile"),
+            ("other.cpuprofile", r#"{"a":1}"#, "is not a V8 CPU profile (no nodes)"),
+            ("empty.cpuprofile", r#"{"nodes":[],"samples":[],"timeDeltas":[]}"#, "has no samples"),
+        ] {
+            let path = dir.path().join(file);
+            std::fs::write(&path, text).unwrap();
+            let err = collect(&ProfileSpec::SnapshotFile { path: path.into(), root: None }).unwrap_err();
+            assert_eq!(err.message.split_once(' ').unwrap().0, file);
+            assert!(err.message.contains(says), "{}", err.message);
+        }
+        let missing =
+            collect(&ProfileSpec::SnapshotFile { path: dir.path().join("gone.cpuprofile").into(), root: None });
+        assert!(missing.unwrap_err().message.starts_with("Cannot read gone.cpuprofile"));
+    }
+
+    #[test]
+    fn an_opened_pstats_file_is_told_apart_by_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run.out");
+        std::fs::write(&path, include_bytes!("../testdata/fib.prof")).unwrap();
+        std::fs::write(dir.path().join("work.py"), "").unwrap();
+        let p = collect(&ProfileSpec::SnapshotFile { path: path.into(), root: None }).unwrap();
+        assert_eq!((p.profiler.as_str(), p.unit.as_str()), ("cProfile", "ms"));
+        assert!(!p.calls.is_empty());
+        let fib = p.frames.iter().find(|f| f.name == "fib").unwrap();
+        assert_eq!(fib.file.as_deref(), Some(dir.path().join("work.py").as_path()), "relative to the snapshot");
+
+        // A Go pprof profile (gzip) named `.prof`.
+        let bad = dir.path().join("bad.prof");
+        std::fs::write(&bad, b"\x1f\x8b\x08\x00").unwrap();
+        let err = collect(&ProfileSpec::SnapshotFile { path: bad.into(), root: None }).unwrap_err();
+        assert!(err.message.starts_with("bad.prof is not a cProfile snapshot"), "{}", err.message);
+
+        // `node --cpu-prof --cpu-prof-name=cpu.prof`.
+        let v8 = dir.path().join("cpu.prof");
+        let json = r#"{"nodes":[{"id":1,"callFrame":{"functionName":"(root)","url":"","lineNumber":-1},"children":[2]},
+            {"id":2,"callFrame":{"functionName":"work","url":"","lineNumber":0}}],"samples":[2,2],"timeDeltas":[0,1000]}"#;
+        std::fs::write(&v8, json).unwrap();
+        let p = collect(&ProfileSpec::SnapshotFile { path: v8.into(), root: None }).unwrap();
+        assert_eq!(p.profiler, "V8 CPU profile");
     }
 
     #[test]

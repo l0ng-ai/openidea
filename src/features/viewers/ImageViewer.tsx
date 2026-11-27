@@ -1,7 +1,8 @@
 /**
  * Image editor kind (IDEA's image viewer): zoom in / out / fit / actual size,
  * ⌘/Ctrl+wheel zoom, transparency chessboard, dimensions and file size.
- * Images are read by the backend as `data:` URLs (the CSP allows those).
+ * Images are read by the backend as `data:` URLs (the CSP allows those). As the preview of an SVG
+ * file it shows the source as typed instead (`source`), drawn as an image so its scripts never run.
  */
 import {
   useCallback,
@@ -59,9 +60,19 @@ export function toggleChessboard() {
 }
 
 const PADDING = 32;
+const NO_FOCUS_TARGET = { current: null };
+const INVALID_SVG = "invalid-svg";
 
-export function ImageViewer({ input }: { input: EditorInput }) {
+/** An SVG source as an image URL. */
+export const svgDataUrl = (source: string) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(source)}`;
+
+/**
+ * `source`: the SVG text to show instead of the file on disk (the SVG editor's preview); null while
+ * it isn't known yet.
+ */
+export function ImageViewer({ input, source }: { input: EditorInput; source?: string | null }) {
   const path = input.path!;
+  const live = source !== undefined;
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [size, setSize] = useState<number | null>(null);
@@ -75,18 +86,27 @@ export function ImageViewer({ input }: { input: EditorInput }) {
   const canvasRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    let live = true;
+    if (live) return;
+    let current = true;
     Promise.all([call(commands.fsReadImage(path)), call(commands.fsProbe(path))])
       .then(([url, probe]) => {
-        if (!live) return;
+        if (!current) return;
         setSrc(url);
         setSize(probe.size);
       })
-      .catch((e: unknown) => live && setError(e instanceof Error ? e.message : String(e)));
+      .catch((e: unknown) => current && setError(e instanceof Error ? e.message : String(e)));
     return () => {
-      live = false;
+      current = false;
     };
-  }, [path, reload]);
+  }, [path, reload, live]);
+
+  // The typed source: each edit is drawn again, so an invalid SVG recovers once it's valid.
+  const liveSrc = useMemo(() => (source ? svgDataUrl(source) : null), [source]);
+  const liveSize = useMemo(() => (source ? new TextEncoder().encode(source).length : null), [source]);
+  const [invalidSrc, setInvalidSrc] = useState<string | null>(null);
+  const shownSrc = live ? liveSrc : src;
+  const shownSize = live ? liveSize : size;
+  const shownError = live ? (invalidSrc !== null && invalidSrc === liveSrc ? INVALID_SVG : null) : error;
 
   const available = useCallback(() => {
     const el = canvasRef.current;
@@ -133,12 +153,22 @@ export function ImageViewer({ input }: { input: EditorInput }) {
     };
   }, [handle]);
 
-  useForwardFocus(rootRef);
+  // Beside the source editor, the preview leaves the editor's focus alone.
+  useForwardFocus(live ? NO_FOCUS_TARGET : rootRef);
 
   const onLoad = (img: HTMLImageElement) => {
+    if (!live) return applyNatural(img.naturalWidth, img.naturalHeight);
+    // WebKit keeps the old natural size when a sized <img> gets a new SVG src; measure a detached copy.
+    const loaded = img.src;
+    const probe = new Image();
+    probe.onload = () => img.src === loaded && applyNatural(probe.naturalWidth, probe.naturalHeight);
+    probe.src = loaded;
+  };
+
+  const applyNatural = (naturalW: number, naturalH: number) => {
     // SVGs without intrinsic size report 0×0; show them at a usable size.
-    const w = img.naturalWidth || 300;
-    const h = img.naturalHeight || 150;
+    const w = naturalW || 300;
+    const h = naturalH || 150;
     setNatural({ w, h });
     const a = available();
     const el = canvasRef.current;
@@ -162,7 +192,7 @@ export function ImageViewer({ input }: { input: EditorInput }) {
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [error, src]);
+  }, [shownError, shownSrc]);
 
   const onPointerDown = (e: ReactPointerEvent) => {
     if (e.button !== 0 && e.button !== 1) return;
@@ -204,15 +234,17 @@ export function ImageViewer({ input }: { input: EditorInput }) {
         <div className={styles.imageActions}>
           <div className={styles.imageActionGroup}>
             <IconButton icon="chessboard" size="small" action="image.toggleChessboard" pressed={chessboard} />
-            <IconButton
-              icon="refresh"
-              size="small"
-              title="Reload from Disk"
-              onClick={() => {
-                setError(null);
-                setReload((n) => n + 1);
-              }}
-            />
+            {!live && (
+              <IconButton
+                icon="refresh"
+                size="small"
+                title="Reload from Disk"
+                onClick={() => {
+                  setError(null);
+                  setReload((n) => n + 1);
+                }}
+              />
+            )}
           </div>
           <div className={styles.imageActionGroup}>
             <IconButton icon="zoom-in" size="small" action="image.zoomIn" />
@@ -221,7 +253,7 @@ export function ImageViewer({ input }: { input: EditorInput }) {
             <IconButton icon="maximize" size="small" action="image.fitToWindow" />
           </div>
         </div>
-        {svg && (
+        {svg && !live && (
           <button
             type="button"
             className={styles.textButton}
@@ -230,16 +262,18 @@ export function ImageViewer({ input }: { input: EditorInput }) {
             <T>Open as Text</T>
           </button>
         )}
-        {(natural || size !== null || view) && (
+        {(natural || shownSize !== null || view) && (
           <div className={styles.imageInfo}>
             {natural && <span>{`${natural.w} × ${natural.h}`}</span>}
-            {size !== null && <span>{formatSize(size)}</span>}
+            {shownSize !== null && <span>{formatSize(shownSize)}</span>}
             {view && <span>{zoomLabel(z)}</span>}
           </div>
         )}
       </div>
-      {error ? (
-        <div className={styles.message}>{tx`Cannot show the image: ${error}`}</div>
+      {shownError ? (
+        <div className={styles.message}>
+          {shownError === INVALID_SVG ? tx("The SVG source is not valid.") : tx`Cannot show the image: ${shownError}`}
+        </div>
       ) : (
         <div
           data-wheel-scroll
@@ -250,9 +284,9 @@ export function ImageViewer({ input }: { input: EditorInput }) {
           onPointerUp={endDrag}
           onPointerCancel={endDrag}
         >
-          {src && (
+          {shownSrc && (
             <img
-              src={src}
+              src={shownSrc}
               alt={path.slice(path.lastIndexOf("/") + 1)}
               draggable={false}
               className={clsx(styles.image, chessboard && styles.chessboard, z >= 4 && styles.pixelated)}
@@ -266,7 +300,7 @@ export function ImageViewer({ input }: { input: EditorInput }) {
                   : { visibility: "hidden" }
               }
               onLoad={(e) => onLoad(e.currentTarget)}
-              onError={() => setError("the file is not a valid image")}
+              onError={() => (live ? setInvalidSrc(shownSrc) : setError("the file is not a valid image"))}
             />
           )}
         </div>

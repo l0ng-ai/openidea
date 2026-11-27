@@ -905,7 +905,7 @@ pub fn native_tsdk(root: &Path, s: &Settings) -> Option<PathBuf> {
 const PYTHON_SERVERS: [&str; 8] =
     ["basedpyright", "pyright", "ty", "pyrefly", "pylsp", "jedi-language-server", "ruff", "djlsp"];
 
-pub(crate) fn merge(base: &mut Value, layer: Value) {
+pub fn merge(base: &mut Value, layer: Value) {
     match (base, layer) {
         (Value::Object(base), Value::Object(layer)) => {
             for (k, v) in layer {
@@ -1513,7 +1513,10 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         && !server_root.ancestors().any(|d| d.join("tsconfig.json").is_file() || d.join("jsconfig.json").is_file())
     {
         let node = node_dir(root, s).map(|d| d.join(exe("node"))).filter(|p| p.is_file()).or_else(|| which("node"));
-        cfg.tsserver_project_extras.paths = vue::cli_paths(server_root, node.as_deref());
+        let mut paths = vue::cli_paths(server_root, node.as_deref());
+        // The project's own Vite / Rollup / esbuild aliases replace the Vue template's `@`.
+        paths.extend(crate::path_aliases::paths(server_root));
+        cfg.tsserver_project_extras.paths = paths;
     }
     if name == vue::SERVER {
         configure_vue_typescript(cfg, root, server_root, s);
@@ -1571,6 +1574,9 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     {
         cfg.command = bin.to_string_lossy().into_owned();
     }
+    if name == crate::mdx::SERVER {
+        crate::mdx::configure(cfg, root, server_root, s);
+    }
     if name == crate::arduino::SERVER {
         crate::arduino::configure(cfg, root, server_root, s);
     }
@@ -1607,6 +1613,107 @@ pub fn configure_vue_module_resolution(cfg: &mut LanguageServerConfig, data_dir:
         Ok(v) => cfg.initialization_options = Some(v),
         Err(e) => tracing::warn!("{}: cannot apply settings to initialization options: {e}", cfg.name),
     }
+    true
+}
+
+/// Registers the tsserver plugin that adds the Vite / Rollup / esbuild path aliases of each
+/// package under `server_root` to that package's tsserver projects' `paths`, below
+/// tsconfig.json / jsconfig.json's own (#6020). Only vtsls hosts tsserver plugins (not
+/// TypeScript 7's native server). No-op without aliases.
+pub fn configure_path_aliases(cfg: &mut LanguageServerConfig, server_root: &Path, data_dir: &Path) -> bool {
+    if cfg.name != "vtsls" || !cfg.tsserver_project {
+        return false;
+    }
+    let packages = crate::path_aliases::packages(server_root);
+    if packages.is_empty() {
+        return false;
+    }
+    let Some(plugin) = crate::path_aliases::tsserver_plugin(data_dir, server_root, &packages) else {
+        return false;
+    };
+    push_global_plugin(cfg, plugin);
+    true
+}
+
+/// Registers CSS Modules Kit (`@css-modules-kit/ts-plugin`, installed under `location`) as a
+/// vtsls global plugin when a tsconfig.json at, above or below `server_root` sets
+/// `cmkOptions.enabled` (#6071). No-op elsewhere, and without the plugin (`None`).
+pub fn configure_css_modules(cfg: &mut LanguageServerConfig, server_root: &Path, location: Option<&Path>) -> bool {
+    if cfg.name != "vtsls" || !cfg.tsserver_project {
+        return false;
+    }
+    let Some(location) = location.filter(|_| crate::css_modules::enabled(server_root)) else {
+        return false;
+    };
+    // Both are Volar plugins sharing the tools' one `@volar/typescript`, which decorates a
+    // tsserver project once: only the first of them to load works. Outside a Vue project
+    // CSS Modules Kit goes first; a Vue project keeps Vue's (`<style module>` is Vue's own).
+    // ponytail: a monorepo whose root isn't the Vue package gives CSS Modules Kit the project.
+    let before = (!vue::vue_project(server_root)).then_some(vue::PLUGIN);
+    insert_global_plugin(cfg, crate::css_modules::tsserver_plugin(location), before);
+    true
+}
+
+/// Adds `plugin` to vtsls' `globalPlugins`, replacing an entry of the same name.
+fn push_global_plugin(cfg: &mut LanguageServerConfig, plugin: Value) {
+    insert_global_plugin(cfg, plugin, None);
+}
+
+/// Adds `plugin` to vtsls' `globalPlugins` (replacing an entry of the same name), in front of
+/// the plugin named `before` when that one is there, else last.
+fn insert_global_plugin(cfg: &mut LanguageServerConfig, plugin: Value, before: Option<&str>) {
+    let mut current =
+        cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or_else(|| json!({}));
+    let mut node = &mut current;
+    for key in ["vtsls", "tsserver"] {
+        node = object_entry(node, key);
+    }
+    let plugins =
+        node.as_object_mut().expect("made an object above").entry("globalPlugins").or_insert_with(|| json!([]));
+    if !plugins.is_array() {
+        *plugins = json!([]);
+    }
+    let plugins = plugins.as_array_mut().expect("made an array above");
+    plugins.retain(|p| p.get("name") != plugin.get("name"));
+    let at = before
+        .and_then(|name| plugins.iter().position(|p| p.get("name").and_then(Value::as_str) == Some(name)))
+        .unwrap_or(plugins.len());
+    plugins.insert(at, plugin);
+    match toml::Value::try_from(current) {
+        Ok(v) => cfg.initialization_options = Some(v),
+        Err(e) => tracing::warn!("{}: cannot apply settings to initialization options: {e}", cfg.name),
+    }
+}
+
+/// Leaves out CSS's vtsls route (`languages/css.toml`) while the CSS Modules Kit plugin is not
+/// installed: without it vtsls has nothing for CSS files.
+pub fn drop_css_modules_route(servers: &mut Vec<LanguageServerConfig>) {
+    servers.retain(|c| c.name != "vtsls" || !c.root_markers.iter().any(|m| m == crate::css_modules::MARKER));
+}
+
+/// Lets vtsls load the tsserver plugins that the project's tsconfig.json / jsconfig.json
+/// declare (Next.js) with any TypeScript version, from a plugin probe location under
+/// `data_dir` that loads the project's packages (#6336). A plugin the IDE registers globally
+/// keeps the IDE's copy, also when a tsconfig names it, so call this after those are
+/// registered. No-op without declared plugins, and for TypeScript 7's native server.
+pub fn configure_tsconfig_plugins(cfg: &mut LanguageServerConfig, server_root: &Path, data_dir: &Path) -> bool {
+    if cfg.name != "vtsls" || !cfg.tsserver_project {
+        return false;
+    }
+    let options = cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok());
+    let global: Vec<String> = options
+        .as_ref()
+        .and_then(|v| v.pointer("/vtsls/tsserver/globalPlugins")?.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|p| p.get("name")?.as_str().map(str::to_owned))
+        .collect();
+    let mut declared = crate::tsconfig_plugins::declared(server_root);
+    declared.packages.retain(|name, _| !global.contains(name));
+    let Some(location) = crate::tsconfig_plugins::probe_location(data_dir, server_root, &declared) else {
+        return false;
+    };
+    merge_init_options(cfg, json!({ "typescript": { "tsserver": { "pluginPaths": [location] } } }));
     true
 }
 
@@ -1886,7 +1993,8 @@ pub fn run_target<'a>(config: &RunConfig, settings: &'a Settings) -> Option<&'a 
 }
 
 fn is_python_config(config: &RunConfig, program: &str) -> bool {
-    matches!(config.kind.as_str(), "python" | "pytest" | "django-test") || is_python_command(program)
+    matches!(config.kind.as_str(), "python" | "pytest" | "unittest" | "doctest" | "django-test")
+        || is_python_command(program)
 }
 
 /// Whether the configuration's `JAVA_HOME` is the one Settings choose (the Maven runner JRE,
@@ -1999,7 +2107,7 @@ pub fn apply_to_run_configs_in(configs: &mut [RunConfig], root: &Path, fallback:
         resolve_run_command(c, root, s);
         let mut path_dirs: Vec<PathBuf> = Vec::new();
         match c.kind.as_str() {
-            "python" | "pytest" | "django-test" => {
+            "python" | "pytest" | "unittest" | "doctest" | "django-test" => {
                 let command = Path::new(&c.command);
                 let own = !c.detected && command.components().count() > 1 && is_python_command(&c.command);
                 let python = if own {
@@ -2017,7 +2125,7 @@ pub fn apply_to_run_configs_in(configs: &mut [RunConfig], root: &Path, fallback:
                     let runner_options = runner
                         && c.args.first().map(String::as_str) == Some("run")
                         && c.args.get(1).is_some_and(|a| a.starts_with('-'));
-                    if (c.kind == "python" || c.kind == "django-test")
+                    if matches!(c.kind.as_str(), "python" | "unittest" | "doctest" | "django-test")
                         && !runner_options
                         && (runner || is_python_command(&c.command))
                     {
@@ -2648,6 +2756,47 @@ mod maven_linkage_tests {
         configure_server(&mut cfg, root, root, &s);
         let options = serde_json::to_value(cfg.initialization_options).unwrap();
         assert_eq!(options.pointer("/typescript/tsserver/maxTsServerMemory"), Some(&json!(6144)));
+    }
+
+    #[test]
+    fn vtsls_probes_the_tsconfig_plugins_but_not_its_global_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (root, data) = (tmp.path().join("app"), tmp.path().join("data"));
+        std::fs::create_dir_all(root.join("node_modules/next")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/@vue/typescript-plugin")).unwrap();
+        let vtsls = || {
+            let mut cfg = custom_server("vtsls", &LanguageServerSettings::default());
+            cfg.tsserver_project = true;
+            merge_init_options(
+                &mut cfg,
+                json!({ "vtsls": { "tsserver": { "globalPlugins": [{ "name": vue::PLUGIN }] } } }),
+            );
+            cfg
+        };
+        let probed = |cfg: &LanguageServerConfig| {
+            serde_json::to_value(&cfg.initialization_options)
+                .unwrap()
+                .pointer("/typescript/tsserver/pluginPaths")
+                .cloned()
+        };
+        std::fs::write(root.join("tsconfig.json"), r#"{"compilerOptions":{"strict":true}}"#).unwrap();
+        let mut cfg = vtsls();
+        assert!(!configure_tsconfig_plugins(&mut cfg, &root, &data));
+        assert_eq!(probed(&cfg), None);
+
+        let plugins = format!(r#"[{{"name":"next"}},{{"name":"{}"}}]"#, vue::PLUGIN);
+        std::fs::write(root.join("tsconfig.json"), format!(r#"{{"compilerOptions":{{"plugins":{plugins}}}}}"#))
+            .unwrap();
+        let mut cfg = vtsls();
+        assert!(configure_tsconfig_plugins(&mut cfg, &root, &data));
+        let location = PathBuf::from(probed(&cfg).unwrap()[0].as_str().unwrap());
+        assert!(location.starts_with(&data) && location.join("node_modules/next/index.js").is_file());
+        // The IDE's Vue plugin is not replaced by the project's.
+        assert!(!location.join("node_modules").join(vue::PLUGIN).exists());
+        // TypeScript 7's native server hosts no plugins.
+        let mut native = vtsls();
+        native.tsserver_project = false;
+        assert!(!configure_tsconfig_plugins(&mut native, &root, &data));
     }
 
     #[test]

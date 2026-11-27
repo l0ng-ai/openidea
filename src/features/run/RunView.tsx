@@ -3,7 +3,7 @@ import clsx from "clsx";
 import type { GroupImperativeHandle, Layout } from "react-resizable-panels";
 import type { RunConfig } from "@/platform/ipc";
 import type { RunTargetValid } from "@/platform/remoteSettings";
-import { useAgentRunSettings, useWorkflowSettings } from "@/platform/workflowSettings";
+import { setConsoleSoftWrap, useAgentRunSettings, useWorkflowSettings } from "@/platform/workflowSettings";
 import {
   EmptyState,
   Icon,
@@ -38,6 +38,7 @@ import {
   rerunSession,
   resizeTerminal,
   runSelectedTests,
+  toggleRerunAutomatically,
   runtime,
   sendStdin,
   setPendingInput,
@@ -50,7 +51,7 @@ import {
   pinSession,
 } from "./store";
 import { rerunFailedConfigs } from "./testing/rerun";
-import { formatDuration, nodeOutput } from "./testing";
+import { formatDuration, frameworkFor, nodeOutput } from "./testing";
 import { TestStatusBar, TestTreeView } from "./TestTreeView";
 import { StackTracePanel, useStackTraces, type StackTraceTab } from "./stackTrace";
 import { ThreadDumpPanel } from "./threadDump/ThreadDumpPanel";
@@ -100,10 +101,9 @@ export function SessionPanel({
   const version = useRun((s) => s.versions[session.id] ?? 0);
   const rt = runtime(session.id);
   const [follow, setFollow] = useState(true);
-  // Settings › Console › Use soft wraps is the default; the toolbar toggle overrides it for this tab.
-  const defaultWrap = useWorkflowSettings((s) => s.console.softWrap);
-  const [wrapOverride, setWrapOverride] = useState<boolean | null>(null);
-  const softWrap = wrapOverride ?? defaultWrap;
+  // Settings › Console › Use soft wraps is shared by every run tab, so the toolbar toggle
+  // writes it instead of keeping a per-tab override that a tab switch would drop.
+  const softWrap = useWorkflowSettings((s) => s.console.softWrap);
   const [selectedTest, setSelectedTest] = useState<string | null>(null);
   const [findOpen, setFindOpen] = useState(false);
   const body = useRef<HTMLDivElement>(null);
@@ -143,6 +143,7 @@ export function SessionPanel({
     if (hasTests) testSplit.current?.setLayout(testLayouts.current[testOrientation]);
   }, [hasTests, testOrientation]);
   const running = isLive(session);
+  const testsRunning = testsRun(session, rt?.tests) === "running";
   const cwd = runDirectory(session.config.cwd);
   const baseConfig = useRun(() => baseConfigOf(session));
   // Test results mutate in place; their version refreshes the selection.
@@ -184,7 +185,7 @@ export function SessionPanel({
   const overflowConsoleToggles = showLifecycle && compactToolbar && !rt.terminal;
   const consoleToggles = [
     { label: "Scroll to End", icon: "scroll-to-end", checked: follow, run: () => setFollow((v) => !v) },
-    { label: "Soft-Wrap", icon: "soft-wrap", checked: softWrap, run: () => setWrapOverride(!softWrap) },
+    { label: "Soft-Wrap", icon: "soft-wrap", checked: softWrap, run: () => void setConsoleSoftWrap(!softWrap) },
   ];
   // IDEA's console toolbar names Previous / Next Occurrence after what they step through here.
   const stackTraceActions = rt.tests
@@ -211,7 +212,7 @@ export function SessionPanel({
 
   const consoleColumn = (
     <div className={styles.consoleColumn}>
-      {rt.tests && <TestStatusBar results={rt.tests} version={version} running={running} />}
+      {rt.tests && <TestStatusBar results={rt.tests} version={version} running={testsRunning} />}
       {rt.console.dropped > 0 && !testModel && (
         <div className={styles.notice}>{tx`${rt.console.dropped.toLocaleString()} earlier lines were discarded`}</div>
       )}
@@ -249,6 +250,7 @@ export function SessionPanel({
           findOpen={findOpen}
           onFindOpenChange={setFindOpen}
           cwd={cwd}
+          module={session.config.module}
           onClear={() => clearConsole(session.id)}
           // A test run's Previous / Next Occurrence go through its failed tests.
           occurrences={rt.tests ? undefined : showLifecycle ? "run" : SERVICES_WINDOW}
@@ -411,7 +413,8 @@ export function SessionPanel({
                 results={rt.tests}
                 version={version}
                 cwd={cwd}
-                running={running}
+                module={session.config.module}
+                running={testsRunning}
                 name={session.config.name}
                 selected={selectedTest}
                 onSelect={setSelectedTest}
@@ -419,6 +422,11 @@ export function SessionPanel({
                 onUpdateSnapshots={(ids) => void updateSnapshots(session.id, ids)}
                 canRunTests={(ids) => canRunSelectedTests(session.id, ids)}
                 onRunTests={(ids, debug) => void runSelectedTests(session.id, ids, debug)}
+                rerunAutomatically={
+                  frameworkFor(session.config) === "js"
+                    ? { on: !!session.watching && running, toggle: () => toggleRerunAutomatically(session.id) }
+                    : undefined
+                }
               />
             </SplitPanel>
             <SplitHandle />
@@ -432,6 +440,14 @@ export function SessionPanel({
       </div>
     </div>
   );
+}
+
+/**
+ * Whether a session's tests still run: a watch run's are done at the end of each cycle, like a
+ * finished run (status, Sort by Duration, Select First Failed).
+ */
+export function testsRun(session: RunSession, tests: { finished: boolean } | null | undefined): "running" | "done" {
+  return isLive(session) && !(session.watching && tests?.finished) ? "running" : "done";
 }
 
 function sessionItems(sessions: readonly RunSession[], targets: readonly RunTargetValid[]): TabItem[] {

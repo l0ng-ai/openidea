@@ -362,6 +362,10 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.sourceFolderDrop {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
 
 /* Results. */
 .error {
@@ -394,6 +398,17 @@
   align-items: center;
   gap: var(--space-1);
   padding-inline: var(--space-2);
+}
+
+/* An unsafe statement waiting for confirmation. */
+:global(.cm-openidea-db-warning) {
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: var(--wave-warning);
+  text-underline-offset: 3px;
+}
+:global(.cm-openidea-db-run-warning svg) {
+  color: var(--warning);
 }
 
 /* Inline statement errors in consoles. */
@@ -835,6 +850,22 @@
   font-family: var(--font-ui);
   font-size: var(--fs-ui);
 }
+:global(.cm-openidea-db-banner-warning) {
+  background: color-mix(in srgb, var(--warning) 12%, var(--bg-editor));
+}
+:global(.cm-openidea-db-banner-action) {
+  height: 22px;
+  padding: 0 6px;
+  border: none;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--link);
+  font: inherit;
+  cursor: pointer;
+}
+:global(.cm-openidea-db-banner-action:hover) {
+  background: var(--bg-hover);
+}
 :global(.cm-openidea-db-banner-text) {
   flex: 1;
   min-width: 0;
@@ -953,6 +984,23 @@
   gap: var(--space-0-5);
   padding: 2px 4px;
   border-bottom: 1px solid var(--border);
+}
+.modifyFilter {
+  flex: 1;
+  min-width: 0;
+}
+.modifyGroup {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 22px;
+  padding: 0 6px;
+  color: var(--fg-muted);
+  cursor: default;
+  white-space: nowrap;
+}
+.modifyGroup:hover {
+  color: var(--fg);
 }
 .modifyList {
   flex: 1;
@@ -1787,4 +1835,42 @@
 
 .jdbcJarPath {
   overflow-wrap: anywhere;
+}
+
+.csvEditor {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.csvSource {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* Kept mounted while the table shows, so the document stays open. */
+.csvHidden {
+  display: none;
+}
+.csvData {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.csvStatus {
+  flex: 1;
+  padding: var(--space-3);
+  color: var(--fg-muted);
+}
+.csvSummary {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.csvTabs {
+  flex: none;
+  border-top: 1px solid var(--border);
 }

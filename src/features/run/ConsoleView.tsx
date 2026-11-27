@@ -44,6 +44,7 @@ const Line = memo(
     marks,
     rules,
     cwd,
+    module,
     currentLink,
   }: {
     line: ConsoleLine;
@@ -51,6 +52,8 @@ const Line = memo(
     rules?: ConsoleRuleMatch;
     length: number;
     cwd: string;
+    /** The run's owning module, which picks between same-named files of a multi-module build. */
+    module?: string | null;
     /** Start of the link Previous / Next Occurrence stepped to on this line. */
     currentLink?: number;
   }) {
@@ -60,7 +63,7 @@ const Line = memo(
     const activate = (e: MouseEvent, link: OutputLink) => {
       e.preventDefault();
       if (window.getSelection()?.toString()) return;
-      if (link.kind !== "url") void openTarget(link.target, cwd);
+      if (link.kind !== "url") void openTarget(link.target, cwd, true, module);
       else if (!debugConsoleUrl(e, link.url)) void openUrl(link.url);
     };
     // A blank line is an empty row: its height comes from CSS, never from a character in the text.
@@ -110,6 +113,7 @@ const Line = memo(
     a.line === b.line &&
     a.length === b.length &&
     a.cwd === b.cwd &&
+    a.module === b.module &&
     a.marks === b.marks &&
     a.rules === b.rules &&
     a.currentLink === b.currentLink,
@@ -128,6 +132,11 @@ export interface FileLink extends LinkPosition {
 }
 
 /** The file links on the `shown` lines (a collapsed fold hides its links), in output order. */
+/** A copy of a line the model may still append to (the open last line). */
+function copyLine(line: ConsoleLine): ConsoleLine {
+  return { ...line, spans: line.spans.map((span) => ({ ...span })) };
+}
+
 export function fileLinks(lines: readonly ConsoleLine[], shown: (index: number) => boolean): FileLink[] {
   const links: FileLink[] = [];
   lines.forEach((line, i) => {
@@ -230,6 +239,8 @@ export interface ConsoleViewProps {
   onFollowChange: (follow: boolean) => void;
   /** Directory relative paths in the output resolve against. */
   cwd: string;
+  /** The run's owning module (`RunConfig` module), when it has one. */
+  module?: string | null;
   onClear?: () => void;
   /** Set while the process accepts input. */
   input?: ConsoleInput;
@@ -248,6 +259,7 @@ export function ConsoleView({
   follow,
   onFollowChange,
   cwd,
+  module,
   onClear,
   input,
   findOpen: controlledFindOpen,
@@ -257,7 +269,12 @@ export function ConsoleView({
 }: ConsoleViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
-  const lines = model.lines;
+  // Pause Output: the output so far stays on screen while the process keeps
+  // writing; resuming shows everything that arrived meanwhile.
+  const [paused, setPaused] = useState<readonly ConsoleLine[] | null>(null);
+  const lines = paused ?? model.lines;
+  const togglePaused = () =>
+    setPaused((p) => (p ? null : model.lines.map((l, i, all) => (i === all.length - 1 ? copyLine(l) : l))));
   const patterns = useWorkflowSettings((s) => s.console.foldPatterns);
   const logColors = useWorkflowSettings((s) => s.console.logColors);
   const consoleRules = compileConsoleRules(useConsoleRules((s) => s.providers));
@@ -479,7 +496,7 @@ export function ConsoleView({
     programmatic.current = true;
     virtualizer.scrollToIndex(rowOfLine.get(hit.line)!, { align: "center" });
     requestAnimationFrame(() => (programmatic.current = false));
-    void openTarget(hit.link.target, cwd, focus);
+    void openTarget(hit.link.target, cwd, focus, module);
     return { index: index + 1, total: links.length };
   });
 
@@ -532,6 +549,11 @@ export function ConsoleView({
         shortcut: formatBinding(hostBinding("Meta+F")),
         run: openFind,
       },
+      {
+        label: "Search with Google",
+        disabled: !selection.trim(),
+        run: () => void openUrl(`https://www.google.com/search?q=${encodeURIComponent(selection.trim())}`),
+      },
       { kind: "separator" },
       {
         label: "Fold Lines Like This",
@@ -539,7 +561,16 @@ export function ConsoleView({
         // Opens Settings › Console with the text added to the fold patterns, for OK / Cancel there.
         run: () => void executeAction("file.settings", `build.console#${foldText}`),
       },
-      { label: "Clear All", icon: "trash", disabled: !onClear, run: () => onClear?.() },
+      { label: "Pause Output", icon: "pause", checked: !!paused, run: togglePaused },
+      {
+        label: "Clear All",
+        icon: "trash",
+        disabled: !onClear,
+        run: () => {
+          setPaused(null);
+          onClear?.();
+        },
+      },
       ...(input
         ? [{ kind: "separator" } as const, { label: "Send EOF", shortcut: "⌃D", run: () => input.onEof() }]
         : []),
@@ -736,6 +767,7 @@ export function ConsoleView({
                   rules={ruled}
                   length={line.text.length}
                   cwd={cwd}
+                  module={module}
                   currentLink={currentLink?.lineId === line.id ? currentLink.start : undefined}
                 />
                 {row.fold && !row.fold.expanded && foldButton(row.fold, true)}

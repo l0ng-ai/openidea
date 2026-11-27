@@ -64,17 +64,14 @@ describe("Dialog chrome", () => {
       </Dialog>,
     );
 
-  it("macOS: traffic lights (only close enabled), title after them, Cancel … default rightmost", () => {
+  it("macOS: a sheet titled in its content, no window buttons, Cancel … default rightmost", () => {
     const onClose = vi.fn();
     show("mac", onClose);
     const bar = document.querySelector("[data-dialog-titlebar]") as HTMLElement;
-    const lights = within(bar).getAllByRole("button");
-    expect(lights.map((b) => b.getAttribute("aria-label"))).toEqual(["Close", "Minimize", "Zoom"]);
-    expect(lights[1]).toBeDisabled();
-    expect(lights[2]).toBeDisabled();
+    expect(within(bar).queryAllByRole("button")).toEqual([]);
     expect(bar.textContent).toBe("Usages Detected");
     expect(footerLabels()).toEqual(["Cancel", "Delete Anyway", "View Usages"]);
-    fireEvent.click(lights[0]!);
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 

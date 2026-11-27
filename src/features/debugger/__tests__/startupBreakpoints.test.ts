@@ -188,6 +188,25 @@ it("hands the window's whole list to the backend before startup, even after a fa
   );
 });
 
+it("leaves the backend alone while no project is open", async () => {
+  loadBreakpoints(null);
+  await vi.advanceTimersByTimeAsync(200);
+  expect(ipc.debugReplaceBreakpoints).not.toHaveBeenCalled();
+  loadBreakpoints("/p");
+  await vi.advanceTimersByTimeAsync(0);
+  expect(ipc.debugReplaceBreakpoints).toHaveBeenCalledOnce();
+});
+
+it("doesn't sync the closed project's files once no project is open", async () => {
+  ipc.debugSetBreakpoints.mockResolvedValue({ status: "ok", data: [] });
+  addBreakpoint("/p/Main.java", 4);
+  await vi.advanceTimersByTimeAsync(200);
+  expect(ipc.debugSetBreakpoints).toHaveBeenCalledOnce();
+  loadBreakpoints(null);
+  await vi.advanceTimersByTimeAsync(200);
+  expect(ipc.debugSetBreakpoints).toHaveBeenCalledOnce();
+});
+
 it("flushes persisted breakpoints immediately after project loading", async () => {
   ipc.debugSetBreakpoints.mockResolvedValue({ status: "ok", data: [] });
   localStorage.setItem(

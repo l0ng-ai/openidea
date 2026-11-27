@@ -113,7 +113,11 @@ pub(crate) async fn tables(pool: &SnowflakePool, schema: &str) -> IdeResult<Vec<
     Ok(shown
         .records()
         .filter_map(|r| {
-            Some(TableInfo { name: r.get("name")?.to_owned(), kind: table_kind(r.get("kind").unwrap_or("TABLE")) })
+            Some(TableInfo {
+                name: r.get("name")?.to_owned(),
+                kind: table_kind(r.get("kind").unwrap_or("TABLE")),
+                comment: r.get("comment").filter(|comment| !comment.is_empty()).map(str::to_owned),
+            })
         })
         .collect())
 }
@@ -132,6 +136,7 @@ pub(crate) async fn table_details(pool: &SnowflakePool, schema: &str, table: &st
                 nullable: yes(r.get("null?")),
                 default: r.get("default").filter(|d| !d.is_empty()).map(str::to_owned),
                 primary_key: yes(r.get("primary key")),
+                comment: r.get("comment").filter(|c| !c.is_empty()).map(str::to_owned),
             })
         })
         .collect();
@@ -140,7 +145,16 @@ pub(crate) async fn table_details(pool: &SnowflakePool, schema: &str, table: &st
         Ok(keys) => foreign_keys(&keys),
         Err(_) => Vec::new(),
     };
-    Ok(TableDetails { columns, indexes: Vec::new(), foreign_keys, triggers: Vec::new() })
+    // `LIKE` matches without case and with wildcards: the exact name picks the row.
+    let like = format!("SHOW TABLES LIKE {} IN SCHEMA {}", quote_literal(DRIVER, table), schema_path(pool, schema));
+    let comment = match show(pool, &like).await {
+        Ok(shown) => shown
+            .records()
+            .find(|r| r.get("name") == Some(table))
+            .and_then(|r| r.get("comment").filter(|c| !c.is_empty()).map(str::to_owned)),
+        Err(_) => None,
+    };
+    Ok(TableDetails { comment, columns, indexes: Vec::new(), foreign_keys, triggers: Vec::new() })
 }
 
 fn foreign_keys(shown: &Shown) -> Vec<ForeignKey> {
@@ -228,7 +242,11 @@ pub(crate) async fn catalog(pool: &SnowflakePool, database: &str) -> IdeResult<V
         let (Some(&index), Some(name)) = (at.get(r.get("schema_name").unwrap_or_default()), r.get("name")) else {
             continue;
         };
-        out[index].tables.push(TableInfo { name: name.to_owned(), kind: table_kind(r.get("kind").unwrap_or("TABLE")) });
+        out[index].tables.push(TableInfo {
+            name: name.to_owned(),
+            kind: table_kind(r.get("kind").unwrap_or("TABLE")),
+            comment: r.get("comment").filter(|comment| !comment.is_empty()).map(str::to_owned),
+        });
     }
     for schema in &mut out {
         schema.tables.sort_by(|a, b| a.name.cmp(&b.name));
@@ -437,6 +455,7 @@ pub(crate) async fn completion(pool: &SnowflakePool) -> IdeResult<Vec<Completion
             primary_key: false,
             has_default: r.get("default").is_some_and(|d| !d.is_empty())
                 || r.get("autoincrement").is_some_and(|a| !a.is_empty()),
+            comment: r.get("comment").filter(|c| !c.trim().is_empty()).map(str::to_owned),
         });
     }
     Ok(tables)

@@ -19,6 +19,11 @@ export interface FileTarget {
   resolve: "path" | "name" | "rubyTest";
   /** JVM frames: the class's binary name (`com.acme.OrderController$Inner`). */
   className?: string;
+  /**
+   * No line: the describe chain and name of a JS test (Cypress prints no line), or the class chain
+   * and name of a pytest test, found in the file.
+   */
+  test?: string[];
 }
 
 /**

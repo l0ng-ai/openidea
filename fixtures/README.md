@@ -10,20 +10,27 @@ something to show.
 | `rust-app/`      | cargo                                                           | `cargo run`                         | `cargo test`         | `cargo test --features failing-tests` | unused variable in `src/parser.rs`                       |
 | `ts-app/`        | Node 22+, pnpm/npm                                              | `pnpm start`                        | `pnpm test` (vitest) | `OPENIDEA_FAIL=1 pnpm test`               | unused function in `src/index.ts`                        |
 | `playwright-app/` | Node 22+, npm (Playwright Test, no browser needed)            | —                                   | `npm test`           | `OPENIDEA_FAIL=1 npm test`                | unused function in `src/checkout.ts`                     |
+| `cypress-app/`  | Node 22+, npm (Cypress 16 with its Electron, no server needed)  | —                                   | `npm run e2e`        | `npm run e2e -- --expose fail=1`          | unused function in `src/cart.ts`                         |
 | `node-test-app/` | Node 22+, npm (no dependencies)                                | —                                   | `npm test` (node:test) | `OPENIDEA_FAIL=1 npm test`              | unused constant in `src/inventory.js`                    |
 | `mocha-app/`    | Node 22+, npm                                                   | —                                   | `npm test` (Mocha)   | `OPENIDEA_FAIL=1 npm test`                | unused constant in `src/pricing.js`                      |
+| `jasmine-app/`  | Node 22+, npm                                                   | —                                   | `npm test` (Jasmine) | `OPENIDEA_FAIL=1 npm test`                | unused constant in `src/cart.js`                         |
 | `python-app/`    | Python 3.10+, pytest                                            | `python -m tasks.cli` (from `src/`) | `pytest`             | `OPENIDEA_FAIL=1 pytest`                  | unused imports in `models.py`                            |
 | `go-app/`        | Go 1.22+                                                        | `go run ./cmd/server`               | `go test ./...`      | `OPENIDEA_FAIL=1 go test ./...`           | unused `fmt.Sprintf` result in `internal/store/store.go` |
 | `kotlin-gradle/` | JDK 21, Gradle 8 (no wrapper)                                   | `gradle run`                        | `gradle test`        | `gradle test -PopenideaFail`              | unused variable in `App.kt`                              |
 | `java-app/`      | JDK 21, Maven 3.9                                               | `mvn compile exec:java`             | `mvn test`           | `mvn test -DopenideaFail=true`            | unused variable in `App.java`                            |
 | `c-app/`         | gcc / g++ 12+, make, GDB 14+                                    | `make all`                          | —                    | —                                     | —                                                        |
 | `php-app/`       | PHP 8.5, Composer                                               | `composer quote`                    | `vendor/bin/pest`    | `OPENIDEA_FAIL=1 vendor/bin/pest`         | unused variable in `ThresholdCustoms.php`                |
+| `unittest-app/`  | Python 3.10+ (standard library only)                            | —                                   | `python -m unittest`; doctests in `inventory/stock.py` | `OPENIDEA_FAIL=1 python -m unittest`  | unused import in `inventory/stock.py`                    |
 | `django-app/`    | Python 3.10+, Django 5.2+                                       | `python manage.py runserver`        | `python manage.py test` | `OPENIDEA_FAIL=1 python manage.py test` | unused import in `shop/views.py`                         |
 | `tailwind-app/`  | Node 22+, pnpm/npm, Tailwind CSS 4, React                       | `pnpm dev`                          | —                    | —                                     | `flex` conflicting with `block` in `src/App.tsx`         |
 | `zig-app/`       | Zig 0.17                                                        | `zig build run`                     | `zig build test`     | —                                     | —                                                        |
 | `biome-app/`     | Node 22+, `@biomejs/biome` (`npm install`)                      | `npm start`                         | —                    | —                                     | `let` never reassigned, `==` and a duplicate CSS `color` (Biome) |
+| `dprint-app/`    | Node 22+, `dprint` (`npm install`)                              | `npm start`                         | —                    | —                                     | unformatted `src/index.ts` / `src/data.json` (dprint); `README.md` keeps Prettier |
 | `stylelint-app/` | Node 22+, `stylelint` (`npm install`)                           | —                                   | —                    | —                                     | long hex colour, unknown property, empty block, duplicate selector (Stylelint) |
 | `polyglot/`      | Go, TS, Python, C, shell, SQL, TOML/YAML/JSON, proto, Terraform | `make`                              | `make test`          | —                                     | unused variable in `native/hash.c`                       |
+
+`python-app/notebooks/summary.ipynb` is a Jupyter notebook for the notebook editor (running it needs
+`ipykernel` in the selected interpreter).
 
 The fixtures are standalone: `rust-app` declares its own `[workspace]` and
 `fixtures/eslint.config.js` keeps them out of the IDE's own lint run.
@@ -45,7 +52,7 @@ git init -q && git add -A && git commit -qm "initial"   # for the VCS checks
 ```
 
 Then open the folder with **File › Open…** (`⌘⇧⌥O`) or from the Welcome screen.
-For `ts-app` / `playwright-app` / `mocha-app` / `polyglot/web` run `pnpm install` first (`npm install` for `biome-app` and `stylelint-app`); for `python-app` create a
+For `ts-app` / `playwright-app` / `mocha-app` / `polyglot/web` run `pnpm install` first (`npm install` for `biome-app`, `cypress-app`, `dprint-app` and `stylelint-app`); for `python-app` create a
 venv (`python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'`); for
 `php-app` run `composer install` (debugging it needs Xdebug in the PHP on `PATH`).
 

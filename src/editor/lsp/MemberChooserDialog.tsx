@@ -13,7 +13,9 @@ export function MemberChooserDialog() {
 function MemberChooserInner({ request }: { request: MemberChooserRequest }) {
   const tx = useTx();
   const { members } = request;
-  const [checked, setChecked] = useState<ReadonlySet<string>>(new Set());
+  const [checked, setChecked] = useState<ReadonlySet<string>>(
+    () => new Set(members.filter((m) => m.checked).map((m) => m.id)),
+  );
   const allChecked = checked.size === members.length;
 
   const finish = (ids: string[] | null) => {

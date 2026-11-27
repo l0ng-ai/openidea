@@ -157,6 +157,8 @@ function tableDoc(t: DbCompletionTable, model: DbCompletion | null): string {
     const k = fks.find((f) => f.columns.includes(c));
     return k ? `→ ${k.refTable} (${k.refColumns[k.columns.indexOf(c)] ?? ""})` : "";
   };
+  // A comment column only when some column has a comment.
+  const comments = t.columns.some((c) => c.comment);
   const rows = t.columns.map(
     (c) =>
       `| ${code(c.name)} | ${c.dataType} | ${[
@@ -166,15 +168,20 @@ function tableDoc(t: DbCompletionTable, model: DbCompletion | null): string {
         refOf(c.name),
       ]
         .filter(Boolean)
-        .join(", ")} |`,
+        .join(", ")} |${comments ? ` ${tableCell(c.comment ?? "")} |` : ""}`,
   );
   return [
     `${t.kind === "materializedView" ? "materialized view" : t.kind} **${t.name}** in ${code(t.schema)}`,
     "",
-    "| column | type | |",
-    "|---|---|---|",
+    comments ? "| column | type | | comment |" : "| column | type | |",
+    comments ? "|---|---|---|---|" : "|---|---|---|",
     ...rows,
   ].join("\n");
+}
+
+/** `text` as one Markdown table cell: pipes escaped, line breaks as spaces. */
+function tableCell(text: string): string {
+  return text.replace(/\s*\r?\n\s*/g, " ").replaceAll("|", "\\|");
 }
 
 function symbolDoc(sym: SqlSymbol, model: DbCompletion | null): string | null {
@@ -196,7 +203,8 @@ function symbolDoc(sym: SqlSymbol, model: DbCompletion | null): string | null {
         c.nullable ? "" : "not null",
         c.hasDefault ? "has default" : "",
       ].filter(Boolean);
-      return `column **${c.name}** ${code(c.dataType)}${traits.length ? ` ${traits.join(", ")}` : ""}\n\nof ${code(owner)}`;
+      const comment = c.comment ? `\n\n${c.comment}` : "";
+      return `column **${c.name}** ${code(c.dataType)}${traits.length ? ` ${traits.join(", ")}` : ""}${comment}\n\nof ${code(owner)}`;
     }
   }
 }

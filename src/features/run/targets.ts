@@ -12,13 +12,14 @@ import { formatArgs } from "./configs";
 import type { RunConfig } from "@/platform/ipc";
 import { applicationConfig, junitRunnerConfig, jvmTestConfig, runsJunitInIde } from "./application";
 import { goTestParts, withoutGoSelection } from "./goArguments";
-import { contextConfig, relToCwd, testConfigFor } from "./context";
+import { contextConfig, doctestConfig, relToCwd, testConfigFor } from "./context";
 import { djangoLabel, djangoTestsOf } from "./djangoTypes";
 import { scanJvmTargets, simpleClassName } from "./jvmTargets";
 import { escapeRegExp } from "./testing/rerun";
 import { pestFilter, phpunitArgs, phpunitFilter } from "./testing/phpunit";
 import { frameworkFor } from "./testing";
 import { withNodeTestNamePattern } from "./testing/nodeTest";
+import { cypressSelection, cypressSpecs } from "./testing/cypress";
 
 export type TargetKind = "main" | "test" | "suite" | "generate";
 
@@ -38,6 +39,8 @@ export interface RunTarget {
   spring?: boolean;
   /** Python: a unittest `TestCase` subclass or one of its methods (what Django's runner can run). */
   unittest?: boolean;
+  /** Python: the docstring examples of a module, class or function (run with doctest). */
+  doctest?: boolean;
   /** Ruby: a `module` suite, which runs the tests of every class declared inside it. */
   rubyModule?: boolean;
   pest?: boolean;
@@ -134,9 +137,12 @@ function rustTargets(lines: string[], relPath: string): RunTarget[] {
   );
 }
 
-/** Jest / Vitest `describe` / `test` / `it` (Mocha's `specify` too), and Playwright's `test.describe` and modifiers. */
+/**
+ * Jest / Vitest `describe` / `test` / `it` (Mocha's `specify` and Jasmine's `fdescribe` / `fit` /
+ * `xdescribe` / `xit` too), and Playwright's `test.describe` and modifiers.
+ */
 const JS_RE =
-  /^(\s*)(test\.describe|describe|suite|context|test|it|specify)\b(?:\.(?:only|skip|todo|concurrent|failing|sequential|fixme|fail|serial|parallel))*(\.each\s*(?:\(.*?\)|`[^`]*`))?\s*\(\s*(['"`])((?:\\.|(?!\4).)*)\4/;
+  /^(\s*)(test\.describe|[fx]?describe|suite|context|test|[fx]?it|specify)\b(?:\.(?:only|skip|todo|concurrent|failing|sequential|fixme|fail|serial|parallel))*(\.each\s*(?:\(.*?\)|`[^`]*`))?\s*\(\s*(['"`])((?:\\.|(?!\4).)*)\4/;
 
 function jsTargets(lines: string[]): RunTarget[] {
   const out: RunTarget[] = [];
@@ -149,7 +155,7 @@ function jsTargets(lines: string[]): RunTarget[] {
     const name = m[5]!.replace(/\\(.)/g, "$1");
     const parameterized = !!m[3] || (m[4] === "`" && name.includes("${")) || /%[sdifjo#%p]|\$\w+/.test(name);
     const path = [...stack.map((s) => s.name), name];
-    const isSuite = m[2] === "test.describe" || m[2] === "describe" || m[2] === "suite" || m[2] === "context";
+    const isSuite = m[2]!.endsWith("describe") || m[2] === "suite" || m[2] === "context";
     out.push({ line: i, kind: isSuite ? "suite" : "test", name: path.join(" > "), path, parameterized });
     if (isSuite) stack.push({ indent, name });
   }
@@ -244,6 +250,83 @@ function pythonTargets(lines: string[]): RunTarget[] {
   }
   return out;
 }
+
+/** Whether the docstring starting at or after line `from` holds `>>>` examples. */
+function docstringHasExamples(lines: readonly string[], from: number): boolean {
+  let i = from;
+  while (i < lines.length && (!lines[i]!.trim() || /^\s*#/.test(lines[i]!))) i++;
+  const open = /^\s*[rRuU]?("""|''')/.exec(lines[i] ?? "");
+  if (!open) return false;
+  const quote = open[1]!;
+  for (let j = i; j < lines.length; j++) {
+    const body = j === i ? lines[j]!.slice(open[0].length) : lines[j]!;
+    if (/^\s*>>>(\s|$)/.test(body)) return true;
+    if (body.includes(quote)) return false;
+  }
+  return false;
+}
+
+/** Whether each line starts inside a triple-quoted string. */
+function inTripleQuotes(lines: readonly string[]): boolean[] {
+  let open: string | null = null;
+  return lines.map((line) => {
+    const inside = open !== null;
+    // Only triple quotes are tracked; one in a one-line string or a comment throws it off.
+    for (const [quote] of line.matchAll(/"""|'''/g)) open = open === null ? quote : open === quote ? null : open;
+    return inside;
+  });
+}
+
+/** The line after a `def` / `class` header at `from` (which may span lines), or -1 when its body is on the header's line. */
+function bodyLine(lines: readonly string[], from: number): number {
+  let depth = 0;
+  for (let i = from; i < lines.length; i++) {
+    // A `#` in a string of the header is taken as a comment.
+    const code = lines[i]!.replace(/#.*$/, "");
+    for (let k = 0; k < code.length; k++) {
+      const c = code[k]!;
+      if ("([{".includes(c)) depth++;
+      else if (")]}".includes(c)) depth--;
+      else if (c === ":" && depth === 0) return code.slice(k + 1).trim() ? -1 : i + 1;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Docstrings with `>>>` examples, as doctest finds them: the module's, and those of classes and
+ * functions at module level or in classes (not in functions). The path is the qualified name.
+ */
+function pythonDoctestTargets(lines: string[]): RunTarget[] {
+  const out: RunTarget[] = [];
+  const first = lines.findIndex((l) => l.trim() && !/^\s*#/.test(l));
+  if (first >= 0 && docstringHasExamples(lines, first))
+    out.push({ line: first, kind: "suite", name: "module", path: [], doctest: true });
+  const strings = inTripleQuotes(lines);
+  const scopes: Array<{ indent: number; name: string; cls: boolean }> = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    // Lines of a string (a docstring, SQL…) are neither headers nor the end of a scope.
+    if (strings[i] || !line.trim() || /^\s*#/.test(line)) continue;
+    const indent = indentOf(line);
+    while (scopes.length && scopes[scopes.length - 1]!.indent >= indent) scopes.pop();
+    const m = /^\s*(?:async\s+)?(def|class)\s+(\w+)/.exec(line);
+    if (!m) continue;
+    const cls = m[1] === "class";
+    const reachable = scopes.every((s) => s.cls);
+    scopes.push({ indent, name: m[2]!, cls });
+    const body = bodyLine(lines, i);
+    if (reachable && body >= 0 && docstringHasExamples(lines, body)) {
+      // One segment, as the results name the object (`[file, "Stock.take", example]`), so the icon shows its state.
+      const name = scopes.map((s) => s.name).join(".");
+      out.push({ line: i, kind: cls ? "suite" : "test", name, path: [name], doctest: true });
+    }
+  }
+  return out;
+}
+
+/** Whether a Python module has docstrings with examples that doctest runs. */
+export const hasDoctests = (content: string) => pythonDoctestTargets(content.split("\n")).length > 0;
 
 /** A class that holds Minitest / Test::Unit tests: by its superclass or its name. */
 const isRubyTestClass = (name: string, superclass: string | undefined) =>
@@ -373,31 +456,51 @@ export function testsInTestDirectory(configs: readonly RunConfig[]): boolean {
   return configs.some((c) => c.isTest && ["mocha", "node-test"].includes(frameworkFor(c)));
 }
 
+/** Whether the project tests with Jasmine, which looks in `spec/` by default (`fooSpec.js` and the like). */
+export function specsInSpecDirectory(configs: readonly RunConfig[]): boolean {
+  return configs.some((c) => c.isTest && frameworkFor(c) === "jasmine");
+}
+
 /**
  * Run targets of a file (relative path picks the language). `django`: a Django project, where
  * `tests.py` (Django's default test module) holds tests too. `testDirectory`: JS files in `test/`
- * hold tests whatever their name (`testsInTestDirectory`).
+ * hold tests whatever their name (`testsInTestDirectory`); `specDirectory`: the same for `spec/`
+ * (`specsInSpecDirectory`).
  */
-export function detectRunTargets(text: string, relPath: string, django = false, testDirectory = false): RunTarget[] {
+export function detectRunTargets(
+  text: string,
+  relPath: string,
+  django = false,
+  testDirectory = false,
+  specDirectory = false,
+): RunTarget[] {
   if (text.length > MAX_SCAN) return [];
   const lines = text.split("\n");
+  if (specDirectory && /(^|\/)spec\//.test(relPath) && targetLanguage(relPath) === "js") return jsTargets(lines);
   switch (targetLanguage(relPath)) {
     case "csharp":
       return csharpTargets(text);
     case "rust":
       return rustTargets(lines, relPath);
     case "js":
-      return /\.(test|spec)\.[cm]?[jt]sx?$|(^|\/)__tests__\//.test(relPath) ||
+      return /\.(test|spec|cy)\.[cm]?[jt]sx?$|(^|\/)__tests__\//.test(relPath) ||
         (testDirectory && /(^|\/)test\//.test(relPath))
         ? jsTargets(lines)
         : [];
-    case "python":
-      return pythonTargets(lines).filter(
+    case "python": {
+      const targets = pythonTargets(lines).filter(
         (t) =>
           t.kind === "main" ||
           /(^|\/)(test_[^/]*|[^/]*_test)\.py$|(^|\/)tests?\//.test(relPath) ||
           (django && /(^|\/)tests\.py$/.test(relPath)),
       );
+      // Docstring examples in any module; a line that is a test already keeps its test.
+      const module = (relPath.split("/").pop() ?? relPath).replace(/\.py$/, "");
+      const doctests = pythonDoctestTargets(lines)
+        .filter((d) => !targets.some((t) => t.line === d.line))
+        .map((d) => (d.path.length ? d : { ...d, name: module }));
+      return [...targets, ...doctests].sort((a, b) => a.line - b.line);
+    }
     case "php":
       return /Test\.php$|(^|\/)tests?\//.test(relPath)
         ? [...phpTargets(lines), ...pestTargets(lines)].sort((a, b) => a.line - b.line)
@@ -464,6 +567,7 @@ export function targetConfig(
       return applicationConfig({ className: target.className, spring: target.spring }, relPath, configs);
     return contextConfig(relPath, configs, content);
   }
+  if (target.doctest) return doctestConfig(relPath, configs, target.path.join("."));
   const file = testConfigFor(relPath, configs, base, content);
   if (!file) return null;
   if (target.className && (file.kind === "maven" || file.kind === "gradle")) {
@@ -481,12 +585,16 @@ export function targetConfig(
     env: { ...file.env },
     detected: true,
   });
+  // Cypress has no name filter of its own: `@cypress/grep` reads the full title (see `testing/cypress.ts`).
+  if (frameworkFor(file) === "cypress")
+    return { ...named([]), ...cypressSelection(file, cypressSpecs(file.args), { grep: [target.path.join(" ")] }) };
   // Playwright selects by declaration line (`file:line`), which also covers a describe block.
   if (frameworkFor(file) === "playwright") return named(withLast(file.args, (f) => `${f}:${target.line + 1}`));
   // node:test selects by full name, through NODE_OPTIONS (see `nodeTest.ts`).
   if (frameworkFor(file) === "node-test")
     return { ...named(file.args), env: withNodeTestNamePattern(file.env, jsNamePattern(target)) };
   if (frameworkFor(file) === "mocha") return named([...file.args, "--grep", jsNamePattern(target)]);
+  if (frameworkFor(file) === "jasmine") return named([...file.args, `--filter=${jsNamePattern(target)}`]);
   switch (file.kind) {
     case "dotnet-test": {
       const methods =
@@ -514,6 +622,9 @@ export function targetConfig(
           : pestFilter(target.path.slice(0, -1), target.path[target.path.length - 1]);
       return named(phpunitArgs(file.args, { target: relToCwd(relPath, file), filter }));
     }
+    case "unittest":
+      // The file's run ends with the module's dotted name: the class or test follows it.
+      return target.unittest ? named(withLast(file.args, (m) => `${m}.${target.path.join(".")}`)) : null;
     case "django-test": {
       // unittest's loader would call a module-level `test_*` function (or a plain class) to build the suite.
       if (!target.unittest) return null;

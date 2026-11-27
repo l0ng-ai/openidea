@@ -28,7 +28,11 @@ pub use syntax::{
     VueComponentImport, VueRefAccess, VueRefElement, WebReference, WebReferenceKind, merge_kinds, merge_visibility,
     set_external_syntax, shift_pos, shift_range,
 };
-pub use syntax::{MethodBody, PhpAlignment, PythonClassFacts, PythonFacts, PythonMethodFacts, PythonSuppression};
+pub use syntax::{
+    MethodBody, PhpAlignment, PytestFixture, PytestFixtureSlot, PytestFixtureUse, PytestFixtureUseKind, PytestModule,
+    PythonClassFacts, PythonFacts, PythonMethodFacts, PythonSuppression, bundler_aliases, resolve_fixture,
+    visible_fixtures,
+};
 
 /// Parsed form of `languages/<id>.toml`. Backend-only; the UI gets [`LanguageInfo`].
 #[derive(Clone, Debug, Serialize, Deserialize)]

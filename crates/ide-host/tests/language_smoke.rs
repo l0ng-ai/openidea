@@ -542,6 +542,23 @@ impl Smoke {
         self.restore(doc, &before).await;
     }
 
+    /// Completion at the end of the typed line, once it offers the auto-import `control`, has
+    /// none labelled `label`.
+    async fn not_offered(&self, typed: Typed, label: &str, control: &str) {
+        let (doc, pos, before) = self.type_line(typed).await;
+        self.retry("completion without the item", self.warm_up, || async {
+            let list = ops::lsp::lsp_completion(&self.host, WINDOW, RequestId(7), doc, pos, None).await;
+            let labels: Vec<String> = match list {
+                Ok(l) => l.items.into_iter().map(|i| i.label).collect(),
+                Err(e) => vec![e.to_string()],
+            };
+            let has = |name: &str| labels.iter().any(|l| l == name);
+            if has(control) && !has(label) { Ok(()) } else { Err(labels) }
+        })
+        .await;
+        self.restore(doc, &before).await;
+    }
+
     async fn organize_imports(&self, import: Typed, expect: Imports) {
         let (doc, _, before) = self.type_line(import).await;
         let typed = import.text.trim();
@@ -694,6 +711,197 @@ const TYPESCRIPT: Checks = Checks {
 #[ignore = "language smoke: needs vtsls"]
 async fn typescript() {
     smoke("typescript", TYPESCRIPT).await;
+}
+
+/// Code Style › TypeScript › Imports (#6072): each change reaches the running vtsls, and its
+/// auto-imports follow it: relative or path alias, `/index` or not, and excluded files and
+/// specifiers left out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "language smoke: needs vtsls"]
+async fn typescript_import_style() {
+    let checks = Checks {
+        files: &[
+            (
+                "tsconfig.json",
+                r#"{"compilerOptions": {"module": "ESNext", "moduleResolution": "Bundler", "strict": true,
+                    "noEmit": true, "allowImportingTsExtensions": true, "paths": {"@/*": ["./src/*"]}},
+                    "include": ["src"]}"#,
+            ),
+            ("src/lib/alpha.ts", "export function alphaHelper(): number {\n  return 1;\n}\n"),
+            // Never excluded, and matching what is typed (tsserver offers only those): the
+            // auto-import candidates are in the completion list.
+            ("src/lib/betaWord.ts", "export function betaWord(): number {\n  return 3;\n}\n"),
+            ("src/lib/hints.ts", "export function alphaHint(): number {\n  return 4;\n}\n"),
+            ("src/app/components/index.ts", "export function betaWidget(): number {\n  return 2;\n}\n"),
+            ("src/app/main.ts", "export const ready = true;\n"),
+            ("src/app/other.ts", "export const other = true;\n"),
+            ("src/app/third.ts", "export const third = true;\n"),
+            ("src/app/fourth.ts", "export const fourth = true;\n"),
+            ("src/app/fifth.ts", "export const fifth = true;\n"),
+        ],
+        ..TYPESCRIPT
+    };
+    let smoke = Smoke::start("typescript", &checks).await;
+    let set = |key: &str, value: &str| {
+        let scope = ide_workspace::settings::SettingsScope::Project;
+        let key = format!("editor.codeStyle.languages.typescript.{key}");
+        ops::project::settings_set(&smoke.host, WINDOW, scope, key, value.into()).unwrap();
+    };
+    let alpha = typed("src/app/main.ts", "export const ready", "alphaH");
+    let beta = typed("src/app/main.ts", "export const ready", "betaW");
+    let import = |typed, label, result| AutoImport { typed, label, result };
+
+    set("importModuleSpecifier", r#""relative""#);
+    smoke.auto_import(import(alpha, "alphaHelper", r#"from "../lib/alpha""#)).await;
+    set("importModuleSpecifier", r#""non-relative""#);
+    smoke.auto_import(import(alpha, "alphaHelper", r#"from "@/lib/alpha""#)).await;
+
+    set("importModuleSpecifier", r#""relative""#);
+    set("importModuleSpecifierEnding", r#""index""#);
+    smoke.auto_import(import(beta, "betaWidget", r#"from "./components/index""#)).await;
+    set("importModuleSpecifierEnding", r#""minimal""#);
+    smoke.auto_import(import(beta, "betaWidget", r#"from "./components""#)).await;
+
+    // tsserver keeps the auto-import candidates of the file it last completed in until the
+    // program changes; other files see an exclusion at once.
+    set("autoImportFileExcludePatterns", r#"["**/index.ts"]"#);
+    smoke.not_offered(typed("src/app/other.ts", "export const other", "betaW"), "betaWidget", "betaWord").await;
+    set("autoImportSpecifierExcludeRegexes", r#"["lib/alpha$"]"#);
+    smoke.not_offered(typed("src/app/third.ts", "export const third", "alphaH"), "alphaHelper", "alphaHint").await;
+
+    // Emptied lists reach the server too: the symbols are offered again.
+    set("autoImportFileExcludePatterns", "[]");
+    let beta = typed("src/app/fourth.ts", "export const fourth", "betaW");
+    smoke.auto_import(import(beta, "betaWidget", r#"from "./components""#)).await;
+    set("autoImportSpecifierExcludeRegexes", "[]");
+    let alpha = typed("src/app/fifth.ts", "export const fifth", "alphaH");
+    smoke.auto_import(import(alpha, "alphaHelper", r#"from "../lib/alpha""#)).await;
+}
+
+/// The latest `tsc` diagnostics of `path` (Problems › TypeScript Project Errors), `None` before any.
+#[cfg(unix)]
+fn tsc_errors(events: &Events, path: &Path) -> Option<Vec<String>> {
+    events.lock().unwrap().iter().rev().find_map(|e| match e {
+        IdeEvent::Diagnostics { path: p, source, items } if source == "tsc" && **p == *path => {
+            Some(items.iter().map(|d| d.message.clone()).collect())
+        }
+        _ => None,
+    })
+}
+
+/// Problems › TypeScript Project Errors (#6073): the project's own `tsc --watch` reports the error
+/// an edit of one file causes in another that is not open, holds it back while that file is open,
+/// clears it once fixed, checks a solution with project references as well, and writes nothing
+/// into the project. TypeScript comes from `OPENIDEA_SMOKE_TYPESCRIPT` (a `typescript` package
+/// folder), else the global npm install.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "language smoke: needs typescript"]
+async fn typescript_project_errors() {
+    let typescript = std::env::var_os("OPENIDEA_SMOKE_TYPESCRIPT").map_or_else(
+        || {
+            let out = std::process::Command::new("npm").args(["root", "-g"]).output().expect("npm root -g");
+            PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()).join("typescript")
+        },
+        PathBuf::from,
+    );
+    assert!(typescript.join("bin/tsc").is_file(), "no TypeScript in {}", typescript.display());
+    let checks = Checks {
+        files: &[
+            // Fails from the start: its error marks the end of the first compilation.
+            ("src/probe.ts", "export const probe: number = \"x\";\n"),
+            ("packages/tsconfig.json", r#"{"files": [], "references": [{"path": "./core"}, {"path": "./app"}]}"#),
+            (
+                "packages/core/tsconfig.json",
+                r#"{"compilerOptions": {"composite": true, "strict": true, "outDir": "out"}}"#,
+            ),
+            ("packages/core/index.ts", "export const version: number = 1;\n"),
+            (
+                "packages/app/tsconfig.json",
+                r#"{"compilerOptions": {"composite": true, "strict": true, "outDir": "out"}, "references": [{"path": "../core"}]}"#,
+            ),
+            (
+                "packages/app/index.ts",
+                "import { version } from \"../core/index\";\nexport const label: string = version;\n",
+            ),
+        ],
+        ..TYPESCRIPT
+    };
+    let smoke = Smoke::start("typescript", &checks).await;
+    let root = smoke.root.clone();
+    std::fs::create_dir_all(root.join("node_modules/.bin")).unwrap();
+    std::os::unix::fs::symlink(&typescript, root.join("node_modules/typescript")).unwrap();
+    std::os::unix::fs::symlink("../typescript/bin/tsc", root.join("node_modules/.bin/tsc")).unwrap();
+    async fn wait(what: &str, ok: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !ok() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+    let errors = |file: &str| tsc_errors(&smoke.events, &root.join(file));
+    let has = |file: &'static str, text: &'static str| {
+        move || errors(file).is_some_and(|e| e.iter().any(|m| m.contains(text)))
+    };
+    let clear = |file: &'static str| move || errors(file).is_some_and(|e| e.is_empty());
+    let set = |on: bool| {
+        let scope = ide_workspace::settings::SettingsScope::Project;
+        ops::project::settings_set(
+            &smoke.host,
+            WINDOW,
+            scope,
+            "languages.typescript.watchProblems".into(),
+            on.to_string(),
+        )
+        .unwrap();
+    };
+
+    set(true);
+    wait("the first compilation", has("src/probe.ts", "not assignable")).await;
+    wait("the solution's error", has("packages/app/index.ts", "not assignable to type 'string'")).await;
+
+    // Renaming an export in money.ts breaks index.ts, which is not open.
+    let money = root.join("src/money.ts");
+    let original = std::fs::read_to_string(&money).unwrap();
+    std::fs::write(&money, original.replace("export function formatMoney", "export function formatPrice")).unwrap();
+    wait("index.ts to break", has("src/index.ts", "formatMoney")).await;
+    assert_eq!(errors("src/money.ts"), None, "the edited file itself is fine");
+
+    // Open, it shows the language server's errors only; closed again, the watcher's.
+    let doc = ops::doc::doc_open(&smoke.host, WINDOW, root.join("src/index.ts")).await.unwrap();
+    wait("index.ts held back while open", clear("src/index.ts")).await;
+    ops::doc::doc_close(&smoke.host, WINDOW, doc.id).await.unwrap();
+    wait("index.ts back once closed", has("src/index.ts", "formatMoney")).await;
+
+    std::fs::write(&money, &original).unwrap();
+    // The fixture's own error (an unused function) stays.
+    let fixed =
+        move || errors("src/index.ts").is_some_and(|e| !e.is_empty() && !e.iter().any(|m| m.contains("formatMoney")));
+    wait("index.ts fixed", fixed).await;
+
+    set(false);
+    wait("every error cleared", || {
+        ["src/probe.ts", "src/index.ts", "packages/app/index.ts"].into_iter().all(|f| clear(f)())
+    })
+    .await;
+
+    // A background check writes nothing into the project: no `.js`, `.d.ts` or `.tsbuildinfo`.
+    fn outputs(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if entry.file_name() == "node_modules" {
+                continue;
+            }
+            if path.is_dir() {
+                outputs(&path, out);
+            } else if [".js", ".d.ts", ".tsbuildinfo"].iter().any(|ext| path.to_string_lossy().ends_with(ext)) {
+                out.push(path);
+            }
+        }
+    }
+    let mut written = Vec::new();
+    outputs(&root, &mut written);
+    assert_eq!(written, Vec::<PathBuf>::new());
 }
 
 const PYTHON: Checks = Checks {

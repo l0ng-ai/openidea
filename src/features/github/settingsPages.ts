@@ -6,7 +6,7 @@ export function activateSettingsPages(): () => void {
     id: "vcs.github",
     title: "GitHub",
     order: 9,
-    keywords: ["pull request", "viewed", "review"],
+    keywords: ["pull request", "viewed", "review", "account", "gh", "token"],
     component: lazyComponent(() => import("./diff/GithubSettingsPage").then((m) => m.GithubSettingsPage)),
   });
 }

@@ -24,10 +24,10 @@ export function isNavigation(tr: Transaction): boolean {
 const MAX_ENTRIES = 100;
 
 const sameTarget = (a: Omit<NavigationLocation, "time">, b: Omit<NavigationLocation, "time">) =>
-  a.path === b.path && a.input?.key === b.input?.key;
+  a.path === b.path && a.input?.key === b.input?.key && a.paneId === b.paneId;
 
 const samePlace = (a: Omit<NavigationLocation, "time">, b: Omit<NavigationLocation, "time">) =>
-  sameTarget(a, b) && Math.abs(a.line - b.line) < MERGE_LINES;
+  sameTarget(a, b) && (Boolean(a.input) || Math.abs(a.line - b.line) < MERGE_LINES);
 
 export class NavigationHistory {
   entries: NavigationLocation[] = [];
@@ -49,8 +49,8 @@ export class NavigationHistory {
   }
 
   /**
-   * Records the caret position. `navigation`: the move came from a navigation
-   * command; a file switch always counts as one.
+   * Records the caret position or editor tab. `navigation`: the move came
+   * from a navigation command; a tab or split-pane switch always counts as one.
    */
   update(loc: Omit<NavigationLocation, "time">, navigation = false) {
     const entry = { ...loc, time: this.now() };
@@ -76,28 +76,64 @@ export class NavigationHistory {
     this.emit();
   }
 
-  /** Moves back; returns the location to navigate to. */
-  back(): NavigationLocation | null {
-    if (!this.canGoBack()) return null;
-    this.index--;
-    this.emit();
-    return this.current;
+  /** Moves back to the previous accepted entry; skips duplicates exposed by stale entries. */
+  back(accept?: (loc: NavigationLocation) => boolean): NavigationLocation | null {
+    const cur = this.current;
+    let skipped = false;
+    for (let i = this.index - 1; i >= 0; i--) {
+      const candidate = this.entries[i]!;
+      if (accept && !accept(candidate)) {
+        skipped = true;
+        continue;
+      }
+      if (skipped && cur && samePlace(candidate, cur)) continue;
+      this.index = i;
+      this.emit();
+      return candidate;
+    }
+    return null;
   }
 
-  forward(): NavigationLocation | null {
-    if (!this.canGoForward()) return null;
-    this.index++;
-    this.emit();
-    return this.current;
+  /** Moves forward to the next accepted entry; skips duplicates exposed by stale entries. */
+  forward(accept?: (loc: NavigationLocation) => boolean): NavigationLocation | null {
+    const cur = this.current;
+    let skipped = false;
+    for (let i = this.index + 1; i < this.entries.length; i++) {
+      const candidate = this.entries[i]!;
+      if (accept && !accept(candidate)) {
+        skipped = true;
+        continue;
+      }
+      if (skipped && cur && samePlace(candidate, cur)) continue;
+      this.index = i;
+      this.emit();
+      return candidate;
+    }
+    return null;
   }
 
-  /** Drops entries of a deleted file. */
+  /** Drops entries of a deleted file and collapses newly adjacent duplicates. */
   removePath(path: string) {
+    if (!path) return;
     const before = this.entries.length;
     const cur = this.current;
-    this.entries = this.entries.filter((e) => e.path !== path);
-    if (this.entries.length === before) return;
-    this.index = cur && cur.path !== path ? this.entries.indexOf(cur) : this.entries.length - 1;
+    const kept: NavigationLocation[] = [];
+    let nextIndex = -1;
+    for (let i = 0; i < this.entries.length; i++) {
+      const entry = this.entries[i]!;
+      if (entry.path === path) continue;
+      const prev = kept[kept.length - 1];
+      if (prev && samePlace(prev, entry)) {
+        kept[kept.length - 1] = entry;
+        if (entry === cur || i <= this.index) nextIndex = kept.length - 1;
+      } else {
+        kept.push(entry);
+        if (entry === cur || (nextIndex < 0 && i >= this.index)) nextIndex = kept.length - 1;
+      }
+    }
+    if (kept.length === before) return;
+    this.entries = kept;
+    this.index = cur && cur.path !== path ? Math.min(nextIndex, kept.length - 1) : kept.length - 1;
     this.emit();
   }
 

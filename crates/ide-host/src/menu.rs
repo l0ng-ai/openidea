@@ -380,6 +380,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
                 "Appearance",
                 vec![
                     act("editor.toggleZen", "Enter Distraction Free Mode"),
+                    act("view.toggleZenMode", "Enter Zen Mode"),
                     act("window.toggleFullScreen", "Toggle Full Screen"),
                     toggle("view.toggleCompactMode", "Compact Mode"),
                     toggle("view.togglePresentationAssistant", "Presentation Assistant"),
@@ -587,6 +588,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
             act("refactor.extractParameter", "Introduce Parameter…"),
             act("refactor.extractMethod", "Extract Method…"),
             act("refactor.extractInterface", "Extract Interface…"),
+            act("refactor.extractTypeAlias", "Extract Type Alias…"),
             act("refactor.inline", "Inline…"),
             SEP,
             act("refactor.pullMembersUp", "Pull Members Up…"),
@@ -622,6 +624,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
             act("run.debugContext", "Debug Context Configuration"),
             act("run.coverage", "Run with Coverage"),
             act("run.profile", "Profile"),
+            act("profiler.openSnapshot", "Open Profiler Snapshot…"),
             act("run.stop", "Stop"),
             SEP,
             act("run.chooseConfig", "Run…"),
@@ -751,6 +754,8 @@ pub fn spec(os: Os) -> Vec<Entry> {
     ));
 
     let mut tools = vec![
+        act("code.saveAsLiveTemplate", "Save as Live Template…"),
+        SEP,
         act("http.newRequest", "New HTTP Request"),
         act("http.showToolWindow", "HTTP Client"),
         SEP,

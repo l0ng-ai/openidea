@@ -73,6 +73,7 @@ pub struct Project {
     pub(crate) widget_preview: ide_flutter::ToolServer,
     pub(crate) kotlin_bridge: Option<Arc<crate::kotlin_bridge::KotlinBridge>>,
     pub(crate) phpstan: Option<Arc<crate::phpstan::Phpstan>>,
+    pub(crate) tsc_watch: Option<Arc<crate::tsc_watch::TscWatch>>,
     pub(crate) watcher: Arc<Watcher>,
     /// Watchers of the Project Structure content roots outside the project folder.
     pub(crate) content_watchers: Mutex<Vec<(PathBuf, Watcher)>>,
@@ -207,7 +208,13 @@ impl Host {
                 let root = member.as_ref().unwrap_or(window_root);
                 ide_sdk::apply::server_launch_overrides(cfg, &effective);
                 ide_sdk::apply::configure_server(cfg, root, server_root, &effective);
+                crate::ts_code_style::configure(cfg, server_root, &effective);
                 ide_sdk::apply::configure_vue_module_resolution(cfg, &data_dir);
+                ide_sdk::apply::configure_path_aliases(cfg, server_root, &data_dir);
+                let css_modules = ide_tools::managed_npm_plugin(&data_dir, "css-modules-kit");
+                ide_sdk::apply::configure_css_modules(cfg, server_root, css_modules.as_deref());
+                // After the global plugins: they keep the IDE's copies.
+                ide_sdk::apply::configure_tsconfig_plugins(cfg, server_root, &data_dir);
                 let container_python = effective.languages.python.run_target().is_some();
                 crate::ops::sdk::container_python::configure_server(cfg, &data_dir, root, &effective);
                 // Attached dependency projects are source, so basedpyright/Pyright should
@@ -357,8 +364,13 @@ impl Host {
         }
         {
             let settings = settings.clone();
+            let data_dir = self.local_data_dir.clone();
             lsp.set_servers_hook(Box::new(move |language, defined| {
-                ide_sdk::apply::language_servers(language.as_str(), defined, &settings.effective())
+                let mut servers = ide_sdk::apply::language_servers(language.as_str(), defined, &settings.effective());
+                if language.as_str() == "css" && ide_tools::managed_npm_plugin(&data_dir, "css-modules-kit").is_none() {
+                    ide_sdk::apply::drop_css_modules_route(&mut servers);
+                }
+                servers
             }));
         }
         {
@@ -396,6 +408,8 @@ impl Host {
             trusted.clone(),
         );
         documents.add_observer(phpstan.clone());
+        let tsc_watch = crate::tsc_watch::TscWatch::new(root.clone(), settings.clone(), sink.clone(), trusted.clone());
+        documents.add_observer(tsc_watch.clone());
         let repos = Arc::new(RwLock::new(Repos::enclosing(&root)?));
         for repo in repos.read().all() {
             repo.set_execution_allowed(trusted.load(Ordering::Acquire));
@@ -447,7 +461,9 @@ impl Host {
                     phpstan.files_removed(batch.removed.iter());
                     lsp.project_files_changed(batch.created.iter().chain(&batch.removed));
                     lsp.watched_files_changed(&batch.created, &batch.modified, &batch.removed, &batch.excluded_dirs);
-                    if composer_changed(&root, changed.iter().chain(&batch.removed)) {
+                    if composer_changed(&root, changed.iter().chain(&batch.removed))
+                        || ts_config_changed(changed.iter().chain(&batch.removed))
+                    {
                         lsp.reconfigure_soon();
                     }
                     // Not while loading: a first `use flake` may write `flake.lock` itself.
@@ -690,6 +706,7 @@ impl Host {
             notebooks,
             kotlin_bridge: Some(kotlin_bridge),
             phpstan: Some(phpstan),
+            tsc_watch: Some(tsc_watch),
             watcher,
             content_watchers: Mutex::new(content_watchers),
             lsp_watchers: Mutex::new(Vec::new()),
@@ -750,8 +767,17 @@ impl Host {
         if let Some(phpstan) = &project.phpstan {
             phpstan.start(&self.runtime);
         }
+        if let Some(watch) = &project.tsc_watch {
+            watch.apply(&self.runtime);
+        }
         if let Some(cmd) = post_start {
             self.environment.spawn_post_start(cmd, project.root.clone(), project.sink.clone());
+        }
+        if project.is_trusted() {
+            let p = project.clone();
+            self.runtime.spawn_blocking(move || {
+                crate::github_auth::apply_to_project(&p);
+            });
         }
         crate::ops::sdk::container_python::ensure(self, &project);
         Ok(project)
@@ -950,6 +976,7 @@ impl Host {
             notebooks,
             kotlin_bridge: None,
             phpstan: None,
+            tsc_watch: None,
             watcher: Arc::new(watcher),
             content_watchers: Mutex::new(Vec::new()),
             lsp_watchers: Mutex::new(Vec::new()),
@@ -1024,9 +1051,8 @@ fn db_sources_watch(
         let Some(db) = weak.upgrade() else { return };
         let sink = sink.clone();
         runtime.spawn(async move {
-            if db.reconcile_sources().await {
-                sink.emit(IdeEvent::DbSourcesChanged);
-            }
+            db.reconcile_sources().await;
+            sink.emit(IdeEvent::DbSourcesChanged);
         });
     }))
     .inspect_err(|e| tracing::warn!("{}", e.message))
@@ -1514,8 +1540,7 @@ impl Project {
     }
 
     pub fn staged_file_encoding(&self, path: &Path, bytes: &[u8]) -> ide_vcs::TextEncoding {
-        let defaults = self.documents.file_defaults();
-        let charset = ide_vfs::detect_encoding(bytes, defaults.fallback_for(path));
+        let charset = self.documents.detect_encoding(path, bytes);
         self.vcs_text_encoding(path, charset)
     }
 
@@ -1874,7 +1899,9 @@ fn content_root_watcher(
             index.ignore_rules_changed(&batch.ignore_rules);
             index.update(&[&changed[..], &ignored].concat(), &[&batch.removed[..], &ignored_gone].concat());
             // A workspace member's PHP language level follows its own composer.json.
-            if composer_changed(&root, changed.iter().chain(&batch.removed)) {
+            if composer_changed(&root, changed.iter().chain(&batch.removed))
+                || ts_config_changed(changed.iter().chain(&batch.removed))
+            {
                 lsp.reconfigure_soon();
             }
             if let Some(bridge) = &kotlin_bridge {
@@ -1894,6 +1921,17 @@ fn content_root_watcher(
     )
     .map_err(|e| tracing::warn!("content root watcher {}: {e}", dir.display()))
     .ok()
+}
+
+/// A tsconfig.json / jsconfig.json (or a `tsconfig.*.json` one extends) changed: the tsserver
+/// plugins it declares are part of vtsls' configuration.
+fn ts_config_changed<'a>(mut paths: impl Iterator<Item = &'a PathBuf>) -> bool {
+    paths.any(|p| {
+        let name = p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+        !p.components().any(|c| c.as_os_str() == "node_modules")
+            && (name.starts_with("tsconfig") || name.starts_with("jsconfig"))
+            && name.ends_with(".json")
+    })
 }
 
 /// Whether the `composer.json` of `root` is among `paths`: the PHP language level follows it
@@ -2005,7 +2043,9 @@ fn independent_eclipse_projects(root: &Path) -> Vec<PathBuf> {
 
 /// The detected roots with the last Gradle sync's source sets first: Gradle evaluated what
 /// static detection guesses. Folders outside the project keep their absolute path, which
-/// `normalize` turns into the same form the UI compares (`Users/me/svc/src/main/java`).
+/// `normalize` turns into the same form the UI compares (`Users/me/svc/src/main/java`);
+/// their `detected_from` owner keeps its leading `/` or drive (`<project>/Gradle`) so
+/// module lists still address them as absolute paths.
 fn with_gradle_roots(
     root: &Path,
     build_cache: &Path,
@@ -2029,11 +2069,21 @@ fn with_gradle_roots(
         };
         if !out.iter().any(|f| f.path == path) {
             // `<module>/Gradle`, like the `<module>/build.gradle` static detection reports, so the
-            // UI still finds the module after a sync. Projects outside the root stay `Gradle`:
-            // the UI reads the folder as project-relative.
+            // UI still finds the module after a sync. Projects outside the root keep their
+            // absolute owner (without `normalize`, which strips a leading `/`), except an ancestor
+            // of the root (opened from a subproject) or a filesystem/drive root, which stay
+            // `Gradle` so they cannot shadow in-project modules or collapse to a bare drive `D:`.
+            let project = dunce::canonicalize(&project).unwrap_or(project);
             let detected_from = match project.strip_prefix(root) {
                 Ok(rel) if !rel.as_os_str().is_empty() => {
                     format!("{}/Gradle", ide_workspace::roots::normalize(&rel.to_string_lossy()))
+                }
+                Err(_) if !root.starts_with(&project) && project.parent().is_some() => {
+                    let raw = project.to_string_lossy().replace('\\', "/");
+                    let owner = raw.trim_end_matches('/');
+                    let drive_root =
+                        owner.len() == 2 && owner.as_bytes()[0].is_ascii_alphabetic() && owner.as_bytes()[1] == b':';
+                    if owner.is_empty() || drive_root { "Gradle".into() } else { format!("{owner}/Gradle") }
                 }
                 _ => "Gradle".into(),
             };
@@ -2482,15 +2532,106 @@ mod gradle_roots_tests {
         std::fs::write(root.join("build.gradle"), "").unwrap();
         let out = with_gradle_roots(&root, &cache, &Default::default(), &[guessed, other.clone()]);
         let abs = |p: PathBuf| ide_workspace::roots::normalize(&s(p));
+        let owner = format!("{}/Gradle", svc.to_string_lossy().replace('\\', "/"));
         let got: Vec<_> = out.iter().map(|f| (f.path.clone(), f.kind, f.detected_from.as_deref())).collect();
-        // A project outside the root is not a module the UI could address.
+        // A project outside the root keeps its absolute owner so module lists still address it.
         assert_eq!(
             got,
             [
                 ("src/it/java".into(), RootKind::Test, Some("Gradle")),
-                (abs(svc.join("src/main/java")), RootKind::Source, Some("Gradle")),
-                (abs(svc.join("build")), RootKind::Excluded, Some("Gradle")),
+                (abs(svc.join("src/main/java")), RootKind::Source, Some(owner.as_str())),
+                (abs(svc.join("build")), RootKind::Excluded, Some(owner.as_str())),
                 ("web".into(), RootKind::Source, None),
+            ]
+        );
+    }
+
+    #[test]
+    fn gradle_sync_roots_keep_plain_gradle_for_ancestors_and_fs_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let composite = dunce::canonicalize(tmp.path()).unwrap();
+        let app = composite.join("app");
+        let lib = app.join("lib");
+        let cache = composite.join("cache");
+        let ext_posix = composite.join("ext-posix/src/main/java");
+        let ext_win = composite.join("ext-win/src/main/java");
+        for d in [
+            composite.join("src/main/java"),
+            app.join("src/main/java"),
+            lib.join("src/main/java"),
+            ext_posix.clone(),
+            ext_win.clone(),
+            cache.clone(),
+        ] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let s = |p: PathBuf| p.to_string_lossy().into_owned();
+        // Opened at `composite/app` while Gradle discovers parent `composite/settings.gradle`
+        // (so `composite` is an ancestor of `root`), plus external roots owned by `/` or `D:/`.
+        let json = serde_json::json!({ "hash": "", "at_ms": 1.0, "error": null, "tasks": [], "projects": [
+            { "path": ":", "dir": s(composite.clone()), "sourceSets": [
+                { "name": "main", "test": false, "src": [s(composite.join("src/main/java"))], "res": [] } ] },
+            { "path": ":app", "dir": s(app.clone()), "sourceSets": [
+                { "name": "main", "test": false, "src": [s(app.join("src/main/java"))], "res": [] } ] },
+            { "path": ":app:lib", "dir": s(lib.clone()), "sourceSets": [
+                { "name": "main", "test": false, "src": [s(lib.join("src/main/java"))], "res": [] } ] },
+            { "path": ":posix-root", "dir": "/", "sourceSets": [
+                { "name": "main", "test": false, "src": [s(ext_posix.clone())], "res": [] } ] },
+            { "path": ":win-drive", "dir": "D:/", "sourceSets": [
+                { "name": "main", "test": false, "src": [s(ext_win.clone())], "res": [] } ] },
+        ]});
+        std::fs::write(cache.join("gradle.json"), json.to_string()).unwrap();
+        std::fs::write(app.join("build.gradle"), "").unwrap();
+        let out = with_gradle_roots(&app, &cache, &Default::default(), &[]);
+        let abs = |p: PathBuf| ide_workspace::roots::normalize(&s(p));
+        let got: Vec<_> = out.iter().map(|f| (f.path.clone(), f.detected_from.as_deref())).collect();
+        assert_eq!(
+            got,
+            [
+                (abs(composite.join("src/main/java")), Some("Gradle")),
+                ("src/main/java".into(), Some("Gradle")),
+                ("lib/src/main/java".into(), Some("lib/Gradle")),
+                (abs(ext_posix), Some("Gradle")),
+                (abs(ext_win), Some("Gradle")),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gradle_sync_roots_canonicalize_symlinked_project_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = dunce::canonicalize(tmp.path()).unwrap();
+        let real = ws.join("real");
+        let link = ws.join("link");
+        let app = real.join("app");
+        let lib = app.join("lib");
+        let cache = ws.join("cache");
+        for d in [real.join("src/main/java"), app.join("src/main/java"), lib.join("src/main/java"), cache.clone()] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let s = |p: PathBuf| p.to_string_lossy().into_owned();
+        // Opened at canonical `real/app`, while Gradle reports projects through the symlink `link`.
+        let json = serde_json::json!({ "hash": "", "at_ms": 1.0, "error": null, "tasks": [], "projects": [
+            { "path": ":", "dir": s(link.clone()), "sourceSets": [
+                { "name": "main", "test": false, "src": [s(real.join("src/main/java"))], "res": [] } ] },
+            { "path": ":app", "dir": s(link.join("app")), "sourceSets": [
+                { "name": "main", "test": false, "src": [s(app.join("src/main/java"))], "res": [] } ] },
+            { "path": ":app:lib", "dir": s(link.join("app/lib")), "sourceSets": [
+                { "name": "main", "test": false, "src": [s(lib.join("src/main/java"))], "res": [] } ] },
+        ]});
+        std::fs::write(cache.join("gradle.json"), json.to_string()).unwrap();
+        std::fs::write(app.join("build.gradle"), "").unwrap();
+        let out = with_gradle_roots(&app, &cache, &Default::default(), &[]);
+        let abs = |p: PathBuf| ide_workspace::roots::normalize(&s(p));
+        let got: Vec<_> = out.iter().map(|f| (f.path.clone(), f.detected_from.as_deref())).collect();
+        assert_eq!(
+            got,
+            [
+                (abs(real.join("src/main/java")), Some("Gradle")),
+                ("src/main/java".into(), Some("Gradle")),
+                ("lib/src/main/java".into(), Some("lib/Gradle")),
             ]
         );
     }
@@ -2618,8 +2759,19 @@ mod agent_worktree_tests {
 
 #[cfg(test)]
 mod composer_tests {
-    use super::composer_changed;
+    use super::{composer_changed, ts_config_changed};
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn tsconfig_and_jsconfig_files_count_outside_node_modules() {
+        let changed = |p: &str| ts_config_changed([PathBuf::from(p)].iter());
+        for yes in ["/p/tsconfig.json", "/p/apps/web/jsconfig.json", "/p/tsconfig.base.json"] {
+            assert!(changed(yes), "{yes}");
+        }
+        for no in ["/p/package.json", "/p/tsconfig.ts", "/p/node_modules/x/tsconfig.json"] {
+            assert!(!changed(no), "{no}");
+        }
+    }
 
     #[test]
     fn only_the_roots_own_composer_json_counts() {

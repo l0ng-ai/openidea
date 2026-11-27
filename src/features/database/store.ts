@@ -10,6 +10,7 @@ import {
   IpcError,
   call,
   commands,
+  emitLocalIdeEvent,
   isCancelled,
   nextRequestId,
   type DataSource,
@@ -22,6 +23,7 @@ import {
   type DbObjectKind,
   type DbPlanNode,
   type DbSchemaObjects,
+  type DbSourceFolder,
   type DbQueryResult,
   type DbStatementOutcome,
   type DbTableDetails,
@@ -56,14 +58,15 @@ import {
   splitTarget,
   targetOf,
 } from "./model";
-import { tableFolder, type DbNode } from "./nodes";
+import { nodeTarget, tableFolder, type DbNode } from "./nodes";
 import { SQL_LANGUAGE } from "./sqlLanguage";
 import { TABLE_KIND, type TableRef } from "./tableInput";
 import type { DiagramData } from "./erDiagram";
 import type { ExportData, ExportFormat } from "./export";
 import type { DbObjectRef } from "./objects";
 import { formatted } from "./sql/format";
-import { bindParams, findParams } from "./sql/params";
+import { unsafeStatement, type UnsafeStatement } from "./sql/unsafe";
+import { bindParams, findParams, unbindRange } from "./sql/params";
 import { isReadOnlyQuery } from "./sql/readOnly";
 import { pageFetch } from "./resultView";
 import type { TableSnapshot } from "./schemaCompare";
@@ -144,6 +147,8 @@ export type DialogState =
   /** Rename a data source (`object` null) or a schema object of target `id`. */
   | { kind: "rename"; id: string; object: DbObjectRef | null }
   | { kind: "renameDatabase"; id: string; database: string }
+  /** New or rename a user data source folder; `sources` joins them when creating. */
+  | { kind: "sourceFolder"; folder: DbSourceFolder | null; sources?: string[] }
   /** Confirm Drop / Truncate, with a preview of the statement. */
   | { kind: "drop"; id: string; object: DbObjectRef }
   | { kind: "truncate"; id: string; schema: string; table: string }
@@ -201,7 +206,9 @@ export type StatementProgress = Exclude<ExecutionEvent, { type: "done" }>;
 
 interface DatabaseState {
   sources: DataSource[];
+  folders: DbSourceFolder[];
   loaded: boolean;
+  foldersLoaded: boolean;
   /** Connected targets (see `splitTarget`). */
   connected: Set<string>;
   /** Targets or whole sources deactivated until the next deliberate database operation. */
@@ -223,6 +230,7 @@ interface DatabaseState {
   /** Console path → its active schema (unqualified names resolve there; see `consoleSchema`). */
   consoleSchemas: Record<string, string>;
   separateProceduresAndFunctions: boolean;
+  showTableComments: boolean;
   completion: Record<string, DbCompletion>;
   results: ResultTab[];
   /** Results shown in the editor under their statements (In-Editor Results), oldest first. */
@@ -274,18 +282,38 @@ function readConsoleSchemas(): Record<string, string> {
   }
 }
 
-function readSeparateProceduresAndFunctions(): boolean {
+function consoleTargetFromPath(path: string, sources: readonly DataSource[]): string | null {
+  const folder = /(?:^|[\\/])consoles[\\/]db[\\/]([^\\/]+)[\\/]console(?:_\d+)?\.sql$/i.exec(path)?.[1];
+  if (!folder) return null;
+  const source = sources.find((candidate) => {
+    const id = candidate.id ?? "";
+    return !!id && (folder === id || folder.startsWith(`${id}.`));
+  });
+  if (!source?.id) return null;
+  const database = folder === source.id ? null : folder.slice(source.id.length + 1);
+  return database ? `${source.id}:${database}` : source.id;
+}
+
+function readViewOptions(): Pick<DatabaseState, "separateProceduresAndFunctions" | "showTableComments"> {
   try {
     const raw = localStorage.getItem(VIEW_OPTIONS_KEY);
-    return raw ? JSON.parse(raw)?.separateProceduresAndFunctions === true : false;
+    const value = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    return {
+      separateProceduresAndFunctions: value.separateProceduresAndFunctions === true,
+      showTableComments: value.showTableComments !== false,
+    };
   } catch {
-    return false;
+    return { separateProceduresAndFunctions: false, showTableComments: true };
   }
 }
 
+const initialViewOptions = readViewOptions();
+
 export const useDatabase = create<DatabaseState>(() => ({
   sources: [],
+  folders: [],
   loaded: false,
+  foldersLoaded: false,
   connected: new Set(),
   pausedConsoleMetadata: new Set(),
   databases: {},
@@ -296,7 +324,7 @@ export const useDatabase = create<DatabaseState>(() => ({
   objects: {},
   consoles: readBindings(),
   consoleSchemas: readConsoleSchemas(),
-  separateProceduresAndFunctions: readSeparateProceduresAndFunctions(),
+  ...initialViewOptions,
   completion: {},
   results: [],
   inline: [],
@@ -337,8 +365,19 @@ useDatabase.subscribe((state, previous) => {
 export function toggleSeparateProceduresAndFunctions() {
   const separateProceduresAndFunctions = !useDatabase.getState().separateProceduresAndFunctions;
   useDatabase.setState({ separateProceduresAndFunctions });
+  saveViewOptions();
+}
+
+export function toggleShowTableComments() {
+  const showTableComments = !useDatabase.getState().showTableComments;
+  useDatabase.setState({ showTableComments });
+  saveViewOptions();
+}
+
+function saveViewOptions() {
+  const { separateProceduresAndFunctions, showTableComments } = useDatabase.getState();
   try {
-    localStorage.setItem(VIEW_OPTIONS_KEY, JSON.stringify({ separateProceduresAndFunctions }));
+    localStorage.setItem(VIEW_OPTIONS_KEY, JSON.stringify({ separateProceduresAndFunctions, showTableComments }));
   } catch {
     // Per-viewer convenience only.
   }
@@ -473,6 +512,131 @@ export async function loadSources(): Promise<void> {
   }
 }
 
+export async function loadSourceFolders(): Promise<void> {
+  if (!useProject.getState().project) return;
+  const current = projectRequest();
+  try {
+    const folders = await call(commands.dbSourceFolders());
+    if (current()) useDatabase.setState({ folders, foldersLoaded: true });
+  } catch (e) {
+    if (!current()) return;
+    useDatabase.setState({ folders: [], foldersLoaded: true });
+    if (!message(e).includes("is not available remotely")) {
+      notifications().notify({
+        level: "error",
+        title: "Cannot read data source folders",
+        body: message(e),
+        key: "db-folders",
+      });
+    }
+  }
+}
+
+async function saveSourceFolders(folders: DbSourceFolder[], failure: string): Promise<boolean> {
+  const current = projectRequest();
+  try {
+    await call(commands.dbSaveSourceFolders(folders));
+    if (!current()) return false;
+    useDatabase.setState({ folders });
+    return true;
+  } catch (e) {
+    if (current())
+      notifications().notify({
+        level: "error",
+        title: failure,
+        body: message(e),
+        key: "db-folders",
+      });
+    return false;
+  }
+}
+
+function withoutSources(folders: DbSourceFolder[], sourceIds: ReadonlySet<string>): DbSourceFolder[] {
+  return folders.map((folder) => ({
+    ...folder,
+    sources: folder.sources.filter((source) => !sourceIds.has(source)),
+  }));
+}
+
+export async function createSourceFolder(name: string, sourceIds: readonly string[] = []): Promise<string | null> {
+  const clean = name.trim();
+  if (!clean) return null;
+  const folders = useDatabase.getState().folders;
+  const names = new Set(folders.map((folder) => folder.name.toLocaleLowerCase()));
+  let unique = clean;
+  for (let n = 2; names.has(unique.toLocaleLowerCase()); n++) unique = `${clean} (${n})`;
+  const id = `folder-${newSourceId()}`;
+  const members = [...new Set(sourceIds)].filter((source) =>
+    useDatabase.getState().sources.some((entry) => entry.id === source),
+  );
+  const next = withoutSources(folders, new Set(members));
+  next.push({
+    id,
+    name: unique,
+    order: folders.reduce((max, folder) => Math.max(max, folder.order), -1) + 1,
+    sources: members,
+  });
+  if (!(await saveSourceFolders(next, "Cannot create the data source folder"))) return null;
+  expandSourceFolder(id);
+  return id;
+}
+
+export async function renameSourceFolder(id: string, name: string): Promise<boolean> {
+  const clean = name.trim();
+  if (!clean) return false;
+  const folders = useDatabase.getState().folders;
+  if (!folders.some((folder) => folder.id === id)) return false;
+  const names = new Set(folders.filter((folder) => folder.id !== id).map((folder) => folder.name.toLocaleLowerCase()));
+  let unique = clean;
+  for (let n = 2; names.has(unique.toLocaleLowerCase()); n++) unique = `${clean} (${n})`;
+  return saveSourceFolders(
+    folders.map((folder) => (folder.id === id ? { ...folder, name: unique } : folder)),
+    "Cannot rename the data source folder",
+  );
+}
+
+export async function deleteSourceFolder(id: string): Promise<boolean> {
+  const folders = useDatabase.getState().folders;
+  if (!folders.some((folder) => folder.id === id)) return false;
+  return saveSourceFolders(
+    folders.filter((folder) => folder.id !== id),
+    "Cannot delete the data source folder",
+  );
+}
+
+export async function removeSourceFolder(folder: DbSourceFolder): Promise<void> {
+  const ok = await confirm({
+    title: "Delete Data Source Folder",
+    message: tx`Delete folder '${folder.name}'? Its data sources move back to the root.`,
+    ok: "Delete",
+    icon: "warning",
+  });
+  if (!ok) return;
+  await deleteSourceFolder(folder.id);
+}
+
+export async function moveSourcesToFolder(sourceIds: readonly string[], folderId: string | null): Promise<boolean> {
+  const ids = new Set(sourceIds);
+  const folders = withoutSources(useDatabase.getState().folders, ids);
+  if (folderId) {
+    const folder = folders.find((candidate) => candidate.id === folderId);
+    if (!folder) return false;
+    const valid = [...ids].filter((source) =>
+      useDatabase.getState().sources.some((candidate) => candidate.id === source),
+    );
+    folder.sources = [...folder.sources, ...valid];
+  }
+  const saved = await saveSourceFolders(folders, "Cannot move the data sources");
+  if (saved && folderId) expandSourceFolder(folderId);
+  return saved;
+}
+
+function expandSourceFolder(id: string) {
+  useDatabase.setState((state) => ({
+    treeExpanded: new Set(state.treeExpanded).add(`source-folder:${id}`),
+  }));
+}
+
 /** Drops cached metadata of target `id` (refresh, disconnect); a data source id drops all its databases. */
 function forget(id: string) {
   invalidateDatabaseRequests(id);
@@ -570,17 +734,61 @@ export async function renameSource(id: string, name: string): Promise<void> {
   await saveSource({ ...src, name: name.trim() }, undefined);
 }
 
-/** Removes the data source after asking (Database tree › Drop on a source). */
-export async function removeSource(source: DataSource): Promise<void> {
+/** Removes data sources after one confirmation (Database tree › Drop on a source). */
+export async function removeSources(sources: readonly DataSource[]): Promise<void> {
+  const unique = [...new Map(sources.flatMap((source) => (source.id ? [[source.id, source] as const] : []))).values()];
+  if (!unique.length) return;
+  const one = unique.length === 1;
+  const count = unique.length;
+  const names = unique
+    .slice(0, 8)
+    .map((source) => source.name)
+    .join("\n");
+  const n = count - 8;
+  const more = n > 0 ? `\n${tx`and ${n} more`}` : "";
   const ok = await confirm({
-    title: "Remove Data Source",
-    message: tx`Remove data source '${source.name}'? Its query console file stays on disk.`,
+    title: one ? "Remove Data Source" : "Remove Data Sources",
+    message: one
+      ? tx`Remove data source '${unique[0]!.name}'? Its query console file stays on disk.`
+      : tx`Remove ${count} data sources? Their query console files stay on disk.\n\n${names}${more}`,
     ok: "Remove",
   });
   if (!ok) return;
-  const id = source.id ?? "";
-  if (connectedTargets(id).length) await disconnect(id);
-  await deleteSource(id);
+  const ids = new Set(unique.map((source) => source.id!));
+  const current = projectRequest();
+  const mutations = unique.map((source) => sourceMutation(source.id!));
+  try {
+    await Promise.all([...ids].filter((id) => connectedTargets(id).length).map((id) => disconnect(id)));
+    await call(commands.dbSaveSources(useDatabase.getState().sources.filter((source) => !ids.has(source.id ?? ""))));
+    if (!current() || mutations.some((unchanged) => !unchanged())) return;
+    for (const id of ids) forget(id);
+    await loadSources();
+    if (!current()) return;
+    useDatabase.setState((s) => {
+      const removed = (node: DbNode) => {
+        const target = nodeTarget(node);
+        return !!target && ids.has(splitTarget(target).id);
+      };
+      const selectedNodes = s.selectedNodes.filter((node) => !removed(node));
+      const selectedNode = s.selectedNode && !removed(s.selectedNode) ? s.selectedNode : null;
+      return {
+        selectedNode,
+        selectedSource: selectedNode ? nodeTarget(selectedNode) : null,
+        selectedNodes,
+      };
+    });
+  } catch (e) {
+    notifications().notify({
+      level: "error",
+      title: one ? "Cannot remove the data source" : "Cannot remove the data sources",
+      body: message(e),
+    });
+  }
+}
+
+/** Removes one data source after asking. */
+export async function removeSource(source: DataSource): Promise<void> {
+  await removeSources([source]);
 }
 
 export async function deleteSource(id: string): Promise<void> {
@@ -754,18 +962,31 @@ export function watchIdleConnections(everyMs = 5000): () => void {
 /** Managed consoles show their source in the tab. Ordinary SQL files can also inherit a source tint. */
 export function consoleDecorations(s: Pick<DatabaseState, "consoles" | "sources">): Map<string, FileDecoration> {
   const out = new Map<string, FileDecoration>();
+  const roots = new Set<string>();
   for (const [path, target] of Object.entries(s.consoles)) {
     const { id, database } = splitTarget(target);
     const source = s.sources.find((x) => x.id === id);
     if (!source) continue;
     const tint = colorVar(source.color);
     // db_console_path and db_consoles own this directory, including already saved consoles.
-    const consoleName = /(?:^|\/)consoles\/db\/[^/]+\/(console(?:_\d+)?)\.sql$/.exec(path.replaceAll("\\", "/"))?.[1];
-    if (consoleName) {
+    const match = /[\\/]consoles[\\/]db[\\/][^\\/]+[\\/](console(?:_\d+)?)\.sql$/i.exec(path);
+    if (match) {
+      const folder = path.replace(/[\\/]console(?:_\d+)?\.sql$/i, "");
+      const root = folder.replace(/[\\/][^\\/]+$/, "");
       const name = source.name || id;
       const label = database ? `${name}: ${database}` : name;
-      out.set(path, { tint, tabTitle: `${consoleName} [${label}]`, tabIcon: sourceIcon(source) });
+      const icon = sourceIcon(source);
+      out.set(path, { tint, tabTitle: `${match[1]} [${label}]`, tabIcon: icon });
+      out.set(folder, { label, icon });
+      roots.add(root);
     } else if (tint) out.set(path, { tint });
+  }
+  for (const root of roots) {
+    const separator = root.includes("\\") ? "\\" : "/";
+    for (const source of s.sources) {
+      if (!source.id) continue;
+      out.set(`${root}${separator}${source.id}`, { label: source.name || source.id, icon: sourceIcon(source) });
+    }
   }
   return out;
 }
@@ -1144,16 +1365,20 @@ export function consoleSource(path: string): string | null {
   const s = useDatabase.getState();
   const bound = s.consoles[path];
   if (bound && s.sources.some((x) => x.id === splitTarget(bound).id)) return bound;
+  const inferred = consoleTargetFromPath(path, s.sources);
+  if (inferred) return inferred;
   const scope = scopeOf(path);
   if (scope) return scope.dataSource;
   return s.sources.length === 1 ? (s.sources[0]!.id ?? null) : null;
 }
 
-/** Opens (creating it on first use) the query console of data source `id`. */
-export async function openConsole(id: string): Promise<void> {
+/** Opens (creating it on first use) the query console of data source `id`, switched to `schema` if given. */
+export async function openConsole(id: string, schema?: string): Promise<void> {
   try {
     const path = await call(commands.dbConsolePath(id));
     bindConsole(path, id);
+    announceConsoleFile(path);
+    if (schema) setConsoleSchema(path, schema);
     await editorService().openFile(path, { focus: true });
   } catch (e) {
     notifications().notify({ level: "error", title: "Cannot open the query console", body: message(e) });
@@ -1165,22 +1390,30 @@ export function consoleFiles(id: string): Promise<string[]> {
   return call(commands.dbConsoles(id, false));
 }
 
-/** Opens one of the query consoles of data source `id`. */
-export async function openConsoleFile(id: string, path: string): Promise<void> {
+/** Opens one of the query consoles of data source `id`, switched to `schema` if given. */
+export async function openConsoleFile(id: string, path: string, schema?: string): Promise<void> {
   bindConsole(path, id);
+  if (schema) setConsoleSchema(path, schema);
   await editorService().openFile(path, { focus: true });
 }
 
 /** Creates and opens another query console of data source `id` (DataGrip's New › Query Console). */
-export async function newConsole(id: string): Promise<void> {
+export async function newConsole(id: string, schema?: string): Promise<void> {
   try {
     const before = new Set(await consoleFiles(id));
     const after = await call(commands.dbConsoles(id, true));
     const path = after.find((p) => !before.has(p)) ?? after[after.length - 1];
-    if (path) await openConsoleFile(id, path);
+    if (path) {
+      announceConsoleFile(path);
+      await openConsoleFile(id, path, schema);
+    }
   } catch (e) {
     notifications().notify({ level: "error", title: "Cannot open the query console", body: message(e) });
   }
+}
+
+function announceConsoleFile(path: string) {
+  emitLocalIdeEvent({ type: "fsChanged", created: [path], modified: [], removed: [] });
 }
 
 let nextTab = 1;
@@ -1492,15 +1725,15 @@ export async function openDdl(id: string, schema: string, name: string): Promise
   }
 }
 
-/**
- * Runs the statement at `from` (or the selection `from..to`, UTF-16 offsets)
- * of console `path` on its data source. Result sets open as `Result N` tabs
- * of the Services view, replacing the console's unpinned ones; everything is
- * logged to its Output tab; returns the outcomes (errors included) for the
- * editor's marks.
- */
-/** Asks for the values of the statements' query parameters and binds them; `[]` when cancelled. */
-async function withParams(statements: SqlStatement[], driver: DbDriver): Promise<SqlStatement[]> {
+interface BoundStatements {
+  /** The statements with their parameters' values in their text; `[]` when cancelled. */
+  statements: SqlStatement[];
+  /** A range of statement `i`'s bound text in its unbound text; `null` when it overlaps a value. */
+  unbind: (i: number, from: number, to: number) => { from: number; to: number } | null;
+}
+
+/** Asks for the values of the statements' query parameters and binds them. */
+async function withParams(statements: SqlStatement[], driver: DbDriver): Promise<BoundStatements> {
   let numbered = 0;
   const found = statements.map((st) => {
     const params = findParams(st.text, driver, numbered);
@@ -1508,15 +1741,29 @@ async function withParams(statements: SqlStatement[], driver: DbDriver): Promise
     return params;
   });
   const names = [...new Set(found.flat().map((p) => p.name))];
-  if (!names.length) return statements;
+  const same: BoundStatements["unbind"] = (_i, from, to) => ({ from, to });
+  if (!names.length) return { statements, unbind: same };
   const values = await new Promise<Record<string, string> | null>((resolve) =>
     useDatabase.setState({ dialog: { kind: "params", names, resolve } }),
   );
-  if (!values) return [];
+  if (!values) return { statements: [], unbind: same };
   useDatabase.setState((s) => ({ paramValues: { ...s.paramValues, ...values } }));
-  return statements.map((st, i) => ({ ...st, text: bindParams(st.text, found[i]!, values) }));
+  return {
+    statements: statements.map((st, i) => ({ ...st, text: bindParams(st.text, found[i]!, values) })),
+    unbind: (i, from, to) => unbindRange(found[i]!, values, from, to),
+  };
 }
 
+/** Asks whether to run an unsafe statement (see `sql/unsafe`); false cancels the run. */
+export type ConfirmUnsafe = (statement: SqlStatement, unsafe: UnsafeStatement) => Promise<boolean>;
+
+/**
+ * Runs the statement at `from` (or the selection `from..to`, UTF-16 offsets)
+ * of console `path` on its data source. Result sets open as `Result N` tabs
+ * of the Services view, replacing the console's unpinned ones; everything is
+ * logged to its Output tab; returns the outcomes (errors included) for the
+ * editor's marks.
+ */
 export async function executeConsole(
   path: string,
   text: string,
@@ -1525,6 +1772,7 @@ export async function executeConsole(
   /** Called once the statements are submitted, with what was submitted. */
   onStart?: (statements: readonly SqlStatement[]) => void,
   onProgress?: (events: readonly StatementProgress[]) => ReadonlyMap<number, DbStatementOutcome> | void,
+  confirmUnsafe?: ConfirmUnsafe,
 ): Promise<DbStatementOutcome[]> {
   const id = consoleSource(path);
   if (!id) {
@@ -1549,7 +1797,7 @@ export async function executeConsole(
   let statementCancelled = false;
   let deliveryIncomplete = false;
   try {
-    const statements = await consoleStatements(id, text, from, to);
+    const statements = await consoleStatements(id, text, from, to, confirmUnsafe);
     if (!current() || preparingConsoles.get(path) !== request || !statements.length) return [];
     preparingConsoles.delete(path);
     const prev = useDatabase.getState().running[path];
@@ -1706,10 +1954,29 @@ function capResults(results: ResultTab[], fresh: ReadonlySet<number>): ResultTab
 }
 
 /** The statements of console `path` to run or explain: the selection's, else the one at `from`, parameters bound. */
-async function consoleStatements(id: string, text: string, from: number, to: number): Promise<SqlStatement[]> {
+async function consoleStatements(
+  id: string,
+  text: string,
+  from: number,
+  to: number,
+  confirmUnsafe?: ConfirmUnsafe,
+): Promise<SqlStatement[]> {
   const statements: SqlStatement[] = await call(commands.dbStatements(id, text, from, to));
   if (!statements.length) return [];
-  return withParams(statements, sourceById(id)?.driver ?? "sqlite");
+  const driver = sourceById(id)?.driver ?? "sqlite";
+  const bound = await withParams(statements, driver);
+  // The bound text is what runs: a parameter's value can make it unsafe (`where :cond`, `1=1`).
+  if (confirmUnsafe)
+    for (const [i, st] of bound.statements.entries()) {
+      const unsafe = unsafeStatement(st.text, driver);
+      if (!unsafe) continue;
+      const original = statements[i]!;
+      // A mark inside a parameter's value marks the whole statement.
+      const at = bound.unbind(i, unsafe.from, unsafe.to) ?? { from: 0, to: original.text.length };
+      // oxlint-disable-next-line no-await-in-loop -- each warning must be answered before asking the next
+      if (!(await confirmUnsafe(original, { ...unsafe, ...at }))) return [];
+    }
+  return bound.statements;
 }
 
 const PLAN_TITLE = "Query Plan";

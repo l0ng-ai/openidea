@@ -1,11 +1,12 @@
 /**
  * Coverage reports collected elsewhere: "Import a report collected in CI from
- * disk" (lcov, JaCoCo XML, Go cover profile, SimpleCov) and "Manage Coverage Reports"
+ * disk" (lcov, JaCoCo or Cobertura XML, Go cover profile, SimpleCov, coverage.py data) and "Manage Coverage Reports"
  * (choose the shown suite, delete suites and remembered imports).
  */
 import { useMemo, useState } from "react";
 import { create } from "zustand";
 import { choosePath } from "@/platform/choosePath";
+import { tx } from "@/platform/i18n";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { basename } from "@/platform/project";
 import { Dialog, Icon, List, T } from "@/ui";
@@ -42,6 +43,18 @@ async function pickReport(): Promise<string | null> {
   });
 }
 
+/** Says how many files of an import are not in the project; coverage.py data maps them with `[paths]`. */
+function outsideText(outside: number, runner: string): string | undefined {
+  if (!outside) return undefined;
+  if (runner === "coverage.py")
+    return outside === 1
+      ? "1 file of the data has no source in this project. Map it with [paths] in the coverage.py configuration."
+      : tx`${outside} files of the data have no source in this project. Map them with [paths] in the coverage.py configuration.`;
+  return outside === 1
+    ? "1 file of the report is not in this project."
+    : tx`${outside} files of the report are not in this project.`;
+}
+
 /** Imports `path` (asks for a file without one) and shows it like a run's suite. */
 export async function importReport(path?: string): Promise<Suite | null> {
   if (!isTauri()) {
@@ -64,12 +77,15 @@ export async function importReport(path?: string): Promise<Suite | null> {
       /* no workbench (tests) */
     }
     const [covered, total] = data.files.reduce((a, f) => [a[0]! + f.linesCovered, a[1]! + f.linesTotal], [0, 0]);
+    // Paths the backend could not map into the project keep the machine's they were recorded on.
+    const prefix = project.root.replace(/\/$/, "") + "/";
+    const outside = data.files.filter((f) => !f.path.startsWith(prefix)).length;
     notifications().notify({
       group: "run",
-      level: "info",
+      level: outside ? "warning" : "info",
       key: "coverage-import",
       title: `Imported coverage '${suite.name}': ${formatPercent(covered!, total!)} lines`,
-      body: data.files.length ? undefined : "The report covers no files of this project.",
+      body: !data.files.length ? "The report covers no files of this project." : outsideText(outside, data.runner),
     });
     return suite;
   } catch (e) {

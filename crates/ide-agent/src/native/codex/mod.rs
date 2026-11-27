@@ -108,7 +108,7 @@ pub(crate) async fn discover(
                 let options = translate::config_options(&models, &settings);
                 let levels = crate::config::options_of(&json!({ "configOptions": options }))
                     .into_iter()
-                    .filter(|o| o.category.as_deref() == Some("thought_level"))
+                    .filter(|o| matches!(o.category.as_deref(), Some("thought_level" | "model_config")))
                     .collect();
                 (model.id.clone(), levels)
             })
@@ -492,8 +492,14 @@ impl CodexShim {
         self.prepare_project_trust(params).await;
         let mut request = json!({ "cwd": params.get("cwd") });
         apply_thread_config(params, &mut request);
+        // Not written to `~/.codex/sessions`, so it isn't listed among the past threads.
+        if params.pointer("/_meta/openidea/ephemeral").and_then(Value::as_bool) == Some(true) {
+            request["ephemeral"] = json!(true);
+        }
         let result = self.call("thread/start", request).await?;
-        let (id, options) = self.open_thread(&result, &models, None);
+        let mut settings = Settings::of(&result, &models);
+        settings.fast_override = params.pointer("/_meta/openidea/codexFast").and_then(Value::as_bool);
+        let (id, options) = self.open_thread(&result, &models, Some(settings));
         if id.is_empty() {
             return Err(error(codes::INTERNAL_ERROR, "codex started no thread"));
         }
@@ -510,7 +516,9 @@ impl CodexShim {
         let mut request = json!({ "threadId": id, "cwd": params.get("cwd") });
         apply_thread_config(params, &mut request);
         let result = self.call("thread/resume", request).await?;
-        let (_, options) = self.open_thread(&result, &models, None);
+        let mut settings = Settings::of(&result, &models);
+        settings.fast_override = params.pointer("/_meta/openidea/codexFast").and_then(Value::as_bool);
+        let (_, options) = self.open_thread(&result, &models, Some(settings));
         let cwd = self.state.lock().threads.get(id).and_then(|t| t.cwd.clone());
         let thread = result.get("thread").unwrap_or(&Value::Null);
         for update in translate::history(thread, cwd.as_deref()) {
@@ -612,6 +620,9 @@ impl CodexShim {
                     }
                     if let Some(effort) = &s.effort {
                         request["effort"] = json!(effort);
+                    }
+                    if let Some(tier) = s.service_tier_override(&models) {
+                        request["serviceTier"] = json!(tier);
                     }
                 }
                 self.call("turn/start", request).await
@@ -1470,14 +1481,13 @@ fn stop_reason(turn: &Value, last_error: Option<Value>, rate_limits: Option<&Val
             let e = turn.get("error").filter(|e| !e.is_null()).cloned().or(last_error).unwrap_or(json!({}));
             let message = translate::error_message(&e);
             return match translate::classify(&e, rate_limits) {
-                Failure::Refusal => Ok(json!({ "stopReason": "refusal" })),
                 Failure::UsageLimit(resets) => Err(ResponseError {
                     code: codes::INTERNAL_ERROR,
                     message,
                     data: Some(json!({ "openidea": { "usageLimit": { "resetsAtMs": resets } } })),
                 }),
                 Failure::Auth => Err(error(AUTH_REQUIRED, format!("Codex authentication failed: {message}"))),
-                Failure::Other => Err(error(codes::INTERNAL_ERROR, message)),
+                Failure::Refusal | Failure::Other => Err(error(codes::INTERNAL_ERROR, message)),
             };
         }
         _ => "end_turn",
@@ -1595,3 +1605,6 @@ fn mcp_text(response: &Value) -> String {
         .collect::<Vec<_>>();
     format!("MCP servers:\n{}", lines.join("\n"))
 }
+
+#[cfg(test)]
+mod reconnect_tests;

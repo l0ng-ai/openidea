@@ -2,8 +2,10 @@
 import type { RunConfig } from "@/platform/ipc";
 import { isJunitRunner } from "../application";
 import { cargoParser } from "./cargo";
+import { cypressParser, cypressSpecs } from "./cypress";
 import { goParser } from "./go";
 import { jsParser } from "./js";
+import { withJasmineHook } from "./jasmine";
 import { jvmParser } from "./jvm";
 import { withMochaHook } from "./mocha";
 import { withNodeTestReporter } from "./nodeTest";
@@ -11,6 +13,8 @@ import { recordsParser } from "./records";
 import { phpunitParser, withTeamcity } from "./phpunit";
 import { playwrightParser } from "./playwright";
 import { pytestParser } from "./pytest";
+import { withDoctestReporter } from "./pythonDoctest";
+import { withUnittestReporter } from "./pythonUnittest";
 import { rubyParser } from "./ruby";
 import { unittestParser } from "./unittest";
 import { zigParser } from "./zig";
@@ -46,10 +50,17 @@ export type Framework =
   | "cargo"
   | "js"
   | "playwright"
+  | "cypress"
   | "node-test"
   | "mocha"
+  | "jasmine"
   | "pytest"
+  /** Django's `manage.py test`: unittest's text runner. */
   | "unittest"
+  /** `python -m unittest`: the IDE's reporter. */
+  | "python-unittest"
+  /** `python -m doctest`: the IDE's reporter. */
+  | "python-doctest"
   | "phpunit"
   | "go"
   | "jvm"
@@ -58,15 +69,18 @@ export type Framework =
   | "zig"
   | "auto";
 
-type FrameworkConfig = Pick<RunConfig, "kind" | "command" | "args"> & Partial<Pick<RunConfig, "testRunner" | "env">>;
+type FrameworkConfig = Pick<RunConfig, "kind" | "command" | "args"> &
+  Partial<Pick<RunConfig, "testRunner" | "env" | "watch">>;
 
 export function frameworkFor(config: FrameworkConfig): Framework {
   const cmd = [config.command, ...config.args].join(" ");
   // A `package.json` script names its runner only in package.json: detection records it.
   if (config.testRunner === "playwright" || /\bplaywright\s+test\b/.test(cmd)) return "playwright";
+  if (config.kind === "cypress" || config.testRunner === "cypress" || /\bcypress\s+run\b/.test(cmd)) return "cypress";
   if (config.testRunner === "node-test" || /(^|[\s/\\])(node|tsx)(\.exe)?(\s+-\S*)*\s+--test(\s|$)/.test(cmd))
     return "node-test";
   if (config.testRunner === "mocha" || /(^|[\s/\\])_?mocha(\.cmd|\.js)?(\s|$)/.test(cmd)) return "mocha";
+  if (config.testRunner === "jasmine" || /(^|[\s/\\])jasmine(\.cmd|\.js)?(\s|$)/.test(cmd)) return "jasmine";
   if (isJunitRunner(config)) return "jvm";
   switch (config.kind) {
     case "dotnet-test":
@@ -79,9 +93,15 @@ export function frameworkFor(config: FrameworkConfig): Framework {
       return "js";
     case "pytest":
       return "pytest";
+    case "unittest":
+      return "python-unittest";
+    case "doctest":
+      return "python-doctest";
     case "python":
       // `manage.py test` made as a Python configuration before the Django tests type existed.
-      return /\bmanage\.py test\b/.test(cmd) ? "unittest" : "pytest";
+      if (/\bmanage\.py test\b/.test(cmd)) return "unittest";
+      if (/(^|\s)-m doctest(\s|$)/.test(cmd)) return "python-doctest";
+      return /(^|\s)-m unittest(\s|$)/.test(cmd) ? "python-unittest" : "pytest";
     case "django-test":
       return "unittest";
     case "phpunit":
@@ -133,10 +153,20 @@ function rubyVerbose<T extends Pick<RunConfig, "kind" | "command" | "args">>(con
 export function withTestReporting<T extends FrameworkConfig>(config: T): T {
   if (frameworkFor(config) === "node-test") return { ...config, env: withNodeTestReporter(config.env ?? {}) };
   if (frameworkFor(config) === "mocha") return { ...config, env: withMochaHook(config.env ?? {}) };
+  if (frameworkFor(config) === "jasmine") return { ...config, env: withJasmineHook(config.env ?? {}) };
+  if (frameworkFor(config) === "python-unittest") return withUnittestReporter(config);
+  if (frameworkFor(config) === "python-doctest") return withDoctestReporter(config);
   if (frameworkFor(config) === "playwright") {
     // The list reporter prints a line per test; a project's own (`html`, `dot` on CI) may print none.
     const chosen = config.args.some((a) => a === "--reporter" || a.startsWith("--reporter="));
     return chosen ? config : { ...config, args: appendScriptArgs(config.command, config.args, ["--reporter=list"]) };
+  }
+  if (frameworkFor(config) === "cypress") {
+    // Service messages per test; the project's own reporter (`spec`, `mochawesome`…) prints none the tree can read.
+    const chosen = config.args.some((a) => a === "--reporter" || a === "-r" || a.startsWith("--reporter="));
+    return chosen
+      ? config
+      : { ...config, args: appendScriptArgs(config.command, config.args, ["--reporter", "teamcity"]) };
   }
   if (frameworkFor(config) === "go" && config.args[0] === "test") {
     const boundary = config.args.findIndex((a) => a === "-args" || a === "--");
@@ -172,11 +202,16 @@ export function createTestParser(config: FrameworkConfig): TestOutputParser {
     case "cargo":
       return cargoParser();
     case "js":
-      return jsParser();
+      return jsParser(!!config.watch);
     case "playwright":
       return playwrightParser();
+    case "cypress":
+      return cypressParser(cypressSpecs(config.args));
     case "node-test":
     case "mocha":
+    case "jasmine":
+    case "python-unittest":
+    case "python-doctest":
       return recordsParser();
     case "pytest":
       return pytestParser();

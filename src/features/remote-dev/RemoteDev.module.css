@@ -6,6 +6,10 @@
   align-items: center;
   padding: 14px var(--space-4);
 }
+/* In the Remote Development window the title above it gives the space. */
+.windowForm {
+  padding-top: 0;
+}
 .form > * {
   grid-column: 1 / -1;
 }

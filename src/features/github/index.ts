@@ -12,6 +12,7 @@ import "./ui/palette.css";
 import { registerActions, type Action } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { lazyComponent } from "@/ui";
+import { githubCloneSource } from "./clone/source";
 import {
   registerCloneSource,
   registerEditorKind,
@@ -257,13 +258,7 @@ export function activate(): () => void {
   setContext("githubPrTab", "list");
   const disposers = [
     activateSettingsPages(),
-    registerCloneSource({
-      id: "github",
-      label: "GitHub",
-      icon: "github",
-      order: 10,
-      component: lazyComponent(() => import("./clone/GitHubCloneSource").then((m) => m.GitHubCloneSource)),
-    }),
+    registerCloneSource(githubCloneSource),
     registerGitLogChecks(lazyComponent(() => import("./LogCommitChecks").then((m) => m.LogCommitChecks))),
     registerToolWindow({
       id: WINDOW,

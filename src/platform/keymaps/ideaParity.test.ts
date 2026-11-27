@@ -13,8 +13,10 @@ describe("IDEA keymap parity", () => {
     ["view.zoomIn", ["Ctrl+Alt+="], ["Alt+Shift+="]],
     ["view.zoomOut", ["Ctrl+Alt+-"], ["Alt+Shift+-"]],
     ["view.resetZoom", ["Ctrl+Alt+0"], ["Alt+Shift+0"]],
-    ["editor.increaseFontSize", ["Alt+Shift+."], ["Alt+Shift+."]],
-    ["editor.decreaseFontSize", ["Alt+Shift+,"], ["Alt+Shift+,"]],
+    ["editor.increaseFontSize", [], []],
+    ["editor.decreaseFontSize", [], []],
+    ["editor.increaseFontSizeAll", ["Ctrl+Shift+."], ["Alt+Shift+."]],
+    ["editor.decreaseFontSizeAll", ["Ctrl+Shift+,"], ["Alt+Shift+,"]],
     ["vcs.changelist.move", ["Meta+Shift+M"], ["Alt+Shift+M"]],
     ["vcs.changelist.edit", ["F2", "Shift+F6"], ["F2", "Shift+F6"]],
     ["code.quickDocumentation", ["F1", "Ctrl+J"], ["Ctrl+Q"]],
@@ -29,6 +31,7 @@ describe("IDEA keymap parity", () => {
     ["code.quickDefinition", ["Alt+Space", "Meta+Y"], ["Ctrl+Shift+I"]],
     ["editor.copyPathReference", ["Meta+Shift+C"], ["Ctrl+Shift+C"]],
     ["project.open", ["F4", "Meta+Down"], ["F4"]],
+    ["diff.compareFileWithEditor", [], []],
     // Diff.OpenInEditor copies EditSource's shortcuts.
     ["diff.jumpToSource", ["F4", "Meta+Down"], ["F4"]],
     ["project.delete", ["Delete", "Backspace", "Meta+Backspace"], ["Delete"]],
@@ -64,6 +67,14 @@ describe("IDEA keymap parity", () => {
     // `Mac OS X 10.5+` removes the ⌘↑ / ⌘↓ it would inherit from `Mac OS X`.
     ["editor.scrollUp", [], ["Ctrl+Up"]],
     ["editor.scrollDown", [], ["Ctrl+Down"]],
+    ["editor.scrollLeft", [], []],
+    ["editor.scrollRight", [], []],
+    ["editor.scrollUpAndMove", [], []],
+    ["editor.scrollDownAndMove", [], []],
+    ["editor.moveUpAndScroll", [], []],
+    ["editor.moveDownAndScroll", [], []],
+    ["editor.moveUpAndScrollWithSelection", [], []],
+    ["editor.moveDownAndScrollWithSelection", [], []],
     // Only IDEA's Xcode keymap binds these (Home / End).
     ["editor.scrollToTop", [], []],
     ["editor.scrollToBottom", [], []],
@@ -79,13 +90,20 @@ describe("IDEA keymap parity", () => {
     ["code.deleteToLineStart", [], []],
     ["code.deleteToLineEnd", [], []],
     ["code.hungryBackspace", [], []],
+    // EditorKillToWordStart / End: only the Emacs keymap binds them.
+    ["code.killToWordStart", [], []],
+    ["code.killToWordEnd", [], []],
     // EditorSwapSelectionBoundaries has no shortcut.
     ["editor.swapSelectionBoundaries", [], []],
+    // EditorToggleStickySelection has no shortcut.
+    ["editor.toggleStickySelection", [], []],
     // EditorSelectLine has no shortcut.
     ["editor.selectLine", [], []],
     // CopyAsPlainText / CopyAsRichText have no shortcut.
     ["code.copyAsPlainText", [], []],
     ["code.copyAsRichText", [], []],
+    // ToggleZenMode has no shortcut.
+    ["view.toggleZenMode", [], []],
     ["navigate.nextOccurrence", ["Meta+Alt+Down"], ["Ctrl+Alt+Down"]],
     ["navigate.prevOccurrence", ["Meta+Alt+Up"], ["Ctrl+Alt+Up"]],
     // Rerun in the Find / Find Usages tool windows uses the Rerun shortcut.
@@ -103,12 +121,20 @@ describe("IDEA keymap parity", () => {
     ["editor.paragraphBackward", [], []],
     ["editor.paragraphForwardWithSelection", [], []],
     ["editor.paragraphBackwardWithSelection", [], []],
+    // The "in Different "CamelHumps" Mode" word moves and deletes have no shortcut.
+    ["editor.nextWordInDifferentHumpsMode", [], []],
+    ["editor.previousWordInDifferentHumpsMode", [], []],
+    ["editor.nextWordInDifferentHumpsModeWithSelection", [], []],
+    ["editor.previousWordInDifferentHumpsModeWithSelection", [], []],
+    ["code.deleteToWordStartInDifferentHumpsMode", [], []],
+    ["code.deleteToWordEndInDifferentHumpsMode", [], []],
     ["code.collapseBlock", ["Meta+Shift+."], ["Ctrl+Shift+."]],
     ["code.autoIndentLines", ["Ctrl+Alt+I"], ["Ctrl+Alt+I"]],
     ["code.showErrorDescription", ["Meta+F1"], ["Ctrl+F1"]],
     ["code.moveElementLeft", ["Meta+Alt+Shift+Left"], ["Ctrl+Alt+Shift+Left"]],
     ["code.moveElementRight", ["Meta+Alt+Shift+Right"], ["Ctrl+Alt+Shift+Right"]],
     ["code.surroundWithLiveTemplate", ["Meta+Alt+J"], ["Ctrl+Alt+J"]],
+    ["code.saveAsLiveTemplate", [], []],
     ["navigate.customRegion", ["Meta+Alt+."], ["Ctrl+Alt+."]],
     ["navigate.showFilePath", ["Meta+Alt+F12"], ["Ctrl+Alt+F12"]],
     ["navigate.nextHighlightedUsage", ["Ctrl+Alt+Down"], ["Ctrl+Alt+Down"]],

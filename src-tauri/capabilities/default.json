@@ -2,7 +2,18 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main", "project-*", "settings-*", "comparison-*", "diff-*", "editor-*", "deployment-*"],
+  "windows": [
+    "main",
+    "project-*",
+    "settings-*",
+    "comparison-*",
+    "diff-*",
+    "editor-*",
+    "deployment-*",
+    "new-project-*",
+    "clone-*",
+    "connect-*"
+  ],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",

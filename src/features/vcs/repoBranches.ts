@@ -215,6 +215,9 @@ export function buildMultiRepoRows({
     if (m !== false)
       repoRows.push({ type: "repo", key: `repo:${repo.root}`, repo, color: repoColorIndex(i), matches: m });
   });
+  // The repository this window works on comes first; the others keep their order (and colours).
+  const currentRow = repoRows.findIndex((r) => r.type === "repo" && r.repo.root === current);
+  if (currentRow > 0) repoRows.unshift(...repoRows.splice(currentRow, 1));
   blocks.push(repoRows);
 
   /** A group row followed (when expanded) by its children; nothing when it has none. */

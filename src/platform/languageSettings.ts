@@ -26,7 +26,7 @@ const DEFAULT_GO_BUILD_TAGS: GoBuildTags = {
   experiments: "",
 };
 
-/** An external formatter (Prettier, oxfmt, Biome, Ruff, Black) and the languages it formats. */
+/** An external formatter (Prettier, oxfmt, Biome, dprint, Ruff, Black) and the languages it formats. */
 interface ExternalFormatterValid {
   path: string;
   configurationDirectory: string;
@@ -63,6 +63,9 @@ const DEFAULT_BIOME_FORMATTER: ExternalFormatterValid = {
   ...DEFAULT_FORMATTER,
   languages: ["css", "graphql", "javascript", "javascriptreact", "typescript", "typescriptreact", "json", "jsonc"],
 };
+
+/** dprint formats what its configuration covers: no language list. */
+const DEFAULT_DPRINT_FORMATTER: ExternalFormatterValid = { ...DEFAULT_FORMATTER, languages: [] };
 
 const DEFAULT_PYTHON_FORMATTER: ExternalFormatterValid = {
   ...DEFAULT_FORMATTER,
@@ -175,6 +178,8 @@ export interface LanguagesValid {
     showInterpreterPaths: boolean;
     /** Folders added to an interpreter's `sys.path`, by interpreter executable. */
     interpreterPaths: Record<string, string[]>;
+    /** Default test runner of gutter and context-menu runs (Settings › Python › Testing). */
+    testRunner: PythonTestRunner;
   };
   ruby: { interpreter: string };
   zig: { zig: string };
@@ -212,6 +217,7 @@ export interface LanguagesValid {
   prettier: ExternalFormatterValid;
   oxfmt: ExternalFormatterValid;
   biome: ExternalFormatterValid;
+  dprint: ExternalFormatterValid;
   ruff: ExternalFormatterValid;
   black: ExternalFormatterValid;
   java: {
@@ -301,6 +307,9 @@ export type FolderListKey =
   | "excluded"
   | "unmarked";
 
+export const PYTHON_TEST_RUNNERS = ["auto", "pytest", "unittest"] as const;
+export type PythonTestRunner = (typeof PYTHON_TEST_RUNNERS)[number];
+
 export const DEFAULT_LANGUAGES: LanguagesValid = {
   pluginFormatters: {},
   python: {
@@ -311,6 +320,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
     hideOtherProjectInterpreters: false,
     showInterpreterPaths: true,
     interpreterPaths: {},
+    testRunner: "auto",
   },
   ruby: { interpreter: "" },
   zig: { zig: "" },
@@ -329,6 +339,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   prettier: DEFAULT_FORMATTER,
   oxfmt: DEFAULT_FORMATTER,
   biome: DEFAULT_BIOME_FORMATTER,
+  dprint: DEFAULT_DPRINT_FORMATTER,
   ruff: DEFAULT_PYTHON_FORMATTER,
   black: DEFAULT_PYTHON_FORMATTER,
   java: {
@@ -466,6 +477,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
       interpreterPaths: Object.fromEntries(
         Object.entries(obj(py.interpreterPaths)).map(([python, paths]) => [python, strings(paths)]),
       ),
+      testRunner: oneOf(py.testRunner, PYTHON_TEST_RUNNERS, d.python.testRunner),
     },
     ruby: { interpreter: text(ruby.interpreter, d.ruby.interpreter) },
     zig: { zig: text(zig.zig, d.zig.zig) },
@@ -511,6 +523,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     prettier: validateFormatter(l.prettier),
     oxfmt: validateFormatter(l.oxfmt),
     biome: validateFormatter(l.biome, DEFAULT_BIOME_FORMATTER),
+    dprint: validateFormatter(l.dprint, DEFAULT_DPRINT_FORMATTER),
     ruff: validateFormatter(l.ruff, DEFAULT_PYTHON_FORMATTER),
     black: validateFormatter(l.black, DEFAULT_PYTHON_FORMATTER),
     java: {

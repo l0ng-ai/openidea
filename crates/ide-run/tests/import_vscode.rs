@@ -380,10 +380,24 @@ fn attach_requests_become_remote_debug_configurations() {
               "pathMappings": [{ "localRoot": "${workspaceFolder}", "remoteRoot": "/app" }] },
             { "name": "Attach to Node", "type": "node", "request": "attach", "port": 9230,
               "localRoot": "${workspaceFolder}/web", "remoteRoot": "/usr/src/app", "restart": true },
+            { "name": "Attach (no restart)", "type": "pwa-node", "request": "attach", "restart": false },
+            { "name": "Attach (restart policy)", "type": "node", "request": "attach",
+              "restart": { "delay": 500, "maxAttempts": 5 } },
             { "name": "Attach to PID", "type": "debugpy", "request": "attach", "processId": "${command:pickProcess}" },
+            { "name": "Debug server", "type": "debugpy", "request": "attach", "listen": { "port": 5679 } },
+            { "name": "Debug server (all interfaces)", "type": "debugpy", "request": "attach",
+              "listen": { "host": "0.0.0.0", "port": 5680 } },
             { "name": "Odd", "type": "node", "request": "test" }
         ]
     }"#);
+    let server = get(&r, "Debug server");
+    assert_eq!(server.kind, "python-debug-server");
+    assert_eq!(
+        server.extras.params,
+        BTreeMap::from([("host".into(), "localhost".into()), ("port".into(), "5679".into())])
+    );
+    // The bind address is not one a program can connect to.
+    assert_eq!(get(&r, "Debug server (all interfaces)").extras.params["host"], "localhost");
     let py = get(&r, "Attach (container)");
     assert_eq!((py.kind.as_str(), py.command.as_str()), ("python-remote", ""));
     assert_eq!(py.debug_adapter.as_deref(), Some("debugpy"));
@@ -402,7 +416,13 @@ fn attach_requests_become_remote_debug_configurations() {
     assert_eq!(node.extras.params["port"], "9230");
     assert_eq!(node.extras.params["localRoot"], "web");
     assert_eq!(node.extras.params["remoteRoot"], "/usr/src/app");
-    assert_eq!(ignored(&r, "Attach to Node"), ["restart"]);
+    assert_eq!(node.extras.params["restart"], "true");
+    assert!(ignored(&r, "Attach to Node").is_empty());
+    let off = get(&r, "Attach (no restart)");
+    assert!(!off.extras.params.contains_key("restart"));
+    assert!(ignored(&r, "Attach (no restart)").is_empty());
+    assert_eq!(get(&r, "Attach (restart policy)").extras.params["restart"], "true");
+    assert_eq!(ignored(&r, "Attach (restart policy)"), ["restart"]);
 
     assert_eq!(reason(&r, "Attach to PID"), &SkipReason::UnsupportedAttach);
     assert_eq!(reason(&r, "Odd"), &SkipReason::UnsupportedRequest { request: "test".into() });

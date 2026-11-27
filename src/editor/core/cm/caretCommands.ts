@@ -1,4 +1,4 @@
-/** IDEA caret commands that CodeMirror has no equivalent for: Split Line, Scroll to Center / Up / Down / Top / Bottom, Page Top / Bottom, code block, brace and paragraph navigation. */
+/** IDEA caret commands that CodeMirror has no equivalent for: Split Line, Scroll to Center / Up / Down / Left / Right / Top / Bottom, Scroll Up / Down and Move if Necessary, Page Top / Bottom, code block, brace and paragraph navigation. */
 import { countColumn, EditorSelection, findColumn, type EditorState, type Transaction } from "@codemirror/state";
 import { EditorView, type Command } from "@codemirror/view";
 import { insertNewlineAndIndent } from "@codemirror/commands";
@@ -36,6 +36,20 @@ const scrollByLine =
 export const scrollUp = scrollByLine(-1);
 export const scrollDown = scrollByLine(1);
 
+/**
+ * Scroll Left / Scroll Right: move the viewport by one column, leaving the caret where it is.
+ * Counted in whole columns, so the scroller rounding a fractional width doesn't add up.
+ */
+const scrollByColumn =
+  (columns: number): Command =>
+  (view) => {
+    const width = view.defaultCharacterWidth;
+    view.scrollDOM.scrollLeft = (Math.round(view.scrollDOM.scrollLeft / width) + columns) * width;
+    return true;
+  };
+export const scrollLeft = scrollByColumn(-1);
+export const scrollRight = scrollByColumn(1);
+
 /** Scroll to Top / Scroll to Bottom (as IDEA): show the start of the file at the top, or bring its end toward the middle, without moving the caret. */
 export const scrollToTop: Command = (view) => {
   view.scrollDOM.scrollTop = 0;
@@ -66,15 +80,21 @@ function pageEdgeLine(view: EditorView, edge: "top" | "bottom"): number {
   return block.top >= bottom || (block.bottom > bottom && previous.top >= top) ? previous.from : block.from;
 }
 
+/** `head` moved to the line starting at `lineStart`, keeping its visual column. */
+function sameColumnOn(state: EditorState, head: number, lineStart: number): number {
+  const line = state.doc.lineAt(head);
+  const target = state.doc.lineAt(lineStart);
+  const column = countColumn(line.text, state.tabSize, head - line.from);
+  return target.from + findColumn(target.text, column, state.tabSize);
+}
+
 /** Move Caret to Page Top / Bottom (with Selection): every caret to that line, keeping its column. */
 function moveToPageEdge(edge: "top" | "bottom", extend = false): Command {
   return (view) => {
     const { state } = view;
-    const target = state.doc.lineAt(pageEdgeLine(view, edge));
+    const target = pageEdgeLine(view, edge);
     const ranges = state.selection.ranges.map((r) => {
-      const line = state.doc.lineAt(r.head);
-      const column = countColumn(line.text, state.tabSize, r.head - line.from);
-      const head = target.from + findColumn(target.text, column, state.tabSize);
+      const head = sameColumnOn(state, r.head, target);
       return extend ? EditorSelection.range(r.anchor, head) : EditorSelection.cursor(head);
     });
     view.dispatch({
@@ -89,6 +109,35 @@ export const cursorPageTop = moveToPageEdge("top");
 export const cursorPageBottom = moveToPageEdge("bottom");
 export const selectPageTop = moveToPageEdge("top", true);
 export const selectPageBottom = moveToPageEdge("bottom", true);
+
+/**
+ * Scroll Up / Down and Move if Necessary: move the viewport by one line, then bring
+ * a caret outside the lines the view shows whole to the first or last of them,
+ * keeping its column. Carets in view keep their place and selection.
+ */
+const scrollByLineAndMove =
+  (lines: number): Command =>
+  (view) => {
+    scrollByLine(lines)(view);
+    const { state } = view;
+    const first = pageEdgeLine(view, "top");
+    const last = view.lineBlockAt(pageEdgeLine(view, "bottom"));
+    let moved = false;
+    const ranges = state.selection.ranges.map((r) => {
+      if (r.head >= first && r.head <= last.to) return r;
+      moved = true;
+      return EditorSelection.cursor(sameColumnOn(state, r.head, r.head < first ? first : last.from));
+    });
+    if (moved) {
+      view.dispatch({
+        selection: EditorSelection.create(ranges, state.selection.mainIndex),
+        userEvent: "select.navigate",
+      });
+    }
+    return true;
+  };
+export const scrollUpAndMove = scrollByLineAndMove(-1);
+export const scrollDownAndMove = scrollByLineAndMove(1);
 
 const NOT_CODE = /String|Comment|Regexp|Char|Template/;
 

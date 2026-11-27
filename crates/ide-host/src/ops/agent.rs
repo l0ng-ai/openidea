@@ -6,11 +6,11 @@ use crate::agent_secrets::{AgentSecrets, Kept};
 use ide_agent::registry::{AgentRegistry, RegistryPaths};
 use ide_agent::{
     AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentChanges, AgentChangesView, AgentCliOffer,
-    AgentCliUpdateResult, AgentCommand, AgentContextUsage, AgentEntry, AgentEvent, AgentModelCatalog, AgentProbe,
-    AgentPrompt, AgentProvider, AgentQueued, AgentSkillMode, AgentSkillPolicy, AgentSkillState, AgentTask,
-    CustomAgentInput, ExternalSession, InstallRemoteSkillRequest, McpExternalSource, McpImportSelection,
-    McpProbeResult, McpScope, McpServer, McpServerInput, McpTransport, NewAgentTask, RemoteSkillBrowseResult,
-    RemoteSkillPreview, SkillsPolicy,
+    AgentCliUpdateResult, AgentCommand, AgentContextUsage, AgentEntry, AgentEvent, AgentLoginEvent, AgentModelCatalog,
+    AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentSkillMode, AgentSkillPolicy, AgentSkillState, AgentTask,
+    CopilotAuthStatus, CustomAgentInput, ExternalSession, InstallRemoteSkillRequest, LoginLaunch, McpExternalSource,
+    McpImportSelection, McpProbeResult, McpScope, McpServer, McpServerInput, McpTransport, NewAgentTask,
+    RemoteSkillBrowseResult, RemoteSkillPreview, SkillsPolicy,
 };
 use ide_command::command;
 use ide_core::error::ErrorKind;
@@ -80,12 +80,32 @@ pub fn agent_refresh_models(
     host.project(window)?.agents.refresh_models(&provider, force, model.as_deref())
 }
 
+/// Probes Copilot's model catalog for a staged GitHub account without persisting until Apply.
+#[command(trust = trusted)]
+pub async fn agent_preview_copilot_models(
+    host: &Host,
+    window: &str,
+    account: String,
+    model: Option<String>,
+) -> IdeResult<AgentModelCatalog> {
+    host.require_trust(window)?;
+    let agents = host.project(window)?.agents.clone();
+    agents.preview_copilot_models(&account, model.as_deref()).await
+}
+
 /// Overrides built-in agent `id`'s command with `command` (its agent file keeps the
 /// built-in's driver and arguments), or returns it to auto-detection with `None`.
 #[command(trust = trusted)]
 pub fn agent_set_command(host: &Host, window: &str, id: String, command: Option<String>) -> IdeResult<()> {
     host.require_trust(window)?;
     host.project(window)?.agents.set_builtin_command(&id, command)
+}
+
+/// Sets additional launch arguments for a built-in ACP agent; an empty list resets them.
+#[command(trust = trusted)]
+pub fn agent_set_additional_args(host: &Host, window: &str, id: String, args: Vec<String>) -> IdeResult<()> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.set_builtin_additional_args(&id, args)
 }
 
 /// Environment variables built-in agent `id` starts with (saved in its agent file);
@@ -99,6 +119,141 @@ pub fn agent_set_env(
 ) -> IdeResult<()> {
     host.require_trust(window)?;
     host.project(window)?.agents.set_builtin_env(&id, env)
+}
+
+/// Default Copilot CLI sign-in status alongside authenticated `github.com` accounts in `gh`.
+#[command(trust = outside_restricted)]
+pub async fn agent_copilot_auth_status(host: &Host, window: &str) -> IdeResult<CopilotAuthStatus> {
+    host.require_trust_if_project(window)?;
+    match host.project(window) {
+        Ok(project) => Ok(project.agents.copilot_auth_status().await),
+        Err(_) => {
+            let custom_dir = host.config_dir.join("agents");
+            let cwd = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
+            Ok(ide_agent::copilot_auth_status_with(Some(&custom_dir), None, &cwd).await)
+        }
+    }
+}
+
+const REMOTE_SESSION_ENV_VARS: [&str; 5] =
+    ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "CODESPACES", "REMOTE_CONTAINERS"];
+
+fn prepare_login_launch_env(
+    is_remote: bool,
+    target_is_gh: bool,
+    env: &mut std::collections::BTreeMap<String, String>,
+    host_has: impl Fn(&str) -> bool,
+) {
+    if !is_remote {
+        return;
+    }
+    let has_non_empty = |env: &std::collections::BTreeMap<String, String>, key: &str| {
+        env.get(key).is_some_and(|v| !v.is_empty()) || host_has(key)
+    };
+    // `openidea-server` spawns sign-in commands in a real PTY even inside WSL, dev containers,
+    // and `--web`, where `SSH_*` variables are absent; mark the session remote so CLIs such as
+    // `copilot login` choose OAuth device-code sign-in over a remote-only loopback server.
+    if !REMOTE_SESSION_ENV_VARS.iter().any(|key| has_non_empty(env, key)) {
+        env.insert("REMOTE_CONTAINERS".into(), "1".into());
+    }
+    if target_is_gh && !has_non_empty(env, "GH_BROWSER") && !has_non_empty(env, "BROWSER") {
+        env.insert("GH_BROWSER".into(), "true".into());
+    }
+}
+
+fn apply_remote_login_env(host: &Host, cwd: &std::path::Path, target_is_gh: bool, launch: &mut LoginLaunch) {
+    let cwd = if cwd.is_dir() { cwd.to_path_buf() } else { dirs::home_dir().unwrap_or_else(std::env::temp_dir) };
+    prepare_login_launch_env(host.environment.is_remote(), target_is_gh, &mut launch.env, |key| {
+        ide_core::process::host_var_os_in(&cwd, key).is_some_and(|v| !v.is_empty())
+    });
+}
+
+fn spawn_login_pty(
+    host: &Host,
+    window: &str,
+    cwd: std::path::PathBuf,
+    launch: LoginLaunch,
+    cols: u16,
+    rows: u16,
+    on_event: Channel<AgentLoginEvent>,
+) -> IdeResult<ide_terminal::TerminalInfo> {
+    crate::ops::term::apply_output_rate(host, window);
+    let cwd = if cwd.is_dir() { cwd } else { dirs::home_dir().unwrap_or_else(std::env::temp_dir) };
+    let options = ide_terminal::TerminalOptions {
+        cwd: cwd.into(),
+        shell: Some(launch.program.to_string_lossy().into_owned()),
+        args: launch.args,
+        env: launch.env,
+        cols: if cols == 0 { 80 } else { cols },
+        rows: if rows == 0 { 20 } else { rows },
+        shell_integration: false,
+    };
+    let exit_channel = on_event.clone();
+    host.terminals.spawn_program(
+        options,
+        format!("agent-login:{window}"),
+        host.window_sink(window),
+        Box::new(move |data| {
+            let _ = on_event.send(AgentLoginEvent::Output { data });
+        }),
+        Some(std::sync::Arc::new(move |code| {
+            let _ = exit_channel.send(AgentLoginEvent::Exited { code });
+        })),
+    )
+}
+
+/// Starts agent `id`'s interactive sign-in flow in an IDE-managed PTY and streams its output and exit code.
+#[command(trust = outside_restricted)]
+pub async fn agent_login_spawn(
+    host: &Host,
+    window: &str,
+    id: String,
+    cols: u16,
+    rows: u16,
+    on_event: Channel<AgentLoginEvent>,
+) -> IdeResult<ide_terminal::TerminalInfo> {
+    host.require_trust_if_project(window)?;
+    let (cwd, mut launch) = match host.project(window) {
+        Ok(project) => {
+            let root = project.root.clone();
+            let agents = project.agents.clone();
+            let launch = host.blocking(move || agents.login_launch(&id)).await?;
+            (root, launch)
+        }
+        Err(_) => {
+            let custom_dir = host.config_dir.join("agents");
+            let cwd = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
+            let cwd_for_lookup = cwd.clone();
+            let launch = host
+                .blocking(move || {
+                    ide_agent::login_launch_without_project(Some(&custom_dir), None, &cwd_for_lookup, &id)
+                })
+                .await?;
+            (cwd, launch)
+        }
+    };
+    apply_remote_login_env(host, &cwd, false, &mut launch);
+    spawn_login_pty(host, window, cwd, launch, cols, rows, on_event)
+}
+
+/// Starts `gh auth login --hostname github.com` in an IDE-managed PTY (with ambient token
+/// variables cleared) and streams its output and exit code.
+#[command(trust = outside_restricted)]
+pub async fn agent_gh_login_spawn(
+    host: &Host,
+    window: &str,
+    cols: u16,
+    rows: u16,
+    on_event: Channel<AgentLoginEvent>,
+) -> IdeResult<ide_terminal::TerminalInfo> {
+    host.require_trust_if_project(window)?;
+    let cwd = host
+        .project(window)
+        .map(|p| p.root.clone())
+        .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(std::env::temp_dir));
+    let mut launch = host.blocking(ide_agent::gh_login_launch).await?;
+    apply_remote_login_env(host, &cwd, true, &mut launch);
+    spawn_login_pty(host, window, cwd, launch, cols, rows, on_event)
 }
 
 /// Saves a new custom ACP agent through its agent file.
@@ -178,6 +333,7 @@ pub async fn agent_registry_install(
 ) -> IdeResult<()> {
     // The agent then shows in `agent_providers`.
     let paths = registry_paths(host);
+    let public_npm_fallback = !host.configured_registries_only();
     let installing = Installing::begin(&id)?;
     let cancel = host.begin_request(request);
     // Also a background task of every project window, so it stays visible and can be
@@ -204,7 +360,7 @@ pub async fn agent_registry_install(
             move || cancel.cancel()
         });
         report(None, None, false);
-        let result = ide_agent::registry::install(&paths, &id, &cancel, &|e| {
+        let result = ide_agent::registry::install(&paths, &id, public_npm_fallback, &cancel, &|e| {
             match &e {
                 InstallEvent::Line { text } => report(Some(text.clone()), None, false),
                 InstallEvent::Progress { fraction, message } => {
@@ -1441,6 +1597,29 @@ mod tests {
         assert!(reloaded.approved(&root, "extra", &extra));
         assert!(!reloaded.approved(&tmp.path().join("other"), "extra", &extra));
     }
+
+    #[test]
+    fn prepare_login_launch_env_marks_remote_sessions_for_device_code_auth() {
+        let mut desktop_env = std::collections::BTreeMap::new();
+        prepare_login_launch_env(false, true, &mut desktop_env, |_| false);
+        assert!(desktop_env.is_empty());
+
+        let mut remote_agent_env = std::collections::BTreeMap::new();
+        prepare_login_launch_env(true, false, &mut remote_agent_env, |_| false);
+        assert_eq!(remote_agent_env.get("REMOTE_CONTAINERS").map(String::as_str), Some("1"));
+        assert!(!remote_agent_env.contains_key("GH_BROWSER"));
+
+        let mut remote_gh_env = std::collections::BTreeMap::new();
+        prepare_login_launch_env(true, true, &mut remote_gh_env, |_| false);
+        assert_eq!(remote_gh_env.get("REMOTE_CONTAINERS").map(String::as_str), Some("1"));
+        assert_eq!(remote_gh_env.get("GH_BROWSER").map(String::as_str), Some("true"));
+
+        // Preserves existing SSH/remote indicators and explicit browser settings.
+        let mut ssh_env = std::collections::BTreeMap::new();
+        prepare_login_launch_env(true, true, &mut ssh_env, |k| matches!(k, "SSH_CONNECTION" | "BROWSER"));
+        assert!(!ssh_env.contains_key("REMOTE_CONTAINERS"));
+        assert!(!ssh_env.contains_key("GH_BROWSER"));
+    }
 }
 
 ide_command::domain!(
@@ -1455,15 +1634,18 @@ ide_command::domain!(
     agent_cli_update,
     agent_cli_update_check,
     agent_commands,
+    agent_copilot_auth_status,
     agent_create,
     agent_delete,
     agent_entries,
     agent_external_sessions,
     agent_fork,
     agent_fork_session,
+    agent_gh_login_spawn,
     agent_grouped_changes,
     agent_hermes_profiles,
     agent_import_session,
+    agent_login_spawn,
     agent_mcp_discover_sources,
     agent_mcp_import,
     agent_mcp_import_selected,
@@ -1473,6 +1655,7 @@ ide_command::domain!(
     agent_mcp_save_json,
     agent_mcp_set_enabled,
     agent_mcp_test,
+    agent_preview_copilot_models,
     agent_probe,
     agent_prompt,
     agent_providers,
@@ -1485,6 +1668,7 @@ ide_command::domain!(
     agent_rollback,
     agent_rollback_changes,
     agent_send_queued_now,
+    agent_set_additional_args,
     agent_set_command,
     agent_shell,
     agent_set_config,

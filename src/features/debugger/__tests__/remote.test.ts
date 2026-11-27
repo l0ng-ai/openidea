@@ -74,8 +74,8 @@ describe("remote debug configuration types", () => {
     });
     expect(missingParams(configOf(type, { port: "abc" }), type).port).toBeDefined();
     // PHP Remote Debug has no host: php-debug listens itself, Xdebug connects to it.
-    if (type.fields.some((f) => f.key === "host"))
-      expect(missingParams(configOf(type, { host: "" }), type)).toEqual({ host: "Host is required" });
+    const host = type.fields.find((f) => f.key === "host");
+    if (host) expect(missingParams(configOf(type, { host: "" }), type)).toEqual({ host: `${host.label} is required` });
   });
 
   it("Remote JVM Debug defaults to attaching to localhost:5005", () => {
@@ -157,6 +157,56 @@ describe("remote attach requests", () => {
     });
   });
 
+  it("Python Debug Server listens on loopback for a local program, everywhere for another machine", () => {
+    const listen = (params: Record<string, string>) =>
+      JSON.parse(remoteAttachConfig(configOf(remote.pythonDebugServerType, params), "/p")!.extraJson!);
+    const l = remoteAttachConfig(configOf(remote.pythonDebugServerType), "/p")!;
+    expect(l).toMatchObject({ adapter: "debugpy", request: "attach", cwd: "/p" });
+    expect(JSON.parse(l.extraJson!)).toEqual({
+      listen: { host: "127.0.0.1", port: 5678 },
+      redirectOutput: true,
+      justMyCode: expect.any(Boolean),
+    });
+    // Every loopback form stays on loopback; IPv6 loopback on 127.0.0.1, which every debugpy listens on.
+    expect(listen({ host: "::1", port: "5679" }).listen).toEqual({ host: "127.0.0.1", port: 5679 });
+    for (const host of ["[::1]", "0:0:0:0:0:0:0:1", "::ffff:127.0.0.1", "LOCALHOST"])
+      expect(listen({ host }).listen.host, host).toBe("127.0.0.1");
+    expect(listen({ host: "127.0.0.2" }).listen.host).toBe("127.0.0.2");
+    expect(listen({ host: "127.1" }).listen.host).toBe("127.0.0.1");
+    expect(listen({ host: "fd00::5" }).listen.host).toBe("::");
+    expect(listen({ host: "a b" }).listen.host).toBe("a b");
+    expect(listen({ host: "host.docker.internal", remoteRoot: "/app" })).toMatchObject({
+      listen: { host: "0.0.0.0", port: 5678 },
+      pathMappings: [{ localRoot: "/p", remoteRoot: "/app" }],
+    });
+  });
+
+  it("Python Debug Server shows the line the program connects with", () => {
+    const field = remote.pythonDebugServerType.fields.find((f) => f.key === "hint")!;
+    expect(field.control).toBe("output");
+    expect(field.value!({ host: "host.docker.internal", port: "5679" })).toBe(
+      'import debugpy; debugpy.connect(("host.docker.internal", 5679)); debugpy.wait_for_client()',
+    );
+    expect(remote.debugpyConnectLine({ host: 'a"b' })).toContain('connect(("a\\"b", 5678))');
+    // Python's connect takes an IPv6 address without brackets; IPv6 loopback connects where the IDE listens.
+    expect(remote.debugpyConnectLine({ host: "[fd00::5]" })).toContain('connect(("fd00::5", 5678))');
+    expect(remote.debugpyConnectLine({ host: "[::1]" })).toContain('connect(("127.0.0.1", 5678))');
+    expect(remoteWaitingNote(configOf(remote.pythonDebugServerType, { host: "::1" }), false, true)).toContain(
+      "connection on 127.0.0.1:5678…",
+    );
+  });
+
+  it("Python Debug Server says it waits for a connection until the program connects, and listens again", () => {
+    const rc = configOf(remote.pythonDebugServerType, { port: "5679" });
+    expect(remoteWaitingNote(rc, false, true)).toBe(
+      "Waiting for process connection on localhost:5679…\n" +
+        'Add to the program: import debugpy; debugpy.connect(("localhost", 5679)); debugpy.wait_for_client()',
+    );
+    expect(remoteWaitingNote(rc)).toBeNull();
+    expect(remote.listensAgain(rc)).toBe(true);
+    expect(REMOTE_TYPES.filter((t) => remote.listensAgain(configOf(t)))).toEqual([remote.pythonDebugServerType]);
+  });
+
   it("Attach to Godot connects to the editor's debug adapter for the project", () => {
     const l = remoteAttachConfig(configOf(remote.godotAttachType), "/p/game")!;
     expect(l).toMatchObject({ adapter: "godot", request: "attach", cwd: "/p/game" });
@@ -175,6 +225,16 @@ describe("remote attach requests", () => {
       localRoot: "/p",
       remoteRoot: "/usr/src/app",
     });
+  });
+
+  it("Attach to Node.js reconnects automatically only when the option is on", () => {
+    const attach = (params: Record<string, string> = {}) =>
+      JSON.parse(remoteAttachConfig(configOf(nodeRemoteType, params), "/p")!.extraJson!);
+    expect(attach()).not.toHaveProperty("restart");
+    expect(attach({ restart: "true" })).toMatchObject({ restart: true, port: 9229 });
+    expect(nodeRemoteType.fields.find((f) => f.key === "restart")!.control).toBe("checkbox");
+    const hint = nodeRemoteType.fields.find((f) => f.key === "hint")!;
+    expect(hint.value!({ restart: "true", port: "9230" })).toBe("nodemon --inspect=0.0.0.0:9230 app.js");
   });
 
   it("PHP Remote Debug defaults to port 9003 and shows the xdebug command line", () => {
@@ -213,6 +273,14 @@ describe("remote attach requests", () => {
   it("PHP Remote Debug says which port it waits on; the attaching types don't", () => {
     expect(remoteWaitingNote(configOf(phpRemoteType, { port: "9010" }))).toBe("Listening for Xdebug on port 9010");
     for (const t of REMOTE_TYPES.filter((x) => x !== phpRemoteType)) expect(remoteWaitingNote(configOf(t))).toBeNull();
+  });
+
+  it("Attach to Node.js with Reconnect automatically says it waits once its process has ended", () => {
+    const rc = configOf(nodeRemoteType, { restart: "true", port: "9230" });
+    expect(remoteWaitingNote(rc, true)).toBe("Waiting to reconnect to Node.js on localhost:9230");
+    // The first attach (or one that never connects) isn't a reconnect.
+    expect(remoteWaitingNote(rc)).toBeNull();
+    expect(remoteWaitingNote(configOf(nodeRemoteType), true)).toBeNull();
   });
 
   it("start-the-remote-side hints follow the port", () => {

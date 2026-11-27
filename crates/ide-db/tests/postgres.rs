@@ -338,6 +338,8 @@ async fn table_details_routines_and_completion_on_older_catalogs() -> IdeResult<
         "CREATE TABLE oi_meta.lines (n INT PRIMARY KEY, o_region INT, o_id INT, \
          FOREIGN KEY (o_region, o_id) REFERENCES oi_meta.orders (region, id))",
         "CREATE INDEX lines_order ON oi_meta.lines (o_id, o_region)",
+        "COMMENT ON TABLE oi_meta.orders IS 'Customer''s orders'",
+        "COMMENT ON COLUMN oi_meta.orders.note IS 'Free text'",
         "CREATE FUNCTION oi_meta.twice(v INT) RETURNS INT AS 'SELECT v * 2' LANGUAGE sql",
     ] {
         db.execute("p", stmt, 10, &c).await?;
@@ -350,6 +352,13 @@ async fn table_details_routines_and_completion_on_older_catalogs() -> IdeResult<
     assert_eq!(details.foreign_keys[0].columns, ["o_region", "o_id"]);
     assert_eq!(details.foreign_keys[0].ref_columns, ["region", "id"]);
     let orders = db.table_details("p", "oi_meta", "orders").await?;
+    assert_eq!(orders.comment.as_deref(), Some("Customer's orders"));
+    let listed = db.tables("p", "oi_meta").await?;
+    let listed_orders = listed.iter().find(|table| table.name == "orders").expect("orders in the table list");
+    assert_eq!(listed_orders.comment.as_deref(), Some("Customer's orders"));
+    let comments: Vec<_> = orders.columns.iter().map(|c| c.comment.as_deref()).collect();
+    assert_eq!(comments, [None, None, Some("Free text")]);
+    assert_eq!(details.comment, None);
     let key = orders.indexes.iter().find(|i| i.unique).expect("primary key index");
     assert_eq!(key.columns, ["region", "id"]);
 
@@ -414,7 +423,29 @@ async fn opening_a_table_reads_multi_column_keys_in_order() -> IdeResult<()> {
     db.execute("p", "CREATE SEQUENCE oi_keys.seq", 10, &c).await?;
     let objects = db.schema_objects("p", "oi_keys").await?;
     assert_eq!(objects.sequences.len(), 1);
-    assert!(db.ddl("p", "oi_keys", "refs").await?.contains("FOREIGN KEY"));
+    let plain = db.ddl("p", "oi_keys", "refs").await?;
+    assert!(plain.contains("FOREIGN KEY"), "{plain}");
+    assert!(plain.contains("\n    owner to "), "{plain}");
+    assert!(!plain.contains("comment on") && !plain.contains("grant ") && !plain.contains("TRIGGER"), "{plain}");
+    // Comments, privileges and triggers come back too, so the script rebuilds the table.
+    for statement in [
+        "COMMENT ON TABLE oi_keys.refs IS 'Refs'",
+        "COMMENT ON COLUMN oi_keys.refs.x IS 'it''s x'",
+        "GRANT SELECT, INSERT ON oi_keys.refs TO PUBLIC",
+        "CREATE FUNCTION oi_keys.touch() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END'",
+        "CREATE TRIGGER refs_touch BEFORE UPDATE ON oi_keys.refs FOR EACH ROW EXECUTE FUNCTION oi_keys.touch()",
+    ] {
+        db.execute("p", statement, 10, &c).await?;
+    }
+    let full = db.ddl("p", "oi_keys", "refs").await?;
+    for part in [
+        "comment on table \"oi_keys\".\"refs\" is 'Refs';",
+        "comment on column \"oi_keys\".\"refs\".\"x\" is 'it''s x';",
+        "grant insert, select on \"oi_keys\".\"refs\" to public;",
+        "CREATE TRIGGER refs_touch BEFORE UPDATE ON oi_keys.refs FOR EACH ROW EXECUTE FUNCTION oi_keys.touch();",
+    ] {
+        assert!(full.contains(part), "{part}\n{full}");
+    }
     db.execute("p", "DROP SCHEMA oi_keys CASCADE", 10, &c).await?;
     Ok(())
 }

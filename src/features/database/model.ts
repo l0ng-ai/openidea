@@ -12,7 +12,7 @@ import type {
   DataSource,
 } from "@/platform/ipc";
 import type { SshConfigValid } from "@/platform/remoteSettings";
-import { blankSnowflake, vendorOf, vendorOfScheme } from "./vendors";
+import { DUCKDB_JDBC_PREFIX, blankSnowflake, vendorOf, vendorOfScheme } from "./vendors";
 
 export type Cell = string | null;
 
@@ -30,9 +30,18 @@ export function toTsv(header: readonly string[] | null, rows: ReadonlyArray<read
  * single-quoted with `'` doubled. `numeric(c)` decides quoting per column.
  */
 export function toOneRow(rows: ReadonlyArray<readonly Cell[]>, numeric: (col: number) => boolean): string {
-  const literal = (v: Cell, c: number) =>
-    v === null ? "NULL" : numeric(c) && Number.isFinite(Number(v)) ? v : `'${v.replace(/'/g, "''")}'`;
-  return rows.flatMap((r) => r.map(literal)).join(", ");
+  return rows.flatMap((r) => r.map((v, c) => sqlLiteral(v, numeric(c)))).join(", ");
+}
+
+/**
+ * A value as an SQL literal: NULL, a number unquoted in a numeric column, else single-quoted
+ * with `'` doubled (and `\\` doubled for drivers that read backslash escapes in strings).
+ */
+export function sqlLiteral(v: Cell, numeric: boolean, driver?: DbDriver): string {
+  if (v === null) return "NULL";
+  if (numeric && Number.isFinite(Number(v))) return v;
+  const escaped = driver === "clickhouse" || driver === "snowflake" ? v.replace(/\\/g, "\\\\") : v;
+  return `'${escaped.replace(/'/g, "''")}'`;
 }
 
 /** RFC 4180 CSV; NULL is an empty field. */
@@ -127,6 +136,22 @@ export const emptyEdits = (): PendingEdits => ({ updates: new Map(), deletes: ne
 
 export function hasEdits(e: PendingEdits): boolean {
   return e.updates.size > 0 || e.deletes.size > 0 || e.inserts.length > 0;
+}
+
+/** Whether any of `rows` has a pending change. Rows from `loaded` on are the inserted ones. */
+export function rowsHaveEdits(e: PendingEdits, rows: readonly number[], loaded: number): boolean {
+  return rows.some((r) => (r >= loaded ? r - loaded < e.inserts.length : e.deletes.has(r) || !!e.updates.get(r)?.size));
+}
+
+/** `e` without the pending changes of `rows` (Revert Selected): their edits and deletes, and the inserted rows among them. */
+export function revertRows(e: PendingEdits, rows: readonly number[], loaded: number): PendingEdits {
+  const picked = new Set(rows);
+  const insertsGone = new Set(rows.filter((r) => r >= loaded).map((r) => r - loaded));
+  return {
+    updates: new Map([...e.updates].filter(([r]) => !picked.has(r))),
+    deletes: new Set([...e.deletes].filter((r) => !picked.has(r))),
+    inserts: e.inserts.filter((_, i) => !insertsGone.has(i)),
+  };
 }
 
 /** The DML requests for `edits` of a page with `columns` / `rows`, keyed by `primaryKey`. */
@@ -410,11 +435,17 @@ function snowflakeParameter(source: Partial<DataSource>, name: string, value: st
 /**
  * Data Source from URL (and the General tab's URL field): `postgres://user:pass@host:5432/db`,
  * `mysql://…`, `mariadb://…`, wire-compatible products (`redshift://`, `tidb://`…), the
- * `jdbc:` forms of those, `jdbc:sqlite:path` / `sqlite:path`. SSL parameters fill the
- * SSL tab, other parameters become driver properties. Null when the URL names no supported driver.
+ * `jdbc:` forms of those, `jdbc:sqlite:path` / `sqlite:path` and `jdbc:duckdb:`.
+ * DuckDB keeps the explicit JDBC URL. For native drivers, SSL parameters fill
+ * the SSL tab and other parameters become driver properties.
  */
 export function parseSourceUrl(raw: string): { source: Partial<DataSource>; password: string | null } | null {
-  const url = raw.trim().replace(/^jdbc:/i, "");
+  const trimmed = raw.trim();
+  if (trimmed.startsWith(DUCKDB_JDBC_PREFIX)) {
+    if (/[\r\n]/.test(trimmed)) return null;
+    return { source: { driver: "jdbc", vendor: "duckdb", url: trimmed, urlOnly: true }, password: null };
+  }
+  const url = trimmed.replace(/^jdbc:/i, "");
   const sqlite = /^sqlite3?:(?:\/\/)?(.+)$/i.exec(url);
   if (sqlite) {
     const file = sqlite[1]!.replace(/^\/([A-Za-z]:)/, "$1");

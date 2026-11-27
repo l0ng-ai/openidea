@@ -189,6 +189,11 @@ fn parse(text: &str) -> IdeResult<Vec<Entry>> {
 /// `github/copilot-cli` publishes standalone archives and `SHA256SUMS.txt` on every GitHub
 /// release. Supplying them installs Copilot without Node.js, npm, `~/.npmrc`, or mirror lag.
 fn add_copilot_release_binaries(entry: &mut Entry, release_base: &str) {
+    let sys_root = if cfg!(target_os = "linux") { Some(Path::new("/")) } else { None };
+    add_copilot_release_binaries_with_root(entry, release_base, sys_root);
+}
+
+fn add_copilot_release_binaries_with_root(entry: &mut Entry, release_base: &str, sys_root: Option<&Path>) {
     let tag = format!("v{}", entry.version.trim_start_matches('v'));
     let base = format!("{}/{}", release_base.trim_end_matches('/'), tag);
     let sha256_url = format!("{base}/SHA256SUMS.txt");
@@ -196,9 +201,12 @@ fn add_copilot_release_binaries(entry: &mut Entry, release_base: &str) {
         Some(p) => (p.args.clone(), p.env.clone()),
         None => (vec!["--acp".into()], BTreeMap::new()),
     };
-    let linux = if cfg!(target_env = "musl") { "linuxmusl" } else { "linux" };
-    let linux_arm = format!("copilot-{linux}-arm64.tar.gz");
-    let linux_x64 = format!("copilot-{linux}-x64.tar.gz");
+    let linux_arm = format!(
+        "copilot-{}-arm64.tar.gz",
+        sys_root.map_or("linux", |root| copilot_linux_variant_at(root, Arch::Arm64))
+    );
+    let linux_x64 =
+        format!("copilot-{}-x64.tar.gz", sys_root.map_or("linux", |root| copilot_linux_variant_at(root, Arch::X64)));
     let targets = [
         ("darwin-aarch64", "copilot-darwin-arm64.tar.gz", "./copilot"),
         ("darwin-x86_64", "copilot-darwin-x64.tar.gz", "./copilot"),
@@ -217,6 +225,22 @@ fn add_copilot_release_binaries(entry: &mut Entry, release_base: &str) {
             sha256_url: Some(sha256_url.clone()),
         });
     }
+}
+
+/// Picks `linux` (glibc) or `linuxmusl` from the host's runtime dynamic linker rather than
+/// `cfg!(target_env = "musl")`: `openidea-server` on Linux is built as static musl so it runs
+/// on every distro, while Copilot's Linux archives dynamically link glibc or musl.
+fn copilot_linux_variant_at(root: &Path, arch: Arch) -> &'static str {
+    let (glibc_rel, musl_rel) = match arch {
+        Arch::Arm64 => ("lib/ld-linux-aarch64.so.1", "lib/ld-musl-aarch64.so.1"),
+        Arch::X64 => ("lib64/ld-linux-x86-64.so.2", "lib/ld-musl-x86_64.so.1"),
+    };
+    let glibc = root.join(glibc_rel);
+    let has_musl_name = |p: PathBuf| p.file_name().is_some_and(|n| n.to_string_lossy().contains("musl"));
+    let points_to_musl =
+        fs::read_link(&glibc).is_ok_and(has_musl_name) || fs::canonicalize(&glibc).is_ok_and(has_musl_name);
+    let has_glibc = glibc.exists() && !points_to_musl;
+    if !has_glibc && root.join(musl_rel).exists() { "linuxmusl" } else { "linux" }
 }
 
 fn safe_segment(s: &str) -> bool {
@@ -443,7 +467,15 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 /// Installs (or updates to) the registry's current version of `id`, streaming progress
 /// through `emit`, and points the agent file at it.
-pub fn install(paths: &RegistryPaths, id: &str, cancel: &CancellationToken, emit: Emit) -> IdeResult<()> {
+/// Installs agent `id`; an npm package retries against the public npm registry when the
+/// configured one misses it only with `public_npm_fallback`.
+pub fn install(
+    paths: &RegistryPaths,
+    id: &str,
+    public_npm_fallback: bool,
+    cancel: &CancellationToken,
+    emit: Emit,
+) -> IdeResult<()> {
     let id = canonical_id(id);
     // The saved index is what the user picked from; fetch only when there is none.
     let text = match fs::read_to_string(&paths.cache_file) {
@@ -455,9 +487,14 @@ pub fn install(paths: &RegistryPaths, id: &str, cancel: &CancellationToken, emit
         .iter()
         .find(|e| e.id == id)
         .ok_or_else(|| IdeError::not_found(format!("{id} is not in the ACP Registry")))?;
-    install_entry(paths, entry, Platform::current(), &on_path, cancel, emit)
+    let npm_installer =
+        move |p: &Package, entry: &Entry, dir: &Path, platform, cancel: &CancellationToken, emit: Emit| {
+            install_npm(p, entry, dir, platform, public_npm_fallback, cancel, emit)
+        };
+    install_entry_with(paths, entry, Platform::current(), &on_path, &npm_installer, cancel, emit)
 }
 
+#[cfg(test)]
 fn install_entry(
     paths: &RegistryPaths,
     entry: &Entry,
@@ -466,7 +503,10 @@ fn install_entry(
     cancel: &CancellationToken,
     emit: Emit,
 ) -> IdeResult<()> {
-    install_entry_with(paths, entry, platform, on_path, &install_npm, cancel, emit)
+    let npm_installer = |p: &Package, entry: &Entry, dir: &Path, platform, cancel: &CancellationToken, emit: Emit| {
+        install_npm(p, entry, dir, platform, true, cancel, emit)
+    };
+    install_entry_with(paths, entry, platform, on_path, &npm_installer, cancel, emit)
 }
 
 type NpmInstaller = dyn Fn(&Package, &Entry, &Path, Platform, &CancellationToken, Emit) -> IdeResult<PathBuf>;
@@ -550,6 +590,7 @@ fn install_entry_with(
         driver: Driver::Acp,
         command: exe.to_string_lossy().into_owned(),
         args,
+        additional_args: Vec::new(),
         env,
         registry: Some(RegistryRef { id: entry.id.clone(), version: entry.version.clone() }),
     };
@@ -662,20 +703,23 @@ fn install_npm(
     entry: &Entry,
     dir: &Path,
     platform: Platform,
+    public_fallback: bool,
     cancel: &CancellationToken,
     emit: Emit,
 ) -> IdeResult<PathBuf> {
     let (name, _) = split_npm_spec(&p.package);
     let npm = which::which("npm").map_err(|_| IdeError::unavailable(format!("npm is required to install {name}")))?;
-    install_npm_with(&npm, p, entry, dir, platform, cancel, emit)
+    install_npm_with(&npm, p, entry, dir, platform, public_fallback, cancel, emit)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn install_npm_with(
     npm: &Path,
     p: &Package,
     entry: &Entry,
     dir: &Path,
     platform: Platform,
+    public_fallback: bool,
     cancel: &CancellationToken,
     emit: Emit,
 ) -> IdeResult<PathBuf> {
@@ -703,6 +747,7 @@ fn install_npm_with(
         },
         &specs,
         false,
+        public_fallback,
         cancel,
         emit,
     )?;
@@ -941,6 +986,7 @@ mod tests {
             driver: Driver::Acp,
             command: "/x".into(),
             args: vec![],
+            additional_args: Vec::new(),
             env: BTreeMap::new(),
             registry: Some(RegistryRef { id: id.into(), version: version.into() }),
         };
@@ -1002,7 +1048,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn npm_registry_agent_retries_against_public_npmjs_on_mirror_miss() {
+    fn npm_registry_agent_retries_against_public_npmjs_on_mirror_miss_unless_registries_are_configured_only() {
         let dir = tempfile::tempdir().unwrap();
         let install_dir = dir.path().join("acme/1.2.0");
         fs::create_dir_all(&install_dir).unwrap();
@@ -1041,8 +1087,8 @@ esac
         ]}"#;
         let entry = parse(index).unwrap().remove(0);
         let pkg = entry.distribution.npx.as_ref().unwrap();
-        let exe =
-            install_npm_with(&npm, pkg, &entry, &install_dir, MAC_ARM, &CancellationToken::new(), &|_| {}).unwrap();
+        let exe = install_npm_with(&npm, pkg, &entry, &install_dir, MAC_ARM, true, &CancellationToken::new(), &|_| {})
+            .unwrap();
         let calls: Vec<String> = fs::read_to_string(&log).unwrap().lines().map(str::to_owned).collect();
         assert_eq!(calls.len(), 2, "{calls:?}");
         assert!(!calls[0].contains("--registry="), "{calls:?}");
@@ -1050,6 +1096,15 @@ esac
         assert!(calls[1].contains("--@acme:registry=https://registry.npmjs.org/"), "{calls:?}");
         assert_eq!(exe, install_dir.join("node_modules/.bin/agent-acp"));
         assert!(exe.is_file());
+        // Only the configured registries: the miss is the error, and npmjs is never asked.
+        let only = dir.path().join("acme-only/1.2.0");
+        fs::create_dir_all(&only).unwrap();
+        let err =
+            install_npm_with(&npm, pkg, &entry, &only, MAC_ARM, false, &CancellationToken::new(), &|_| {}).unwrap_err();
+        let calls: Vec<String> = fs::read_to_string(&log).unwrap().lines().map(str::to_owned).collect();
+        assert_eq!(calls.len(), 3, "{calls:?}");
+        assert!(!calls[2].contains("--registry="), "{calls:?}");
+        assert!(err.message.contains("notarget"), "{err:?}");
     }
 
     #[test]
@@ -1168,6 +1223,7 @@ esac
             driver: Driver::Acp,
             command: "/data/tools/copilot/1.0.104/node_modules/.bin/copilot".into(),
             args: vec!["--acp".into()],
+            additional_args: Vec::new(),
             env: BTreeMap::new(),
             registry: Some(RegistryRef { id: "copilot".into(), version: "1.0.104".into() }),
         }
@@ -1180,7 +1236,7 @@ esac
         write_atomic(&p.cache_file, index.as_bytes()).unwrap();
         let spec = provider::load(Some(&p.agents_dir), None).into_iter().find(|s| s.id == "copilot").unwrap();
         assert_eq!(spec.name, "GitHub Copilot");
-        assert_eq!(spec.login_hint, "Run `copilot` in a terminal and sign in.");
+        assert_eq!(spec.login_hint, "Run `copilot login` in a terminal.");
         assert_eq!(spec.source, AgentSource::Registry { version: "1.0.104".into(), update: None });
 
         let mut providers = vec![provider::describe(&spec)];
@@ -1271,5 +1327,97 @@ esac
         let npm_bin = p.tools_dir.join("copilot/1.0.114/node_modules/.bin/copilot");
         assert!(npm_bin.is_file());
         assert_eq!(CustomAgent::read(&p.agent_file("copilot")).unwrap().command, npm_bin.to_string_lossy());
+    }
+
+    #[test]
+    fn selects_copilot_linux_archive_from_runtime_dynamic_linker() {
+        let index = r#"{"agents":[
+            {"id":"github-copilot-cli","name":"Copilot","version":"1.0.116",
+             "distribution":{"npx":{"package":"@github/copilot@1.0.116","args":["--acp"]}}}
+        ]}"#;
+        let archives_for = |root: &Path| -> (String, String) {
+            let mut entry = parse(index).unwrap().remove(0);
+            entry.distribution.binary.clear();
+            add_copilot_release_binaries_with_root(&mut entry, "https://example.invalid/releases", Some(root));
+            (
+                entry.distribution.binary["linux-x86_64"].archive.clone(),
+                entry.distribution.binary["linux-aarch64"].archive.clone(),
+            )
+        };
+        let touch = |path: PathBuf| {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"").unwrap();
+        };
+
+        // 1. Non-FHS root (neither loader present) defaults to glibc archives.
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(
+            archives_for(empty.path()),
+            (
+                "https://example.invalid/releases/v1.0.116/copilot-linux-x64.tar.gz".into(),
+                "https://example.invalid/releases/v1.0.116/copilot-linux-arm64.tar.gz".into(),
+            )
+        );
+
+        // 2. Standard glibc host (and glibc host with musl-tools also installed) uses `copilot-linux-*`,
+        //    even when `openidea-server` itself is compiled for `*-unknown-linux-musl`.
+        let glibc = tempfile::tempdir().unwrap();
+        touch(glibc.path().join("lib64/ld-linux-x86-64.so.2"));
+        touch(glibc.path().join("lib/ld-linux-aarch64.so.1"));
+        assert_eq!(
+            archives_for(glibc.path()),
+            (
+                "https://example.invalid/releases/v1.0.116/copilot-linux-x64.tar.gz".into(),
+                "https://example.invalid/releases/v1.0.116/copilot-linux-arm64.tar.gz".into(),
+            )
+        );
+        touch(glibc.path().join("lib/ld-musl-x86_64.so.1"));
+        touch(glibc.path().join("lib/ld-musl-aarch64.so.1"));
+        assert_eq!(
+            archives_for(glibc.path()),
+            (
+                "https://example.invalid/releases/v1.0.116/copilot-linux-x64.tar.gz".into(),
+                "https://example.invalid/releases/v1.0.116/copilot-linux-arm64.tar.gz".into(),
+            )
+        );
+
+        // 3. musl-only host (e.g. Alpine) uses `copilot-linuxmusl-*`.
+        let musl = tempfile::tempdir().unwrap();
+        touch(musl.path().join("lib/ld-musl-x86_64.so.1"));
+        touch(musl.path().join("lib/ld-musl-aarch64.so.1"));
+        assert_eq!(
+            archives_for(musl.path()),
+            (
+                "https://example.invalid/releases/v1.0.116/copilot-linuxmusl-x64.tar.gz".into(),
+                "https://example.invalid/releases/v1.0.116/copilot-linuxmusl-arm64.tar.gz".into(),
+            )
+        );
+
+        // 4. Alpine `libc6-compat` / `gcompat` symlinking `ld-linux` to `ld-musl` still picks `linuxmusl`.
+        #[cfg(unix)]
+        {
+            fs::create_dir_all(musl.path().join("lib64")).unwrap();
+            std::os::unix::fs::symlink("../lib/ld-musl-x86_64.so.1", musl.path().join("lib64/ld-linux-x86-64.so.2"))
+                .unwrap();
+            std::os::unix::fs::symlink("ld-musl-aarch64.so.1", musl.path().join("lib/ld-linux-aarch64.so.1")).unwrap();
+            assert_eq!(
+                archives_for(musl.path()),
+                (
+                    "https://example.invalid/releases/v1.0.116/copilot-linuxmusl-x64.tar.gz".into(),
+                    "https://example.invalid/releases/v1.0.116/copilot-linuxmusl-arm64.tar.gz".into(),
+                )
+            );
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let parsed = parse(index).unwrap().remove(0);
+            let expected_x64 = format!("copilot-{}-x64.tar.gz", copilot_linux_variant_at(Path::new("/"), Arch::X64));
+            assert!(
+                parsed.distribution.binary["linux-x86_64"].archive.ends_with(&expected_x64),
+                "unexpected linux-x86_64 archive: {}",
+                parsed.distribution.binary["linux-x86_64"].archive
+            );
+        }
     }
 }

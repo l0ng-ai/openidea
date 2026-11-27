@@ -1,11 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jvmFrameTarget } from "./links";
+import { useBuildModel } from "@/platform/buildModel";
+import type { MavenModel, MavenProject } from "@/platform/ipc";
 import { useRemote } from "@/platform/remote";
 
 const files: Record<string, string> = {
   "/p/src/main/java/com/acme/Util.java": "package com.acme;\nclass Util {}",
   "/p/other/Util.java": "package org.other;\nclass Util {}",
   "/p/src/main/kotlin/Orders.kt": "package com.acme.orders\nfun main() {}",
+  "/p/cypress/e2e/cart.cy.ts":
+    'describe("cart", () => {\n  it("adds", () => {});\n  context("totals", () => {\n    it("adds", () => {});\n  });\n});',
 };
 const symbols = vi.hoisted(() => ({ list: [] as unknown[] }));
 
@@ -27,7 +31,16 @@ vi.mock("@/platform/ipc", () => ({
   },
 }));
 
-const { resolveTarget } = await import("./navigate");
+const { declarationLine, resolveTarget } = await import("./navigate");
+
+describe("JS tests without a line", () => {
+  it("are found in their file by describe chain and name", async () => {
+    expect(await declarationLine("/p/cypress/e2e/cart.cy.ts", ["cart", "totals", "adds"])).toBe(4);
+    expect(await declarationLine("/p/cypress/e2e/cart.cy.ts", ["cart", "adds"])).toBe(2);
+    expect(await declarationLine("/p/cypress/e2e/cart.cy.ts", ["cart", "gone"])).toBeUndefined();
+    // The first call loads the run targets' parsers.
+  }, 60_000);
+});
 
 describe("JVM stack frame resolution", () => {
   afterEach(() => {
@@ -108,5 +121,93 @@ describe("JVM stack frame resolution", () => {
     );
     // Same simple name in another package isn't it.
     expect(await resolveTarget(jvmFrameTarget("java.awt.List$X", "List.java", 1), "/p")).toBeNull();
+  });
+});
+
+/** A Maven project of the multi-module fixture: its folder, artifact and the modules it depends on. */
+function moduleProject(dir: string, artifactId: string, dependsOn: string[] = []): MavenProject {
+  return {
+    pom: dir ? `${dir}/pom.xml` : "pom.xml",
+    dir,
+    groupId: "com.example",
+    artifactId,
+    version: "1.0",
+    packaging: dir ? "jar" : "pom",
+    displayName: artifactId,
+    parent: null,
+    modules: [],
+    aggregated: !!dir,
+    plugins: [],
+    dependencies: dependsOn.map((target) => ({
+      groupId: "com.example",
+      artifactId: target,
+      version: "1.0",
+      type: "jar",
+      classifier: null,
+      scope: "compile",
+      optional: false,
+      children: [],
+    })),
+    profiles: [],
+    javaVersion: 8,
+    command: "mvn",
+    options: [],
+    env: {},
+  };
+}
+
+describe("JVM stack frames of a multi-module build", () => {
+  afterEach(() => useBuildModel.setState({ root: null, model: null, gradleOffline: false }));
+
+  /** module-a/b/c each hold com.example.task.DoTaskController; app depends on module-c only. */
+  const multiModule = (): MavenModel => ({
+    projects: [
+      moduleProject(
+        "",
+        "repro-parent",
+        ["module-a", "module-b", "module-c", "app"].map((d) => `unused-${d}`),
+      ),
+      moduleProject("module-a", "module-a"),
+      moduleProject("module-b", "module-b"),
+      moduleProject("module-c", "module-c"),
+      moduleProject("app", "app", ["module-c"]),
+    ],
+    profiles: [],
+    syncedAt: 0,
+    stale: false,
+    syncError: null,
+  });
+
+  it("opens the copy the run's module depends on, not the first one the index lists", async () => {
+    const tail = "src/main/java/com/example/task/DoTaskController.java";
+    const dirs = ["module-a", "module-b", "module-c"];
+    for (const dir of dirs) files[`/p/${dir}/${tail}`] = "package com.example.task;\nclass DoTaskController {}";
+    useBuildModel.setState({ root: "/p", model: { maven: multiModule() }, gradleOffline: false });
+    try {
+      // The frame names module-c's class, whose line 107 throws; module-a's copy is what a
+      // name-only lookup finds first.
+      expect(
+        await resolveTarget(
+          jvmFrameTarget("com.example.task.DoTaskController", "DoTaskController.java", 107),
+          "/p/app",
+          "app",
+        ),
+      ).toBe(`/p/module-c/${tail}`);
+    } finally {
+      for (const dir of dirs) delete files[`/p/${dir}/${tail}`];
+    }
+  });
+
+  it("keeps the name-only lookup when the run's module is unknown", async () => {
+    const tail = "src/main/java/com/example/task/DoTaskController.java";
+    for (const dir of ["module-a", "module-c"]) files[`/p/${dir}/${tail}`] = "package com.example.task;";
+    useBuildModel.setState({ root: "/p", model: { maven: multiModule() }, gradleOffline: false });
+    try {
+      expect(
+        await resolveTarget(jvmFrameTarget("com.example.task.DoTaskController", "DoTaskController.java", 107), "/p"),
+      ).toBe(`/p/module-a/${tail}`);
+    } finally {
+      for (const dir of ["module-a", "module-c"]) delete files[`/p/${dir}/${tail}`];
+    }
   });
 });

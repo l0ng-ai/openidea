@@ -2,18 +2,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type {
   AcpImportOutcome,
+  AgentLoginEvent,
   AgentProvider,
   AgentRegistry,
+  CopilotAuthStatus,
   InstallEvent,
   RegistryAgent,
   RequestId,
 } from "@/bindings";
-import { IpcError } from "@/platform/ipc";
+import { IpcError, commands as ipcCommands } from "@/platform/ipc";
+import * as openUrlMod from "@/platform/openUrl";
+import { disableRemote, enableRemote } from "@/platform/remote";
 import { setLocale, tx } from "@/platform/i18n";
 import { iconMarkup } from "@/ui/icons";
 import { MessagesHost } from "@/workbench/messages";
 import { AgentRegistryPage as RegistryPage } from "./AgentRegistryPage";
-import { SettingsFormContext, registerSettingsPage } from "@/workbench/contributions";
+import { provideEmbeddedTerminal, SettingsFormContext, registerSettingsPage } from "@/workbench/contributions";
 import { useSettingsFormFor } from "@/features/settings/components/context";
 import { closeSettings, openSettings, selectPage } from "@/features/settings/model/staging";
 import { SettingsDialog } from "@/features/settings/dialog/SettingsDialog";
@@ -419,8 +423,14 @@ class FakeCommands implements CommandsBackend {
   list: AgentProvider[] = [];
   saved: [string, string | null][] = [];
   providers = vi.fn(async () => this.list);
+  copilotAuthStatus?: () => Promise<CopilotAuthStatus>;
+  loginSpawn?: CommandsBackend["loginSpawn"];
+  ghLoginSpawn?: CommandsBackend["ghLoginSpawn"];
+  refreshModels?: CommandsBackend["refreshModels"];
+  previewCopilotModels?: CommandsBackend["previewCopilotModels"];
   chooseExecutable = vi.fn(async () => "/chosen/agent");
   saveCustom = vi.fn(async () => {});
+  setAdditionalArgs = vi.fn<CommandsBackend["setAdditionalArgs"]>();
   removeCustom = vi.fn(async () => {});
   importAcp = vi.fn(async (): Promise<AcpImportOutcome[]> => []);
   pickAcpJson = vi.fn(async (): Promise<string | null> => null);
@@ -607,8 +617,19 @@ describe("Built-in executable overrides", () => {
     expect(commands.savedEnv.at(-1)).toEqual(["claude", {}]);
   });
 
-  it("writes a Copilot GitHub account without storing a token or exposing the control variable", async () => {
+  it("writes a Copilot GitHub account from the dropdown without storing a token or exposing the control variable", async () => {
     const commands = new FakeCommands();
+    commands.copilotAuthStatus = vi.fn(async () => ({
+      authenticated: true,
+      login: "alice",
+      authType: "gh-cli",
+      statusMessage: "alice (via gh)",
+      ghInstalled: true,
+      ghAccounts: [
+        { login: "alice", active: true },
+        { login: "alice-work", active: false },
+      ],
+    }));
     commands.list = [
       {
         ...claudeProvider("copilot"),
@@ -621,9 +642,17 @@ describe("Built-in executable overrides", () => {
       },
     ];
     await openCommands(commands, vi.fn(), "GitHub Copilot");
-    const account = screen.getByRole("textbox", { name: "GitHub account" });
+    const signInSection = screen.getByRole("region", { name: "Sign In" });
+    const launchSection = screen.getByRole("region", { name: "Launch" });
+    const account = await within(signInSection).findByRole("button", { name: "GitHub account" });
+    expect(within(launchSection).queryByRole("button", { name: "GitHub account" })).toBeNull();
+    await waitFor(() => expect(account).toHaveTextContent("Copilot CLI default (alice via GitHub CLI)"));
     expect(screen.queryByRole("textbox", { name: "Environment variables" })).toBeNull();
-    fireEvent.change(account, { target: { value: "dengliu_microsoft" } });
+    fireEvent.click(account);
+    fireEvent.click(await screen.findByRole("option", { name: "alice-work" }));
+    expect(account).toHaveTextContent("alice-work");
+    expect(commands.savedEnv).toEqual([]);
+    expect(apply()).toBeEnabled();
 
     await act(async () => fireEvent.click(apply()));
 
@@ -632,11 +661,312 @@ describe("Built-in executable overrides", () => {
         "copilot",
         {
           COPILOT_TELEMETRY_OPTOUT: "1",
-          OPENIDEA_COPILOT_GITHUB_ACCOUNT: "dengliu_microsoft",
+          OPENIDEA_COPILOT_GITHUB_ACCOUNT: "alice-work",
         },
       ],
     ]);
     expect(JSON.stringify(commands.savedEnv)).not.toMatch(/gho_|ghp_|token/i);
+  });
+
+  it("hides stale Copilot models until authenticated and previews per-account models immediately on switch", async () => {
+    const staleModel: AgentProvider["config"][number] = {
+      id: "model",
+      name: "Model",
+      description: null,
+      category: "model",
+      current: "gemini-4-neon",
+      values: [
+        { value: "gemini-4-neon", name: "Gemini 4 Neon", description: null },
+        { value: "gpt-5", name: "GPT-5", description: null },
+      ],
+      via: "option",
+    };
+    const personalModel: AgentProvider["config"][number] = {
+      id: "model",
+      name: "Model",
+      description: null,
+      category: "model",
+      current: "claude-sonnet-4.5",
+      values: [
+        { value: "claude-sonnet-4.5", name: "Claude Sonnet 4.5", description: null },
+        { value: "gpt-5", name: "GPT-5", description: null },
+      ],
+      via: "option",
+    };
+    const commands = new FakeCommands();
+    commands.copilotAuthStatus = vi.fn(async () => ({
+      authenticated: false,
+      login: null,
+      authType: null,
+      statusMessage: null,
+      ghInstalled: true,
+      ghAccounts: [
+        { login: "alice", active: true },
+        { login: "alice-work", active: false },
+      ],
+    }));
+    commands.refreshModels = vi.fn(async () => {
+      const currentAccount = commands.list[0]?.env.OPENIDEA_COPILOT_GITHUB_ACCOUNT ?? "";
+      return {
+        provider: "copilot",
+        config: [currentAccount === "alice-work" ? staleModel : personalModel],
+        thoughtLevels: {},
+        refreshing: false,
+        refreshedAtMs: Date.now(),
+        retryAtMs: null,
+        error: null,
+      };
+    });
+    commands.previewCopilotModels = vi.fn(async (account) => ({
+      provider: "copilot",
+      config: [account === "alice-work" ? staleModel : personalModel],
+      thoughtLevels: {},
+      refreshing: false,
+      refreshedAtMs: Date.now(),
+      retryAtMs: null,
+      error: null,
+    }));
+    commands.list = [
+      {
+        ...claudeProvider("copilot"),
+        id: "copilot",
+        name: "GitHub Copilot",
+        command: "copilot --headless --no-auto-update --stdio",
+        defaultProgram: "copilot",
+        installed: true,
+        canSignIn: true,
+        commandReadOnlyReason: "registry",
+        config: [staleModel],
+      },
+    ];
+    await openCommands(commands, vi.fn(), "GitHub Copilot");
+
+    // Signed-out default account never leaks cached models from a previous session/account.
+    await screen.findByText("Sign in above to view and choose models available for this account.");
+    expect(screen.queryByRole("button", { name: "Model" })).toBeNull();
+
+    // Selecting `alice` immediately previews `alice`'s subscription models before Apply, while keeping Apply enabled.
+    const account = screen.getByRole("button", { name: "GitHub account" });
+    fireEvent.click(account);
+    fireEvent.click(await screen.findByRole("option", { name: "alice" }));
+    const modelButton = await screen.findByRole("button", { name: "Model" });
+    expect(modelButton).toHaveTextContent("Agent's default (Claude Sonnet 4.5)");
+    expect(commands.previewCopilotModels).toHaveBeenCalledWith("alice", null);
+    expect(commands.savedEnv).toEqual([]);
+    expect(apply()).toBeEnabled();
+
+    // Switching to `alice-work` immediately previews `alice-work`'s subscription models too.
+    fireEvent.click(screen.getByRole("button", { name: "GitHub account" }));
+    fireEvent.click(await screen.findByRole("option", { name: "alice-work" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("Agent's default (Gemini 4 Neon)"),
+    );
+    expect(commands.previewCopilotModels).toHaveBeenCalledWith("alice-work", null);
+    expect(commands.savedEnv).toEqual([]);
+
+    // Applying saves the staged account without losing the loaded models.
+    await act(async () => fireEvent.click(apply()));
+    expect(commands.savedEnv).toEqual([["copilot", { OPENIDEA_COPILOT_GITHUB_ACCOUNT: "alice-work" }]]);
+    expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("Agent's default (Gemini 4 Neon)");
+  });
+
+  it("runs in-IDE Sign In and Add account PTY dialogs and selects the newly added gh account", async () => {
+    const written: string[] = [];
+    provideEmbeddedTerminal(async () => ({
+      write: (d) => written.push(d),
+      clear: vi.fn(),
+      focus: vi.fn(),
+      fit: vi.fn(),
+      dispose: vi.fn(),
+    }));
+    let onLoginEvent: ((e: AgentLoginEvent) => void) | null = null;
+    try {
+      const commands = new FakeCommands();
+      commands.loginSpawn = vi.fn(async (_id, _cols, _rows, cb) => {
+        onLoginEvent = cb;
+        return 101;
+      });
+      commands.ghLoginSpawn = vi.fn(async (_cols, _rows, cb) => {
+        onLoginEvent = cb;
+        return 102;
+      });
+      const refreshModels = vi.fn().mockResolvedValue({
+        provider: "copilot",
+        config: [],
+        thoughtLevels: {},
+        refreshing: false,
+        refreshedAtMs: Date.now(),
+        retryAtMs: null,
+        error: null,
+      });
+      commands.refreshModels = refreshModels;
+      commands.copilotAuthStatus = vi
+        .fn<() => Promise<CopilotAuthStatus>>()
+        .mockResolvedValueOnce({
+          authenticated: false,
+          login: null,
+          authType: null,
+          statusMessage: null,
+          ghInstalled: true,
+          ghAccounts: [{ login: "alice", active: true }],
+        })
+        .mockResolvedValueOnce({
+          authenticated: true,
+          login: "alice",
+          authType: "oauth",
+          statusMessage: "alice",
+          ghInstalled: true,
+          ghAccounts: [{ login: "alice", active: true }],
+        })
+        .mockResolvedValueOnce({
+          authenticated: true,
+          login: "alice",
+          authType: "oauth",
+          statusMessage: "alice",
+          ghInstalled: true,
+          ghAccounts: [
+            { login: "alice", active: true },
+            { login: "alice-work", active: false },
+          ],
+        });
+      commands.list = [
+        {
+          ...claudeProvider("copilot"),
+          id: "copilot",
+          name: "GitHub Copilot",
+          command: "copilot --headless --no-auto-update --stdio",
+          defaultProgram: "copilot",
+          loginHint: "Run `copilot login` in a terminal.",
+          installed: true,
+          canSignIn: true,
+          commandReadOnlyReason: "registry",
+        },
+      ];
+      await openCommands(commands, vi.fn(), "GitHub Copilot");
+
+      // 1) Agent Sign In dialog (`copilot login`)
+      fireEvent.click(await screen.findByRole("button", { name: "Sign In…" }));
+      expect(await screen.findByRole("dialog", { name: "Sign In to GitHub Copilot" })).toBeInTheDocument();
+      await waitFor(() =>
+        expect(commands.loginSpawn).toHaveBeenCalledWith(
+          "copilot",
+          expect.any(Number),
+          expect.any(Number),
+          expect.any(Function),
+        ),
+      );
+      act(() => {
+        onLoginEvent?.({ type: "output", data: "Opening browser…\r\n" });
+        onLoginEvent?.({ type: "exited", code: 0 });
+      });
+      expect(written).toContain("Opening browser…\r\n");
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Sign In to GitHub Copilot" })).toBeNull());
+      expect(refreshModels).toHaveBeenCalledWith("copilot", null, true);
+
+      // 2) Add GitHub CLI account (`gh auth login`) auto-selects newly added account
+      fireEvent.click(await screen.findByRole("button", { name: "Add account…" }));
+      expect(await screen.findByRole("dialog", { name: "Sign In to GitHub CLI" })).toBeInTheDocument();
+      await waitFor(() => expect(commands.ghLoginSpawn).toHaveBeenCalled());
+      act(() => {
+        onLoginEvent?.({ type: "exited", code: 0 });
+      });
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Sign In to GitHub CLI" })).toBeNull());
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "GitHub account" })).toHaveTextContent("alice-work"),
+      );
+    } finally {
+      provideEmbeddedTerminal(undefined);
+    }
+  });
+
+  it("surfaces a device-code banner in Sign In dialog, copies locally, opens browser, and advances remote gh login", async () => {
+    provideEmbeddedTerminal(async () => ({
+      write: vi.fn(),
+      clear: vi.fn(),
+      focus: vi.fn(),
+      fit: vi.fn(),
+      dispose: vi.fn(),
+    }));
+    const openSpy = vi.spyOn(openUrlMod, "openExternalUrl").mockResolvedValue();
+    const termWriteSpy = vi.spyOn(ipcCommands, "termWrite").mockResolvedValue({ status: "ok", data: null });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    enableRemote({
+      target: { kind: "ssh", configId: "devbox" } as never,
+      root: "/home/alice/repo",
+      host: "devbox",
+      os: "linux",
+      commands: ["agent_gh_login_spawn", "term_write", "term_resize", "term_kill"],
+    });
+    let onLoginEvent: ((e: AgentLoginEvent) => void) | null = null;
+    try {
+      const commands = new FakeCommands();
+      commands.ghLoginSpawn = vi.fn(async (_cols, _rows, cb) => {
+        onLoginEvent = cb;
+        return 202;
+      });
+      commands.copilotAuthStatus = vi.fn<() => Promise<CopilotAuthStatus>>().mockResolvedValue({
+        authenticated: false,
+        login: null,
+        authType: null,
+        statusMessage: null,
+        ghInstalled: true,
+        ghAccounts: [],
+      });
+      commands.list = [
+        {
+          ...claudeProvider("copilot"),
+          id: "copilot",
+          name: "GitHub Copilot",
+          command: "copilot --headless --no-auto-update --stdio",
+          defaultProgram: "copilot",
+          loginHint: "Run `copilot login` in a terminal.",
+          installed: true,
+          canSignIn: true,
+          commandReadOnlyReason: "registry",
+        },
+      ];
+      await openCommands(commands, vi.fn(), "GitHub Copilot");
+
+      fireEvent.click(await screen.findByRole("button", { name: "Add account…" }));
+      expect(await screen.findByRole("dialog", { name: "Sign In to GitHub CLI" })).toBeInTheDocument();
+      await waitFor(() => expect(commands.ghLoginSpawn).toHaveBeenCalled());
+
+      act(() => {
+        onLoginEvent?.({
+          type: "output",
+          data: "! First copy your one-time code: \u001b[1mWDJB-MJHT\u001b[0m\r\nPress Enter to open https://github.com/login/device in your browser... ",
+        });
+      });
+
+      const banner = await screen.findByRole("region", { name: "Device verification code" });
+      expect(within(banner).getByText("WDJB-MJHT")).toBeInTheDocument();
+      expect(within(banner).getByText("github.com/login/device")).toBeInTheDocument();
+
+      await act(async () => {
+        fireEvent.click(within(banner).getByRole("button", { name: "Copy Code & Open Browser" }));
+      });
+
+      expect(writeText).toHaveBeenCalledWith("WDJB-MJHT");
+      expect(openSpy).toHaveBeenCalledWith("https://github.com/login/device");
+      expect(termWriteSpy).toHaveBeenCalledWith(202, "\r");
+      expect(within(banner).getByRole("button", { name: "Copied" })).toBeInTheDocument();
+
+      // Clicking again does not send a second Enter for the same code.
+      termWriteSpy.mockClear();
+      await act(async () => {
+        fireEvent.click(within(banner).getByRole("button", { name: "Copy Code & Open Browser" }));
+      });
+      expect(termWriteSpy).not.toHaveBeenCalled();
+    } finally {
+      disableRemote();
+      openSpy.mockRestore();
+      termWriteSpy.mockRestore();
+      provideEmbeddedTerminal(undefined);
+    }
   });
 
   it("Cancel discards command edits without writing", async () => {

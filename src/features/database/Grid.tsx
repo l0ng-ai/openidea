@@ -34,7 +34,8 @@ import {
   NULL_INPUT,
   type BooleanLiterals,
 } from "./cellEditors";
-import { registerCellGrid, type CellActions } from "./cellActions";
+import { copyAggregate, registerCellGrid, type CellActions } from "./cellActions";
+import { AGGREGATE_ROWS, aggregateText, aggregates } from "./resultView";
 import type { DbDriver } from "@/platform/ipc";
 
 export interface GridColumn {
@@ -86,6 +87,8 @@ export interface GridProps {
   onSort?: (column: string, add: boolean) => void;
   /** Extra context menu items for the selected rows. */
   rowMenu?: (rows: number[]) => MenuItem[];
+  /** More Copy as entries for the selected rows (SQL statements of the whole rows). */
+  copyAs?: (rows: number[]) => MenuItem[];
   /** Row number shown for row 0 (paging). */
   firstRowNumber?: number;
   /** Row number shown for a row (local sort / filter reorder them); `firstRowNumber + row` otherwise. */
@@ -317,6 +320,12 @@ export function Grid(props: GridProps) {
     if (!sel.rows?.length) return block;
     return [...new Set([...sel.rows, ...block])].sort((a, b) => a - b);
   };
+  /** The selected cells, row by row: the block's columns of every selected row (as the Aggregates panel). */
+  const selectedCells = (): Cell[] => {
+    if (!sel) return [];
+    const n = norm(sel);
+    return selectedRows().flatMap((r) => Array.from({ length: n.right - n.left + 1 }, (_, i) => value(r, n.left + i)));
+  };
   const rowSelected = (() => {
     const rows = new Set(selectedRows());
     return (r: number) => rows.has(r);
@@ -500,6 +509,7 @@ export function Grid(props: GridProps) {
         else copy(kind, false);
       },
       selectedRows,
+      aggregates: () => (sel && !editing ? aggregates(selectedCells()) : null),
     };
     Object.assign((cellActions.current ??= {} as CellActions), actions);
   });
@@ -629,11 +639,16 @@ export function Grid(props: GridProps) {
           { kind: "action", action: "db.copyAsTsv", label: "TSV", arg: cellActions.current },
           { kind: "action", action: "db.copyAsCsv", label: "CSV", arg: cellActions.current },
           { kind: "action", action: "db.copyAsOneRow", label: "One-Row", arg: cellActions.current },
+          ...(() => {
+            const more = props.copyAs?.(selectedRows()) ?? [];
+            return more.length ? [{ kind: "separator" } as const, ...more] : [];
+          })(),
         ],
       },
       { kind: "action", action: "db.copyWithHeader", arg: cellActions.current },
       { kind: "action", action: "db.copyRowsAsTsv", arg: cellActions.current },
       { kind: "action", action: "db.copyRowsAsCsv", arg: cellActions.current },
+      aggregateMenu(cellActions.current),
     ];
     if (editable && onEdit) {
       items.push(
@@ -986,4 +1001,18 @@ function CellSelect({
       </Popup>
     </div>
   );
+}
+
+/** Copy Aggregation Result › each aggregate the selection has (Sum of text has none), with its value. */
+function aggregateMenu(grid: CellActions): MenuItem {
+  const a = grid.aggregates();
+  const submenu: MenuItem[] = a
+    ? AGGREGATE_ROWS.flatMap(([label, key]) => {
+        const text = aggregateText(a, key);
+        return text === null
+          ? []
+          : [{ label: `${tx(label)}: ${text}`, verbatim: true, run: () => copyAggregate(grid, key) }];
+      })
+    : [];
+  return { label: "Copy Aggregation Result", disabled: !submenu.length, submenu };
 }

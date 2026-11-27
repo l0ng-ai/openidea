@@ -95,46 +95,52 @@ pub fn schemas(driver: DbDriver, system: bool) -> &'static str {
     }
 }
 
-/// Rows: `name, kind` where kind is `table`, `view` or `materialized view`.
+/// Rows: `name, kind, comment` where kind is `table`, `view` or `materialized view`.
 pub fn tables(driver: DbDriver, schema: &str) -> String {
     match driver {
         DbDriver::Jdbc => unreachable!("JDBC introspection uses DatabaseMetaData"),
         DbDriver::Clickhouse => format!(
             "SELECT name, CASE engine WHEN 'View' THEN 'view' WHEN 'MaterializedView' THEN 'materialized view' \
-             WHEN 'WindowView' THEN 'view' ELSE 'table' END FROM system.tables \
+             WHEN 'WindowView' THEN 'view' ELSE 'table' END, comment FROM system.tables \
              WHERE database = {} AND is_temporary = 0 ORDER BY name",
             quote_literal(driver, schema)
         ),
         DbDriver::Sqlite => format!(
-            "SELECT name, type FROM {}.sqlite_master WHERE type IN ('table', 'view') \
+            "SELECT name, type, NULL FROM {}.sqlite_master WHERE type IN ('table', 'view') \
              AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name",
             quote_ident(driver, schema)
         ),
         DbDriver::Snowflake => format!(
             "SELECT table_name, CASE table_type WHEN 'VIEW' THEN 'view' WHEN 'MATERIALIZED VIEW' THEN 'materialized view' \
-             ELSE 'table' END FROM information_schema.tables WHERE table_schema = {} ORDER BY 1",
+             ELSE 'table' END, comment FROM information_schema.tables WHERE table_schema = {} ORDER BY 1",
             quote_literal(driver, schema)
         ),
         DbDriver::Oracle => format!(
-            "SELECT table_name, 'table' FROM all_tables WHERE owner = {} \
-             UNION ALL SELECT view_name, 'view' FROM all_views WHERE owner = {} ORDER BY 1",
-            quote_literal(driver, schema),
+            "SELECT table_name, CASE WHEN table_type = 'VIEW' THEN 'view' ELSE 'table' END, comments \
+             FROM all_tab_comments WHERE owner = {} ORDER BY 1",
             quote_literal(driver, schema)
         ),
         DbDriver::Postgres => format!(
-            "SELECT c.relname, CASE c.relkind WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized view' ELSE 'table' END \
+            "SELECT c.relname, CASE c.relkind WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized view' ELSE 'table' END, \
+             obj_description(c.oid, 'pg_class') \
              FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
              WHERE n.nspname = {} AND c.relkind IN ('r', 'v', 'm', 'p', 'f') ORDER BY 1",
             quote_literal(driver, schema)
         ),
         DbDriver::Mysql => format!(
-            "SELECT table_name, CASE WHEN table_type LIKE '%VIEW%' THEN 'view' ELSE 'table' END \
+            "SELECT table_name, CASE WHEN table_type LIKE '%VIEW%' THEN 'view' ELSE 'table' END, \
+             CASE WHEN table_type LIKE '%VIEW%' THEN NULL ELSE NULLIF(table_comment, '') END \
              FROM information_schema.tables WHERE table_schema = {} ORDER BY 1",
             quote_literal(driver, schema)
         ),
         DbDriver::SqlServer => format!(
-            "SELECT TABLE_NAME, CASE WHEN TABLE_TYPE LIKE '%VIEW%' THEN 'view' ELSE 'table' END \
-             FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = {} ORDER BY 1",
+            "SELECT t.TABLE_NAME, CASE WHEN t.TABLE_TYPE LIKE '%VIEW%' THEN 'view' ELSE 'table' END, \
+             CAST(ep.value AS nvarchar(max)) \
+             FROM INFORMATION_SCHEMA.TABLES t \
+             LEFT JOIN sys.extended_properties ep \
+               ON ep.major_id = OBJECT_ID(QUOTENAME(t.TABLE_SCHEMA) + '.' + QUOTENAME(t.TABLE_NAME)) \
+               AND ep.minor_id = 0 AND ep.name = 'MS_Description' \
+             WHERE t.TABLE_SCHEMA = {} ORDER BY 1",
             quote_literal(driver, schema)
         ),
     }
@@ -145,7 +151,8 @@ const SNOWFLAKE_TYPE: &str = "CASE WHEN data_type = 'NUMBER' THEN 'NUMBER(' || n
      WHEN data_type = 'TEXT' THEN 'VARCHAR(' || character_maximum_length || ')' \
      WHEN data_type LIKE 'TIME%' THEN data_type || '(' || datetime_precision || ')' ELSE data_type END";
 
-/// Rows: `name, type, nullable (YES/NO or 0/1), default, is_pk (0/1)`.
+/// Rows: `name, type, nullable (YES/NO or 0/1), default, is_pk (0/1)`, and the column's
+/// comment on the engines that keep one (PostgreSQL, MySQL, Oracle, ClickHouse).
 pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
     let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
     match driver {
@@ -153,7 +160,7 @@ pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
         DbDriver::Clickhouse => format!(
             "SELECT name, type, CASE WHEN startsWith(type, 'Nullable(') \
              OR startsWith(type, 'LowCardinality(Nullable(') THEN 'YES' ELSE 'NO' END, \
-             if(default_kind = '', NULL, default_expression), is_in_primary_key \
+             if(default_kind = '', NULL, default_expression), is_in_primary_key, comment \
              FROM system.columns WHERE database = {s} AND table = {t} ORDER BY position"
         ),
         DbDriver::Sqlite => format!(
@@ -166,13 +173,14 @@ pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
                JOIN information_schema.key_column_usage k ON k.constraint_name = tc.constraint_name \
                AND k.table_schema = tc.table_schema AND k.table_name = tc.table_name \
                WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = c.table_schema \
-               AND tc.table_name = c.table_name AND k.column_name = c.column_name) THEN 1 ELSE 0 END \
+               AND tc.table_name = c.table_name AND k.column_name = c.column_name) THEN 1 ELSE 0 END, \
+             col_description(format('%I.%I', c.table_schema, c.table_name)::regclass, c.ordinal_position::int) \
              FROM information_schema.columns c WHERE c.table_schema = {s} AND c.table_name = {t} \
              ORDER BY c.ordinal_position"
         ),
         DbDriver::Mysql => format!(
             "SELECT column_name, column_type, is_nullable, column_default, \
-             CASE WHEN column_key = 'PRI' THEN 1 ELSE 0 END \
+             CASE WHEN column_key = 'PRI' THEN 1 ELSE 0 END, column_comment \
              FROM information_schema.columns WHERE table_schema = {s} AND table_name = {t} \
              ORDER BY ordinal_position"
         ),
@@ -192,8 +200,10 @@ pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
         ),
         DbDriver::Oracle => format!(
             "SELECT c.column_name, c.data_type, DECODE(c.nullable, 'Y', 'YES', 'NO'), c.data_default, \
-             CASE WHEN k.column_name IS NOT NULL THEN 1 ELSE 0 END \
+             CASE WHEN k.column_name IS NOT NULL THEN 1 ELSE 0 END, cc.comments \
              FROM all_tab_columns c \
+             LEFT JOIN all_col_comments cc ON cc.owner = c.owner AND cc.table_name = c.table_name \
+             AND cc.column_name = c.column_name \
              LEFT JOIN (SELECT kc.column_name FROM all_constraints con \
                JOIN all_cons_columns kc ON kc.owner = con.owner AND kc.table_name = con.table_name \
                AND kc.constraint_name = con.constraint_name \
@@ -201,6 +211,28 @@ pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
              ON k.column_name = c.column_name \
              WHERE c.owner = {s} AND c.table_name = {t} ORDER BY c.column_id"
         ),
+    }
+}
+
+/// One row, one column: the table's comment (`NULL` or empty for none). `None` for the
+/// engines whose comments the IDE doesn't read here (Snowflake reads it with `SHOW`).
+pub fn table_comment(driver: DbDriver, schema: &str, table: &str) -> Option<String> {
+    let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
+    match driver {
+        DbDriver::Postgres => Some(format!(
+            "SELECT obj_description(c.oid, 'pg_class') FROM pg_class c \
+             JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = {s} AND c.relname = {t}"
+        )),
+        // A view's `table_comment` is the word `VIEW`.
+        DbDriver::Mysql => Some(format!(
+            "SELECT CASE WHEN table_type = 'VIEW' THEN NULL ELSE table_comment END \
+             FROM information_schema.tables WHERE table_schema = {s} AND table_name = {t}"
+        )),
+        DbDriver::Oracle => {
+            Some(format!("SELECT comments FROM all_tab_comments WHERE owner = {s} AND table_name = {t}"))
+        }
+        DbDriver::Clickhouse => Some(format!("SELECT comment FROM system.tables WHERE database = {s} AND name = {t}")),
+        _ => None,
     }
 }
 
@@ -275,7 +307,7 @@ pub fn completion_columns(driver: DbDriver, scope: CompletionScope) -> String {
             "SELECT c.database, c.table, CASE t.engine WHEN 'View' THEN 'view' \
              WHEN 'MaterializedView' THEN 'materialized view' WHEN 'WindowView' THEN 'view' ELSE 'table' END, \
              c.name, c.type, CASE WHEN startsWith(c.type, 'Nullable(') \
-             OR startsWith(c.type, 'LowCardinality(Nullable(') THEN 'YES' ELSE 'NO' END, c.is_in_primary_key, 1 \
+             OR startsWith(c.type, 'LowCardinality(Nullable(') THEN 'YES' ELSE 'NO' END, c.is_in_primary_key, 1, c.comment \
              FROM system.columns c JOIN system.tables t ON t.database = c.database AND t.name = c.table \
              WHERE lower(c.database) NOT IN ('system', 'information_schema') AND t.is_temporary = 0",
             "c.database",
@@ -286,7 +318,7 @@ pub fn completion_columns(driver: DbDriver, scope: CompletionScope) -> String {
              CASE WHEN p.pk > 0 THEN 1 ELSE 0 END, \
              CASE WHEN p.dflt_value IS NOT NULL THEN 1 \
              WHEN p.pk = 1 AND upper(p.type) = 'INTEGER' \
-             AND (SELECT count(*) FROM pragma_table_info(m.name) k WHERE k.pk > 0) = 1 THEN 1 ELSE 0 END \
+             AND (SELECT count(*) FROM pragma_table_info(m.name) k WHERE k.pk > 0) = 1 THEN 1 ELSE 0 END, NULL \
              FROM sqlite_master m JOIN pragma_table_info(m.name) p \
              WHERE m.type IN ('table', 'view') AND m.name NOT LIKE 'sqlite\\_%' ESCAPE '\\'",
             "'main'",
@@ -299,7 +331,7 @@ pub fn completion_columns(driver: DbDriver, scope: CompletionScope) -> String {
                AND a.attnum = ANY(i.indkey)) THEN 1 ELSE 0 END, \
              CASE WHEN a.atthasdef OR EXISTS (SELECT 1 FROM pg_depend d WHERE d.refclassid = 'pg_class'::regclass \
                AND d.refobjid = c.oid AND d.refobjsubid = a.attnum AND d.classid = 'pg_class'::regclass \
-               AND d.deptype = 'i') THEN 1 ELSE 0 END \
+               AND d.deptype = 'i') THEN 1 ELSE 0 END, col_description(c.oid, a.attnum) \
              FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_attribute a ON a.attrelid = c.oid \
              WHERE c.relkind IN ('r', 'v', 'm', 'p', 'f') AND a.attnum > 0 AND NOT a.attisdropped \
              AND n.nspname NOT IN ('pg_catalog', 'information_schema') \
@@ -310,7 +342,7 @@ pub fn completion_columns(driver: DbDriver, scope: CompletionScope) -> String {
         DbDriver::Mysql => (
             "SELECT c.table_schema, c.table_name, CASE WHEN t.table_type LIKE '%VIEW%' THEN 'view' ELSE 'table' END, \
              c.column_name, c.column_type, c.is_nullable, CASE WHEN c.column_key = 'PRI' THEN 1 ELSE 0 END, \
-             CASE WHEN c.column_default IS NOT NULL OR c.extra LIKE '%auto_increment%' THEN 1 ELSE 0 END \
+             CASE WHEN c.column_default IS NOT NULL OR c.extra LIKE '%auto_increment%' THEN 1 ELSE 0 END, c.column_comment \
              FROM information_schema.columns c JOIN information_schema.tables t \
              ON t.table_schema = c.table_schema AND t.table_name = c.table_name \
              WHERE c.table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')",
@@ -325,7 +357,7 @@ pub fn completion_columns(driver: DbDriver, scope: CompletionScope) -> String {
                AND k.TABLE_SCHEMA = tc.TABLE_SCHEMA AND k.TABLE_NAME = tc.TABLE_NAME \
                WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY' AND tc.TABLE_SCHEMA = c.TABLE_SCHEMA \
                AND tc.TABLE_NAME = c.TABLE_NAME AND k.COLUMN_NAME = c.COLUMN_NAME) THEN 1 ELSE 0 END, \
-             CASE WHEN c.COLUMN_DEFAULT IS NOT NULL THEN 1 ELSE 0 END \
+             CASE WHEN c.COLUMN_DEFAULT IS NOT NULL THEN 1 ELSE 0 END, NULL \
              FROM INFORMATION_SCHEMA.COLUMNS c JOIN INFORMATION_SCHEMA.TABLES t \
              ON t.TABLE_SCHEMA = c.TABLE_SCHEMA AND t.TABLE_NAME = c.TABLE_NAME \
              WHERE c.TABLE_SCHEMA NOT IN ('sys', 'INFORMATION_SCHEMA')",
@@ -335,7 +367,7 @@ pub fn completion_columns(driver: DbDriver, scope: CompletionScope) -> String {
         DbDriver::Snowflake => (
             "SELECT c.table_schema, c.table_name, CASE t.table_type WHEN 'VIEW' THEN 'view' \
              WHEN 'MATERIALIZED VIEW' THEN 'materialized view' ELSE 'table' END, c.column_name, c.data_type, \
-             c.is_nullable, 0, CASE WHEN c.column_default IS NOT NULL THEN 1 ELSE 0 END \
+             c.is_nullable, 0, CASE WHEN c.column_default IS NOT NULL THEN 1 ELSE 0 END, c.comment \
              FROM information_schema.columns c JOIN information_schema.tables t \
              ON t.table_schema = c.table_schema AND t.table_name = c.table_name \
              WHERE c.table_schema <> 'INFORMATION_SCHEMA'",
@@ -346,8 +378,10 @@ pub fn completion_columns(driver: DbDriver, scope: CompletionScope) -> String {
             "SELECT c.owner, c.table_name, CASE WHEN v.view_name IS NOT NULL THEN 'view' ELSE 'table' END, \
              c.column_name, c.data_type, DECODE(c.nullable, 'Y', 'YES', 'NO'), \
              CASE WHEN k.column_name IS NOT NULL THEN 1 ELSE 0 END, \
-             CASE WHEN c.data_default IS NOT NULL THEN 1 ELSE 0 END \
+             CASE WHEN c.data_default IS NOT NULL THEN 1 ELSE 0 END, cc.comments \
              FROM all_tab_columns c \
+             LEFT JOIN all_col_comments cc ON cc.owner = c.owner AND cc.table_name = c.table_name \
+             AND cc.column_name = c.column_name \
              LEFT JOIN all_views v ON v.owner = c.owner AND v.view_name = c.table_name \
              LEFT JOIN (SELECT con.owner, con.table_name, kc.column_name FROM all_constraints con \
                JOIN all_cons_columns kc ON kc.owner = con.owner AND kc.table_name = con.table_name \
@@ -632,21 +666,22 @@ pub fn sqlite_ddl(schema: &str, name: &str) -> String {
     )
 }
 
-/// Rows: `oid, relkind` of a PostgreSQL relation.
+/// Rows: `oid, relkind, owner, comment` of a PostgreSQL relation.
 pub fn postgres_relation(schema: &str, name: &str) -> String {
     format!(
-        "SELECT c.oid::text, c.relkind::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+        "SELECT c.oid::text, c.relkind::text, pg_get_userbyid(c.relowner), obj_description(c.oid, 'pg_class') \
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
          WHERE n.nspname = {} AND c.relname = {}",
         quote_literal(DbDriver::Postgres, schema),
         quote_literal(DbDriver::Postgres, name)
     )
 }
 
-/// Rows: `name, type, not null (0/1), default` of relation `oid`.
+/// Rows: `name, type, not null (0/1), default, comment` of relation `oid`.
 pub fn postgres_ddl_columns(oid: u32) -> String {
     format!(
         "SELECT a.attname, format_type(a.atttypid, a.atttypmod), CASE WHEN a.attnotnull THEN 1 ELSE 0 END, \
-         pg_get_expr(d.adbin, d.adrelid) FROM pg_attribute a \
+         pg_get_expr(d.adbin, d.adrelid), col_description(a.attrelid, a.attnum) FROM pg_attribute a \
          LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
          WHERE a.attrelid = {oid} AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum"
     )
@@ -666,6 +701,27 @@ pub fn postgres_ddl_indexes(oid: u32) -> String {
         "SELECT pg_get_indexdef(i.indexrelid) FROM pg_index i WHERE i.indrelid = {oid} \
          AND NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid = i.indexrelid AND c.conrelid = i.indrelid) \
          ORDER BY 1"
+    )
+}
+
+/// Rows: `grantee` (`PUBLIC` for everyone), privileges (`insert, select`), grantable (0/1) of
+/// the privileges relation `oid` grants beyond its owner's. A relation whose ACL was never
+/// changed (`relacl` null) grants none.
+pub fn postgres_ddl_grants(oid: u32) -> String {
+    format!(
+        "SELECT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END, \
+         string_agg(lower(a.privilege_type), ', ' ORDER BY a.privilege_type), \
+         CASE WHEN a.is_grantable THEN 1 ELSE 0 END \
+         FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a \
+         WHERE c.oid = {oid} AND a.grantee <> c.relowner GROUP BY 1, 3 ORDER BY 1, 3"
+    )
+}
+
+/// Rows: `CREATE TRIGGER …` of the user triggers of relation `oid`.
+pub fn postgres_ddl_triggers(oid: u32) -> String {
+    format!(
+        "SELECT pg_get_triggerdef(oid, true) FROM pg_trigger WHERE tgrelid = {oid} AND NOT tgisinternal \
+         ORDER BY tgname"
     )
 }
 
@@ -908,6 +964,18 @@ pub struct DdlColumn {
     pub data_type: String,
     pub not_null: bool,
     pub default: Option<String>,
+    pub comment: Option<String>,
+}
+
+/// What [`postgres_table_ddl`] adds after `create table` so the script rebuilds the table.
+#[derive(Default)]
+pub struct DdlExtras {
+    pub comment: Option<String>,
+    pub owner: Option<String>,
+    /// `grantee` (`PUBLIC` for everyone), privileges (`insert, select`), with grant option.
+    pub grants: Vec<(String, String, bool)>,
+    /// `CREATE TRIGGER …` statements.
+    pub triggers: Vec<String>,
 }
 
 /// `create table` of a PostgreSQL table from its catalog (the server has no `SHOW CREATE`).
@@ -917,6 +985,7 @@ pub fn postgres_table_ddl(
     columns: &[DdlColumn],
     constraints: &[(String, String)],
     indexes: &[String],
+    extras: &DdlExtras,
 ) -> String {
     let d = DbDriver::Postgres;
     let mut items: Vec<String> = columns
@@ -933,9 +1002,31 @@ pub fn postgres_table_ddl(
         })
         .collect();
     items.extend(constraints.iter().map(|(name, def)| format!("    constraint {} {def}", quote_ident(d, name))));
-    let mut out = format!("create table {}\n(\n{}\n);\n", qualified(d, schema, table), items.join(",\n"));
-    for i in indexes {
-        out.push_str(&format!("\n{i};\n"));
+    let target = qualified(d, schema, table);
+    let mut out = format!("create table {target}\n(\n{}\n);\n", items.join(",\n"));
+    // The order a script runs in: comments, owner and privileges, then indexes and triggers.
+    if let Some(comment) = &extras.comment {
+        out.push_str(&format!("\ncomment on table {target} is {};\n", quote_literal(d, comment)));
+    }
+    for c in columns {
+        if let Some(comment) = &c.comment {
+            let column = format!("{target}.{}", quote_ident(d, &c.name));
+            out.push_str(&format!("\ncomment on column {column} is {};\n", quote_literal(d, comment)));
+        }
+    }
+    if let Some(owner) = &extras.owner {
+        out.push_str(&format!("\nalter table {target}\n    owner to {};\n", quote_ident(d, owner)));
+    }
+    if !extras.grants.is_empty() {
+        out.push('\n');
+    }
+    for (grantee, privileges, grantable) in &extras.grants {
+        let to = if grantee == "PUBLIC" { "public".to_owned() } else { quote_ident(d, grantee) };
+        let option = if *grantable { " with grant option" } else { "" };
+        out.push_str(&format!("grant {privileges} on {target} to {to}{option};\n"));
+    }
+    for statement in indexes.iter().chain(&extras.triggers) {
+        out.push_str(&format!("\n{};\n", statement.trim_end().trim_end_matches(';')));
     }
     out
 }
@@ -957,6 +1048,40 @@ mod tests {
     }
 
     #[test]
+    fn comments_are_read_where_the_engine_keeps_them() {
+        assert!(columns(DbDriver::Postgres, "public", "t").contains("col_description("));
+        assert!(columns(DbDriver::Mysql, "db", "t").contains("column_comment"));
+        assert!(columns(DbDriver::Oracle, "S", "T").contains("all_col_comments"));
+        assert!(columns(DbDriver::Clickhouse, "db", "t").contains("is_in_primary_key, comment"));
+        assert!(tables(DbDriver::Postgres, "public").contains("obj_description(c.oid, 'pg_class')"));
+        assert!(tables(DbDriver::Mysql, "db").contains("table_comment"));
+        assert!(tables(DbDriver::Oracle, "S").contains("all_tab_comments"));
+        assert!(tables(DbDriver::Clickhouse, "db").contains("END, comment FROM system.tables"));
+        assert!(tables(DbDriver::SqlServer, "dbo").contains("sys.extended_properties"));
+        // Completion (the hover card of a table or column) carries them too, as the ninth field.
+        let completion = |driver| completion_columns(driver, CompletionScope::All);
+        assert!(completion(DbDriver::Postgres).contains("col_description(c.oid, a.attnum)"));
+        assert!(completion(DbDriver::Mysql).contains("ELSE 0 END, c.column_comment"));
+        assert!(
+            completion(DbDriver::Oracle).contains("cc.comments")
+                && completion(DbDriver::Oracle).contains("all_col_comments")
+        );
+        assert!(completion(DbDriver::Clickhouse).contains("c.is_in_primary_key, 1, c.comment"));
+        assert!(completion(DbDriver::Snowflake).contains("ELSE 0 END, c.comment"));
+        for driver in [DbDriver::Sqlite, DbDriver::SqlServer] {
+            assert!(completion(driver).contains("ELSE 0 END, NULL"), "{driver:?}");
+        }
+        let pg = table_comment(DbDriver::Postgres, "public", "o'rders").unwrap();
+        assert!(pg.contains("obj_description(c.oid, 'pg_class')") && pg.contains("'o''rders'"), "{pg}");
+        assert!(table_comment(DbDriver::Mysql, "db", "t").unwrap().contains("table_comment"));
+        assert!(table_comment(DbDriver::Oracle, "S", "T").unwrap().contains("all_tab_comments"));
+        assert!(table_comment(DbDriver::Clickhouse, "db", "t").unwrap().contains("system.tables"));
+        for driver in [DbDriver::Sqlite, DbDriver::SqlServer, DbDriver::Snowflake] {
+            assert_eq!(table_comment(driver, "s", "t"), None);
+        }
+    }
+
+    #[test]
     fn clickhouse_escapes_backslashes_and_delimiters() {
         let driver = DbDriver::Clickhouse;
         assert_eq!(quote_literal(driver, r"path\O'Brien"), r"'path\\O''Brien'");
@@ -973,6 +1098,7 @@ mod tests {
         assert_eq!(current_schema(driver), Some("SELECT currentDatabase()"));
         let relations = tables(driver, "event's\\db");
         assert!(relations.contains("WHEN 'MaterializedView' THEN 'materialized view'"));
+        assert!(relations.contains(r"END, comment FROM system.tables"));
         assert!(relations.contains(r"WHERE database = 'event''s\\db' AND is_temporary = 0"));
         let fields = columns(driver, "default", "events");
         assert!(fields.starts_with("SELECT name, type, CASE WHEN startsWith(type, 'Nullable(')"));
@@ -1088,6 +1214,7 @@ mod tests {
     #[test]
     fn sqlserver_introspection_queries() {
         assert!(tables(DbDriver::SqlServer, "dbo").contains("INFORMATION_SCHEMA.TABLES"));
+        assert!(tables(DbDriver::SqlServer, "dbo").contains("sys.extended_properties"));
         assert!(columns(DbDriver::SqlServer, "dbo", "t").contains("INFORMATION_SCHEMA.COLUMNS"));
         assert!(indexes(DbDriver::SqlServer, "dbo", "t").contains("sys.indexes"));
         assert!(foreign_keys(DbDriver::SqlServer).contains("sys.foreign_key_columns"));
@@ -1164,8 +1291,10 @@ mod tests {
         assert_eq!(DbDriver::Oracle.default_port(), Some(1521));
         assert!(schemas(DbDriver::Oracle, true).contains("all_users"));
         assert!(schemas(DbDriver::Oracle, false).contains("'MDSYS'"));
-        assert!(tables(DbDriver::Oracle, "hr").contains("all_tables"));
-        assert!(tables(DbDriver::Oracle, "hr").contains("all_views"));
+        let relations = tables(DbDriver::Oracle, "hr");
+        assert!(relations.contains("all_tab_comments"));
+        assert!(relations.contains("table_type = 'VIEW'"));
+        assert!(relations.contains("comments"));
         let cols = columns(DbDriver::Oracle, "hr", "employees");
         assert!(cols.contains("all_tab_columns"));
         assert!(cols.contains("DECODE(c.nullable, 'Y', 'YES', 'NO')"));
@@ -1254,12 +1383,13 @@ mod tests {
     #[test]
     fn postgres_ddl() {
         let cols = [
-            DdlColumn { name: "id".into(), data_type: "integer".into(), not_null: true, default: None },
+            DdlColumn { name: "id".into(), data_type: "integer".into(), not_null: true, default: None, comment: None },
             DdlColumn {
                 name: "name".into(),
                 data_type: "character varying(40)".into(),
                 not_null: false,
                 default: Some("'x'::character varying".into()),
+                comment: None,
             },
         ];
         assert_eq!(
@@ -1268,9 +1398,50 @@ mod tests {
                 "t",
                 &cols,
                 &[("t_pkey".into(), "PRIMARY KEY (id)".into())],
-                &["CREATE INDEX t_name ON public.t USING btree (name)".into()]
+                &["CREATE INDEX t_name ON public.t USING btree (name)".into()],
+                &DdlExtras::default(),
             ),
             "create table \"public\".\"t\"\n(\n    \"id\" integer not null,\n    \"name\" character varying(40) default 'x'::character varying,\n    constraint \"t_pkey\" PRIMARY KEY (id)\n);\n\nCREATE INDEX t_name ON public.t USING btree (name);\n"
+        );
+    }
+
+    #[test]
+    fn postgres_ddl_rebuilds_comments_owner_grants_and_triggers() {
+        let cols = [
+            DdlColumn { name: "id".into(), data_type: "integer".into(), not_null: true, default: None, comment: None },
+            DdlColumn {
+                name: "note".into(),
+                data_type: "text".into(),
+                not_null: false,
+                default: None,
+                comment: Some("what's this".into()),
+            },
+        ];
+        let extras = DdlExtras {
+            comment: Some("Orders".into()),
+            owner: Some("app owner".into()),
+            grants: vec![("PUBLIC".into(), "select".into(), false), ("reader".into(), "insert, select".into(), true)],
+            triggers: vec![
+                "CREATE TRIGGER t_audit AFTER INSERT ON public.t FOR EACH ROW EXECUTE FUNCTION audit()".into(),
+            ],
+        };
+        assert_eq!(
+            postgres_table_ddl(
+                "public",
+                "t",
+                &cols,
+                &[],
+                &["CREATE INDEX t_note ON public.t USING btree (note)".into()],
+                &extras
+            ),
+            "create table \"public\".\"t\"\n(\n    \"id\" integer not null,\n    \"note\" text\n);\n\
+             \ncomment on table \"public\".\"t\" is 'Orders';\n\
+             \ncomment on column \"public\".\"t\".\"note\" is 'what''s this';\n\
+             \nalter table \"public\".\"t\"\n    owner to \"app owner\";\n\
+             \ngrant select on \"public\".\"t\" to public;\n\
+             grant insert, select on \"public\".\"t\" to \"reader\" with grant option;\n\
+             \nCREATE INDEX t_note ON public.t USING btree (note);\n\
+             \nCREATE TRIGGER t_audit AFTER INSERT ON public.t FOR EACH ROW EXECUTE FUNCTION audit();\n"
         );
     }
 

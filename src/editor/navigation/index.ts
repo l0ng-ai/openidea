@@ -19,7 +19,9 @@ import { isVirtualUri } from "@/platform/virtualDocs";
 import { editorService } from "@/workbench/contributions";
 import { fileIconName } from "@/ui";
 import { registerRelatedProvider, relatedItems } from "@/editor/relatedProviders";
-import { gotoTestOrSubject, type TestNavDeps } from "./gotoTest";
+import { createTestFor, gotoTestOrSubject, type TestNavDeps } from "./gotoTest";
+import { componentFileItems } from "./componentFiles";
+import { createPythonTest } from "./pythonCreateTest";
 import { headerSourceItems } from "./headerSource";
 import { stubRelatedItems } from "./pythonStubs";
 import { projectPythonHierarchy, pythonSuperDeps } from "./pythonHierarchy";
@@ -155,6 +157,8 @@ function testDeps(view: EditorView, ctx: EditorDocContext): TestNavDeps {
       const outline = await call(commands.docOutline(ctx.doc));
       return topLevelTypeAt(outline, offsetToPos(view.state.doc, view.state.selection.main.head))?.name ?? null;
     },
+    createPythonTest: (req) =>
+      void createPythonTest(view, ctx, req).catch((e) => showHint(view, String(e), { tone: "error" })),
     createTest: ({ directory, name, extension }) =>
       void executeAction("templates.newFromTemplate", { directory, name, extension, kindId: "test" }),
     createRustTestModule: () => {
@@ -171,6 +175,16 @@ function testDeps(view: EditorView, ctx: EditorDocContext): TestNavDeps {
       view.focus();
     },
   };
+}
+
+async function createTest(view: EditorView) {
+  const ctx = docOf(view);
+  if (!ctx || isVirtualUri(ctx.path)) return;
+  try {
+    await createTestFor(ctx.path, testDeps(view, ctx));
+  } catch (e) {
+    if (!isCancelled(e)) showHint(view, e instanceof Error ? e.message : String(e), { tone: "error" });
+  }
 }
 
 async function gotoTest(view: EditorView) {
@@ -244,6 +258,14 @@ async function gotoRelated(view: EditorView) {
 
 const findFilesNamed = async (name: string) => call(commands.findFilesNamed(name));
 
+const listFiles = async (dir: string) => {
+  try {
+    return (await call(commands.fsReadDir(dir))).filter((e) => e.kind !== "dir").map((e) => e.name);
+  } catch {
+    return null;
+  }
+};
+
 /** Navigate › Stub / Implementation: the `.pyi` declaration of a Python one, or the reverse. */
 async function gotoStub(view: EditorView) {
   const ctx = docOf(view);
@@ -259,6 +281,7 @@ async function gotoStub(view: EditorView) {
 
 export function registerNavigationActions(): () => void {
   const unregisterHeaders = registerRelatedProvider((ctx) => headerSourceItems(ctx.path, findFilesNamed));
+  const unregisterComponents = registerRelatedProvider((ctx) => componentFileItems(ctx.path, ctx.text, listFiles));
   const unregisterStubs = registerRelatedProvider(async (ctx) => {
     const ed = editorsFor(ctx.path)[0];
     if (!ed || ctx.language !== "python") return [];
@@ -266,13 +289,26 @@ export function registerNavigationActions(): () => void {
   });
   const unregister = registerActions([
     editorAction("navigate.gotoTest", "Test", gotoTest, { keywords: ["go to test", "test subject", "create test"] }),
+    editorAction("navigate.createTest", "Create Test…", createTest, {
+      keywords: ["new test", "generate test", "pytest"],
+    }),
     editorAction("navigate.superMethod", "Super Method", superMethod, {
       keywords: ["go to super", "overridden", "parent"],
     }),
     editorAction("navigate.nextMethod", "Next Method", (v) => gotoMethod(v, 1)),
     editorAction("navigate.previousMethod", "Previous Method", (v) => gotoMethod(v, -1)),
     editorAction("navigate.relatedSymbol", "Related Symbol…", gotoRelated, {
-      keywords: ["go to related", "header", "source", "switch header source", "view", "controller"],
+      keywords: [
+        "go to related",
+        "header",
+        "source",
+        "switch header source",
+        "view",
+        "controller",
+        "template",
+        "styles",
+        "stories",
+      ],
     }),
     editorAction("navigate.pythonStub", "Stub / Implementation", gotoStub, {
       when: `${EDITOR_WHEN} && editorLangId == python`,
@@ -282,6 +318,7 @@ export function registerNavigationActions(): () => void {
   return () => {
     unregister();
     unregisterHeaders();
+    unregisterComponents();
     unregisterStubs();
   };
 }

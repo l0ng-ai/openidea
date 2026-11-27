@@ -21,8 +21,12 @@ import { goTestParts } from "./goArguments";
 import {
   allClosest,
   contextConfig,
+  doctestConfig,
   fileRole,
+  implicitPythonTests,
   projectPython,
+  PYTHON_KINDS,
+  pythonTestRunner,
   testBasesFor,
   testConfigFor,
   relToCwd as relativeToCwd,
@@ -38,6 +42,8 @@ import {
   goFuzzConfig,
   targetConfig,
   targetLanguage,
+  hasDoctests,
+  specsInSpecDirectory,
   testsInTestDirectory,
   zigTargets,
   type RunTarget,
@@ -444,7 +450,7 @@ function site(input: ContextInput): FileSite {
   const kinds: Record<string, string[]> = {
     js: ["npm", "deno", "bun", "node"],
     ts: ["npm", "deno", "bun", "node"],
-    python: ["python", "pytest", "django-test"],
+    python: PYTHON_KINDS,
     ruby: ["ruby", "rake", "rspec"],
     php: ["php", "phpunit", "composer"],
     zig: ["zig", "zig-application"],
@@ -521,7 +527,7 @@ function pythonCommand(input: ContextInput, env: ToolEnv, s: FileSite): { comman
   if (py) {
     // A venv-relative interpreter is relative to the project root.
     const owner = allClosest(
-      input.configs.filter((c) => ["python", "pytest", "django-test"].includes(c.kind)),
+      input.configs.filter((c) => PYTHON_KINDS.includes(c.kind)),
       relTo(input.path, input.root),
     )[0];
     const cwd = owner?.cwd ?? "";
@@ -812,6 +818,9 @@ function godotScene(rel: string, configs: readonly RunConfig[]): Produced | null
 }
 
 /** The file as a whole: tests of a test file, the project's run target, or the runtime for its language. */
+/** `if __name__ == "__main__":` at module level. */
+const PYTHON_MAIN = /^if\s+__name__\s*==\s*['"]__main__['"]\s*:/m;
+
 export function produceFile(input: ContextInput, env: ToolEnv): Produced | null {
   input = scopedInput(input);
   const s = site(input);
@@ -845,6 +854,17 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
       const found = testConfigFor(rel, configs, undefined, input.content);
       const test = found && goTestNamed(found, input);
       if (test) return { name: test.name, scope: "file", config: test };
+    }
+    // A module with docstring examples and no `if __name__ == "__main__":` runs its doctests (PyCharm's "Doctests in …").
+    if (
+      role === "script" &&
+      lang === "python" &&
+      input.content &&
+      hasDoctests(input.content) &&
+      !PYTHON_MAIN.test(input.content)
+    ) {
+      const config = doctestConfig(rel, configs);
+      return { name: config.name, scope: "file", config };
     }
     if (lang === "rust" && cargoOwner(rel, configs).length) {
       const example = /(?:^|\/)examples\/([^/]+)\.rs$/.exec(rel)?.[1];
@@ -1153,7 +1173,13 @@ export function fileTargets(
       (t) => t.kind === "main" && (!t.className || /\.(java|kt)$/.test(input.path)),
     );
   }
-  const targets = detectRunTargets(content, s.rel, hasDjangoTests(input.configs), testsInTestDirectory(input.configs));
+  const targets = detectRunTargets(
+    content,
+    s.rel,
+    hasDjangoTests(input.configs),
+    testsInTestDirectory(input.configs),
+    specsInSpecDirectory(input.configs),
+  );
   return /\.java$/.test(input.path) ? [...targets, ...inheritedRunTargets(input.path, content)] : targets;
 }
 
@@ -1266,6 +1292,8 @@ function cmakeTargets(input: ContextInput): RunConfig[] {
 // Directories (project view): "Run 'Tests in 'dir''", "Run 'All Tests'"
 
 const TEST_DIR = /(^|\/)(tests?|__tests__|specs?|test_?\w*)$/;
+/** Folders `go test ./...` never builds packages from: `testdata`, `vendor`, names starting with `.` or `_`. */
+const GO_SKIPPED_DIR = /(^|\/)(testdata|vendor|[._][^/]*)(\/|$)/;
 
 /**
  * The tests of a Ruby folder: RSpec on the folder, `rake test` with `TEST=<glob>`, or the
@@ -1298,14 +1326,13 @@ function rubyDirectory(
 export function produceDirectory(input: ContextInput): Produced | null {
   input = scopedInput(input);
   const { root } = input;
-  if (!root || !isProjectPath(input) || input.path === root) return null;
-  const rel = relTo(input.path, root);
+  if (!root || !isProjectPath(input)) return null;
+  const rel = input.path === root ? "" : relTo(input.path, root);
   const name = baseName(rel);
   const jvmRoot = /^(?:(.*)\/)?src\/test(?:\/(java|kotlin|scala|groovy))?$/.exec(rel);
   const jvmPackage = /^(?:(.*)\/)?src\/test\/(?:java|kotlin|scala|groovy)\/(.+)$/.exec(rel);
   const marked = isTestPath(currentRoots(), rel);
   const tests = input.configs.filter((c) => c.isTest);
-  if (!TEST_DIR.test(rel) && !jvmRoot && !jvmPackage && !marked && !/(^|\/)src\/test(\/|$)/.test(rel)) return null;
   const closest = (kinds: string[]) =>
     allClosest(
       tests.filter((c) => kinds.includes(c.kind)),
@@ -1325,6 +1352,25 @@ export function produceDirectory(input: ContextInput): Produced | null {
     },
   });
   const testsIn = `Tests in '${name}'`;
+  const goTests = (base: RunConfig | undefined): Produced | null => {
+    if (base?.args[0] !== "test") return null;
+    const dir = relToCwd(base);
+    // Outside the module (an attached project's folder), or a folder `go test` skips.
+    if (/^(\/|[A-Za-z]:\/)/.test(dir) || GO_SKIPPED_DIR.test(dir)) return null;
+    const target = dir ? `./${dir}/...` : "./...";
+    const parts = goTestParts(base.args);
+    const p = make(base, testsIn, ["test", ...parts.flags, target, ...parts.program]);
+    const config = goTestNamed(
+      base.params?.goKind ? { ...p.config!, params: { ...base.params, scope: "directory", target } } : p.config!,
+      input,
+    );
+    return { ...p, name: config.name, config };
+  };
+  if (!rel || (!TEST_DIR.test(rel) && !jvmRoot && !jvmPackage && !marked && !/(^|\/)src\/test(\/|$)/.test(rel))) {
+    // Like GoLand, any folder of a Go module runs the packages under it, unless it belongs as closely to other tests.
+    const owners = allClosest(tests, rel);
+    return owners.every((c) => c.kind === "go") ? goTests(owners[0]) : null;
+  }
 
   if (jvmRoot || jvmPackage || /(^|\/)src\/test(\/|$)/.test(rel)) {
     const base = closest(["gradle", "maven"]);
@@ -1342,12 +1388,29 @@ export function produceDirectory(input: ContextInput): Produced | null {
   const js = closest(["npm", "bun", "deno"]);
   const ruby = marked && !js && rubyDirectory(closest, relToCwd, make, testsIn, root);
   if (ruby) return ruby;
-  const py = closest(["pytest"]);
+  // The chosen default test runner sets the other one's configurations aside (Autodetect keeps both).
+  const runner = pythonTestRunner();
+  const py = runner === "unittest" ? undefined : closest(["pytest"]);
   const django = closest(["django-test"]);
+  const unittest =
+    runner === "pytest"
+      ? undefined
+      : (closest(["unittest"]) ??
+        (!py &&
+        !django &&
+        allClosest(
+          input.configs.filter((c) => PYTHON_KINDS.includes(c.kind)),
+          rel,
+        ).length
+          ? implicitPythonTests(rel, [...input.configs], "unittest")
+          : undefined));
   const go = closest(["go"]);
   const cargo = closest(["cargo"]);
   if (cargo && /(^|\/)tests$/.test(rel) && !js && !py) return make(cargo, "All Tests", [...cargo.args, "--tests"]);
   if (py && (!js || /(^|\/)tests?$/.test(rel))) return make(py, testsIn, [...py.args, relToCwd(py)]);
+  // unittest discovers the folder's `test*.py` modules (the reporter adds `-t` inside a package).
+  if (unittest && (!js || /(^|\/)tests?$/.test(rel)) && relToCwd(unittest))
+    return make(unittest, testsIn, [...unittest.args, "discover", "-s", relToCwd(unittest)]);
   // Django runs a test package by its dotted label (`polls/tests` → `polls.tests`).
   if (django && !js && relToCwd(django)) {
     const tests = djangoTestsOf(django, [djangoLabel(relToCwd(django))]);
@@ -1361,17 +1424,7 @@ export function produceDirectory(input: ContextInput): Produced | null {
     if (js.kind === "deno") return make(js, testsIn, [...js.args, dir]);
     return make(js, testsIn, js.args.includes("--") ? [...js.args, dir] : [...js.args, "--", dir]);
   }
-  if (go) {
-    const dir = relToCwd(go);
-    const p = make(
-      go,
-      testsIn,
-      go.args.map((a) => (a === "./..." ? `./${dir}/...` : a)),
-    );
-    const config = goTestNamed(p.config!, input);
-    return { ...p, name: config.name, config };
-  }
-  return null;
+  return goTests(go);
 }
 
 /** All tools a production for this input may ask about (looked up before launching). */

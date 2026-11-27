@@ -452,6 +452,26 @@ pub fn managed_bundle(app_data: &Path, name: &str) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// The `location` of the npm tsserver plugin `name` (the folder holding its `node_modules`),
+/// when the package is installed at the registry's pinned version.
+pub fn managed_npm_plugin(app_data: &Path, name: &str) -> Option<PathBuf> {
+    let spec = registry::find(name)?;
+    let root = tools_dir(app_data);
+    npm_plugin_version(&root, spec)?.1.then_some(root)
+}
+
+/// The installed version of an npm plugin's package, and whether it is the pinned one
+/// (any version when unpinned). `None` for other tools or when it is not installed.
+fn npm_plugin_version(root: &Path, spec: &ToolSpec) -> Option<(String, bool)> {
+    let (ToolKind::Plugin, Method::Npm { packages }) = (spec.kind, spec.method) else { return None };
+    let pkg = npm_name(packages[0]);
+    let json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("node_modules").join(pkg).join("package.json")).ok()?).ok()?;
+    let version = json.get("version")?.as_str()?.to_string();
+    let pinned = packages[0].get(pkg.len() + 1..).is_none_or(|pin| pin == version);
+    Some((version, pinned))
+}
+
 /// Installer and detector over one tools directory.
 #[derive(Clone)]
 pub struct Tools {
@@ -555,6 +575,10 @@ impl Tools {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub(crate) fn http(&self) -> IdeResult<Http> {
+        Ok(Http::new(&self.system_path)?.with_gh_from(&self.child_path))
     }
 
     /// [`Tools::command`] in the project directory.
@@ -841,6 +865,16 @@ impl Tools {
                 Err(_) => (ToolStatus::Missing, None, None),
             };
         }
+        if let (ToolKind::Plugin, Method::Npm { packages }) = (spec.kind, spec.method) {
+            return match npm_plugin_version(&self.root, spec) {
+                Some((version, true)) => (
+                    ToolStatus::Installed,
+                    Some(self.root.join("node_modules").join(npm_name(packages[0]))),
+                    Some(version),
+                ),
+                _ => (ToolStatus::Missing, None, None),
+            };
+        }
         let main = spec.commands[0];
         let managed = managed_bin_dir(&self.root, spec, self.platform).and_then(|d| self.exe_in(&d, main));
         if let Some(path) = managed {
@@ -902,7 +936,7 @@ impl Tools {
                     _ => (ToolStatus::Missing, None, None),
                 }
             }
-            _ => match self.which(main) {
+            _ => match self.which(main).or_else(|| self.found.get(main).cloned()) {
                 Some(path) => {
                     let version = self.query_version(spec, &path);
                     (ToolStatus::OnPath, Some(path), version)
@@ -1078,6 +1112,7 @@ impl Tools {
             },
             &specs,
             pnpm,
+            !self.downloads.configured_registries_only,
             cancel,
             emit,
         )
@@ -1249,7 +1284,8 @@ impl Tools {
                 dotnet::SDK_DOWNLOAD_URL
             )));
         };
-        let pick = Http::new(&self.system_path)
+        let pick = self
+            .http()
             .and_then(|http| dotnet::pick_tool_version(package, sdk.major, |url| http.get_text(url, cancel)));
         match pick {
             Ok(dotnet::ToolPick::Latest) => Ok(None),
@@ -1463,6 +1499,12 @@ impl Tools {
                 sources::openvsx_pick(&json, assets, self.platform)
             }
             ReleaseSource::MavenCentral { group, artifact } => {
+                if self.downloads.configured_registries_only {
+                    return Err(IdeError::unavailable(format!(
+                        "{group}:{artifact} is downloaded from Maven Central, and Settings › Tools › Download Mirrors \
+                         allows only the configured package registries"
+                    )));
+                }
                 let xml = http.get_text(&sources::maven_metadata_url(group, artifact), cancel)?;
                 sources::maven_pick(group, artifact, &xml)
             }
@@ -1535,7 +1577,7 @@ impl Tools {
         cancel: &CancellationToken,
         emit: Emit,
     ) -> IdeResult<()> {
-        let http = Http::new(&self.system_path)?;
+        let http = self.http()?;
         let message = match source {
             ReleaseSource::GitHubTag { tag, .. } => format!("Resolving release {tag}…"),
             _ => "Resolving the latest release…".into(),
@@ -1676,7 +1718,7 @@ impl Tools {
     fn latest_version(&self, method: Method, cancel: &CancellationToken) -> IdeResult<Option<String>> {
         match method {
             Method::Release { source, assets, .. } => {
-                let http = Http::new(&self.system_path)?;
+                let http = self.http()?;
                 Ok(Some(self.resolve_release(&http, source, assets, cancel)?.version))
             }
             Method::Npm { packages } => {
@@ -1690,7 +1732,7 @@ impl Tools {
                 // on a slow registry takes several seconds per package, more when run side by side.
                 let out = match view(&[]) {
                     Some((true, out)) => Some(out),
-                    Some((false, out)) if is_npm_registry_miss(&out) => {
+                    Some((false, out)) if !self.downloads.configured_registries_only && is_npm_registry_miss(&out) => {
                         let extra = npm_public_registry_args([packages[0]], pnpm);
                         view(&extra).and_then(|(ok, retry)| ok.then_some(retry))
                     }

@@ -118,7 +118,7 @@ export interface ValidSettings extends WorkflowSettings {
   proxy: ProxySettingsValid;
   remoteDevelopment: { idleTimeoutMinutes: number };
   /** Tools › Download sources: a mirror prefix for the installer's release downloads. */
-  toolDownloads: { githubMirror: string };
+  toolDownloads: { githubMirror: string; configuredRegistriesOnly: boolean };
   languages: LanguagesValid;
   cmake: ReturnType<typeof validateCMake>;
   projectStructure: ProjectStructureValid;
@@ -227,7 +227,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   notifications: DEFAULT_NOTIFICATIONS,
   proxy: DEFAULT_PROXY,
   remoteDevelopment: { idleTimeoutMinutes: DEFAULT_REMOTE_IDLE_MINUTES },
-  toolDownloads: { githubMirror: "" },
+  toolDownloads: { githubMirror: "", configuredRegistriesOnly: false },
   languages: DEFAULT_LANGUAGES,
   cmake: {},
   projectStructure: DEFAULT_PROJECT_STRUCTURE,
@@ -242,6 +242,14 @@ export const DEFAULT_SETTINGS: ValidSettings = {
     showCost: false,
     smoothText: true,
     fitWindowWidth: false,
+    chatUseUiFont: true,
+    chatFontFamily: "Inter",
+    chatFontFallback: "",
+    chatFontSize: 13,
+    codeUseDefaultFont: true,
+    codeFontFamily: "JetBrains Mono",
+    codeFontFallback: "",
+    codeFontSize: 13,
     thinking: "auto",
     toolCalls: "grouped",
     expandToolOutput: false,
@@ -435,6 +443,7 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
         typeof obj(root.toolDownloads).githubMirror === "string"
           ? String(obj(root.toolDownloads).githubMirror).trim()
           : "",
+      configuredRegistriesOnly: obj(root.toolDownloads).configuredRegistriesOnly === true,
     },
     languages: validateLanguages(root.languages),
     cmake: validateCMake(root.cmake),
@@ -457,6 +466,14 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
       showCost: bool(agents.showCost, d.agents.showCost),
       smoothText: bool(agents.smoothText, d.agents.smoothText),
       fitWindowWidth: bool(agents.fitWindowWidth, d.agents.fitWindowWidth),
+      chatUseUiFont: bool(agents.chatUseUiFont, d.agents.chatUseUiFont),
+      chatFontFamily: str(agents.chatFontFamily, d.agents.chatFontFamily),
+      chatFontFallback: str(agents.chatFontFallback, d.agents.chatFontFallback),
+      chatFontSize: num(agents.chatFontSize, d.agents.chatFontSize, LIMITS.fontSize, true),
+      codeUseDefaultFont: bool(agents.codeUseDefaultFont, d.agents.codeUseDefaultFont),
+      codeFontFamily: str(agents.codeFontFamily, d.agents.codeFontFamily),
+      codeFontFallback: str(agents.codeFontFallback, d.agents.codeFontFallback),
+      codeFontSize: num(agents.codeFontSize, d.agents.codeFontSize, LIMITS.fontSize, true),
       thinking: oneOf(agents.thinking, ["auto", "expanded", "collapsed"] as const, d.agents.thinking),
       toolCalls: oneOf(agents.toolCalls, ["grouped", "each"] as const, d.agents.toolCalls),
       expandToolOutput: bool(agents.expandToolOutput, d.agents.expandToolOutput),

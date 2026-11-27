@@ -56,8 +56,9 @@ import { WorkingRow } from "./WorkingRow";
  * Lets the rows of a long conversation skip rendering while off screen (`data-measured`, see
  * the CSS), so showing the tab again or restyling it costs what is on screen, not the whole
  * history. A row skips only once it was laid out: it keeps its real height, and scrolling up
- * doesn't jump (WebKit has no scroll anchoring). A new width lays them out again once it
- * settles; Find in Conversation (`enabled` false) needs every row laid out.
+ * doesn't jump (WebKit has no scroll anchoring). Rows near the view (`data-near`) always render.
+ * A new width lays them out again once it settles; Find in Conversation (`enabled` false) needs
+ * every row laid out.
  */
 function useOffscreenRows(
   ref: RefObject<HTMLElement | null>,
@@ -122,9 +123,43 @@ function useOffscreenRows(
       measured.current = { width: el.clientWidth, fitWindowWidth, fontZoom };
       unmark();
     };
+    // Rows within a viewport of the view always render. WebKit on macOS can keep a row that
+    // scrolled into view skipped after the offset moved without a user scroll (following the end
+    // as a reply streams, the composer shrinking after a send): it paints blank, or keeps its
+    // remembered height while the reply grows, so the end of the reply can't be scrolled to.
+    const near =
+      typeof IntersectionObserver === "undefined"
+        ? null
+        : new IntersectionObserver(
+            (records) => {
+              for (const { target, isIntersecting } of records) {
+                if (isIntersecting) target.setAttribute("data-near", "");
+                else target.removeAttribute("data-near");
+              }
+            },
+            { root: el, rootMargin: "100% 0px" },
+          );
+    const watched = new Set<Element>();
+    const watch = () => {
+      if (!near) return;
+      for (const row of watched) {
+        if (row.parentNode === el) continue;
+        near.unobserve(row);
+        watched.delete(row);
+      }
+      for (const row of el.querySelectorAll(`:scope > .${styles.conversationRow}`)) {
+        if (watched.has(row)) continue;
+        watched.add(row);
+        near.observe(row);
+      }
+    };
     remeasure();
+    watch();
     mark();
-    const rows = new MutationObserver(mark);
+    const rows = new MutationObserver(() => {
+      watch();
+      mark();
+    });
     rows.observe(el, { childList: true });
     // Earlier rows load in front of the first one shown, which then loses its author header while
     // it may be off-screen: lay it out again, or it keeps the height it had with the header.
@@ -146,6 +181,8 @@ function useOffscreenRows(
       cancelAnimationFrame(frame);
       window.clearTimeout(timer);
       rows.disconnect();
+      near?.disconnect();
+      for (const row of watched) row.removeAttribute("data-near");
       authors.disconnect();
       resize.disconnect();
     };
@@ -153,6 +190,31 @@ function useOffscreenRows(
   // Keep independent of `visible`: when a kept-alive tab hides, `data-selection` must stay until
   // the selection leaves and WebKit clears off-screen rows' highlights before skipping again.
   useSelectionVisibility(ref, enabled, `.${styles.conversationRow}`);
+}
+
+/**
+ * Scrolls the conversation to `top`, first marking the rows a viewport around it `data-near`
+ * (as `useOffscreenRows` would after the move). WebKit doesn't repaint a row that skipped
+ * rendering when it turns visible after the offset jumped there: the view stays blank until the
+ * next change to the conversation (sending from far up, then waiting for the reply).
+ */
+function scrollStreamTo(el: HTMLElement, top: number) {
+  revealRowsAt(el, top);
+  el.scrollTop = top;
+}
+
+export function revealRowsAt(el: HTMLElement, top: number) {
+  const view = el.clientHeight;
+  const target = Math.max(0, Math.min(top, el.scrollHeight - view));
+  if (Math.abs(target - el.scrollTop) <= view) return;
+  const origin = el.getBoundingClientRect().top - el.scrollTop;
+  const rows = el.querySelectorAll(`:scope > .${styles.conversationRow}`);
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const box = rows[i]!.getBoundingClientRect();
+    if (box.top - origin > target + 2 * view) continue;
+    if (box.bottom - origin < target - view) break;
+    rows[i]!.setAttribute("data-near", "");
+  }
 }
 
 /** Images remain visible beside the work's folded summary, without duplicating them when it opens. */
@@ -212,6 +274,24 @@ function clampMultiClick(target: EventTarget) {
   if (row) clampSelectionToRow(document.getSelection(), row);
 }
 
+/** First entry index painted for a `shown` tail cap, keeping a leading process run intact. */
+function historyStart(entries: readonly AgentEntry[], shown: number): number {
+  let start = Math.max(0, entries.length - shown);
+  // Keep a process run intact so prepending never replaces the anchored row.
+  while (start > 0 && isProcessEntry(entries[start]!) && isProcessEntry(entries[start - 1]!)) start--;
+  return start;
+}
+
+/**
+ * Next `shown` cap after one batch. Keeping a process run intact can already paint more than
+ * `shown` entries, so step past what is actually painted (`entries.length - start`) rather than
+ * `shown`; otherwise a process run longer than `ENTRY_BATCH` leaves `start` unchanged and stalls.
+ */
+function nextShownBatch(entries: readonly AgentEntry[] | null, shown: number): number {
+  if (!entries) return shown + ENTRY_BATCH;
+  return Math.max(shown, entries.length - historyStart(entries, shown)) + ENTRY_BATCH;
+}
+
 export function Stream({
   loadError,
   task,
@@ -239,9 +319,11 @@ export function Stream({
   // Opened at the end, the last entries come first and the earlier ones follow in batches:
   // reopening a long conversation paints at once. A kept offset needs them all.
   const [shown, setShown] = useState(() => (positions.get(key)?.stick === false ? Infinity : ENTRY_BATCH));
-  let start = finding || !entries ? 0 : Math.max(0, entries.length - shown);
-  // Keep a process run intact so prepending never replaces the anchored row.
-  while (entries && start > 0 && isProcessEntry(entries[start]!) && isProcessEntry(entries[start - 1]!)) start--;
+  const start = finding || !entries ? 0 : historyStart(entries, shown);
+  const latest = useRef({ entries, start, visible });
+  useLayoutEffect(() => {
+    latest.current = { entries, start, visible };
+  });
   const dragging = useRef(false);
   // When the user last scrolled the conversation (wheel, touch, keys, the scrollbar, Find):
   // that leaves the end. WebKit also moves the offset back on its own while rows lay out,
@@ -280,11 +362,12 @@ export function Stream({
   const anchor = useRef<{ el: Element; top: number } | null>(null);
   const loadEarlier = useCallback(() => {
     const el = ref.current;
-    if (!visible || !el || start <= 0 || dragging.current || anchor.current) return;
+    const { start: currentStart, visible: isVisible } = latest.current;
+    if (!isVisible || !el || currentStart <= 0 || dragging.current || anchor.current) return;
     const first = el.firstElementChild;
     if (!position.current.stick && first) anchor.current = { el: first, top: first.getBoundingClientRect().top };
-    startTransition(() => setShown((n) => n + ENTRY_BATCH));
-  }, [start, visible]);
+    startTransition(() => setShown((n) => nextShownBatch(latest.current.entries, n)));
+  }, []);
   const loadTimer = useRef<number | null>(null);
   /** Load the next batch once the user stops scrolling near the top. */
   const loadWhenStill = useCallback(() => {
@@ -298,12 +381,19 @@ export function Stream({
     const down = (event: PointerEvent) => {
       if (!ref.current?.contains(event.target as Node)) return;
       dragging.current = true;
-      if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
+      if (loadTimer.current !== null) {
+        window.clearTimeout(loadTimer.current);
+        loadTimer.current = null;
+      }
     };
     const up = () => {
       if (!dragging.current) return;
       dragging.current = false;
-      if (ref.current && (position.current.stick || ref.current.scrollTop < 120)) loadWhenStill();
+      if (
+        ref.current &&
+        (position.current.stick || ref.current.scrollHeight <= ref.current.clientHeight || ref.current.scrollTop < 120)
+      )
+        loadWhenStill();
     };
     window.addEventListener("pointerdown", down, true);
     window.addEventListener("pointerup", up, true);
@@ -314,16 +404,24 @@ export function Stream({
       window.removeEventListener("pointerup", up, true);
       window.removeEventListener("pointercancel", up, true);
       window.removeEventListener("blur", up);
-      if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
+      if (loadTimer.current !== null) {
+        window.clearTimeout(loadTimer.current);
+        loadTimer.current = null;
+      }
     };
   }, [loadWhenStill]);
   useEffect(() => {
     // Following the end, paint the rest in the background. A user who scrolled away
-    // gets them only after stopping near the top (`loadWhenStill`), so the scrollbar
-    // is not resized mid-drag. A hidden tab paints nothing more.
-    if (visible && start > 0 && position.current.stick && !dragging.current)
-      startTransition(() => setShown((n) => n + ENTRY_BATCH));
-  }, [start, visible]);
+    // gets them only after stopping near the top (`loadWhenStill`), or when folded rows
+    // do not yet fill the viewport, so the scrollbar is not resized mid-drag. A hidden
+    // tab paints nothing more.
+    if (!visible || start <= 0 || dragging.current) return;
+    if (position.current.stick) {
+      startTransition(() => setShown((n) => nextShownBatch(latest.current.entries, n)));
+    } else if (ref.current && (ref.current.scrollHeight <= ref.current.clientHeight || ref.current.scrollTop < 120)) {
+      loadWhenStill();
+    }
+  }, [loadWhenStill, start, visible]);
   useEffect(() => {
     // A conversation read to its end gives back the history painted above its recent entries
     // once it stays behind other tabs: a few kept-alive tabs would otherwise hold every turn
@@ -367,7 +465,7 @@ export function Stream({
   const onDiagramDrawn = useCallback(() => {
     const el = ref.current;
     if (!el) return;
-    if (position.current.stick && !dragging.current) el.scrollTop = el.scrollHeight;
+    if (position.current.stick && !dragging.current) scrollStreamTo(el, el.scrollHeight);
     updateJumpVisibility(el);
   }, [updateJumpVisibility]);
   useLayoutEffect(() => {
@@ -396,8 +494,8 @@ export function Stream({
     if (!el || entries === null || !visible) return;
     trimSlack();
     if (position.current.stick) {
-      if (!dragging.current) el.scrollTop = el.scrollHeight;
-    } else if (!restored.current) el.scrollTop = position.current.top;
+      if (!dragging.current) scrollStreamTo(el, el.scrollHeight);
+    } else if (!restored.current) scrollStreamTo(el, position.current.top);
     restored.current = true;
     updateJumpVisibility(el);
   });
@@ -417,7 +515,8 @@ export function Stream({
     if (!el) return;
     const observer = new ResizeObserver(() => {
       trimSlack();
-      if (position.current.stick && !dragging.current) el.scrollTop = el.scrollHeight;
+      if (position.current.stick && !dragging.current) scrollStreamTo(el, el.scrollHeight);
+      else if (!position.current.stick && el.scrollHeight <= el.clientHeight && !dragging.current) loadWhenStill();
       updateJumpVisibility(el);
     });
     observer.observe(el);
@@ -425,7 +524,7 @@ export function Stream({
       observer.disconnect();
       if (restored.current) positions.set(key, { ...position.current, top: el.scrollTop });
     };
-  }, [key, positions, trimSlack, updateJumpVisibility]);
+  }, [key, loadWhenStill, positions, trimSlack, updateJumpVisibility]);
   /**
    * The wheel scrolls the innermost container under the pointer, and only that one: a run of
    * calls from its headers, a tool output from its text, the conversation elsewhere. A container
@@ -491,6 +590,7 @@ export function Stream({
     if (!el) return;
     scrollingUp.current = false;
     position.current = { top: el.scrollTop, stick: true };
+    revealRowsAt(el, el.scrollHeight);
     if (typeof el.scrollTo === "function") el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
     else el.scrollTop = el.scrollHeight;
     setAway(false);
@@ -651,7 +751,7 @@ export function Stream({
               const stick =
                 (atEnd && !scrollingUp.current && (movedDown || stayedAtEnd)) || (position.current.stick && !byUser);
               // Still following: back to the end the offset was moved away from.
-              if (stick && !atEnd && !dragging.current) el.scrollTop = el.scrollHeight;
+              if (stick && !atEnd && !dragging.current) scrollStreamTo(el, el.scrollHeight);
               position.current = { top: el.scrollTop, stick };
               positions.set(key, position.current);
               updateJumpVisibility(el);

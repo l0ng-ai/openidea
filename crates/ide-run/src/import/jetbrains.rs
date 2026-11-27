@@ -4,7 +4,7 @@
 //! than one place is taken from the first, in that order.
 //!
 //! Python, Django server, Django tests, pytest, npm, Jest, Vitest, Node.js, Shell Script,
-//! Application, JAR Application, Spring Boot, Go Application / Go Test, Flutter and compound configurations become the
+//! Application, JAR Application, Spring Boot, Go Application / Go Test, Flutter, Dockerfile and compound configurations become the
 //! matching kinds; other types are skipped with their type.
 //! `$PROJECT_DIR$` (and `$MODULE_DIR$`, `$MODULE_WORKING_DIR$`, `$ContentRoot$`,
 //! `$ProjectFileDir$`, all the project directory here) and `$USER_HOME$` are replaced; another
@@ -169,6 +169,7 @@ const SPRING_BOOT: &str = "SpringBootApplicationConfigurationType";
 const GO_APPLICATION: &str = "GoApplicationRunConfiguration";
 const GO_TEST: &str = "GoTestRunConfiguration";
 const FLUTTER: &str = "FlutterRunConfigurationType";
+const DOCKER: &str = "docker-deploy";
 
 type Res<T> = Result<T, SkipReason>;
 
@@ -341,6 +342,8 @@ impl Cx<'_> {
             DJANGO_SERVER => self.django_server(name, c, &mut ignored)?,
             DJANGO_TESTS => self.django_tests(name, c, &mut ignored)?,
             PYTHON_TESTS if matches!(factory, "py.test" | "pytest") => self.pytest(name, c, &mut ignored)?,
+            PYTHON_TESTS if factory == "Unittests" => self.unittest(name, c, &mut ignored)?,
+            PYTHON_TESTS if factory == "Doctests" => self.doctest(name, c, &mut ignored)?,
             NPM => self.npm(name, c, &mut ignored)?,
             JEST | VITEST => self.js_tests(name, c, ty == VITEST, &mut ignored)?,
             NODE => self.node(name, c, &mut ignored)?,
@@ -351,6 +354,7 @@ impl Cx<'_> {
             GO_APPLICATION => self.go_config(name, c, false, &mut ignored)?,
             GO_TEST => self.go_config(name, c, true, &mut ignored)?,
             FLUTTER => self.flutter(name, c)?,
+            DOCKER => self.dockerfile(name, c, &mut ignored)?,
             COMPOUND => {
                 members = c.children_named("toRun").filter_map(|t| t.attr("name")).map(str::to_owned).collect();
                 config(name, "compound", String::new(), Vec::new(), None)
@@ -359,6 +363,40 @@ impl Cx<'_> {
             other => return Err(SkipReason::UnsupportedType { type_: other.to_owned() }),
         };
         Ok(Found { config, members, ignored })
+    }
+
+    /// Keep Docker's form fields; the frontend resolves the server name to a saved connection
+    /// and uses the native Dockerfile type to generate the platform's run and stop commands.
+    fn dockerfile(&self, name: &str, c: &El, ignored: &mut Vec<String>) -> Res<RunConfig> {
+        let deployment = c.child("deployment").ok_or(SkipReason::NothingToRun)?;
+        if deployment.attr("type") != Some("dockerfile") {
+            return Err(SkipReason::UnsupportedType {
+                type_: format!("{DOCKER} ({})", deployment.attr("type").unwrap_or_default()),
+            });
+        }
+        let settings = deployment.child("settings").ok_or(SkipReason::NothingToRun)?;
+        let file = self.path(settings.option("sourceFilePath"))?.ok_or(SkipReason::NothingToRun)?;
+        let mut rc = config(name, "docker-dockerfile", String::new(), Vec::new(), None);
+        rc.extras.params.extend([
+            ("dockerfile".into(), path_from(self.root, file, self.root)),
+            ("runImage".into(), "true".into()),
+            ("serverName".into(), c.attr("server-name").unwrap_or_default().trim().to_owned()),
+        ]);
+        for (from, to) in [("imageTag", "tag"), ("containerName", "containerName")] {
+            if let Some(value) = self.text(settings.option(from))? {
+                rc.extras.params.insert(to.into(), value);
+            }
+        }
+        for option in settings.children_named("option") {
+            if let Some(key) = option.attr("name")
+                && !matches!(key, "sourceFilePath" | "imageTag" | "containerName")
+            {
+                ignored.push(key.into());
+            }
+        }
+        // The resolved connection ID belongs to this machine, not to the shared project.
+        self.machine_values.set(true);
+        Ok(rc)
     }
 
     /// A Go Application (`GoApplicationRunConfiguration`) or Go Test configuration. Both share
@@ -661,6 +699,66 @@ impl Cx<'_> {
         // Single quotes group words here too (`PyTestsShared.kt:671`).
         args.extend(self.args_quoted(field("_new_additionalArguments").as_deref(), Quotes::Single, &dir)?);
         let mut rc = config(name, "pytest", exe, args, Some("debugpy"));
+        rc.cwd = cwd.map(Into::into);
+        rc.is_test = true;
+        self.python_env(c, &mut rc, ignored)?;
+        Ok(rc)
+    }
+
+    /// PyCharm's Unittests: a Python target (`tests.test_money.TestRound`) as unittest's name, a
+    /// file as its path, a folder discovered (`discover -s`, with the configuration's pattern).
+    fn unittest(&self, name: &str, c: &El, ignored: &mut Vec<String>) -> Res<RunConfig> {
+        let (exe, mut args, dir, cwd) = self.interpreter(c, ignored)?;
+        args.extend(["-m".to_owned(), "unittest".to_owned()]);
+        let field = |key: &str| c.option(key).map(json_string).filter(|v| !v.trim().is_empty());
+        if let Some(target) = field("_new_target") {
+            let target = self.expand(&target)?;
+            match field("_new_targetType").as_deref() {
+                Some("PYTHON") => args.push(target),
+                Some("CUSTOM") => {}
+                _ => {
+                    let path = path_from(self.root, file_url_path(&target), &dir);
+                    if path.ends_with(".py") {
+                        args.push(path);
+                    } else {
+                        args.extend(["discover".to_owned(), "-s".to_owned(), path]);
+                        if let Some(pattern) = field("_new_pattern") {
+                            args.extend(["-p".to_owned(), strip_quotes(&pattern).to_owned()]);
+                        }
+                    }
+                }
+            }
+        }
+        args.extend(self.args_quoted(field("_new_additionalArguments").as_deref(), Quotes::Single, &dir)?);
+        let mut rc = config(name, "unittest", exe, args, Some("debugpy"));
+        rc.cwd = cwd.map(Into::into);
+        rc.is_test = true;
+        self.python_env(c, &mut rc, ignored)?;
+        Ok(rc)
+    }
+
+    /// PyCharm's Doctests: a file, or a Python target (`shop.money.round_eur`) as the IDE's
+    /// `file::qualname` (the module found on disk like pytest's targets).
+    fn doctest(&self, name: &str, c: &El, ignored: &mut Vec<String>) -> Res<RunConfig> {
+        let (exe, mut args, dir, cwd) = self.interpreter(c, ignored)?;
+        args.extend(["-m".to_owned(), "doctest".to_owned()]);
+        let field = |key: &str| c.option(key).map(json_string).filter(|v| !v.trim().is_empty());
+        args.extend(self.args_quoted(field("_new_additionalArguments").as_deref(), Quotes::Single, &dir)?);
+        if let Some(target) = field("_new_target") {
+            let target = self.expand(&target)?;
+            match field("_new_targetType").as_deref() {
+                Some("PYTHON") => match self.python_target(&target, &dir) {
+                    Some(node) => args.push(match node.split_once("::") {
+                        Some((file, rest)) => format!("{file}::{}", rest.replace("::", ".")),
+                        None => node,
+                    }),
+                    None => ignored.push("_new_target".into()),
+                },
+                Some("CUSTOM") => {}
+                _ => args.push(path_from(self.root, file_url_path(&target), &dir)),
+            }
+        }
+        let mut rc = config(name, "doctest", exe, args, Some("debugpy"));
         rc.cwd = cwd.map(Into::into);
         rc.is_test = true;
         self.python_env(c, &mut rc, ignored)?;

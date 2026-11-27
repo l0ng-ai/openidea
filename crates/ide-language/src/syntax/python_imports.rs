@@ -38,27 +38,85 @@ struct Rewrite<'a> {
 impl Rewrite<'_> {
     fn run(mut self, tree: &Tree) -> Vec<TextEdit> {
         let mut imports = Vec::new();
-        let mut chains = Vec::new();
+        let mut idents = Vec::new();
         collect(tree.root_node(), &mut |n| match n.kind() {
             "import_statement" | "import_from_statement" => imports.push(n),
-            "attribute" if !inside_import(n) => chains.push(n),
+            "identifier" if !inside_import(n) => idents.push(n),
             _ => {}
         });
-        let mut renamed: Vec<(String, String)> = Vec::new();
+        // Unaliased `import a.b` that change: (name node, old, new). They bind `a`, used as `a.b.x`.
+        let mut dotted: Vec<(Node, String, String)> = Vec::new();
+        let mut kept: Vec<String> = Vec::new();
         for node in imports {
             if node.kind() == "import_statement" {
-                self.import(node, &mut renamed);
+                self.import(node, &mut dotted, &mut kept);
             } else {
                 self.import_from(node);
             }
         }
-        // `import a.b` is used as `a.b.x`: those chains follow the import.
-        for node in chains {
-            let t = self.src(node);
-            if let Some((_, new)) = renamed.iter().find(|(old, _)| *old == t) {
-                self.edit(node, new.clone());
+        if dotted.is_empty() {
+            return self.finish();
+        }
+        let root_of = |s: &str| s.split('.').next().unwrap_or_default().to_owned();
+        let mut needed: Vec<(usize, String)> = Vec::new();
+        for id in idents {
+            let name = self.src(id);
+            if !dotted.iter().any(|(_, old, _)| root_of(old) == name) || is_attribute_field(id) {
+                continue;
+            }
+            // `a`, `a.b`, `a.b.x`: one edit per expression, on the longest prefix that moved.
+            let mut spine = vec![id];
+            while let Some(p) = spine
+                .last()
+                .and_then(|n| n.parent())
+                .filter(|p| p.kind() == "attribute" && p.child_by_field_name("object") == spine.last().copied())
+            {
+                spine.push(p);
+            }
+            let key = |n: Node| self.src(n).chars().filter(|c| !c.is_whitespace()).collect::<String>();
+            // ponytail: a bare `pkg` (no attribute) is never rewritten, it may be a parameter or a
+            // local of the same name.
+            if let Some((node, new)) =
+                spine.iter().skip(1).rev().find_map(|&n| Some((n, map_module(&key(n), self.moves)?)))
+            {
+                self.edit(node, new);
+                continue;
+            }
+            // A use the rewritten imports no longer bind (`pkg.helper()` after `import pkg.models` moved).
+            if spine.len() < 2 {
+                continue;
+            }
+            let used = key(*spine.last().unwrap_or(&id));
+            for (i, (_, old, new)) in dotted.iter().enumerate() {
+                let common: Vec<&str> = old
+                    .split('.')
+                    .zip(used.split('.'))
+                    .take(old.split('.').count() - 1)
+                    .take_while(|(a, b)| a == b)
+                    .map(|(a, _)| a)
+                    .collect();
+                if common.is_empty() {
+                    continue;
+                }
+                let prefix = common.join(".");
+                let covered = |m: &String| *m == prefix || m.starts_with(&format!("{prefix}."));
+                let gone = map_module(&prefix, self.moves).is_some();
+                if !gone && !covered(new) && !kept.iter().any(covered) && !needed.contains(&(i, prefix.clone())) {
+                    needed.push((i, prefix));
+                }
             }
         }
+        for (i, (node, _, new)) in dotted.iter().enumerate() {
+            let extra: String = needed.iter().filter(|(j, _)| *j == i).map(|(_, p)| format!(", {p}")).collect();
+            self.edits.push(TextEdit {
+                range: self.idx.range(node.start_byte(), node.end_byte()),
+                new_text: format!("{new}{extra}"),
+            });
+        }
+        self.finish()
+    }
+
+    fn finish(mut self) -> Vec<TextEdit> {
         self.edits.sort_by_key(|e| (e.range.start.line, e.range.start.col));
         self.edits
     }
@@ -72,7 +130,7 @@ impl Rewrite<'_> {
     }
 
     /// `import a.b`, `import a.b as c`.
-    fn import(&mut self, node: Node, renamed: &mut Vec<(String, String)>) {
+    fn import<'t>(&mut self, node: Node<'t>, dotted: &mut Vec<(Node<'t>, String, String)>, kept: &mut Vec<String>) {
         let mut cursor = node.walk();
         for item in node.children_by_field_name("name", &mut cursor) {
             let (name, aliased) = match item.kind() {
@@ -83,12 +141,16 @@ impl Rewrite<'_> {
                 _ => (item, false),
             };
             let old = self.src(name).to_owned();
-            let Some(new) = map_module(&old, self.moves) else { continue };
+            let Some(new) = map_module(&old, self.moves) else {
+                if !aliased {
+                    kept.push(old);
+                }
+                continue;
+            };
             if aliased {
                 self.edit(name, new);
             } else if old.contains('.') {
-                renamed.push((old, new.clone()));
-                self.edit(name, new);
+                dotted.push((name, old, new));
             } else {
                 // The bound name stays, so the rest of the file needs no change.
                 self.edit(name, format!("{new} as {old}"));
@@ -166,18 +228,20 @@ impl Rewrite<'_> {
             }
             return;
         }
+        for (item, text) in &in_place {
+            self.edit(*item, text.clone());
+        }
         if moved.is_empty() {
             if let Some(m) = render(&target, self).filter(|m| m != self.src(module)) {
                 self.edit(module, m);
             }
-            for (item, text) in in_place {
-                self.edit(item, text);
-            }
             return;
         }
-        // ponytail: a split statement loses a multi-line names list's layout; fine for the rare
-        // "some names of one `from` moved elsewhere" case.
-        let indent = line_indent(self.text, node.start_byte());
+        // Names imported from elsewhere now go to statements of their own, after this one (or
+        // after `;` when the statement shares its line: `try: from a import b, c`).
+        let line_start = self.text[..node.start_byte()].rfind('\n').map_or(0, |i| i + 1);
+        let before = &self.text[line_start..node.start_byte()];
+        let sep = if before.trim().is_empty() { format!("\n{before}") } else { "; ".to_owned() };
         let mut parents: Vec<&str> = Vec::new();
         for m in &moved {
             if !parents.contains(&m.1.as_str()) {
@@ -194,27 +258,45 @@ impl Rewrite<'_> {
                 format!("from {from} import {}", items.join(", "))
             });
         }
-        let kept: Vec<String> = names
-            .iter()
-            .filter(|n| !moved.iter().any(|m| m.0 == **n))
-            .map(|n| in_place.iter().find(|(i, _)| i == n).map_or_else(|| self.src(*n).to_owned(), |(_, t)| t.clone()))
-            .collect();
-        let sep = format!("\n{indent}");
-        if kept.is_empty() {
+        let is_moved = |n: &Node| moved.iter().any(|m| m.0 == *n);
+        let Some(last_kept) = names.iter().rposition(|n| !is_moved(n)) else {
             self.edit(node, added.join(&sep));
             return;
-        }
+        };
         if let Some(m) = render(&target, self).filter(|m| m != self.src(module)) {
             self.edit(module, m);
         }
-        let (first, last) = (names[0], names[names.len() - 1]);
-        let range = self.idx.range(first.start_byte(), last.end_byte());
-        self.edits.push(TextEdit { range, new_text: kept.join(", ") });
+        let mut trailing_done = false;
+        for (i, item) in names.iter().enumerate().filter(|(_, n)| is_moved(n)) {
+            let (start, end) = if let Some(line) = self.own_lines(*item) {
+                line
+            } else if i < last_kept {
+                (item.start_byte(), names[i + 1].start_byte())
+            } else if !trailing_done {
+                trailing_done = true;
+                (names[last_kept].end_byte(), names[names.len() - 1].end_byte())
+            } else {
+                continue;
+            };
+            self.edits.push(TextEdit { range: self.idx.range(start, end), new_text: String::new() });
+        }
         let end = self.idx.pos(node.end_byte());
         self.edits.push(TextEdit {
             range: ide_core::Range { start: end, end },
             new_text: format!("{sep}{}", added.join(&sep)),
         });
+    }
+
+    /// The whole lines of an import list item that has them to itself (`    models,  # noqa`).
+    fn own_lines(&self, item: Node) -> Option<(usize, usize)> {
+        let start = self.text[..item.start_byte()].rfind('\n').map_or(0, |i| i + 1);
+        if !self.text[start..item.start_byte()].trim().is_empty() {
+            return None;
+        }
+        let end = self.text[item.end_byte()..].find('\n').map_or(self.text.len(), |i| item.end_byte() + i + 1);
+        let rest = self.text[item.end_byte()..end].trim_start();
+        let rest = rest.strip_prefix(',').unwrap_or(rest).trim();
+        (rest.is_empty() || rest.starts_with('#')).then_some((start, end))
     }
 }
 
@@ -236,9 +318,9 @@ fn inside_import(mut n: Node) -> bool {
     false
 }
 
-fn line_indent(text: &str, byte: usize) -> &str {
-    let start = text[..byte].rfind('\n').map_or(0, |i| i + 1);
-    &text[start..byte]
+/// `x` in `obj.x`.
+fn is_attribute_field(n: Node) -> bool {
+    n.parent().is_some_and(|p| p.kind() == "attribute" && p.child_by_field_name("attribute") == Some(n))
 }
 
 fn join(a: &str, b: &str) -> String {
@@ -288,6 +370,11 @@ mod tests {
         let moves: Vec<(String, String)> = moves.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
         let mut edits = Syntax::new().python_import_edits(text, package, new_package, &moves);
         edits.sort_by_key(|e| std::cmp::Reverse((e.range.start.line, e.range.start.col)));
+        // Like `ide-text`, which rejects a set of overlapping edits.
+        for w in edits.windows(2) {
+            let (later, earlier) = (&w[0].range, &w[1].range);
+            assert!((earlier.end.line, earlier.end.col) <= (later.start.line, later.start.col), "overlap: {edits:?}");
+        }
         let mut out = text.to_owned();
         for e in edits {
             let (s, t) = (byte_at(&out, e.range.start).unwrap(), byte_at(&out, e.range.end).unwrap());
@@ -386,6 +473,64 @@ mod tests {
     fn unrelated_imports_are_untouched() {
         let src = "from __future__ import annotations\nimport os\nfrom datetime import date\nfrom pkgx import models\nfrom . import *\n";
         assert_eq!(apply(src, "pkg", "pkg", RENAME), src);
+    }
+
+    #[test]
+    fn nested_chains_get_one_edit() {
+        let src = "import pkg.models\nimport pkg.models.sub\npkg.models.sub.f()\npkg.models.g()\n";
+        assert_eq!(
+            apply(src, "", "", &[("pkg", "lib.pkg")]),
+            "import lib.pkg.models\nimport lib.pkg.models.sub\nlib.pkg.models.sub.f()\nlib.pkg.models.g()\n"
+        );
+    }
+
+    #[test]
+    fn other_uses_of_the_old_prefix_keep_their_binding() {
+        let moves = &[("pkg.models", "core.models")];
+        assert_eq!(
+            apply("import pkg.models\n\npkg.models.Task()\npkg.helper()\n", "", "", moves),
+            "import core.models, pkg\n\ncore.models.Task()\npkg.helper()\n"
+        );
+        let moves = &[("a.b.c", "a.x.c")];
+        assert_eq!(
+            apply("import a.b.c\na.b.c.f()\na.b.g()\n", "", "", moves),
+            "import a.x.c, a.b\na.x.c.f()\na.b.g()\n"
+        );
+        // Inside a moved package the other uses follow it.
+        assert_eq!(
+            apply("import pkg.models\npkg.helper()\n", "", "", &[("pkg", "lib.pkg")]),
+            "import lib.pkg.models\nlib.pkg.helper()\n"
+        );
+    }
+
+    #[test]
+    fn bare_names_are_left_alone() {
+        let src = "import pkg.models\ndef f(pkg):\n    return pkg.models.x\n";
+        assert_eq!(
+            apply(src, "", "", &[("pkg", "lib.pkg")]),
+            "import lib.pkg.models\ndef f(pkg):\n    return lib.pkg.models.x\n"
+        );
+    }
+
+    #[test]
+    fn split_statements_stay_valid() {
+        let moves = &[("pkg.models", "core.models")];
+        assert_eq!(
+            apply("try: from pkg import cli, models\nexcept ImportError: pass\n", "", "", moves),
+            "try: from pkg import cli; from core import models\nexcept ImportError: pass\n"
+        );
+        assert_eq!(
+            apply("import os; from pkg import cli, models\n", "", "", moves),
+            "import os; from pkg import cli; from core import models\n"
+        );
+        assert_eq!(
+            apply("from pkg import (\n    models,  # noqa: F401\n    cli,  # used below\n)\n", "", "", moves),
+            "from pkg import (\n    cli,  # used below\n)\nfrom core import models\n"
+        );
+        assert_eq!(
+            apply("from pkg import (\n    cli,  # used below\n    models,\n)\n", "", "", moves),
+            "from pkg import (\n    cli,  # used below\n)\nfrom core import models\n"
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "ide-coverage"
-description = "Run with Coverage: coverage-tool launch plans (cargo-llvm-cov, vitest / jest / c8, coverage.py, go test, JaCoCo) and report parsers (lcov, Go cover profiles, JaCoCo XML)"
+description = "Run with Coverage: coverage-tool launch plans (cargo-llvm-cov, vitest / jest / c8, coverage.py, go test, JaCoCo) and report parsers (lcov, Go cover profiles, JaCoCo and Cobertura XML, SimpleCov, coverage.py data)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

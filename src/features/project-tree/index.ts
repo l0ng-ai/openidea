@@ -62,11 +62,19 @@ export function activate(): () => void {
     const p = useProject.getState().project;
     const s = useProjectTree.getState();
     if ((p?.root ?? null) !== s.root || p?.workspace?.projects !== (s.members ?? undefined))
-      initProjectTree(p?.root ?? null, p?.name ?? "", p?.workspace?.projects ?? null, p?.unity ?? null);
+      initProjectTree(
+        p?.root ?? null,
+        p?.name ?? "",
+        p?.workspace?.projects ?? null,
+        p?.unity ?? null,
+        p?.unreal ?? null,
+      );
     else if (p) {
-      useProjectTree.setState({ name: p.name, unity: p.unity ?? null });
+      useProjectTree.setState({ name: p.name, unity: p.unity ?? null, unreal: p.unreal ?? null });
       if (p.unity && !s.unity && s.mode === "project") setViewMode("unity");
       if (!p.unity && s.mode === "unity") setViewMode("project");
+      if (p.unreal && !s.unreal && s.mode === "project") setViewMode("unreal");
+      if (!p.unreal && s.mode === "unreal") setViewMode("project");
     }
   };
   sync();

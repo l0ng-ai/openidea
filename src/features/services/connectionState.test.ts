@@ -21,6 +21,8 @@ vi.mock("@/platform/ipc", async (original) => ({
     dockerDisconnect: backend.disconnect,
   },
 }));
+import { useProject } from "@/platform/project";
+import { useRemote } from "@/platform/remote";
 import {
   connectConnection,
   connectionState,
@@ -193,6 +195,66 @@ describe("Docker connections", () => {
       closed();
       await connecting;
       expect(backend.snapshot).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe("remote session switching", () => {
+    it("reloads the remote host's connections and drops in-flight local snapshots", async () => {
+      const stop = watch();
+      try {
+        await vi.waitFor(() => expect(connectionState("box").snapshot).toEqual(ready));
+
+        let resolveStale!: (v: unknown) => void;
+        backend.snapshot.mockReturnValueOnce(new Promise((r) => (resolveStale = r)));
+        const staleRefresh = refresh("box");
+
+        const remoteSnap = { availability: { kind: "ready", context: "default" }, errors: [] };
+        backend.settings.mockResolvedValueOnce(
+          ok({
+            connections: [{ id: "remote", name: "Docker", endpoint: { kind: "default" } }],
+            registries: [],
+          }),
+        );
+        backend.snapshot.mockResolvedValueOnce(ok(remoteSnap));
+
+        useRemote.setState({
+          session: {
+            target: { kind: "ssh", config: "thinkpad" },
+            root: "/home/deng/proj",
+            host: "deng@deng-thinkpad.local",
+            os: "linux",
+            commands: ["docker_settings", "docker_snapshot", "docker_events"],
+          },
+        });
+
+        await vi.waitFor(() => expect(connectionState("remote").snapshot).toEqual(remoteSnap));
+        expect(useServices.getState().settings?.connections.map((c) => c.id)).toEqual(["remote"]);
+        expect(backend.cancel).toHaveBeenCalledOnce();
+
+        // Completing the stale local snapshot must not leak back into the remote view.
+        resolveStale(ok(ready));
+        await staleRefresh;
+        expect(useServices.getState().conns.box).toBeUndefined();
+      } finally {
+        stop();
+        useRemote.setState({ session: null });
+      }
+    });
+
+    it("refreshes immediately when a Restricted Mode project becomes trusted", async () => {
+      useProject.setState({ project: { root: "/remote", name: "p", isGit: false, trusted: false } as never });
+      backend.snapshot.mockRejectedValueOnce(new Error("Project is in Restricted Mode"));
+
+      const stop = watch();
+      try {
+        await vi.waitFor(() => expect(connectionState("box").error).toContain("Restricted Mode"));
+        backend.snapshot.mockResolvedValueOnce(ok(ready));
+        useProject.setState({ project: { root: "/remote", name: "p", isGit: false, trusted: true } as never });
+        await vi.waitFor(() => expect(connectionState("box").snapshot).toEqual(ready));
+      } finally {
+        stop();
+        useProject.setState({ project: null });
+      }
     });
   });
 });

@@ -2,12 +2,18 @@ import { clearContext, setContext } from "@/platform/context";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
+import { useProjectRoots } from "@/platform/projectRoots";
 import { useRemote } from "@/platform/remote";
 import { resolveMenuItems, type MenuItem } from "@/ui";
 import { registerMenuGroup } from "@/workbench/contributions";
 import { contextMenuItems, keyLabel, revealLabel } from "./contextMenu";
 import type { ProjectNode } from "./model";
 import { useProjectTree } from "./store";
+import { closePopup, useLspPopup } from "@/editor/lsp/popupStore";
+import { _provideCopyPathChooser } from "@/editor/api";
+import { openCopyPathChooser } from "@/editor/core/copyPathChooser";
+
+_provideCopyPathChooser(openCopyPathChooser);
 
 vi.mock("@/platform/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/platform/ipc")>()),
@@ -48,6 +54,7 @@ const OTHER_ACTIONS = [
   "diff.compareWith",
   "diff.compareFiles",
   "diff.compareDirectories",
+  "diff.compareFileWithEditor",
   "vcs.commit",
   "vcs.addToVcs",
   "vcs.annotate",
@@ -79,9 +86,11 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  closePopup();
   disposers.forEach((d) => d());
   useProject.setState({ project: null, settings: null });
   useProjectTree.setState({ root: null });
+  useProjectRoots.setState({ root: null, detected: [] });
   useRemote.setState({ session: null });
 });
 
@@ -92,6 +101,23 @@ describe("project view context menu", () => {
     const mixed = labels(contextMenuItems([node("/p/left", true), node("/p/a.txt")]));
     for (const label of ["Compare Directories", "Compare Files", "Compare With…"]) expect(mixed).not.toContain(label);
     expect(labels(contextMenuItems([node("/p/a.txt"), node("/p/b.txt")]))).toContain("Compare Files");
+  });
+
+  it("offers Compare File with Editor for a single file other than the editor's", () => {
+    const label = "Compare File with Editor";
+    expect(labels(contextMenuItems([node("/p/a.txt")]))).not.toContain(label);
+    setContext("editorPath", "/p/b.txt");
+    try {
+      const items = labels(contextMenuItems([node("/p/a.txt")]));
+      expect(items.indexOf(label)).toBe(items.indexOf("Compare With…") + 1);
+      expect(labels(contextMenuItems([node("/p/b.txt")]))).not.toContain(label);
+      expect(labels(contextMenuItems([node("/p/left", true)]))).not.toContain(label);
+      expect(labels(contextMenuItems([node("/p/a.txt"), node("/p/c.txt")]))).not.toContain(label);
+      setContext("editorPath", "git-revision:7b22/a.txt");
+      expect(labels(contextMenuItems([node("/p/a.txt")]))).not.toContain(label);
+    } finally {
+      clearContext("editorPath");
+    }
   });
 
   it("shows Compare With…'s shortcut on every comparison it runs (#3806)", () => {
@@ -147,38 +173,87 @@ describe("project view context menu", () => {
     }
   });
 
-  it("lists contributed links in Copy Path/Reference…", () => {
+  /** Runs Copy Path/Reference… and returns the chooser's rows as `label: preview`. */
+  const chooser = (items: MenuItem[]) => {
+    const item = resolveMenuItems(items).find((r) => r.label === "Copy Path/Reference…");
+    expect(item?.submenu).toBeUndefined();
+    item!.run!();
+    const popup = useLspPopup.getState().popup;
+    return popup?.kind === "list" ? popup.items.map((i) => `${i.label}: ${i.preview}`) : undefined;
+  };
+
+  it("previews each way Copy Path/Reference… copies the selection, contributed links included", () => {
     disposers.push(
       registerMenuGroup({
         id: "test.link",
         menus: ["copyPath"],
         items: (_menu, ctx) => [
-          { label: `Link ${ctx.paths.join()} ${ctx.dirs?.join()}`, verbatim: true, run: () => undefined },
+          {
+            id: "test.link",
+            label: "Link",
+            verbatim: true,
+            preview: `${ctx.paths.join()} ${ctx.dirs?.join()}`,
+            run: () => undefined,
+          },
+          // Without a preview a contribution has nothing to show in the chooser.
+          { id: "test.bare", label: "Bare", run: () => undefined },
         ],
       }),
     );
-    expect(sub(contextMenuItems([node("/p/src", true)]), "Copy Path/Reference…")).toEqual([
-      "Absolute Path",
-      "File Name",
-      "Path From Content Root",
-      "-",
-      "Link /p/src true",
+    expect(chooser(contextMenuItems([node("/p/src", true), node("/p/src/a.ts")], { x: 10, y: 20 }))).toEqual([
+      "Absolute Path: /p/src\n/p/src/a.ts",
+      "File Name: src\na.ts",
+      "Path From Content Root: src\nsrc/a.ts",
+      "Link: /p/src,/p/src/a.ts true,false",
     ]);
+    expect(useLspPopup.getState().popup).toMatchObject({ layout: "copyPath", anchor: { x: 10, y: 20 } });
   });
 
-  it("lists contributed links in Copy Path/Reference… of library files too", () => {
+  it("offers the fully qualified name of Java classes and packages in Copy Path/Reference…", () => {
+    useProjectRoots.setState({
+      root: ROOT,
+      detected: [
+        { path: "src/main/java", kind: "source", detectedFrom: "pom.xml" },
+        { path: "src/test/java", kind: "test", detectedFrom: "pom.xml" },
+        { path: "web/src", kind: "source", detectedFrom: "web/package.json" },
+      ],
+    });
+    const reference = (nodes: ProjectNode[]) =>
+      chooser(contextMenuItems(nodes))?.filter((r) => r.startsWith("Reference:"));
+    expect(
+      reference([node("/p/src/main/java/com/example/App.java"), node("/p/src/main/java/com/example", true)]),
+    ).toEqual(["Reference: com.example.App\ncom.example"]);
+    expect(reference([node("/p/src/main/java/Main.java")])).toEqual(["Reference: Main"]);
+    expect(reference([node("/p/src/test/java/com/example/AppTest.java")])).toEqual(["Reference: com.example.AppTest"]);
+    // Not a Java class or package: the source root itself, other files, non-JVM roots, a mixed selection.
+    for (const nodes of [
+      [node("/p/src/main/java", true)],
+      [node("/p/src/main/java/com/example/app.properties")],
+      [node("/p/src/main/java/com/example/package-info.java")],
+      [node("/p/src/main/java/module-info.java")],
+      [node("/p/src/main/java/com/my-app", true)],
+      [node("/p/src/main/java/com/my-app/App.java")],
+      [node("/p/web/src/App.java")],
+      [node("/p/web/src/lib", true)],
+      [node("/p/src/main/java/com/example/App.java"), node("/p/README.md")],
+    ])
+      expect(reference(nodes)).toEqual([]);
+  });
+
+  it("offers no content root paths for library files in Copy Path/Reference…", () => {
     disposers.push(
       registerMenuGroup({
         id: "test.link",
         menus: ["copyPath"],
-        items: (_menu, ctx) => [{ label: `Link ${ctx.paths.join()}`, verbatim: true, run: () => undefined }],
+        items: (_menu, ctx) => [
+          { id: "test.link", label: "Link", verbatim: true, preview: ctx.paths.join(), run: () => undefined },
+        ],
       }),
     );
-    expect(sub(contextMenuItems([{ ...node("/root/.m2/lib.jar"), readOnly: true }]), "Copy Path/Reference…")).toEqual([
-      "Absolute Path",
-      "File Name",
-      "-",
-      "Link /root/.m2/lib.jar",
+    expect(chooser(contextMenuItems([{ ...node("/root/.m2/lib.jar"), readOnly: true }]))).toEqual([
+      "Absolute Path: /root/.m2/lib.jar",
+      "File Name: lib.jar",
+      "Link: /root/.m2/lib.jar",
     ]);
   });
 

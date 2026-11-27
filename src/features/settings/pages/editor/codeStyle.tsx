@@ -19,7 +19,7 @@ import {
   type SqlWordCase,
 } from "@/platform/editorSettings";
 import { NATIVE_TO_ASCII_ACTION } from "../../nativeToAscii";
-import { FormGroup, NumberInput, Row, Select, Toggle } from "../../components/Form";
+import { FormGroup, GlobListEditor, NumberInput, Row, Select, Toggle } from "../../components/Form";
 import { useSetting } from "../../components/context";
 import type { PageSpec } from "../spec";
 import {
@@ -157,6 +157,74 @@ const COMMENTS = {
   keywords: ["Line comment at first column", "Add a space at line comment start"],
 };
 const CASE = { id: "case", label: "Case", keywords: ["Keywords", "Identifiers", "To upper", "To lower"] };
+const IMPORTS = {
+  id: "imports",
+  label: "Imports",
+  keywords: ["imports", "static imports", "wildcard", "class count", "import with *"],
+};
+
+const SPACES = { id: "spaces", label: "Spaces", keywords: ["Space", "Around binary operators", "Within braces"] };
+const PUNCTUATION = { id: "punctuation", label: "Punctuation", keywords: ["Semicolons", "Quotes"] };
+const TS_IMPORTS = {
+  id: "imports",
+  label: "Imports",
+  keywords: ["Import paths", "Import path ending", "Do not auto-import from", "Do not auto-import specifiers matching"],
+};
+
+/** The TypeScript server's code style: JavaScript (and JSX) and TypeScript (and TSX). */
+const TS_STYLE_LANGUAGES = new Set(["javascript", "typescript"]);
+
+/** tsserver's space options and their defaults (vtsls'). */
+const TS_SPACES = [
+  { key: "insertSpaceAfterCommaDelimiter", label: "After comma", on: true },
+  { key: "insertSpaceAfterSemicolonInForStatements", label: "After semicolon in for statements", on: true },
+  { key: "insertSpaceBeforeAndAfterBinaryOperators", label: "Around binary operators", on: true },
+  { key: "insertSpaceAfterKeywordsInControlFlowStatements", label: "After control flow keywords", on: true },
+  {
+    key: "insertSpaceAfterFunctionKeywordForAnonymousFunctions",
+    label: "After function keyword in anonymous functions",
+    on: true,
+  },
+  { key: "insertSpaceBeforeFunctionParenthesis", label: "Before function declaration parentheses", on: false },
+  { key: "insertSpaceAfterConstructor", label: "After constructor keyword", on: false },
+  { key: "insertSpaceAfterOpeningAndBeforeClosingNonemptyParenthesis", label: "Within parentheses", on: false },
+  { key: "insertSpaceAfterOpeningAndBeforeClosingNonemptyBrackets", label: "Within brackets", on: false },
+  { key: "insertSpaceAfterOpeningAndBeforeClosingNonemptyBraces", label: "Within braces", on: true },
+  { key: "insertSpaceAfterOpeningAndBeforeClosingEmptyBraces", label: "Within empty braces", on: true },
+  {
+    key: "insertSpaceAfterOpeningAndBeforeClosingTemplateStringBraces",
+    label: "Within template string interpolations",
+    on: false,
+  },
+  { key: "insertSpaceAfterOpeningAndBeforeClosingJsxExpressionBraces", label: "Within JSX expressions", on: false },
+  { key: "insertSpaceAfterTypeAssertion", label: "After type assertion", on: false },
+];
+
+const SEMICOLONS: SelectOption<NonNullable<LanguageCodeStyle["semicolons"]>>[] = [
+  { value: "ignore", label: "Keep as is" },
+  { value: "insert", label: "Use semicolons" },
+  { value: "remove", label: "Don't use semicolons" },
+];
+
+const QUOTES: SelectOption<NonNullable<LanguageCodeStyle["quotes"]>>[] = [
+  { value: "auto", label: "As in the file" },
+  { value: "single", label: "Single quotes" },
+  { value: "double", label: "Double quotes" },
+];
+
+const IMPORT_PATHS: SelectOption<NonNullable<LanguageCodeStyle["importModuleSpecifier"]>>[] = [
+  { value: "shortest", label: "Shortest" },
+  { value: "relative", label: "Relative" },
+  { value: "non-relative", label: "Non-relative (paths, baseUrl)" },
+  { value: "project-relative", label: "Relative within the project" },
+];
+
+const IMPORT_ENDINGS: SelectOption<NonNullable<LanguageCodeStyle["importModuleSpecifierEnding"]>>[] = [
+  { value: "auto", label: "Automatic" },
+  { value: "minimal", label: "Minimal (./components)" },
+  { value: "index", label: "Index file (./components/index)" },
+  { value: "js", label: "Extension (./components/index.js)" },
+];
 
 const WORD_CASES: SelectOption<SqlWordCase>[] = [
   { value: "upper", label: "To upper" },
@@ -254,6 +322,130 @@ function LanguageStyle({ lang }: { lang: LanguageInfo }) {
       ),
     });
   }
+  if (lang.id === "java") {
+    tabs.push({
+      ...IMPORTS,
+      content: (
+        <FormGroup>
+          <Row
+            label="Class count to use import with '*'"
+            hint="Use a wildcard import once this many classes of one package are used (5 by default; 999 keeps single-class imports)."
+          >
+            <NumberInput
+              value={own.classCountToUseImportWithStar ?? 5}
+              onChange={(n) => set({ classCountToUseImportWithStar: n })}
+              min={1}
+              max={999}
+              integer
+              aria-label="Class count to use import with *"
+            />
+          </Row>
+          <Row
+            label="Names count to use static import with '*'"
+            hint="Use a wildcard static import once this many names are imported statically (3 by default; 999 keeps single imports)."
+          >
+            <NumberInput
+              value={own.namesCountToUseStaticImportWithStar ?? 3}
+              onChange={(n) => set({ namesCountToUseStaticImportWithStar: n })}
+              min={1}
+              max={999}
+              integer
+              aria-label="Names count to use static import with *"
+            />
+          </Row>
+        </FormGroup>
+      ),
+    });
+  }
+  if (TS_STYLE_LANGUAGES.has(lang.id)) {
+    tabs.push(
+      {
+        ...SPACES,
+        content: (
+          <>
+            {TS_SPACES.map(({ key, label, on }) => (
+              <Toggle
+                key={key}
+                checked={own.spaces?.[key] ?? on}
+                onChange={(v) => set({ spaces: { ...own.spaces, [key]: v } })}
+                label={label}
+              />
+            ))}
+          </>
+        ),
+      },
+      {
+        ...PUNCTUATION,
+        content: (
+          <FormGroup>
+            <Row label="Semicolons">
+              <Select
+                value={own.semicolons ?? "ignore"}
+                options={SEMICOLONS}
+                onChange={(semicolons) => set({ semicolons })}
+                aria-label="Semicolons"
+              />
+            </Row>
+            <Row label="Quotes" hint="For the strings and imports the TypeScript server adds.">
+              <Select
+                value={own.quotes ?? "auto"}
+                options={QUOTES}
+                onChange={(quotes) => set({ quotes })}
+                aria-label="Quotes"
+              />
+            </Row>
+          </FormGroup>
+        ),
+      },
+      {
+        ...TS_IMPORTS,
+        content: (
+          <FormGroup>
+            <Row label="Import paths" hint="For the imports the TypeScript server adds.">
+              <Select
+                value={own.importModuleSpecifier ?? "shortest"}
+                options={IMPORT_PATHS}
+                onChange={(importModuleSpecifier) => set({ importModuleSpecifier })}
+                aria-label="Import paths"
+              />
+            </Row>
+            <Row label="Import path ending">
+              <Select
+                value={own.importModuleSpecifierEnding ?? "auto"}
+                options={IMPORT_ENDINGS}
+                onChange={(importModuleSpecifierEnding) => set({ importModuleSpecifierEnding })}
+                aria-label="Import path ending"
+              />
+            </Row>
+            <Row label="Do not auto-import from" stacked hint="Files matching these globs, e.g. **/index.ts.">
+              <GlobListEditor
+                value={own.autoImportFileExcludePatterns ?? []}
+                onChange={(autoImportFileExcludePatterns) => set({ autoImportFileExcludePatterns })}
+                placeholder="**/index.ts"
+                aria-label="Do not auto-import from"
+                fullWidth
+              />
+            </Row>
+            <Row
+              label="Do not auto-import specifiers matching"
+              stacked
+              hint="Regular expressions for the import path, e.g. ^node: or /index$."
+            >
+              <GlobListEditor
+                value={own.autoImportSpecifierExcludeRegexes ?? []}
+                onChange={(autoImportSpecifierExcludeRegexes) => set({ autoImportSpecifierExcludeRegexes })}
+                placeholder="/index$"
+                emptyText="No expressions"
+                itemLabel="Expression"
+                aria-label="Do not auto-import specifiers matching"
+                fullWidth
+              />
+            </Row>
+          </FormGroup>
+        ),
+      },
+    );
+  }
   if (lang.id === "sql") {
     const wordCase = sqlCaseOf(own);
     tabs.push({
@@ -289,6 +481,13 @@ function LanguageStyle({ lang }: { lang: LanguageInfo }) {
         <div className={styles.note}>
           {tx(
             "Ruff formats with the indent, tab character and hard wrap set here, and Black with the hard wrap, when no Ruff or Black configuration of the project or user applies. A file's .editorconfig values come first, as in the editor.",
+          )}
+        </div>
+      )}
+      {TS_STYLE_LANGUAGES.has(lang.id) && (
+        <div className={styles.note}>
+          {tx(
+            "The TypeScript server applies Spaces and Punctuation to Reformat Code and to the code it adds: quick fixes, imports, refactorings and organize imports. Files below a Prettier, Biome or oxfmt configuration are formatted by that tool. A .editorconfig's quote_type and ij_* properties come first. TSX files use the TypeScript settings, JSX files the JavaScript ones.",
           )}
         </div>
       )}
@@ -408,10 +607,20 @@ export async function codeStyleLanguagePages(): Promise<PageSpec[]> {
           ...keywords,
         ]),
         ...(lang.id === "java"
-          ? ["Formatting profile", "IntelliJ IDEA", "Custom Eclipse formatter XML", "Eclipse formatter XML"]
+          ? [
+              "Formatting profile",
+              "IntelliJ IDEA",
+              "Custom Eclipse formatter XML",
+              "Eclipse formatter XML",
+              IMPORTS.label,
+              ...IMPORTS.keywords,
+            ]
           : []),
         ...(lang.id === "php" ? ["Alignment", "Align key-value pairs", "Align consecutive assignments"] : []),
         ...(lang.id === "sql" ? [CASE.label, ...CASE.keywords, "Do not change"] : []),
+        ...(TS_STYLE_LANGUAGES.has(lang.id)
+          ? [SPACES, PUNCTUATION, TS_IMPORTS].flatMap(({ label, keywords }) => [label, ...keywords])
+          : []),
       ],
       component: () => <LanguageStyle lang={lang} />,
     }));

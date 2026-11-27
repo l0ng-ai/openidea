@@ -71,6 +71,7 @@ const Block = memo(function Block({
   heights,
   viewStates,
   entriesCache,
+  onFirstChangeShown,
 }: {
   entry: CombinedDiffItem;
   index: number;
@@ -85,6 +86,8 @@ const Block = memo(function Block({
   viewStates: Map<string, DiffViewState>;
   /** Git entries of the blocks, so a block back in view shows without asking Git again. */
   entriesCache: DiffEntriesCache;
+  /** Set on the block the diff opened at, until it has shown its first difference. */
+  onFirstChangeShown?: () => void;
 }) {
   const item = entry.data;
   // A block mounted collapsed creates its diff once expanded.
@@ -176,6 +179,7 @@ const Block = memo(function Block({
             input={input}
             documentOwner={combinedDiffDocumentOwner(tabKey, input.key)}
             viewState={viewState}
+            onFirstChangeShown={onFirstChangeShown}
             fit
           />
         </div>
@@ -242,7 +246,14 @@ export function CombinedDiffView({
   const [heights] = useState(() => new Map<string, number>());
   const [viewStates] = useState(() => new Map<string, DiffViewState>());
   const [entriesCache] = useState<DiffEntriesCache>(() => new Map());
+  // IDEA's combined diff opens at the first difference of the file it was opened for.
+  const firstChange = useRef<string | null>(reveal ?? entries[0]?.key ?? null);
+  const firstChangeShown = useCallback(() => {
+    firstChange.current = null;
+  }, []);
   const keys = useMemo(() => entries.map((e) => e.key), [entries]);
+  // Each diff's own key, hashing its texts: worked out once, not on every scroll frame.
+  const diffKeys = useMemo(() => items.map((item) => diffInput(item).key), [items]);
 
   // Blocks that stay mounted when scrolled away: the one holding the keyboard focus, so typing still
   // reaches it, and with autosave off those with unsaved staged edits, which unmounting would save.
@@ -253,12 +264,12 @@ export function CombinedDiffView({
       const slot = scrollRef.current?.contains(active) ? active?.closest<HTMLElement>("[data-index]") : null;
       if (slot) shown.add(Number(slot.dataset.index));
       if (useProject.getState().settings?.files?.autoSave === false)
-        items.forEach((item, index) => {
-          if (ownedStagedDocument(combinedDiffDocumentOwner(tabKey, diffInput(item).key))?.dirty) shown.add(index);
+        diffKeys.forEach((key, index) => {
+          if (ownedStagedDocument(combinedDiffDocumentOwner(tabKey, key))?.dirty) shown.add(index);
         });
       return [...shown].sort((a, b) => a - b);
     },
-    [items, tabKey],
+    [diffKeys, tabKey],
   );
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -343,6 +354,7 @@ export function CombinedDiffView({
                 heights={heights}
                 viewStates={viewStates}
                 entriesCache={entriesCache}
+                onFirstChangeShown={firstChange.current === key ? firstChangeShown : undefined}
               />
             </div>
           ))}

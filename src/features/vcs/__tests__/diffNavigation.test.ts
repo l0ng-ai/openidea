@@ -69,3 +69,15 @@ it("normalizes line endings like the viewer when skipping unchanged files", asyn
   const data = withChain([diff("a"), crlf, diff("z")], 0);
   expect(await changedChainNeighbour(data, 1, "none")).toMatchObject({ path: "/repo/z" });
 });
+
+it("stops at a changed Git image before trying to decode its bytes as text", async () => {
+  const image: DiffData = {
+    path: "/repo/badge.PNG",
+    left: { type: "rev", rev: "HEAD" },
+    right: { type: "worktree" },
+  };
+  probe.mockResolvedValue({ status: "ok", data: { binary: true, tooLarge: false } });
+  const chain = withChain([diff("a"), image, diff("z")], 0);
+  expect(await changedChainNeighbour(chain, 1, "none")).toMatchObject({ path: image.path });
+  expect(probe).not.toHaveBeenCalled();
+});

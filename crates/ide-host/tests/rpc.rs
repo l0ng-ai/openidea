@@ -271,6 +271,9 @@ async fn serves_projects_files_documents_search_and_runs() {
             .await
             .unwrap();
     assert_eq!(env["DOCKER_HOST"], "unix:///run/user/1/docker.sock");
+    // Services › Docker commands are served by the project host too.
+    assert!(Dispatcher::standard().commands().contains(&"docker_snapshot"));
+    assert_eq!(invoke(&peer, "docker_settings", json!({})).await.unwrap()["connections"], json!([]));
 
     // Real project-host ignore writes travel through the remote command dispatcher.
     assert!(Dispatcher::standard().commands().contains(&"vcs_add_to_ignore"));
@@ -391,6 +394,8 @@ async fn local_deployment_runs_on_the_project_host() {
         "http_curl",
         "http_environment_file",
         "http_variable_definitions",
+        "db_source_folders",
+        "db_save_source_folders",
         "db_sources",
         "db_save_sources",
         "db_set_password",
@@ -420,6 +425,7 @@ async fn local_deployment_runs_on_the_project_host() {
         "db_table_page",
         "db_apply_edits",
         "db_console_path",
+        "db_consoles_dir",
         "db_consoles",
         "ssh_test",
         "ssh_set_secret",

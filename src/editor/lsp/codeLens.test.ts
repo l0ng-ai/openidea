@@ -121,6 +121,11 @@ describe("usages lens targets", () => {
     ];
     expect(lensTargets(items).map((t) => t.name)).toEqual(["Cart", "count"]);
   });
+
+  it("counts a CSS selector's usages from its name, past the `.`", () => {
+    const targets = lensTargets([item(".button", "class", 0), item("button", "class", 1)]);
+    expect(targets.map((t) => t.col)).toEqual([1, 0]);
+  });
 });
 
 describe("author hint", () => {

@@ -3,7 +3,7 @@
 pub(crate) mod agent;
 mod agent_tools;
 mod build;
-mod configs;
+pub(crate) mod configs;
 mod output;
 mod process;
 mod targets;

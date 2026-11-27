@@ -11,7 +11,8 @@
   grid-template-columns: minmax(0, 1fr);
   background: var(--bg-app);
   color: var(--fg);
-  font-size: var(--fs-ui);
+  font-family: var(--agent-font-ui, var(--font-ui));
+  font-size: var(--agent-fs-ui);
 }
 
 .conversation {
@@ -215,8 +216,8 @@
   min-width: 0;
   contain-intrinsic-size: auto 120px;
 }
-/* Laid out once, an off-screen row skips rendering at its remembered size (`useOffscreenRows`). */
-.conversationRow[data-measured] {
+/* Laid out once, a row away from the view skips rendering at its remembered size (`useOffscreenRows`). */
+.conversationRow[data-measured]:not([data-near]) {
   content-visibility: auto;
 }
 /* WebKit leaves a stale selection highlight on rows that skipped rendering (`useOffscreenRows`). */
@@ -523,7 +524,7 @@
   transform: translateX(0);
 }
 .markdown :global(code) {
-  font-family: var(--font-mono);
+  font-family: var(--agent-font-code, var(--font-mono));
   font-size: var(--agent-fs-small, var(--fs-small));
   border-radius: var(--radius-small);
   background: var(--md-code-bg);
@@ -543,6 +544,8 @@
   display: block;
   background: none;
   box-shadow: none;
+  /* A chosen code size wins over the chat-derived one; inline code stays with the chat. */
+  font-size: var(--agent-fs-code-chosen, var(--agent-fs-small, var(--fs-small)));
 }
 .codeBlock {
   position: relative;
@@ -635,7 +638,7 @@
   border-radius: var(--radius-small);
   background: var(--bg-elev);
   color: var(--danger);
-  font-family: var(--font-mono);
+  font-family: var(--agent-font-code, var(--font-mono));
   font-size: var(--agent-fs-small, var(--fs-small));
   text-align: left;
   white-space: pre-wrap;
@@ -939,7 +942,7 @@
   border-radius: var(--radius-small);
   border: 1px solid var(--border);
   background: var(--bg-elev);
-  font-family: var(--font-mono);
+  font-family: var(--agent-font-code, var(--font-mono));
   font-size: var(--agent-fs-small, var(--fs-small));
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -1006,7 +1009,7 @@
   border-radius: var(--radius-small);
   background: var(--bg-editor);
   color: var(--fg);
-  font-family: var(--font-mono);
+  font-family: var(--agent-font-code, var(--font-mono));
   font-size: var(--agent-fs-code, var(--fs-code));
   line-height: calc(var(--lh-code) + var(--agent-font-zoom, 0px) * 1.6);
   white-space: pre-wrap;
@@ -1045,7 +1048,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--font-mono);
+  font-family: var(--agent-font-code, var(--font-mono));
   font-size: var(--agent-fs-small, var(--fs-small));
 }
 .permissionDone {
@@ -1070,6 +1073,12 @@
   color: var(--danger);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+.errorContent {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
 }
 
 .working {
@@ -1379,7 +1388,7 @@
 .changeCommitHash {
   flex: none;
   color: var(--fg-subtle);
-  font-family: var(--font-mono);
+  font-family: var(--agent-font-code, var(--font-mono));
 }
 .changeCommitSummary {
   flex: 1 1 0;
@@ -1463,7 +1472,7 @@
 .subagentActivity {
   padding-left: 22px;
   color: var(--fg-muted);
-  font-family: var(--font-mono);
+  font-family: var(--agent-font-code, var(--font-mono));
   font-size: var(--agent-fs-small, var(--fs-small));
   white-space: nowrap;
   overflow: hidden;
@@ -1763,7 +1772,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
   background: var(--bg-editor);
-  font-family: var(--font-mono);
+  font-family: var(--agent-font-code, var(--font-mono));
   font-size: var(--agent-fs-code, var(--fs-code));
 }
 .questionPreviewEmpty {
@@ -1943,7 +1952,7 @@
 .exitCode {
   flex: none;
   color: var(--danger);
-  font-family: var(--font-mono);
+  font-family: var(--agent-font-code, var(--font-mono));
   font-size: var(--agent-fs-small, var(--fs-small));
 }
 .terminalBlock {
@@ -1957,7 +1966,7 @@
 .terminalOutput {
   margin: 0;
   padding: 6px 10px;
-  font-family: var(--font-mono);
+  font-family: var(--agent-font-code, var(--font-mono));
   font-size: var(--agent-fs-small, var(--fs-small));
   white-space: pre-wrap;
   word-break: break-word;

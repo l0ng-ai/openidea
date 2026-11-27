@@ -1,4 +1,5 @@
 use super::blocking;
+use super::pytest_fixtures::{PytestFixtureAt, fixture_at};
 use super::python_stubs::{
     PythonStubLinks, counterpart_candidates, match_declarations, module_name, site_packages, stub_path,
 };
@@ -7,7 +8,7 @@ use crate::Project;
 use ide_command::command;
 use ide_core::{DocId, IdeResult, IpcPath, LanguageId, Location, Pos};
 use ide_index::{ExtensionCount, FileMatch, IndexStatus, SymbolFilter, SymbolMatch};
-use ide_language::{FileReference, WebReference};
+use ide_language::{CSS_VARIABLE, FileReference, WebReference};
 use ide_workspace::file_refs::{self, PathCompletion};
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -24,6 +25,18 @@ pub struct WebGoto {
 }
 
 const MAX_WEB_TARGETS: usize = 200;
+
+/// A custom property declaration (`--accent: #3b82f6`), for `var(--…)` completion and hover.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CssVariable {
+    pub name: String,
+    /// The declared value, whitespace collapsed.
+    pub value: Option<String>,
+    pub location: Location,
+}
+
+const MAX_CSS_VARIABLES: usize = 5000;
 
 /// A Python class definition and the base names written in its source. The UI builds a
 /// name → locations index from every class in the project (attached dependency roots
@@ -181,6 +194,41 @@ pub async fn web_goto(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeRes
             }
         };
         Ok(Some(WebGoto { reference, targets }))
+    })
+    .await
+}
+
+/// Custom properties declared in `doc` (from its current text, first) and in the project's
+/// other stylesheets (from the index, so kept up to date as files change).
+#[command(trust = always)]
+pub async fn web_css_variables(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<CssVariable>> {
+    let project = host.project(window)?;
+    let syntax = host.syntax();
+    blocking(move || {
+        let snap = project.documents.snapshot(doc)?;
+        let own = if snap.large { Vec::new() } else { syntax.web_definitions(&snap.language, &snap.text) };
+        let mut out: Vec<CssVariable> = own
+            .into_iter()
+            .filter(|t| t.kind == CSS_VARIABLE)
+            .map(|t| CssVariable {
+                name: t.name,
+                value: t.container,
+                location: Location { path: snap.path.clone(), range: t.range, uri: None },
+            })
+            .collect();
+        out.extend(
+            project
+                .index
+                .symbols_prefixed("--", CSS_VARIABLE, MAX_CSS_VARIABLES)
+                .into_iter()
+                .filter(|m| *m.path != *snap.path)
+                .map(|m| CssVariable {
+                    name: m.name,
+                    value: m.container,
+                    location: Location { path: m.path, range: m.range, uri: None },
+                }),
+        );
+        Ok(out)
     })
     .await
 }
@@ -431,6 +479,23 @@ pub async fn nav_python_stubs(host: &Host, window: &str, doc: DocId) -> IdeResul
     .await
 }
 
+/// pytest fixtures at `pos` of a Python document: the definition pytest uses for the fixture
+/// named there (a test's parameter, a `usefixtures` / `getfixturevalue` string), and the
+/// fixtures visible where a fixture name goes, for completion.
+#[command(trust = always)]
+pub async fn nav_pytest_fixtures(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<PytestFixtureAt> {
+    let project = host.project(window)?;
+    let syntax = host.syntax();
+    blocking(move || {
+        let snap = project.documents.snapshot(doc)?;
+        if snap.large || snap.language.as_str() != "python" {
+            return Ok(Default::default());
+        }
+        Ok(fixture_at(&project, &syntax, &snap.path, &snap.text, pos))
+    })
+    .await
+}
+
 ide_command::domain!(
     nav:
     find_dirs,
@@ -444,12 +509,14 @@ ide_command::domain!(
     mark_recent,
     nav_index_definitions,
     nav_inheritance,
+    nav_pytest_fixtures,
     nav_python_stubs,
     nav_resolve_module,
     path_completions,
     recent_files,
     remove_recent,
     scope_files,
+    web_css_variables,
     web_goto,
     web_unresolved_references,
 );

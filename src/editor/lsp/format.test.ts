@@ -180,11 +180,17 @@ describe("format on save provider isolation", () => {
     expect(formatsOnSave(oxfmt, "typescript")).toBe(true);
     expect(formatsOnSave(oxfmt, "markdown")).toBe(false);
     expect(formatsOnSave(settings({ prettier: { runOnSave: true } }), "markdown")).toBe(true);
+    // A list saved before MDX had its own language: MDX follows its Markdown entry.
+    const saved = settings({ prettier: { runOnSave: true, languages: ["markdown", "css"] } });
+    expect(formatsOnSave(saved, "mdx")).toBe(true);
+    expect(formatsOnSave(settings({ prettier: { runOnSave: true, languages: ["css"] } }), "mdx")).toBe(false);
     expect(formatsOnSave(settings({ biome: { runOnSave: true } }), "json")).toBe(true);
     expect(formatsOnSave(settings({ biome: { runOnSave: true } }), "markdown")).toBe(false);
     expect(formatsOnSave(settings({ ruff: { runOnSave: true } }), "python")).toBe(true);
     expect(formatsOnSave(settings({ ruff: { runOnSave: true } }), "typescript")).toBe(false);
     expect(formatsOnSave(settings({}), "typescript")).toBe(false);
+    // dprint's configuration decides which files it formats.
+    expect(formatsOnSave(settings({ dprint: { runOnSave: true } }), "toml")).toBe(true);
     expect(formatsOnSave(settings({}, true), "rust")).toBe(true);
     expect(formatsOnSave(null, "typescript")).toBe(false);
   });

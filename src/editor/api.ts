@@ -27,6 +27,7 @@ import {
   type EditorState,
   type Extension,
   type RangeSet,
+  type Text,
   type Transaction,
 } from "@codemirror/state";
 import { GutterMarker, ViewPlugin, type EditorView, type ViewUpdate } from "@codemirror/view";
@@ -34,7 +35,7 @@ import type { LanguageDescription } from "@codemirror/language";
 import type { HunkKind } from "@/bindings";
 import type { LineEnding } from "@/platform/ipc";
 import { create } from "zustand";
-import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
+import { maybeEditorService, type EditorInput, type MenuGroupContext } from "@/workbench/contributions";
 import { isSameOrInside } from "@/platform/paths";
 import { useProject } from "@/platform/project";
 import { rootOfPath } from "@/platform/projectRoots";
@@ -252,6 +253,25 @@ export function activeEditor(): TextEditorHandle | null {
 /** Editors currently showing `path` (split panes may show the same file). */
 export function editorsFor(path: string): TextEditorHandle[] {
   return [...useEditorRegistry.getState().editors].filter((e) => e.ctx.path === path);
+}
+
+/**
+ * While a cell editor of a custom editor (a notebook) has focus, it stands in for the
+ * active editor's view: the notebook publishes the editor context keys for it and
+ * editor actions resolve to it, like a text tab's view. The owner keeps this current
+ * on focus changes (see `_setFocusedCellEditor`); editor/core re-reads it whenever it
+ * republishes contexts, so actions never fall back to the last text tab.
+ */
+let focusedCell: EditorView | null = null;
+
+/** The focused cell editor standing in for the active editor's view, if any. */
+export function focusedCellEditor(): EditorView | null {
+  return focusedCell;
+}
+
+/** Published by the custom editor owning the cell editors (a notebook); `null` once none has focus. */
+export function _setFocusedCellEditor(view: EditorView | null) {
+  focusedCell = view;
 }
 
 // --- called by editor/core only ---------------------------------------------
@@ -529,6 +549,29 @@ export function contributedAtAll<T>(state: EditorState, key: string, pos: number
   return state.languageDataAt<T>(key, pos);
 }
 
+/**
+ * A problem a feature marks on its own text (the database console's run errors
+ * and unsafe-query warnings): the editor's hover shows it like a diagnostic.
+ *
+ *   problemProviders.of((state) => state.field(myField).problems)
+ */
+export interface ContributedProblem {
+  from: number;
+  to: number;
+  severity: "error" | "warning" | "info";
+  message: string;
+}
+
+export const problemProviders = Facet.define<(state: EditorState) => readonly ContributedProblem[]>();
+
+/** The contributed problems whose range covers `pos`. */
+export function contributedProblemsAt(state: EditorState, pos: number): ContributedProblem[] {
+  return state
+    .facet(problemProviders)
+    .flatMap((provider) => provider(state))
+    .filter((p) => p.from <= pos && pos <= p.to);
+}
+
 /** A context action a feature offers at the caret, listed by Show Context Actions (⌥↵). */
 export interface ContributedIntention {
   id: string;
@@ -562,6 +605,7 @@ export function contributedQuickFixes(view: EditorView, from: number, to: number
 /**
  * Extra rows for the ⌥↵ submenu of inspection `inspectionId` at the caret (after Edit
  * inspection profile setting and Disable inspection), such as Suppress for statement.
+ * The producer's suppressed-rule list is part of `intentionControls` itself.
  */
 export const inspectionControlProviders =
   Facet.define<(view: EditorView, inspectionId: string) => readonly ContributedIntention[]>();
@@ -614,8 +658,10 @@ export interface NavigationLocation {
   col: number;
   /** `Date.now()` when the location was last visited. */
   time: number;
-  /** A place that is a tab rather than a text position (a diff), opened with this input on Back. */
+  /** A place that is a tab rather than a text position (diff, agent chat, terminal tab…), opened with this input on Back. */
   input?: EditorInput;
+  /** Split pane holding the editor tab when recorded, so Back/Forward returns to the same split when it still exists. */
+  paneId?: string;
 }
 
 export interface NavigationHistorySnapshot {
@@ -996,6 +1042,37 @@ export function _provideCodePreview(provider: typeof codePreviewProvider) {
   codePreviewProvider = provider;
 }
 
+/** A row of the Copy Path/Reference… chooser. */
+export interface CopyPathRow {
+  /** The action whose shortcut the row shows. */
+  id: string;
+  /** English label, translated by the chooser. */
+  label: string;
+  /** The copied text; a row without one is left out. */
+  preview: string | null;
+  run: () => void;
+}
+
+type CopyPathChooser = (
+  anchor: { x: number; y: number } | "center",
+  rows: readonly CopyPathRow[],
+  ctx: MenuGroupContext,
+) => void;
+let copyPathChooser: CopyPathChooser | null = null;
+
+/**
+ * The editor's Copy Path/Reference… chooser for files outside an editor (the Project view's
+ * selection): `rows`, then the rows contributed to the `copyPath` menu for `ctx`, with previews.
+ */
+export function openCopyPathChooser(...args: Parameters<CopyPathChooser>): void {
+  copyPathChooser?.(...args);
+}
+
+/** @internal editor/core only. */
+export function _provideCopyPathChooser(open: CopyPathChooser) {
+  copyPathChooser = open;
+}
+
 let workspaceHistory: ((id: number, redo: boolean) => Promise<void>) | null = null;
 
 /** Undo/redo a refactoring through the same history used by editor commands. */
@@ -1029,3 +1106,23 @@ export function onWorkspaceEditHistory(listener: (state: WorkspaceEditHistorySta
 export function _emitWorkspaceEditHistory(state: WorkspaceEditHistoryState) {
   for (const listener of workspaceHistoryListeners) listener(state);
 }
+
+/** On the transaction that puts refactoring `id`'s history marker into an editor. */
+export const workspaceEditMarker = Annotation.define<number>();
+
+/**
+ * Local edits that finished a refactoring in one editor (its reformatting, the in-place rename
+ * of an introduced name), kept out of the undo history. Undoing the refactoring reverts them
+ * first, while the text is still `end`; redoing it applies `changes` again.
+ */
+export interface WorkspaceEditFollowUp {
+  changes: ChangeSet;
+  revert: ChangeSet;
+  end: Text;
+}
+
+/** Looks up the follow-up edits of refactoring `id` recorded in an editor state. */
+export const workspaceEditFollowUps = Facet.define<(state: EditorState, id: number) => WorkspaceEditFollowUp | null>();
+
+/** Asks an editor to finish an interactive edit (an in-place rename) before refactoring `id` is undone. */
+export const settleWorkspaceEdit = StateEffect.define<number>();

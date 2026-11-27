@@ -55,7 +55,7 @@ exclude = ["**/.git", "**/node_modules", "**/target", "**/dist"]
 | Plugins                      | Plugins                                                                                                                                                                                                                                                                                                                                                                         |
 | Version Control              | Commit; Confirmation; Directory Mappings; Issue Navigation; Log; Shelf; Git; GitHub                                                                                                                                                                                                                                                                                             |
 | Build, Execution, Deployment | CMake; Gradle; Maven; Console; Debugger (Data Views, Stepping); Python Debugger; Run/Debug; Run Targets; Deployment (Options)                                                                                                                                                                                                                                                   |
-| Languages & Frameworks       | Language Servers; Go (Build Tags, Go Modules); Java; Markdown; Node.js; PHP; Python Interpreter; Prettier; oxfmt; Biome; Ruff; Black formatter; Ruby; Rust; TypeScript                                                                                                                                                                                                          |
+| Languages & Frameworks       | Language Servers; Go (Build Tags, Go Modules); Java; Markdown; Node.js; PHP; Python Interpreter; Prettier; oxfmt; Biome; dprint; Ruff; Black formatter; Ruby; Rust; TypeScript                                                                                                                                                                                                  |
 | Tools                        | Agents (Chat); Terminal; Actions on Save; External Tools; SSH Configurations; MCP Server                                                                                                                                                                                                                                                                                        |
 | Security                     | Project Trust                                                                                                                                                                                                                                                                                                                                                                   |
 
@@ -90,7 +90,7 @@ Settings › Appearance & Behavior › System Settings, unless noted.
 | `dateFormat.overrideSystem`  | `false`        | **Override system date and time format** (Date Formats page).                                                                                      |
 | `dateFormat.pattern`         | `"dd.MM.yyyy"` | Date pattern with `dd`, `MM`, `MMM`, `yy`, `yyyy`.                                                                                                 |
 | `dateFormat.use24Hour`       | `true`         | 24-hour time.                                                                                                                                      |
-| `dateFormat.pretty`          | `true`         | "Today", "Yesterday", "5 min ago".                                                                                                                 |
+| `dateFormat.pretty`          | `true`         | "Today", "Yesterday", "5 min ago" (in lists with time, in the annotate gutter as the day alone).                                                   |
 
 ### `[appearance]`
 
@@ -139,6 +139,16 @@ Settings › Appearance & Behavior › Appearance, unless noted.
 | `formatOnSave`                           | `false`                          | Reformat code on save (Tools › Actions on Save).                                                       |
 
 Sub-tables such as `[editor.general]`, `[editor.appearance]`, `[editor.completion]`, `[editor.tabs]`, `[editor.codeStyle]` and `[editor.encodings]` hold the options of the matching Editor pages.
+
+`[editor.encodings.mappings]` in a project's `.openidea/settings.toml` gives a file or a folder its own encoding. Keys are paths relative to the project, with `/` separators. Choosing an encoding in the status bar adds the file here; after **Convert**, once the file is saved.
+
+```toml
+[editor.encodings.mappings]
+"src/main/java" = "iso-8859-15"   # every file in the folder
+"web/legacy/index.jsp" = "windows-1252"
+```
+
+A file's own entry wins over `.editorconfig`. A folder's entry applies where `.editorconfig` sets no `charset`, and wins over the project encoding; the nearest folder wins. An entry with an unknown encoding or a path outside the project is ignored.
 
 ### `[files]`
 

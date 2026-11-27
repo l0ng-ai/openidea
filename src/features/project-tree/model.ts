@@ -10,7 +10,10 @@ import { ancestorsWithin, insideAnyOf, isInside, isSameOrInside, nameOf, parentO
 export interface TreeOptions {
   /** Applied only by the Unity pane, never persisted as a user preference. */
   unityRoot?: string;
+  /** Applied only by the Unreal pane, never persisted as a user preference. */
+  unrealRoot?: string;
   showUnityMeta: boolean;
+  /** Generated build output, shared by the engine panes (Unity's Library, Unreal's Binaries/Intermediate). */
   showUnityGenerated: boolean;
   /** Show ignored names (`files.ignoredNames`: `.git`, `.DS_Store`, …). Dotfiles are always shown. */
   showHidden: boolean;
@@ -90,8 +93,21 @@ export function unityPathVisible(path: string, opts: TreeOptions): boolean {
   return true;
 }
 
+/** The Unreal pane hides what UBT writes: build output, and the project files it generates. */
+export function unrealPathVisible(path: string, opts: TreeOptions): boolean {
+  if (opts.unrealRoot && path.startsWith(opts.unrealRoot + "/")) {
+    const relative = path.slice(opts.unrealRoot.length + 1);
+    if (!opts.showUnityGenerated) {
+      if (/^(Binaries|Intermediate|Saved|DerivedDataCache|\.vs)(\/|$)/.test(relative)) return false;
+      if (!relative.includes("/") && /\.(sln|slnx|suo|user|vcxproj|pidb)$/i.test(relative)) return false;
+    }
+  }
+  return true;
+}
+
 export function isVisible(entry: FileEntry, opts: TreeOptions): boolean {
   if (!unityPathVisible(entry.path, opts)) return false;
+  if (!unrealPathVisible(entry.path, opts)) return false;
   // Ignored names are also excluded on the backend; only "Show Hidden" brings them back.
   if (isIgnoredName(entry.name)) return opts.showHidden;
   if (!opts.showExcluded && entry.ignored) return false;

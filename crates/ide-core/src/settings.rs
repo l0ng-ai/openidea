@@ -99,6 +99,20 @@ pub struct AgentSettings {
     pub smooth_text: bool,
     /// Conversations and the composer expand to the full width of the pane instead of staying in a centred column.
     pub fit_window_width: bool,
+    /// Chat text follows the interface font (Appearance › Use custom font).
+    pub chat_use_ui_font: bool,
+    /// Chat text family when it does not follow the interface font.
+    pub chat_font_family: String,
+    /// Covers characters the chat font lacks.
+    pub chat_font_fallback: String,
+    pub chat_font_size: u32,
+    /// Code in chat follows the built-in code font.
+    pub code_use_default_font: bool,
+    /// Code family when it does not follow the built-in code font.
+    pub code_font_family: String,
+    /// Covers characters the code font lacks.
+    pub code_font_fallback: String,
+    pub code_font_size: u32,
     #[serde(deserialize_with = "or_default")]
     #[specta(type = ThinkingDisplay)]
     pub thinking: ThinkingDisplay,
@@ -145,6 +159,14 @@ impl Default for AgentSettings {
             show_cost: false,
             smooth_text: true,
             fit_window_width: false,
+            chat_use_ui_font: true,
+            chat_font_family: "Inter".into(),
+            chat_font_fallback: String::new(),
+            chat_font_size: 13,
+            code_use_default_font: true,
+            code_font_family: "JetBrains Mono".into(),
+            code_font_fallback: String::new(),
+            code_font_size: 13,
             thinking: ThinkingDisplay::Auto,
             tool_calls: ToolCallDisplay::Grouped,
             expand_tool_output: false,
@@ -432,6 +454,12 @@ pub struct ToolDownloadSettings {
     /// commas or whitespace and tried in order before the official host; empty keeps every
     /// download on its official host.
     pub github_mirror: String,
+    /// Package registries only as configured (a company Nexus or Artifactory): npm and pnpm
+    /// installs and update checks never retry against the public npm registry, and the IDE
+    /// fetches nothing from public package registries itself (the JUnit Platform launcher from
+    /// Maven Central, dependency version completion from Maven Central, npm, PyPI and
+    /// crates.io). Off by default.
+    pub configured_registries_only: bool,
 }
 
 /// Absent profiles retain automatic discovery for existing projects.
@@ -1212,6 +1240,8 @@ pub struct LanguagesSettings {
     pub prettier: ExternalFormatterSettings,
     pub oxfmt: ExternalFormatterSettings,
     pub biome: ExternalFormatterSettings,
+    /// dprint formats every file its configuration covers: `languages` is unused.
+    pub dprint: ExternalFormatterSettings,
     pub ruff: ExternalFormatterSettings,
     pub black: ExternalFormatterSettings,
     pub java: JavaSettings,
@@ -1238,6 +1268,7 @@ impl Default for LanguagesSettings {
                 languages: BIOME_LANGUAGES.iter().map(|&l| l.into()).collect(),
                 ..ExternalFormatterSettings::default()
             },
+            dprint: ExternalFormatterSettings { languages: Vec::new(), ..ExternalFormatterSettings::default() },
             ruff: ExternalFormatterSettings {
                 languages: vec!["python".into()],
                 ..ExternalFormatterSettings::default()
@@ -1315,6 +1346,7 @@ impl LanguagesSettings {
             ExternalFormatter::Prettier => &self.prettier,
             ExternalFormatter::Oxfmt => &self.oxfmt,
             ExternalFormatter::Biome => &self.biome,
+            ExternalFormatter::Dprint => &self.dprint,
             ExternalFormatter::Ruff => &self.ruff,
             ExternalFormatter::Black => &self.black,
         }
@@ -1328,6 +1360,7 @@ pub enum ExternalFormatter {
     Prettier,
     Oxfmt,
     Biome,
+    Dprint,
     Ruff,
     Black,
 }
@@ -1339,6 +1372,7 @@ impl ExternalFormatter {
             Self::Prettier => "prettier",
             Self::Oxfmt => "oxfmt",
             Self::Biome => "biome",
+            Self::Dprint => "dprint",
             Self::Ruff => "ruff",
             Self::Black => "black",
         }
@@ -1349,11 +1383,11 @@ impl ExternalFormatter {
 pub const BIOME_LANGUAGES: [&str; 8] =
     ["css", "graphql", "javascript", "javascriptreact", "typescript", "typescriptreact", "json", "jsonc"];
 
-/// An external formatter (Prettier, oxfmt, Biome, Ruff, Black) and the languages it formats.
+/// An external formatter (Prettier, oxfmt, Biome, dprint, Ruff, Black) and the languages it formats.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ExternalFormatterSettings {
-    /// Empty path: project node_modules (Prettier/oxfmt/Biome), managed installation, then PATH.
+    /// Empty path: project node_modules (Prettier/oxfmt/Biome/dprint), managed installation, then PATH.
     pub path: String,
     /// Ruff only: directory containing its configuration, or a configuration file.
     pub configuration_directory: String,
@@ -1414,6 +1448,9 @@ pub struct PythonSettings {
     /// Folders the user added to an interpreter's `sys.path` (All Interpreters › Show Paths),
     /// by interpreter executable; absolute or `~/`.
     pub interpreter_paths: BTreeMap<String, Vec<String>>,
+    /// Default test runner (Settings › Python › Testing): `auto` (pytest when the project uses
+    /// it, else unittest), `pytest` or `unittest`.
+    pub test_runner: String,
 }
 
 impl Default for PythonSettings {
@@ -1426,6 +1463,7 @@ impl Default for PythonSettings {
             hide_other_project_interpreters: false,
             show_interpreter_paths: true,
             interpreter_paths: BTreeMap::new(),
+            test_runner: "auto".into(),
         }
     }
 }
@@ -1724,11 +1762,14 @@ pub struct TypeScriptSettings {
     /// plugin (hybrid mode; a Vue project's program alone needs ~3 GiB, and the
     /// vtsls default 3072 dies in a GC death spiral), else unset (vtsls default).
     pub tsserver_max_memory: u32,
+    /// Problems › TypeScript project errors: the project's own `tsc --watch` per root
+    /// `tsconfig.json` reports the errors of files that are not open.
+    pub watch_problems: bool,
 }
 
 impl Default for TypeScriptSettings {
     fn default() -> Self {
-        Self { version: "bundled".into(), tsserver_max_memory: 0 }
+        Self { version: "bundled".into(), tsserver_max_memory: 0, watch_problems: false }
     }
 }
 

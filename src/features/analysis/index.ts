@@ -5,7 +5,9 @@
  */
 import { registerEditorContribution } from "@/editor/api";
 import { registerActions } from "@/platform/actions";
+import { provideRulePrompt } from "@/platform/inspectionControls";
 import { useProject } from "@/platform/project";
+import { promptInput } from "@/workbench/inputDialogs";
 import { registerOverlay, registerToolWindow } from "@/workbench/contributions";
 import {
   showCodeCleanupDialog,
@@ -26,6 +28,7 @@ export function activate(): () => void {
   const disposers = [
     registerEditorContribution({ id: "analysis.python-inheritance", extensions: pythonInheritanceExtension }),
     installInspectionProfileSync(),
+    provideRulePrompt(promptInput),
     useProject.subscribe((s, prev) => {
       if (s.project?.root === prev.project?.root) return;
       resetInspection();

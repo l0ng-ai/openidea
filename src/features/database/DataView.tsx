@@ -12,11 +12,12 @@ import { EXPORT_FORMATS, exportData, type ExportData, type ExportFormat } from "
 import { Grid, type CopyFormat, type GridColumn, type GridProps, type GridRange } from "./Grid";
 import type { Cell } from "./model";
 import {
+  AGGREGATE_ROWS,
+  aggregateText,
   aggregates,
   cellMatcher,
   distinctValues,
   findCells,
-  formatNumber,
   rowMatches,
   toggleFilterValue,
   visibleRows,
@@ -70,6 +71,70 @@ export function ExtractorSelect({ value, onChange }: { value: ExportFormat; onCh
 export const copyFormatOf = (extractor: ExportFormat): CopyFormat =>
   extractor === "csv" ? "csv" : extractor === "onerow" ? "onerow" : "tsv";
 
+/** The toolbar's extractor; `table` is the whole table to export (`null`: nothing, already reported). */
+export interface ExtractorMenu {
+  value: ExportFormat;
+  onChange: (f: ExportFormat) => void;
+  table: () => ExportData | null | Promise<ExportData | null>;
+}
+
+const PANEL_ENTRIES: ReadonlyArray<{ panel: DataPanel; label: string }> = [
+  { panel: "record", label: "Show Record View" },
+  { panel: "value", label: "Open in Value Editor" },
+  { panel: "aggregates", label: "Show Aggregate View" },
+];
+
+/**
+ * The view's entries of the grid's context menu (DataGrip's): the side panels, checked while
+ * shown, then the toolbar's extractor and Export Table to Clipboard when the view has them.
+ */
+export function viewMenu(
+  panel: DataPanel | null,
+  onPanelChange: (panel: DataPanel | null) => void,
+  extractor?: ExtractorMenu,
+): MenuItem[] {
+  const items: MenuItem[] = PANEL_ENTRIES.map(({ panel: p, label }) => ({
+    label,
+    checked: panel === p,
+    run: () => onPanelChange(panel === p ? null : p),
+  }));
+  if (!extractor) return items;
+  return [
+    ...items,
+    { kind: "separator" },
+    {
+      label: "Data Extractor",
+      submenu: EXPORT_FORMATS.map((f) => ({
+        label: f.label,
+        checked: f.id === extractor.value,
+        run: () => extractor.onChange(f.id),
+      })),
+    },
+    {
+      label: "Export Table to Clipboard",
+      icon: "copy",
+      run: () =>
+        void Promise.resolve(extractor.table()).then(
+          (data) => data && writeClipboardText(exportData(extractor.value, data)),
+        ),
+    },
+  ];
+}
+
+/** Copy as › SQL INSERT / UPDATE / DELETE of the whole selected rows, in the selected order. */
+function sqlCopies(rows: readonly number[], extractor: ExtractorMenu): MenuItem[] {
+  const copy = (format: ExportFormat) => () =>
+    void Promise.resolve(extractor.table()).then((data) => {
+      const picked = data && rows.flatMap((r) => (data.rows[r] ? [data.rows[r]] : []));
+      if (picked?.length) void writeClipboardText(exportData(format, { ...data!, rows: picked }));
+    });
+  return [
+    { label: "SQL INSERT", run: copy("sql") },
+    { label: "SQL UPDATE", run: copy("sqlUpdates") },
+    { label: "SQL DELETE", run: copy("sqlDeletes") },
+  ];
+}
+
 /** The Record / Value / Aggregates panel's toggle (IDEA's "Show Value Editor"). */
 export function PanelToggle({ panel, onChange }: { panel: DataPanel | null; onChange: (p: DataPanel | null) => void }) {
   return (
@@ -117,6 +182,8 @@ export interface DataViewProps extends Pick<
   onPanelChange: (panel: DataPanel | null) => void;
   /** Plain ⌘C's copy format (the toolbar's extractor; TSV by default). */
   copyFormat?: CopyFormat;
+  /** The toolbar's extractor, also offered in the grid's context menu with the whole table to copy. */
+  extractor?: ExtractorMenu;
   /** The search bar is shown (the toolbar's search button, ⌘F in the grid). */
   searchOpen?: boolean;
   onSearchOpenChange?: (open: boolean) => void;
@@ -248,7 +315,12 @@ export function DataView(props: DataViewProps) {
             driver={props.driver}
             sort={sort}
             onSort={onSort}
-            rowMenu={props.rowMenu && ((rows) => props.rowMenu!(rows.map(at)))}
+            copyAs={props.extractor && ((rows) => sqlCopies(rows.map(at), props.extractor!))}
+            rowMenu={(rows) => {
+              const own = props.rowMenu?.(rows.map(at)) ?? [];
+              const view = viewMenu(panel, onPanelChange, props.extractor);
+              return own.length ? [...own, { kind: "separator" }, ...view] : view;
+            }}
             rowNumber={(r) => (props.firstRowNumber ?? 1) + at(r)}
             copyFormat={props.copyFormat}
             onSelectionChange={setRange}
@@ -466,17 +538,6 @@ function FilterPopup(props: {
     </Popup>
   );
 }
-
-const AGGREGATE_ROWS: ReadonlyArray<[label: string, key: keyof ReturnType<typeof aggregates>]> = [
-  ["Count", "count"],
-  ["Distinct", "distinct"],
-  ["Nulls", "nulls"],
-  ["Sum", "sum"],
-  ["Avg", "avg"],
-  ["Median", "median"],
-  ["Min", "min"],
-  ["Max", "max"],
-];
 
 function SidePanel(props: {
   panel: DataPanel;
@@ -744,14 +805,13 @@ function AggregatesView({ range, value }: { range: GridRange; value: (row: numbe
   for (let r = range.top; r <= range.bottom; r++) rows.add(r);
   for (const r of rows) for (let c = range.left; c <= range.right; c++) cells.push(value(r, c));
   const a = aggregates(cells);
-  const show = (v: number | string | null) => (v === null ? "—" : typeof v === "number" ? formatNumber(v) : v);
   return (
     <table className={styles.aggregates}>
       <tbody>
         {AGGREGATE_ROWS.map(([label, key]) => (
           <tr key={key}>
             <th scope="row">{label}</th>
-            <td>{show(a[key])}</td>
+            <td>{aggregateText(a, key) ?? "—"}</td>
           </tr>
         ))}
       </tbody>

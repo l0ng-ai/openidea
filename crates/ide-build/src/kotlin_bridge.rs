@@ -91,12 +91,14 @@ fn plan(root: &Path, model: &BuildModel, cancel: &CancellationToken) -> IdeResul
 
 /// Run the project's configured wrapper/settings/JDK and lifecycle, with an output
 /// redirector loaded before Maven calculates its lifecycle execution plans.
+/// Builds the Kotlin libraries; `on_progress` gets Maven's progress (message, fraction 0..1).
 pub fn build(
     root: &Path,
     model: &BuildModel,
     bundle: &Path,
     generation: &Path,
     cancel: &CancellationToken,
+    on_progress: &(dyn Fn(&str, Option<f32>) + Sync),
 ) -> IdeResult<Outcome> {
     std::fs::create_dir_all(generation)?;
     let mut plan = plan(root, model, cancel)?;
@@ -124,10 +126,10 @@ pub fn build(
     for step in &plan.steps {
         let mut reactor = plan.clone();
         reactor.steps = vec![step.clone()];
-        let result = compile::run(root, &reactor, cancel, &|event| {
-            if let BuildEvent::Output { text, .. } = event {
-                tracing::debug!("kotlin bridge: {}", text.trim_end());
-            }
+        let result = compile::run(root, &reactor, cancel, &|event| match event {
+            BuildEvent::Output { text, .. } => tracing::debug!("kotlin bridge: {}", text.trim_end()),
+            BuildEvent::Progress { message, fraction } => on_progress(&message, fraction),
+            _ => {}
         })?;
         messages.extend(result.messages);
     }
@@ -456,6 +458,7 @@ mod tests {
             Path::new("unused.jar"),
             &directory.path().join("private"),
             &CancellationToken::new(),
+            &|_, _| {},
         )
         .err()
         .unwrap();

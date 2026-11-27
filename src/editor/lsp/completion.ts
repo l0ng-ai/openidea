@@ -62,6 +62,8 @@ import { iconNode } from "@/ui/iconNode";
 import { parameterInfoOrLeave, triggerSignatureHelp } from "./signature";
 import { featureBackoff } from "./availability";
 import { pathCompletionSource, pathContext, pathLike } from "./fileReferences";
+import { cssVariablePrefix, cssVariableSource, STYLESHEETS, type VariableOption } from "./cssVariables";
+import { javaDeclarationAt, variableNameSource } from "./variableNames";
 import { editorPrefs } from "@/platform/editorSettings";
 import { tx } from "@/platform/i18n";
 import { showHint } from "./hint";
@@ -611,6 +613,78 @@ const SERVER_INSERT_WAIT_MS = 1000;
 
 const WORD_BEFORE = /[\p{L}\p{N}_$]+$/u;
 const VALID_FOR = /^[\p{L}\p{N}_$]*$/u;
+/** One token a server may replace whole: a Tailwind class (`items-c`), a CSS value. */
+const TOKEN = /^[\p{L}\p{N}_$-]+$/u;
+
+/**
+ * Start of the token the server replaces, when it reaches back past our word over
+ * hyphens (Tailwind's `items-c`). Items from several servers can be merged, so the
+ * most common start among single-token ranges ending at the caret wins.
+ */
+function serverTokenStart(items: readonly CompletionItem[], doc: Text, pos: number, wordFrom: number): number | null {
+  const votes = new Map<number, number>();
+  for (const it of items) {
+    if (!it.replaceRange) continue;
+    const start = posToOffset(doc, it.replaceRange.start);
+    const end = posToOffset(doc, it.replaceRange.end);
+    if (start >= wordFrom || end < pos) continue;
+    if (!TOKEN.test(doc.sliceString(start, pos))) continue;
+    votes.set(start, (votes.get(start) ?? 0) + 1);
+  }
+  let best: number | null = null;
+  let most = 0;
+  for (const [start, n] of votes) {
+    if (n > most) {
+      best = start;
+      most = n;
+    }
+  }
+  return best;
+}
+
+/**
+ * `validFor` for a list that may continue across a hyphen. CodeMirror re-queries
+ * when this returns false, so only keep the list while an option still starts
+ * with the typed text: `items-` continues (Tailwind), `foo-bar` in JS re-queries.
+ * A list pruned for a longer token is only valid while the text still starts
+ * with that token, so backspacing asks the server again.
+ */
+export function completionValidFor(items: readonly CompletionItem[], prunedBy: string | null) {
+  let labels: string[] | null = null; // built lazily: an explicit list can hold 26k items
+  return (text: string): boolean => {
+    const typed = text.toLowerCase();
+    if (prunedBy && !typed.startsWith(prunedBy)) return false;
+    if (VALID_FOR.test(text)) return true;
+    if (!text.includes("-") || !TOKEN.test(text)) return false;
+    labels ??= items.map((it) => (it.filterText ?? it.label).toLowerCase());
+    return labels.some((label) => label.startsWith(typed));
+  };
+}
+
+// Above this, mapping every item to a CodeMirror option and re-filtering it on each
+// keystroke shows up as input lag (Tailwind sends ~26k); below it pruning isn't worth it.
+const PRUNE_ABOVE = 2000;
+
+function isSubsequence(needle: string, haystack: string): boolean {
+  let at = 0;
+  for (const ch of haystack) if (ch === needle[at] && ++at === needle.length) return true;
+  return at === needle.length;
+}
+
+/**
+ * Items that can still match `typed`. Subsequence accepts a superset of what the
+ * fuzzy matcher shows for longer text, so typing on loses nothing. `prunedBy` is
+ * set only when something was dropped.
+ */
+export function pruneItems(
+  items: readonly CompletionItem[],
+  typed: string,
+): { items: readonly CompletionItem[]; prunedBy: string | null } {
+  if (!typed || items.length <= PRUNE_ABOVE) return { items, prunedBy: null };
+  const needle = typed.toLowerCase();
+  const kept = items.filter((it) => isSubsequence(needle, (it.filterText ?? it.label).toLowerCase()));
+  return kept.length && kept.length < items.length ? { items: kept, prunedBy: needle } : { items, prunedBy: null };
+}
 
 let inflight: RequestId | null = null;
 
@@ -619,8 +693,17 @@ function cancelInflight() {
   inflight = null;
 }
 
+/** Inside a stylesheet's `var(`, where `cssVariableSource` lists the project's custom properties instead of the server or the document's words. */
+function inVarCall(ctx: CompletionContext): boolean {
+  const language = ctx.state.facet(lspDoc)?.language ?? "";
+  if (!STYLESHEETS.has(language) || !isTauri()) return false;
+  const line = ctx.state.doc.lineAt(ctx.pos);
+  return cssVariablePrefix(line.text.slice(0, ctx.pos - line.from)) !== null;
+}
+
 /** Language-data completion sources (keywords etc.), used when no server answers. */
 async function fallback(ctx: CompletionContext): Promise<CompletionResult | null> {
+  if (inVarCall(ctx)) return null;
   const sources = ctx.state.languageDataAt<CompletionSource | readonly (string | Completion)[]>(
     "autocomplete",
     ctx.pos,
@@ -721,6 +804,12 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
     if (inflight === id) inflight = null;
   }
   if (ctx.aborted || !list.items.length) return list.items.length || smart ? null : fallback(ctx);
+  const wordFrom = word?.from ?? ctx.pos;
+  // Tailwind's replace range covers the whole class (`items-c`) while our word is
+  // only the `c` after the hyphen; CodeMirror matches a one-character pattern only
+  // at the start of a label, so filtering on `c` drops `items-center`.
+  const completionFrom = serverTokenStart(list.items, ctx.state.doc, ctx.pos, wordFrom) ?? wordFrom;
+  const typed = ctx.state.sliceDoc(completionFrom, ctx.pos);
   let lower: ReadonlySet<CompletionItem> = new Set();
   if (smart) {
     const expected = await expectedType(ctx, doc.doc, word?.from ?? ctx.pos);
@@ -734,7 +823,7 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
     const bases = new Map<string, string[]>();
     for (const c of graph) bases.set(c.name, [...(bases.get(c.name) ?? []), ...c.bases]);
     const smartResult = await smartItems(list.items, expected, (item) => resolveItem(doc.doc, item), {
-      typed: word?.text ?? "",
+      typed,
       member: ctx.state.sliceDoc(from - 1, from) === ".",
       mentioned: mentionedNames(ctx.state.doc.toString()),
       bases: (name) => bases.get(name) ?? [],
@@ -750,12 +839,14 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
   }
   const req: RequestContext = { doc: doc.doc, path: doc.path, language: doc.uiMode, pos: ctx.pos, text: ctx.state.doc };
   const prefs = editorPrefs().completion;
-  const typed = word?.text ?? "";
   let items = withoutDuplicates(
     prefs.matchCase
       ? list.items.filter((it) => matchesCase(it.filterText ?? it.label, typed, prefs.caseSensitivity))
       : list.items,
   );
+  if (inVarCall(ctx)) items = items.filter((it) => !it.label.startsWith("--"));
+  const pruned = pruneItems(items, typed);
+  items = [...pruned.items];
   // A server snippet named like a live template (jdtls `sout`, `fori`) would be listed twice; the template wins.
   if (items.some((it) => it.kind === "snippet")) {
     const own = await contributedSource(ctx);
@@ -764,7 +855,7 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
     if (names.size) items = items.filter((it) => it.kind !== "snippet" || !names.has(it.label));
   }
   return {
-    from: word ? word.from : ctx.pos,
+    from: completionFrom,
     options: items.map((item) => {
       const option = makeCompletion(item, req);
       // Smart Type: an item that may fit (`Any`) follows the ones that do.
@@ -775,7 +866,7 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
     validFor:
       list.isIncomplete || (prefs.matchCase && prefs.caseSensitivity === "all") || (smart && typed)
         ? undefined
-        : VALID_FOR,
+        : completionValidFor(items, pruned.prunedBy),
     filter: true,
   };
 }
@@ -919,6 +1010,9 @@ function gated(source: CompletionSource): CompletionSource {
     if (ctx.state.field(smartLookup, false) && source !== claimingLspSource) return null;
     const only = exclusiveSource(ctx);
     if (only) return source === contributedSource ? only(ctx) : null;
+    // At a Java declaration's name only names fit: IDEA lists no live templates there, and
+    // jdtls' own name proposals repeat the type (`orderBookOrderBook`).
+    if (source !== variableNameSource && javaDeclarationAt(ctx)) return null;
     if (!ctx.explicit && (!editorPrefs().completion.autoPopup || inplaceRenameActive(ctx.state))) return null;
     if (!editorPrefs().completion.sortAlphabetically) return source(ctx);
     return Promise.resolve(source(ctx)).then(
@@ -1052,6 +1146,13 @@ export function explicitCompletion(view: EditorView): boolean {
 // Rendering
 
 function kindBadge(c: Completion): Node | null {
+  const swatch = (c as VariableOption).swatch;
+  if (swatch) {
+    const span = document.createElement("span");
+    span.className = "cm-lsp-kind cm-lsp-swatch";
+    span.style.setProperty("--swatch", swatch);
+    return span;
+  }
   if (!isLsp(c) && "icon" in c) {
     const icon = (c as RichCompletion).icon;
     if (icon) return iconNode(icon, 16, "cm-lsp-kind");
@@ -1185,7 +1286,13 @@ export function completionExtension() {
     smartLookup,
     endSmartLookup,
     autocompletion({
-      override: [gated(claimingLspSource), gated(contributedSource), gated(pathFallbackSource)],
+      override: [
+        gated(claimingLspSource),
+        gated(contributedSource),
+        gated(pathFallbackSource),
+        gated(cssVariableSource),
+        gated(variableNameSource),
+      ],
       icons: false,
       addToOptions: [
         { render: kindBadge, position: 20 },

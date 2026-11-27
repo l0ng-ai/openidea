@@ -16,6 +16,8 @@
 //!
 //! Lines in the model are 0-based, like every IPC coordinate.
 
+mod cobertura;
+mod coveragepy;
 mod goprofile;
 mod import;
 mod jacoco;
@@ -23,7 +25,8 @@ mod lcov;
 mod plan;
 mod simplecov;
 
-pub use import::import;
+pub use coveragepy::is_data_file;
+pub use import::{import, import_data};
 pub use plan::prepare;
 
 use ide_core::{IdeError, IdeResult, IpcPath};

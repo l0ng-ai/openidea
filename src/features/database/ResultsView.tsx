@@ -29,7 +29,16 @@ import { ColumnsPopup } from "./ColumnsPopup";
 import { cellOf, cutLength, hasCutCells, loadCells, loadPage, rowsOf, useCutCells } from "./cutCells";
 import { DataView, ExtractorSelect, PanelToggle, copyFormatOf, exportMenu, type DataPanel } from "./DataView";
 import type { ExportData, ExportFormat } from "./export";
-import { buildRowEdits, emptyEdits, hasEdits, splitTarget, type Cell, type PendingEdits } from "./model";
+import {
+  buildRowEdits,
+  emptyEdits,
+  hasEdits,
+  revertRows,
+  rowsHaveEdits,
+  splitTarget,
+  type Cell,
+  type PendingEdits,
+} from "./model";
 import {
   editStatements,
   pkResultColumns,
@@ -453,9 +462,9 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
     }
   };
 
-  const showExport = async (at: { x: number; y: number }) => {
-    if (!r) return;
-    // What is exported or copied is the whole values, not the starts the page carries.
+  /** The result to export or copy: the whole values, not the starts the page carries. */
+  const exportSource = async (): Promise<ExportData | null> => {
+    if (!r) return null;
     if (hasCutCells(r)) {
       try {
         await loadPage(tab);
@@ -466,17 +475,19 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
           body: e instanceof Error ? e.message : String(e),
           key: "db-whole-value",
         });
-        return;
+        return null;
       }
     }
-    showContextMenu(
-      at,
-      exportMenu(
-        { columns, rows: rowsOf(r), driver, table: queryTable(text, { driver }) },
-        queryTable(text, { driver }),
-        extractor,
-      ),
-    );
+    return {
+      columns: gridColumns.map((c) => ({ name: c.name, type: c.type, primaryKey: c.primaryKey })),
+      rows: rowsOf(r),
+      driver,
+      table: queryTable(text, { driver }),
+    };
+  };
+  const showExport = async (at: { x: number; y: number }) => {
+    const data = await exportSource();
+    if (data) showContextMenu(at, exportMenu(data, queryTable(text, { driver }), extractor));
   };
 
   // Submit / Revert / Go to Column (⌘↩ / ⌥⌘Z / ⌘F12) reach the latest state through the handle, as in the table editor.
@@ -524,6 +535,10 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
           restoreRows: {
             enabled: (rows) => rowsEditable && rows.some((row) => edits.deletes.has(row)),
             run: restoreRows,
+          },
+          revertRows: {
+            enabled: (rows) => rowsEditable && rowsHaveEdits(edits, rows, loaded),
+            run: (rows) => setEdits((e) => revertRows(e, rows, loaded)),
           },
         }
       : undefined;
@@ -635,6 +650,7 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
               panel={panel}
               onPanelChange={setPanel}
               copyFormat={copyFormatOf(extractor)}
+              extractor={{ value: extractor, onChange: setExtractor, table: exportSource }}
               searchOpen={searchOpen}
               onSearchOpenChange={setSearchOpen}
               firstRowNumber={(tab.page ?? 0) * (tab.pageSize ?? 0) + 1}
@@ -656,6 +672,12 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
                         arg: { rows, editor: handleRef.current },
                       },
                       { kind: "action", action: "db.restoreRows", arg: { rows, editor: handleRef.current } },
+                      {
+                        kind: "action",
+                        action: "db.revertSelected",
+                        icon: "revert",
+                        arg: { rows, editor: handleRef.current },
+                      },
                     ]
                   : []
               }

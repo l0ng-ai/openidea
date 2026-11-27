@@ -100,6 +100,8 @@ struct Record {
     paths: Vec<SavedPath>,
     documents: Vec<(DocId, DocState)>,
     after: Vec<WorkspaceEditPrecondition>,
+    /// External writes seen by each open document as of `after` (see [`Documents::external_writes`]).
+    writes: Vec<(DocId, u64)>,
 }
 
 fn stale(path: &Path) -> IdeError {
@@ -314,12 +316,7 @@ fn hash_disk(hash: &mut blake3::Hasher, path: &Path, unsaved: &HashMap<PathBuf, 
 
 /// The bytes saving `state` would write.
 fn saved_bytes(state: &DocState) -> IdeResult<Vec<u8>> {
-    let text = state.doc.text_for_save();
-    Ok(if state.native_to_ascii {
-        ide_vfs::encode_properties_ascii(&text).into_bytes()
-    } else {
-        ide_vfs::encode(&text, &state.encoding, state.has_bom)?
-    })
+    state.bytes_for_save(&state.doc)
 }
 
 /// A reverted edit may leave the dirty flag set even when all saved bytes match.
@@ -372,6 +369,35 @@ impl Documents {
                 Ok(WorkspaceEditPrecondition { path: path.clone().into(), hash: hash.finalize().to_hex().to_string() })
             })
             .collect()
+    }
+
+    /// How many external writes each open document under `roots` has seen, with its path. An
+    /// unsaved buffer's file is checked first, for a write the watcher hasn't reported yet.
+    fn external_writes(&self, roots: &[PathBuf]) -> IdeResult<Vec<(DocId, u64, PathBuf)>> {
+        let mut writes = Vec::new();
+        for id in self.open_documents() {
+            self.with_doc(id, |state| {
+                if roots.iter().any(|p| text_path(&state.path).is_ok_and(|file| file.starts_with(p))) {
+                    self.check_disk_conflict(id, state);
+                    writes.push((id, state.external_writes, state.path.clone()));
+                }
+                Ok(())
+            })?;
+        }
+        Ok(writes)
+    }
+
+    /// Fingerprints see an unsaved buffer in place of its file, so another program writing that
+    /// file since the record was made shows only as a disk conflict. The IDE's own saves don't count.
+    fn validate_external_writes(&self, record: &Record, roots: &[PathBuf]) -> IdeResult<()> {
+        for (id, writes, path) in self.external_writes(roots)? {
+            // A document opened since then starts at zero.
+            let before = record.writes.iter().find(|(doc, _)| *doc == id).map_or(0, |(_, writes)| *writes);
+            if writes != before {
+                return Err(stale(&path));
+            }
+        }
+        Ok(())
     }
 
     fn validate_preconditions(&self, expected: &[WorkspaceEditPrecondition]) -> IdeResult<()> {
@@ -474,6 +500,10 @@ impl Documents {
             Ok(after) => after,
             Err(error) => return Err(self.recover(record, error)),
         };
+        record.writes = match self.external_writes(&roots) {
+            Ok(writes) => writes.into_iter().map(|(id, writes, _)| (id, writes)).collect(),
+            Err(error) => return Err(self.recover(record, error)),
+        };
         if let Err(error) = fs::remove_file(record.directory.path().join("recovery")) {
             return Err(self.recover(record, error.into()));
         }
@@ -573,6 +603,7 @@ impl Documents {
             paths,
             documents,
             after: Vec::new(),
+            writes: Vec::new(),
         })
     }
 
@@ -819,7 +850,7 @@ impl Documents {
                 let loaded = if state.encoding_chosen {
                     Self::load_as(path, &state.encoding, native_to_ascii)?
                 } else {
-                    Self::load_with_defaults(path, &defaults, state.editorconfig.as_ref())?
+                    Self::load_with_defaults(path, &defaults, state.editorconfig.as_ref())?.0
                 };
                 state.native_to_ascii = native_to_ascii;
                 self.replace_locked(id, state, &loaded.text)?;
@@ -874,8 +905,9 @@ impl Documents {
         if record.undone != redo {
             return Err(IdeError::invalid("the refactoring is already in the requested history state"));
         }
-        self.validate_preconditions(&record.after)?;
         let roots = record.paths.iter().map(|p| p.path.clone()).collect::<Vec<_>>();
+        self.validate_external_writes(record, &roots)?;
+        self.validate_preconditions(&record.after)?;
         let mut current = self.backup(&roots)?;
         fs::write(current.directory.path().join("recovery"), b"history restore in progress")?;
         let _active = ActiveEdit::new(&self.workspace_edit_active);
@@ -884,6 +916,10 @@ impl Documents {
         }
         current.after = match self.fingerprints(&roots) {
             Ok(after) => after,
+            Err(error) => return Err(self.recover(current, error)),
+        };
+        current.writes = match self.external_writes(&roots) {
+            Ok(writes) => writes.into_iter().map(|(id, writes, _)| (id, writes)).collect(),
             Err(error) => return Err(self.recover(current, error)),
         };
         current.undone = !redo;

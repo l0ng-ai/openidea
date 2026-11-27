@@ -47,6 +47,21 @@ export interface LanguageCodeStyle {
   /** SQL › Case: Reformat Code's case for keywords and unquoted identifiers. */
   keywordCase?: SqlWordCase;
   identifierCase?: SqlWordCase;
+  /** Java: organize imports switches to a wildcard import once this many classes of one package are used (jdtls passthrough). */
+  classCountToUseImportWithStar?: number;
+  /** Java: organize imports switches to a wildcard static import once this many names are used (jdtls passthrough). */
+  namesCountToUseStaticImportWithStar?: number;
+  /** JavaScript / TypeScript › Punctuation (unset: tsserver's default, `ignore` / `auto`). */
+  semicolons?: "ignore" | "insert" | "remove";
+  quotes?: "auto" | "single" | "double";
+  /** JavaScript / TypeScript › Spaces, by tsserver format option (`insertSpaceAfterCommaDelimiter`). */
+  spaces?: Record<string, boolean>;
+  /** JavaScript / TypeScript › Imports (unset: tsserver's default, `shortest` / `auto`). */
+  importModuleSpecifier?: "shortest" | "relative" | "non-relative" | "project-relative";
+  importModuleSpecifierEnding?: "auto" | "minimal" | "index" | "js";
+  /** Do not auto-import from these globs / specifiers matching these regular expressions. */
+  autoImportFileExcludePatterns?: string[];
+  autoImportSpecifierExcludeRegexes?: string[];
 }
 
 /** IDEA's SQL word case: To upper / To lower / Do not change. */
@@ -251,7 +266,15 @@ export const EDITOR_EXTRA_DEFAULTS = {
     formatterOnTag: "@formatter:on",
     formatterTagsRegexp: false,
   },
-  encodings: { global: "utf-8", project: "utf-8", properties: "iso-8859-1", nativeToAscii: false, utf8Bom: "never" },
+  encodings: {
+    global: "utf-8",
+    project: "utf-8",
+    properties: "iso-8859-1",
+    nativeToAscii: false,
+    utf8Bom: "never",
+    /** Project-relative path of a file or folder (`/` separators) to its encoding label. */
+    mappings: {} as Record<string, string>,
+  },
 };
 
 export type EditorExtras = typeof EDITOR_EXTRA_DEFAULTS;
@@ -317,6 +340,9 @@ export function validateEditorExtras(raw: unknown): EditorExtras {
   if (!DOCSTRING_FORMATS.includes(out.docstringFormat)) out.docstringFormat = "rest";
   for (const k of ["codeVisionUsagesPosition", "codeVisionAuthorPosition"] as const)
     if (!["top", "right"].includes(out.inlay[k])) out.inlay[k] = "top";
+  out.encodings.mappings = Object.fromEntries(
+    Object.entries(out.encodings.mappings).filter(([, label]) => typeof label === "string"),
+  );
   out.rainbowBracketColors = Math.min(5, Math.max(2, Math.round(out.rainbowBracketColors)));
   out.fontWeight = fontWeightOf(out.fontWeight, EDITOR_EXTRA_DEFAULTS.fontWeight);
   out.boldFontWeight = fontWeightOf(out.boldFontWeight, EDITOR_EXTRA_DEFAULTS.boldFontWeight);

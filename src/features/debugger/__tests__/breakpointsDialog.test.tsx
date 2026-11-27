@@ -1,6 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { provideEditorService } from "@/workbench/contributions";
+
+const { snapshotCompletion } = vi.hoisted(() => ({ snapshotCompletion: vi.fn() }));
+vi.mock("@/platform/ipc", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/platform/ipc")>();
+  return { ...real, commands: { ...real.commands, lspSnapshotCompletion: snapshotCompletion } };
+});
+vi.mock("@/editor/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/editor/api")>()),
+  attachDocument: async (file: string) => ({
+    text: () => `${file}\nfor x in xs:\n    print(x)\n`,
+    release: () => {},
+  }),
+}));
 import { addBreakpoint, useBreakpoints } from "../breakpoints/store";
 import { useExceptionBreakpoints } from "../breakpoints/exceptions";
 import { loadExceptionClasses, removeAllExceptionClasses, useExceptionClasses } from "../breakpoints/exceptionClasses";
@@ -46,6 +59,58 @@ describe("the Breakpoints dialog", () => {
     expect(condition().value).toBe("");
     clickRow("main.py:3", 2);
     expect(openFile).toHaveBeenCalledWith(path, { selection: { line: 2, col: 0 } });
+  });
+
+  it("completes the condition from the language server at the breakpoint's line, without a debug session", async () => {
+    vi.useFakeTimers();
+    snapshotCompletion.mockResolvedValue({
+      status: "ok",
+      data: [
+        {
+          label: "xs",
+          labelDetail: null,
+          labelDescription: null,
+          detail: "list",
+          kind: "variable",
+          sortText: "1",
+          insertText: "xs",
+          isSnippet: false,
+        },
+        {
+          label: "x",
+          labelDetail: null,
+          labelDescription: null,
+          detail: "int",
+          kind: "variable",
+          sortText: "0",
+          insertText: "x",
+          isSnippet: false,
+        },
+      ],
+    });
+    try {
+      render(<DebuggerOverlays />);
+      fireEvent.change(condition(), { target: { value: "x", selectionStart: 1, selectionEnd: 1 } });
+      await act(() => vi.advanceTimersByTimeAsync(200));
+      expect(snapshotCompletion).toHaveBeenCalledWith(
+        path,
+        `${path}\nfor x in xs:\n    x\n    print(x)\n`,
+        { line: 2, col: 5 },
+        expect.anything(),
+      );
+      const popup = screen.getByRole("listbox", { name: "Completions" });
+      expect(
+        within(popup)
+          .getAllByRole("option")
+          .map((o) => o.textContent),
+      ).toEqual(["xint", "xslist"]);
+      fireEvent.keyDown(condition(), { key: "ArrowDown" });
+      fireEvent.keyDown(condition(), { key: "Enter" });
+      expect(condition().value).toBe("xs");
+      expect(screen.queryByRole("listbox", { name: "Completions" })).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("saves the condition being typed when the dialog closes or another breakpoint is shown", () => {

@@ -31,7 +31,7 @@ pub use history::HistoryEntry;
 pub use plan::{PlanNode, PlanProperty};
 pub use source::{
     DataSource, DbColor, DbDriver, DbExternalTunnel, DbIntrospection, DbOptions, DbProperty, DbSchemaSelection,
-    DbSnowflake, DbSnowflakeAuth, DbSsh, DbSshAuth, DbSslMode, DbTxMode, DbVisibilityChange,
+    DbSnowflake, DbSnowflakeAuth, DbSourceFolder, DbSsh, DbSshAuth, DbSslMode, DbTxMode, DbVisibilityChange,
 };
 pub use sql::{CellValue, DbRowEdit, SortKey};
 
@@ -146,6 +146,10 @@ pub struct SchemaObject {
 pub struct TableInfo {
     pub name: String,
     pub kind: DbTableKind,
+    /// The table's or view's comment; `None` when it has none, or the engine keeps no comments.
+    #[serde(default)]
+    #[specta(optional)]
+    pub comment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -157,6 +161,10 @@ pub struct ColumnInfo {
     pub nullable: bool,
     pub default: Option<String>,
     pub primary_key: bool,
+    /// `None` when it has none, or the engine keeps no comments.
+    #[serde(default)]
+    #[specta(optional)]
+    pub comment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -172,6 +180,10 @@ pub struct IndexInfo {
 #[serde(rename_all = "camelCase")]
 #[serde(rename = "DbTableDetails")]
 pub struct TableDetails {
+    /// The table's comment; `None` when it has none, or the engine keeps no comments.
+    #[serde(default)]
+    #[specta(optional)]
+    pub comment: Option<String>,
     pub columns: Vec<ColumnInfo>,
     pub indexes: Vec<IndexInfo>,
     pub foreign_keys: Vec<ForeignKey>,
@@ -200,6 +212,10 @@ pub struct CompletionColumn {
     pub primary_key: bool,
     /// Has a default (or is generated): optional in INSERT.
     pub has_default: bool,
+    /// The column's comment; `None` when it has none, or the engine keeps no comments.
+    #[serde(default)]
+    #[specta(optional)]
+    pub comment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -560,6 +576,18 @@ impl DbManager {
                 None => {}
             }
             source::save(&self.root, &project)?;
+            if let Ok(mut folders) = source::load_folders(&self.root) {
+                let known: std::collections::HashSet<&str> = sources.iter().map(|source| source.id.as_str()).collect();
+                let mut changed = false;
+                for folder in &mut folders {
+                    let before = folder.sources.len();
+                    folder.sources.retain(|id| known.contains(id.as_str()));
+                    changed |= folder.sources.len() != before;
+                }
+                if changed {
+                    source::save_folders(&self.root, &folders)?;
+                }
+            }
             old
         };
         for o in old {
@@ -1095,7 +1123,11 @@ impl DbManager {
             .filter_map(|r| {
                 let mut it = r.into_iter();
                 let name = it.next().flatten()?;
-                Some(TableInfo { name, kind: DbTableKind::from_catalog(it.next().flatten().as_deref()) })
+                Some(TableInfo {
+                    name,
+                    kind: DbTableKind::from_catalog(it.next().flatten().as_deref()),
+                    comment: it.next().flatten().filter(|comment| !comment.is_empty()),
+                })
             })
             .collect())
     }
@@ -1119,11 +1151,18 @@ impl DbManager {
                 let nullable = flag(&it.next().flatten());
                 let default = it.next().flatten();
                 let primary_key = flag(&it.next().flatten());
-                Some(ColumnInfo { name, data_type, nullable, default, primary_key })
+                let comment = it.next().flatten().filter(|c| !c.is_empty());
+                Some(ColumnInfo { name, data_type, nullable, default, primary_key, comment })
             })
             .collect();
         if driver == DbDriver::Jdbc {
-            return Ok(TableDetails { columns, indexes: vec![], foreign_keys: vec![], triggers: vec![] });
+            return Ok(TableDetails {
+                comment: None,
+                columns,
+                indexes: vec![],
+                foreign_keys: vec![],
+                triggers: vec![],
+            });
         }
         let mut indexes: Vec<IndexInfo> = Vec::new();
         for r in pool.rows(&sql::indexes(driver, schema, table), MAX_META_ROWS).await? {
@@ -1175,7 +1214,17 @@ impl DbManager {
                 Some(TriggerInfo { name, timing, events })
             })
             .collect();
-        Ok(TableDetails { columns, indexes, foreign_keys, triggers })
+        let comment = match sql::table_comment(driver, schema, table) {
+            Some(q) => pool.rows(&q, 1).await.map_or_else(
+                |e| {
+                    tracing::warn!("table comment: {}", e.message);
+                    None
+                },
+                |rows| rows.into_iter().next().and_then(|r| r.into_iter().next().flatten()).filter(|c| !c.is_empty()),
+            ),
+            None => None,
+        };
+        Ok(TableDetails { comment, columns, indexes, foreign_keys, triggers })
     }
 
     /// The object privileges granted on `table`; empty, without a query, on the engines
@@ -1385,10 +1434,13 @@ impl DbManager {
             }
             DbDriver::Postgres => {
                 let rel = pool.rows(&sql::postgres_relation(schema, name), 1).await?.into_iter().next();
-                let (oid, kind) = match rel.as_deref() {
-                    Some([Some(oid), Some(kind)]) => {
-                        (oid.parse::<u32>().map_err(|e| IdeError::invalid(e.to_string()))?, kind.clone())
-                    }
+                let (oid, kind, owner, comment) = match rel.as_deref() {
+                    Some([Some(oid), Some(kind), owner, comment]) => (
+                        oid.parse::<u32>().map_err(|e| IdeError::invalid(e.to_string()))?,
+                        kind.clone(),
+                        owner.clone(),
+                        comment.clone(),
+                    ),
                     _ => return Err(missing()),
                 };
                 if kind == "v" || kind == "m" {
@@ -1409,6 +1461,7 @@ impl DbManager {
                             data_type: it.next().flatten().unwrap_or_default(),
                             not_null: flag(&it.next().flatten()),
                             default: it.next().flatten(),
+                            comment: it.next().flatten(),
                         })
                     })
                     .collect::<Vec<_>>();
@@ -1422,7 +1475,18 @@ impl DbManager {
                     })
                     .collect::<Vec<_>>();
                 let indexes = cells(pool.rows(&sql::postgres_ddl_indexes(oid), MAX_META_ROWS).await?, 0);
-                Ok(sql::postgres_table_ddl(schema, name, &columns, &constraints, &indexes))
+                let grants = pool
+                    .rows(&sql::postgres_ddl_grants(oid), MAX_META_ROWS)
+                    .await?
+                    .into_iter()
+                    .filter_map(|r| {
+                        let mut it = r.into_iter();
+                        Some((it.next().flatten()?, it.next().flatten()?, flag(&it.next().flatten())))
+                    })
+                    .collect();
+                let triggers = cells(pool.rows(&sql::postgres_ddl_triggers(oid), MAX_META_ROWS).await?, 0);
+                let extras = sql::DdlExtras { comment, owner, grants, triggers };
+                Ok(sql::postgres_table_ddl(schema, name, &columns, &constraints, &indexes, &extras))
             }
         }
     }
@@ -1470,6 +1534,7 @@ impl DbManager {
                 nullable: flag(&Some(next())),
                 primary_key: flag(&Some(next())),
                 has_default: flag(&Some(next())),
+                comment: Some(next()).filter(|c| !c.trim().is_empty()),
             };
             if name.is_empty() || column.name.is_empty() {
                 continue;

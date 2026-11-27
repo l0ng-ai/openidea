@@ -34,7 +34,8 @@ pub struct EditorConfigProps {
     pub indent_size: Option<u32>,
     pub tab_width: Option<u32>,
     pub end_of_line: Option<LineEnding>,
-    /// `utf-8`, `utf-8-bom`, `utf-16le`, `utf-16be` or `latin1`.
+    /// `utf-8`, `utf-8-bom`, `utf-16le`, `utf-16be`, `latin1` or an encoding
+    /// Settings › Editor › File Encodings lists (`iso-8859-15`, `windows-1252`, `gbk`, …).
     pub charset: Option<String>,
     pub trim_trailing_whitespace: Option<bool>,
     pub insert_final_newline: Option<bool>,
@@ -48,15 +49,29 @@ impl EditorConfigProps {
 
     /// WHATWG encoding label and BOM flag for `charset`.
     pub fn encoding(&self) -> Option<(&'static str, bool)> {
-        Some(match self.charset.as_deref()? {
-            "utf-8" => ("utf-8", false),
-            "utf-8-bom" => ("utf-8", true),
-            "utf-16le" => ("utf-16le", true),
-            "utf-16be" => ("utf-16be", true),
-            "latin1" => ("windows-1252", false),
-            _ => return None,
-        })
+        charset_encoding(self.charset.as_deref()?)
     }
+}
+
+/// WHATWG label and BOM flag of a lower-cased `charset` value: the five the spec
+/// defines and the other encodings Settings › Editor › File Encodings lists.
+fn charset_encoding(charset: &str) -> Option<(&'static str, bool)> {
+    Some(match charset {
+        "utf-8" => ("utf-8", false),
+        "utf-8-bom" => ("utf-8", true),
+        "utf-16le" => ("utf-16le", true),
+        "utf-16be" => ("utf-16be", true),
+        // WHATWG decodes ISO-8859-1 as windows-1252.
+        "latin1" | "iso-8859-1" | "windows-1252" => ("windows-1252", false),
+        "iso-8859-15" => ("iso-8859-15", false),
+        "gbk" => ("gbk", false),
+        "gb18030" => ("gb18030", false),
+        "big5" => ("big5", false),
+        "shift_jis" => ("shift_jis", false),
+        "euc-kr" => ("euc-kr", false),
+        "koi8-r" => ("koi8-r", false),
+        _ => return None,
+    })
 }
 
 /// Raw `key = value` pairs (keys lower-cased) in application order.
@@ -200,8 +215,7 @@ fn props_from(map: &HashMap<String, String>) -> EditorConfigProps {
         Some("cr") => Some(LineEnding::Cr),
         _ => None,
     };
-    let charset =
-        get("charset").filter(|c| matches!(c.as_str(), "utf-8" | "utf-8-bom" | "utf-16le" | "utf-16be" | "latin1"));
+    let charset = get("charset").filter(|c| charset_encoding(c).is_some());
     let max_line_length = get("max_line_length").and_then(|v| v.parse::<u32>().ok());
     EditorConfigProps {
         indent_style,
@@ -260,6 +274,13 @@ impl EditorConfig {
 
     /// Effective properties for `file` (absolute); `None` when no section applies.
     pub fn resolve(&self, file: &Path) -> Option<EditorConfigProps> {
+        let props = props_from(&self.resolve_pairs(file)?);
+        (!props.is_empty()).then_some(props)
+    }
+
+    /// Every `key = value` that applies to `file` (keys lower-cased), domain-specific ones
+    /// (`quote_type`, `ij_*`) included; `None` when no section applies.
+    pub fn resolve_pairs(&self, file: &Path) -> Option<HashMap<String, String>> {
         let mut chain: Vec<(PathBuf, Arc<ParsedFile>)> = Vec::new();
         for dir in file.ancestors().skip(1) {
             if let Some(parsed) = self.load(&dir.join(FILE_NAME)) {
@@ -286,11 +307,7 @@ impl EditorConfig {
                 }
             }
         }
-        if !matched {
-            return None;
-        }
-        let props = props_from(&map);
-        (!props.is_empty()).then_some(props)
+        matched.then_some(map)
     }
 }
 
@@ -402,5 +419,35 @@ mod tests {
         create_file(&ec, &r.join("new.l1")).unwrap();
         assert!(std::fs::read(r.join("new.l1")).unwrap().is_empty());
         assert!(create_file(&ec, &r.join("new.txt")).is_err(), "never truncates");
+    }
+
+    /// The labels of `ENCODING_CHOICES` in `src/platform/editorSettings.ts`, copied by hand.
+    #[test]
+    fn charset_maps_the_listed_encodings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path().canonicalize().unwrap();
+        let listed = [
+            ("utf-8", "utf-8"),
+            ("utf-16le", "utf-16le"),
+            ("utf-16be", "utf-16be"),
+            ("gbk", "gbk"),
+            ("gb18030", "gb18030"),
+            ("big5", "big5"),
+            ("shift_jis", "shift_jis"),
+            ("euc-kr", "euc-kr"),
+            ("windows-1252", "windows-1252"),
+            ("iso-8859-1", "windows-1252"),
+            ("ISO-8859-15", "iso-8859-15"),
+            ("koi8-r", "koi8-r"),
+        ];
+        let sections: String =
+            listed.iter().enumerate().map(|(i, (c, _))| format!("[*.e{i}]\ncharset = {c}\n")).collect();
+        write(&r.join(".editorconfig"), &format!("root = true\n{sections}"));
+        let ec = EditorConfig::new();
+        for (i, (charset, label)) in listed.iter().enumerate() {
+            let encoding = ec.resolve(&r.join(format!("a.e{i}"))).and_then(|p| p.encoding());
+            assert_eq!(encoding.map(|(label, _)| label), Some(*label), "charset = {charset}");
+            assert!(encoding_rs::Encoding::for_label(label.as_bytes()).is_some(), "{label} is a WHATWG label");
+        }
     }
 }

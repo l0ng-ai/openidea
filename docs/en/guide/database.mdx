@@ -20,12 +20,19 @@ Open it from **Tools › Database** or **View › Tool Windows › Database**. T
 | ClickHouse | ClickHouse (over HTTP)                                                                       |
 | Snowflake  | Snowflake (over HTTPS, see below)                                                            |
 | SQLite     | SQLite                                                                                       |
+| DuckDB     | DuckDB (official JDBC driver)                                                                |
 
 Presets set the default port and, where needed, SSL (for example Redshift, Neon and Supabase require SSL).
 
+## DuckDB
+
+Choose **New › Data Source › DuckDB**. In **Manage Drivers…**, add the [official DuckDB JDBC JAR](https://duckdb.org/docs/stable/clients/java) and save the profile. OpenIDEA fills in the driver class and URL template. A Java 17 or newer runtime is required.
+
+Choose **File** to open an existing database or create a new file, **In memory** for a temporary database that lasts until disconnect, or **JDBC URL** to enter a DuckDB URL directly. To inspect an existing file without changing it, enable **Read-only** in **Options**. The official driver applies this setting when it opens the file.
+
 ## JDBC drivers
 
-In a named data source's **General** tab, **Driver** defaults to **Built-in**. Use **Manage Drivers…** to view or add JDBC profiles for that data source type. Select the profile from **Driver** to use JDBC while keeping the source type and icon. **Go to Driver** opens the selected profile and its JAR list. Choose **New › Data Source › Custom JDBC** for databases without a preset, or open its **Manage Drivers…** to see all profiles and change their associated types.
+For presets with a built-in driver, **Driver** defaults to **Built-in** in the **General** tab. Use **Manage Drivers…** to view or add JDBC profiles for that data source type. Select the profile from **Driver** to use JDBC while keeping the source type and icon. **Go to Driver** opens the selected profile and its JAR list. Choose **New › Data Source › Custom JDBC** for databases without a preset, or open its **Manage Drivers…** to see all profiles and change their associated types.
 
 Add a named profile with the vendor's driver JAR, any dependency JARs, the fully qualified driver class, and an optional JDBC URL template. OpenIDEA reads the driver classes declared in the selected JARs. You can choose a different class or enter its full name manually. Use `{host}`, `{port}`, `{database}` or `{file}` in a template to get matching connection fields, or edit the JDBC URL directly. Only import drivers you trust. OpenIDEA loads their code in a separate process using an installed Java 17 or newer runtime.
 
@@ -42,7 +49,7 @@ Profiles are reused across projects. If a project file changes a connection's UR
 Click **+** in the Database tool window (or press `⌘N` / `Alt+Insert` there) and choose:
 
 - **Data Source ›** a preset from the list above.
-- **Data Source from File…** to open a SQLite file.
+- **Data Source from File…** to open a DuckDB (`.duckdb`) or SQLite file.
 - **Data Source from URL…** to paste a URL such as `postgresql://user@localhost:5432/db`. Schemes like `mysql://`, `mariadb://`, `sqlserver://`, `oracle://`, `clickhouse://`, `sqlite:path` and `jdbc:` URLs are accepted.
 - **Import from Clipboard** to read a connection URL from the clipboard.
 
@@ -80,13 +87,18 @@ The data source dialog has a name, an optional **Color:** (tints the tree and co
 ### Where settings and passwords are stored
 
 - Project data sources: `.openidea/data-sources.toml` in the project.
+- Data source folders: `.openidea/data-source-folders.toml` in the project.
 - Global data sources: `data-sources.toml` in the IDE's data directory (see [Data directories](/en/reference/data-directories)).
 - You can edit these files by hand or have a coding agent edit them while the project is open: the Database tool window picks up the change, and connections of data sources whose settings changed or that were removed are closed.
 - Passwords are never written to these files. Saved passwords go to the OS credential store (Keychain, Windows Credential Manager or Secret Service). Unsaved ones are kept in memory for the session; OpenIDEA asks for them when it connects.
 
 ## Browse the database
 
-The tree shows data source › database (PostgreSQL) › schema › `tables`, `views`, `materialized views`, `routines` and `sequences`. Tables contain `columns`, `keys`, `foreign keys`, `indexes` and `triggers`. Nodes load when you expand them. Turn on **Separate Procedures and Functions** in the tool window's options menu to split `routines`.
+The tree shows data source › database (PostgreSQL) › schema › `tables`, `views`, `materialized views`, `routines` and `sequences`. Tables contain `columns`, `keys`, `foreign keys`, `indexes` and `triggers`. Nodes load when you expand them. Turn on **Separate Procedures and Functions** in the tool window's options menu to split `routines`; **Show Table Comments** shows a table's comment in grey after its name.
+
+Select several data sources with `Shift` or `⌘`/`Ctrl` to refresh, deactivate or remove them together; the context menu shows the number of affected sources.
+
+**New › Folder…** creates a data source folder. Drag selected sources onto it, or use **Move to Folder**. Deleting a folder only moves its sources back to the root.
 
 Double-click a table to edit its data, a data source to open its console, and a routine, sequence or trigger to see its DDL. Type in **Filter objects** to filter the tree.
 
@@ -118,7 +130,7 @@ These keys work while the Database tree has focus. The context menu also has **T
 
 ## Query console
 
-Each data source has a query console, a `.sql` file kept in the IDE's data directory. Open it with **Query Console** (`⌘⇧L` / `Ctrl+Shift+Q`), from the tree, or with **Tools › Open Query Console**. Any writable `.sql` file in the project gets the same toolbar, so you can bind it to a data source and run it.
+Each data source has a query console, a `.sql` file kept under `consoles/db` in the IDE's data directory and listed under the **Database Consoles** root in **Scratches and Consoles**, grouped by data source name. Open it with **Query Console** (`⌘⇧L` / `Ctrl+Shift+Q`), from the tree, or with **Tools › Open Query Console**. Any writable `.sql` file in the project gets the same toolbar, so you can bind it to a data source and run it. In **Recent Files** (`⌘E` / `Ctrl+E`) a console shows its data source name, such as `console [Orders]`.
 
 The console toolbar has:
 

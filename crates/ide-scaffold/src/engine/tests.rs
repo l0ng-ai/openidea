@@ -131,6 +131,20 @@ fn package_steps_use_the_chosen_runner() {
 }
 
 #[test]
+fn create_vue_runs_without_prompting() {
+    let def = def("vue").unwrap();
+    let mut values = with_defaults(def, "My App", &Values::new());
+    // A valid package name, or create-vue asks for one.
+    assert_eq!(argv(&def.steps[0], &values)[2..], ["create-vue@latest", "my-app", "--ts"]);
+    values.insert("ts".into(), "false".into());
+    assert!(argv(&def.steps[0], &values).ends_with(&["--oxlint".to_owned()]));
+    for flag in ["router", "pinia", "vitest", "eslint"] {
+        values.insert(flag.into(), "true".into());
+    }
+    assert!(argv(&def.steps[0], &values).ends_with(&["--router", "--pinia", "--vitest", "--eslint"].map(String::from)));
+}
+
+#[test]
 fn conditional_arguments() {
     let def = def("python").unwrap();
     let mut values = with_defaults(def, "app", &Values::new());

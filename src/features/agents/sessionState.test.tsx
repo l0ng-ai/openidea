@@ -2373,6 +2373,46 @@ describe("meters in the task header", () => {
     }
   });
 
+  it("always renders conversation rows near the view, whatever WebKit decides about off-screen rows", async () => {
+    const observers: { callback: IntersectionObserverCallback; targets: Set<Element> }[] = [];
+    class FakeIntersectionObserver {
+      targets = new Set<Element>();
+      constructor(callback: IntersectionObserverCallback) {
+        observers.push({ callback, targets: this.targets });
+      }
+      observe(target: Element) {
+        this.targets.add(target);
+      }
+      unobserve(target: Element) {
+        this.targets.delete(target);
+      }
+      disconnect() {
+        this.targets.clear();
+      }
+      takeRecords() {
+        return [];
+      }
+    }
+    vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+    try {
+      const { container } = render(<SessionEditor input={input("A")} />);
+      await screen.findByText("Answer A");
+      const row = container.querySelector(`.${styles.conversationRow}`)!;
+      const observer = observers.find((o) => o.targets.has(row))!;
+      expect(observer).toBeDefined();
+      const report = (isIntersecting: boolean) =>
+        act(() =>
+          observer.callback([{ target: row, isIntersecting } as IntersectionObserverEntry], {} as IntersectionObserver),
+        );
+      report(true);
+      expect(row).toHaveAttribute("data-near");
+      report(false);
+      expect(row).not.toHaveAttribute("data-near");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("hides the status-bar Terminal button in the local checkout and opens the worktree's terminal otherwise", async () => {
     const opened: unknown[] = [];
     const disposeTerminal = registerActions([

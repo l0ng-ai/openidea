@@ -110,13 +110,15 @@ pub fn run_streamed_picking(
 }
 
 /// Runs an `npm` / `pnpm` command against the user's configured registry first (preserving
-/// corporate mirrors, proxies, and CAs), and retries once against [`PUBLIC_NPM_REGISTRY`] when
-/// the configured registry misses the package/version or rejects auth. Preserves the primary
-/// error if the public registry is unreachable.
+/// corporate mirrors, proxies, and CAs), and with `public_fallback` retries once against
+/// [`PUBLIC_NPM_REGISTRY`] when the configured registry misses the package/version or rejects
+/// auth. Preserves the primary error if the public registry is unreachable. Without
+/// `public_fallback` (Settings › Tools › Download Mirrors) the configured registry's error stands.
 pub fn run_npm_with_public_fallback(
     mut build: impl FnMut(&[String]) -> Command,
     specs: &[String],
     pnpm: bool,
+    public_fallback: bool,
     cancel: &CancellationToken,
     emit: Emit,
 ) -> IdeResult<String> {
@@ -127,7 +129,7 @@ pub fn run_npm_with_public_fallback(
         return Ok(output);
     }
     let err = failed_command(&label, &output, &status);
-    if cancel.is_cancelled() || !is_npm_registry_miss(&output) {
+    if !public_fallback || cancel.is_cancelled() || !is_npm_registry_miss(&output) {
         return Err(err);
     }
     emit(InstallEvent::Line {
@@ -437,6 +439,17 @@ impl Http {
     pub fn compressed(mut self) -> Self {
         self.compressed = true;
         self
+    }
+
+    /// Looks up `gh` on `search_path` (e.g. a path that includes IDE-managed tools).
+    pub(crate) fn with_gh_from(mut self, search_path: &std::ffi::OsStr) -> Self {
+        self.gh = which::which_in("gh", Some(search_path), ".").ok();
+        self
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn gh_path(&self) -> Option<&Path> {
+        self.gh.as_deref()
     }
 
     /// Skips `GITHUB_TOKEN` / `GH_TOKEN` / `gh auth token` (e.g. retrying a public GitHub endpoint after HTTP 401).

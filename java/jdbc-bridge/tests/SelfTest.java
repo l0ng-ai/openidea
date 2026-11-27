@@ -32,10 +32,12 @@ public class SelfTest {
                 case "getIdentifierQuoteString" -> "\"";
                 case "getSearchStringEscape" -> "\\";
                 case "getSchemas" -> rows(List.of(Map.of("TABLE_SCHEM", "app")));
+                case "getTables" -> rows(List.of(Map.of(
+                    "TABLE_NAME", "orders", "TABLE_TYPE", "TABLE", "REMARKS", "Orders table")));
                 case "getColumns" -> "app".equals(a[1]) && "%".equals(a[2]) ? rows(List.of(
                     Map.of("TABLE_NAME", "orders", "COLUMN_NAME", "id", "TYPE_NAME", "INT", "NULLABLE", 0),
                     Map.of("TABLE_NAME", "orders", "COLUMN_NAME", "note", "TYPE_NAME", "VARCHAR", "NULLABLE", 1,
-                        "COLUMN_DEF", "'none'"))) : rows(List.of());
+                        "COLUMN_DEF", "'none'", "REMARKS", "free text"))) : rows(List.of());
                 default -> throw new SQLFeatureNotSupportedException();
             });
             return proxy(Connection.class, (p, m, a) -> switch (m.getName()) {
@@ -154,6 +156,10 @@ public class SelfTest {
             send(out, 9, "schemaColumns", "app");
             var columns = new String(reply(in), StandardCharsets.UTF_8);
             assert columns.contains("orders") && columns.contains("note") && columns.contains("'none'") : columns;
+            assert columns.contains("comment") && columns.contains("free text") : columns;
+            send(out, 10, "tables", "app");
+            var tables = new String(reply(in), StandardCharsets.UTF_8);
+            assert tables.contains("orders") && tables.contains("Orders table") : tables;
         } finally {
             child.destroyForcibly().waitFor();
         }

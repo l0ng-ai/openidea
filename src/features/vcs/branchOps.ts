@@ -37,6 +37,7 @@ import {
   type RemoteTarget,
 } from "./ops";
 import { beginGitWork, conflictedFiles, currentRepo, currentRepoRoot, refreshNow, repoName, useVcs } from "./store";
+import { renameBranchInLogFilters } from "./logStore";
 import { tx, txTemplate } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { workflowSettings } from "@/platform/workflowSettings";
@@ -761,7 +762,11 @@ export async function renameBranch(branch: Branch) {
       },
     },
   );
-  if (ok !== undefined && useProject.getState().project === project) renameRecent(name, to);
+  if (ok !== undefined && useProject.getState().project === project) {
+    renameRecent(name, to);
+    // The log follows: its Branch filter and "Log: branch" tabs keep naming the branch.
+    if (repo) renameBranchInLogFilters(repo, name, to);
+  }
 }
 
 async function promptBranchRename(
@@ -1376,6 +1381,27 @@ export async function checkoutAndRebase({ branch, repos }: CheckoutRebaseTarget)
   });
 }
 
+/**
+ * Checkout and Update on a local branch: checks it out (in `roots`, or the
+ * current repository), then updates it like Update does, in each repository
+ * where the checkout took place.
+ */
+export async function checkoutAndUpdate(branch: NamedBranch, roots?: readonly string[]) {
+  const project = useProject.getState().project;
+  if (roots) await checkoutInRepos(branch, roots);
+  else await checkoutBranch(branch);
+  if (useProject.getState().project !== project) return;
+  const repos: readonly (string | null)[] = roots ?? [currentRepo()];
+  const heads = await Promise.all(
+    repos.map(async (repo) => [repo, await call(commands.vcsBranchInfo(repo)).catch(() => null)] as const),
+  );
+  if (useProject.getState().project !== project) return;
+  const targets = heads
+    .filter(([, info]) => info?.head === branch.name)
+    .map(([repo]) => ({ repo: repo ?? undefined, branch }));
+  if (targets.length) await updateBranches(targets);
+}
+
 export type BranchUpdateTarget = { repo?: string; branch?: Pick<Branch, "name" | "remote"> };
 
 /** Update the named branches. Checked-out branches follow the configured update method. */
@@ -1741,6 +1767,8 @@ export async function renameInRepos(name: string, roots: readonly string[], upst
       if (useProject.getState().project !== project) return;
       if (complete) renameRecent(name, to);
       else rememberBranch(to);
+      // The log follows the kept renames in every renamed repository.
+      if (complete) for (const root of roots) renameBranchInLogFilters(root, name, to);
       // Only change tracking after the user has decided which renames to retain.
       if (unsetUpstream) {
         for (const { root } of done) {

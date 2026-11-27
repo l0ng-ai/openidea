@@ -23,6 +23,7 @@ import { useProject } from "@/platform/project";
 import { syncRemoteRecentMenu } from "@/platform/remote";
 import { useContributions, useMenuSlotItems, useStandaloneEditor } from "@/workbench/contributions";
 import { useDistractionFree } from "@/workbench/distractionFree";
+import { useFullscreen } from "@/workbench/zenMode";
 import { javaFileNameOf, menuLabelParams } from "@/workbench/menuLabels";
 import { orderStatusItems } from "@/workbench/StatusBar";
 import { statusWidgetRows } from "@/workbench/statusBarWidgets";
@@ -277,6 +278,10 @@ export function installMenuBridge(): () => void {
     useKeymap.subscribe(push),
     useDistractionFree.subscribe((s, prev) => {
       if (s.active !== prev.active) push();
+    }),
+    // View › Appearance › Enter / Exit Zen Mode also follows full screen.
+    useFullscreen.subscribe((s, prev) => {
+      if (s.on !== prev.on && useDistractionFree.getState().active) push();
     }),
     // Window › Hide All Tool Windows reads "Restore Tool Windows" while it would restore them.
     useToolWindowLayout.subscribe((s, prev) => {

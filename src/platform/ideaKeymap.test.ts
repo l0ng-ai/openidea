@@ -92,12 +92,74 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Compare File with Editor", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="C" parent="$default"><action id="CompareFileWithEditor"><keyboard-shortcut first-keystroke="ctrl alt D"/></action></keymap>`,
+    );
+    expect(k.overrides["diff.compareFileWithEditor"]).toEqual([normalizeBinding("Ctrl+Alt+D")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Increase / Decrease Font Size in All Editors", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="F" parent="Mac OS X 10.5+"><action id="EditorIncreaseFontSizeGlobal"><keyboard-shortcut first-keystroke="shift meta EQUALS"/></action><action id="EditorDecreaseFontSizeGlobal"><keyboard-shortcut first-keystroke="shift meta MINUS"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.increaseFontSizeAll"]).toEqual([normalizeBinding("Meta+Shift+=")]);
+    expect(k.overrides["editor.decreaseFontSizeAll"]).toEqual([normalizeBinding("Meta+Shift+-")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Scroll Left / Scroll Right", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="Mac OS X 10.5+"><action id="EditorScrollLeft"><keyboard-shortcut first-keystroke="meta alt LEFT"/></action><action id="EditorScrollRight"><keyboard-shortcut first-keystroke="meta alt RIGHT"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.scrollLeft"]).toEqual([normalizeBinding("Meta+Alt+Left")]);
+    expect(k.overrides["editor.scrollRight"]).toEqual([normalizeBinding("Meta+Alt+Right")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Scroll Up / Scroll Down and Move if Necessary", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="E" parent="$default"><action id="EditorScrollUpAndMove"><keyboard-shortcut first-keystroke="alt UP"/></action><action id="EditorScrollDownAndMove"><keyboard-shortcut first-keystroke="alt DOWN"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.scrollUpAndMove"]).toEqual([normalizeBinding("Alt+Up")]);
+    expect(k.overrides["editor.scrollDownAndMove"]).toEqual([normalizeBinding("Alt+Down")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Move Up / Down and Scroll (with Selection)", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="E" parent="$default"><action id="EditorMoveUpAndScroll"><keyboard-shortcut first-keystroke="ctrl alt UP"/></action><action id="EditorMoveDownAndScroll"><keyboard-shortcut first-keystroke="ctrl alt DOWN"/></action><action id="EditorMoveUpAndScrollWithSelection"><keyboard-shortcut first-keystroke="ctrl alt shift UP"/></action><action id="EditorMoveDownAndScrollWithSelection"><keyboard-shortcut first-keystroke="ctrl alt shift DOWN"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.moveUpAndScroll"]).toEqual([normalizeBinding("Ctrl+Alt+Up")]);
+    expect(k.overrides["editor.moveDownAndScroll"]).toEqual([normalizeBinding("Ctrl+Alt+Down")]);
+    expect(k.overrides["editor.moveUpAndScrollWithSelection"]).toEqual([normalizeBinding("Ctrl+Alt+Shift+Up")]);
+    expect(k.overrides["editor.moveDownAndScrollWithSelection"]).toEqual([normalizeBinding("Ctrl+Alt+Shift+Down")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Scroll to Top / Scroll to Bottom", () => {
     const k = parseIdeaKeymap(
       `<keymap name="X" parent="Mac OS X 10.5+"><action id="EditorScrollTop"><keyboard-shortcut first-keystroke="HOME"/></action><action id="EditorScrollBottom"><keyboard-shortcut first-keystroke="END"/></action></keymap>`,
     );
     expect(k.overrides["editor.scrollToTop"]).toEqual([normalizeBinding("Home")]);
     expect(k.overrides["editor.scrollToBottom"]).toEqual([normalizeBinding("End")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Toggle Zen Mode", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="E" parent="Mac OS X 10.5+"><action id="ToggleZenMode"><keyboard-shortcut first-keystroke="control meta Z"/></action></keymap>`,
+    );
+    expect(k.overrides["view.toggleZenMode"]).toEqual([normalizeBinding("Ctrl+Meta+Z")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Save as Live Template, which has no shortcut in the presets", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="E" parent="$default"><action id="SaveAsTemplate"><keyboard-shortcut first-keystroke="ctrl alt shift T"/></action></keymap>`,
+    );
+    expect(k.overrides["code.saveAsLiveTemplate"]).toEqual([normalizeBinding("Ctrl+Alt+Shift+T")]);
     expect(k.unknownActions).toEqual([]);
   });
 
@@ -128,6 +190,15 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Kill to Word Start / End", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="K" parent="$default"><action id="EditorKillToWordStart"><keyboard-shortcut first-keystroke="alt BACK_SPACE"/></action><action id="EditorKillToWordEnd"><keyboard-shortcut first-keystroke="alt D"/></action></keymap>`,
+    );
+    expect(k.overrides["code.killToWordStart"]).toEqual([normalizeBinding("Alt+Backspace")]);
+    expect(k.overrides["code.killToWordEnd"]).toEqual([normalizeBinding("Alt+D")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Hungry Backspace", () => {
     const k = parseIdeaKeymap(
       `<keymap name="H" parent="$default"><action id="EditorHungryBackSpace"><keyboard-shortcut first-keystroke="control alt BACK_SPACE"/></action></keymap>`,
@@ -145,11 +216,31 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it('maps the word moves and deletes in Different "CamelHumps" Mode', () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="H" parent="$default"><action id="EditorNextWordInDifferentHumpsMode"><keyboard-shortcut first-keystroke="control alt RIGHT"/></action><action id="EditorPreviousWordInDifferentHumpsModeWithSelection"><keyboard-shortcut first-keystroke="control alt shift LEFT"/></action><action id="EditorDeleteToWordStartInDifferentHumpsMode"><keyboard-shortcut first-keystroke="control alt BACK_SPACE"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.nextWordInDifferentHumpsMode"]).toEqual([normalizeBinding("Ctrl+Alt+Right")]);
+    expect(k.overrides["editor.previousWordInDifferentHumpsModeWithSelection"]).toEqual([
+      normalizeBinding("Ctrl+Alt+Shift+Left"),
+    ]);
+    expect(k.overrides["code.deleteToWordStartInDifferentHumpsMode"]).toEqual([normalizeBinding("Ctrl+Alt+Backspace")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Swap Selection Boundaries", () => {
     const k = parseIdeaKeymap(
       `<keymap name="S" parent="$default"><action id="EditorSwapSelectionBoundaries"><keyboard-shortcut first-keystroke="control X" second-keystroke="control X"/></action></keymap>`,
     );
     expect(k.overrides["editor.swapSelectionBoundaries"]).toEqual([normalizeBinding("Ctrl+X Ctrl+X")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Toggle Sticky Selection", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="S" parent="$default"><action id="EditorToggleStickySelection"><keyboard-shortcut first-keystroke="control SPACE"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.toggleStickySelection"]).toEqual([normalizeBinding("Ctrl+Space")]);
     expect(k.unknownActions).toEqual([]);
   });
 
@@ -210,6 +301,14 @@ describe("IntelliJ IDEA keymap import", () => {
       "toolwindow.resizeUp": [normalizeBinding("Ctrl+Alt+Up")],
       "toolwindow.resizeDown": [normalizeBinding("Ctrl+Alt+Down")],
     });
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Delete Duplicate Lines", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="Mac OS X 10.5+"><action id="EditorUniqueLines"><keyboard-shortcut first-keystroke="shift meta 7"/></action></keymap>`,
+    );
+    expect(k.overrides["code.uniqueLines"]).toEqual([normalizeBinding("Shift+Meta+7")]);
     expect(k.unknownActions).toEqual([]);
   });
 

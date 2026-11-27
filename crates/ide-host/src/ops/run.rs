@@ -334,9 +334,18 @@ pub async fn run_start(
         Some(agent) => agent.wrap_output(on_output),
         None => on_output,
     };
+    // `execute_run_configuration` asked the Run tool window to start it.
+    let mcp = crate::mcp::run::configs::config_run_launch(&config);
+    let on_output = match &mcp {
+        Some(mcp) => mcp.wrap_output(on_output),
+        None => on_output,
+    };
     let result = start_inner(host, window, config, on_output, agent.as_ref(), &cancel).await;
     if let Some(agent) = &agent {
         agent.started(&result);
+    }
+    if let Some(mcp) = &mcp {
+        mcp.started(&result);
     }
     if let Some(id) = request {
         host.end_request(id);
@@ -493,7 +502,7 @@ async fn start_inner(
     }
     // A Python configuration pointing at a missing interpreter fails in the depth of
     // process spawn otherwise; name the cause and the fix like PyCharm's "Invalid SDK".
-    let is_python = matches!(config.kind.as_str(), "python" | "pytest" | "django-test");
+    let is_python = matches!(config.kind.as_str(), "python" | "pytest" | "unittest" | "doctest" | "django-test");
     if is_python && Path::new(&config.command).components().count() > 1 {
         let cwd = project.root.join(config.cwd.as_deref().unwrap_or(Path::new("")));
         let executable = ide_core::project_roots::resolve(&cwd, Path::new(&config.command));

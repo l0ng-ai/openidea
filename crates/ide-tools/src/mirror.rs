@@ -112,7 +112,7 @@ mod tests {
     const ASSET: &str = "https://github.com/LuaLS/lua-language-server/releases/download/3.13.5/x.zip";
 
     fn settings(mirror: &str) -> ToolDownloadSettings {
-        ToolDownloadSettings { github_mirror: mirror.into() }
+        ToolDownloadSettings { github_mirror: mirror.into(), ..Default::default() }
     }
 
     #[test]

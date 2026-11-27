@@ -55,7 +55,7 @@ exclude = ["**/.git", "**/node_modules", "**/target", "**/dist"]
 | 插件             | 插件                                                                                                                                                                                                                                                            |
 | 版本控制         | 提交；确认；目录映射；问题导航；日志；搁置；Git；GitHub                                                                                                                                                                                                         |
 | 构建、执行、部署 | CMake；Gradle；Maven；控制台；调试器（数据视图、单步执行）；Python 调试器；运行/调试；运行目标；部署（选项）                                                                                                                                                    |
-| 语言和框架       | 语言服务器；Go（构建标签、Go 模块）；Java；Markdown；Node.js；PHP；Python 解释器；Prettier；oxfmt；Biome；Ruff；Black 格式化工具；Ruby；Rust；TypeScript                                                                                                        |
+| 语言和框架       | 语言服务器；Go（构建标签、Go 模块）；Java；Markdown；Node.js；PHP；Python 解释器；Prettier；oxfmt；Biome；dprint；Ruff；Black 格式化工具；Ruby；Rust；TypeScript                                                                                                |
 | 工具             | 智能体（聊天）；终端；保存时操作；外部工具；SSH 配置；MCP 服务器                                                                                                                                                                                                |
 | 安全             | 项目信任                                                                                                                                                                                                                                                        |
 
@@ -90,7 +90,7 @@ exclude = ["**/.git", "**/node_modules", "**/target", "**/dist"]
 | `dateFormat.overrideSystem`  | `false`        | **覆盖系统日期和时间格式**（日期格式页）。                                                                                    |
 | `dateFormat.pattern`         | `"dd.MM.yyyy"` | 日期格式，可用 `dd`、`MM`、`MMM`、`yy`、`yyyy`。                                                                              |
 | `dateFormat.use24Hour`       | `true`         | 使用 24 小时制。                                                                                                              |
-| `dateFormat.pretty`          | `true`         | 显示“今天”“昨天”“5 分钟前”这类相对时间。                                                                                      |
+| `dateFormat.pretty`          | `true`         | 显示“今天”“昨天”“5 分钟前”这类相对时间（列表中带时间，注解装订区域仅显示日期）。                                              |
 
 ### `[appearance]`
 
@@ -139,6 +139,16 @@ exclude = ["**/.git", "**/node_modules", "**/target", "**/dist"]
 | `formatOnSave`                           | `false`                          | 保存时重新格式化代码（工具 › 保存时操作）。                                        |
 
 `[editor.general]`、`[editor.appearance]`、`[editor.completion]`、`[editor.tabs]`、`[editor.codeStyle]`、`[editor.encodings]` 等子表保存对应编辑器页面的选项。
+
+项目 `.openidea/settings.toml` 中的 `[editor.encodings.mappings]` 为单个文件或文件夹指定编码。键是相对于项目的路径，使用 `/` 分隔。在状态栏中选择编码时，该文件会被添加到这里；使用 **Convert** 时，在保存文件之后添加。
+
+```toml
+[editor.encodings.mappings]
+"src/main/java" = "iso-8859-15"   # 文件夹中的所有文件
+"web/legacy/index.jsp" = "windows-1252"
+```
+
+文件自身的条目优先于 `.editorconfig`。文件夹的条目在 `.editorconfig` 未设置 `charset` 时生效，并优先于项目编码；最近的文件夹优先。编码未知或路径在项目之外的条目会被忽略。
 
 ### `[files]`
 

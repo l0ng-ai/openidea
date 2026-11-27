@@ -4,10 +4,13 @@
  * direct interpreter invocation for main files. Best effort, IDEA-style.
  */
 import type { RunConfig } from "@/platform/ipc";
+import { validateLanguages, type PythonTestRunner } from "@/platform/languageSettings";
+import { useProject } from "@/platform/project";
 import { jvmModuleDir } from "@/platform/javaLaunch";
 import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
 import { inGradleModule } from "./gradleModuleTests";
 import { systemPython } from "./pythonTypes";
+import { cypressSelection, isCypressComponentSpec } from "./testing/cypress";
 import { phpunitArgs } from "./testing/phpunit";
 import { frameworkFor } from "./testing";
 import { goTestParts } from "./goArguments";
@@ -55,8 +58,8 @@ const stem = (p: string) => (p.split("/").pop() ?? p).replace(/\.[^.]+$/, "");
 /** Kinds whose test configs can run a file of this extension. */
 function testKinds(relPath: string): string[] {
   if (/\.cs$/i.test(relPath)) return ["dotnet-test"];
-  if (/\.[cm]?[jt]sx?$/.test(relPath)) return ["npm", "deno", "bun", "node"];
-  if (/\.py$/.test(relPath)) return ["pytest", "python", "django-test"];
+  if (/\.[cm]?[jt]sx?$/.test(relPath)) return ["npm", "deno", "bun", "node", "cypress"];
+  if (/\.py$/.test(relPath)) return ["pytest", "unittest", "python", "django-test"];
   if (/\.php$/.test(relPath)) return ["phpunit"];
   if (/_spec\.rb$/.test(relPath)) return ["rspec", "rake", "ruby"];
   if (/(^|\/)test_[^/]*\.rb$|_test\.rb$/.test(relPath)) return ["rake", "rspec", "ruby"];
@@ -126,11 +129,14 @@ function derived(base: RunConfig, relPath: string, patch: Partial<RunConfig>): R
 export function projectPython(configs: RunConfig[], relPath?: string): { command: string; prefix: string[] } | null {
   if (relPath !== undefined)
     configs = allClosest(
-      configs.filter((c) => ["python", "pytest", "django-test"].includes(c.kind)),
+      configs.filter((c) => PYTHON_KINDS.includes(c.kind)),
       relPath,
     );
   // A detected configuration says what the project uses; one made by hand only what it runs itself.
-  const py = configs.find((c) => c.kind === "python" && c.detected) ?? configs.find((c) => c.kind === "python");
+  const py =
+    configs.find((c) => c.kind === "python" && c.detected) ??
+    configs.find((c) => c.kind === "python") ??
+    configs.find((c) => c.kind === "unittest");
   if (py) {
     // The interpreter part ends where the program starts: `-m`, or the script (`manage.py`). What follows
     // (`runserver`, `test`…) belongs to that program, never to the interpreter.
@@ -152,25 +158,50 @@ export function projectPython(configs: RunConfig[], relPath?: string): { command
   return null;
 }
 
+/** Kinds of a Python project's configurations. */
+export const PYTHON_KINDS = ["python", "pytest", "unittest", "doctest", "django-test"];
+
+/** Settings › Python › Testing › Default test runner. */
+export function pythonTestRunner(): PythonTestRunner {
+  return validateLanguages(useProject.getState().settings?.languages).python.testRunner;
+}
+
+/** A module of unittest tests (and not pytest's): Autodetect runs it with unittest. */
+const isUnittestModule = (content: string) =>
+  /^[ \t]*(?:import|from)[ \t]+unittest\b/m.test(content) && !/^[ \t]*(?:import|from)[ \t]+pytest\b/m.test(content);
+
 /**
- * PyCharm runs pytest for a `test_*.py` file even when the project declares no
- * test setup: `python -m pytest`, with the project's interpreter when detected.
- * The "Edit configuration templates…" › pytest values win over both the
- * interpreter and the runner arguments, like a template a new config inherits.
+ * The test runner of a Python file with no test configuration for it, like PyCharm's "Default
+ * test runner": the setting, or with Autodetect, unittest for a module of unittest tests, else pytest.
  */
-function implicitPytest(relPath: string, configs: RunConfig[]): RunConfig | null {
-  if (!relPath.endsWith(".py")) return null;
+function implicitPythonRunner(content: string): "pytest" | "unittest" {
+  const runner = pythonTestRunner();
+  if (runner !== "auto") return runner;
+  return isUnittestModule(content) ? "unittest" : "pytest";
+}
+
+/**
+ * PyCharm runs a `test_*.py` file even when the project declares no test setup: `python -m pytest`
+ * (or `python -m unittest`, by `implicitPythonRunner`), with the project's interpreter when
+ * detected. The "Edit configuration templates…" › pytest values win over both the interpreter and
+ * the runner arguments, like a template a new config inherits.
+ */
+export function implicitPythonTests(
+  relPath: string,
+  configs: RunConfig[],
+  runner: "pytest" | "unittest" | "doctest",
+): RunConfig {
   const owners = allClosest(
-    configs.filter((c) => ["python", "pytest", "django-test"].includes(c.kind)),
+    configs.filter((c) => PYTHON_KINDS.includes(c.kind)),
     relPath,
   );
   const py = projectPython(owners);
   const base: RunConfig = {
-    id: "pytest:implicit",
-    name: "pytest",
-    kind: "pytest",
+    id: `${runner}:implicit`,
+    name: runner === "pytest" ? "pytest" : `python -m ${runner}`,
+    kind: runner,
     command: py?.command ?? systemPython(),
-    args: [...(py?.prefix ?? []), "-m", "pytest"],
+    args: [...(py?.prefix ?? []), "-m", runner],
     cwd: owners[0]?.cwd ?? null,
     module: owners[0]?.module,
     env: { ...owners[0]?.env },
@@ -178,7 +209,7 @@ function implicitPytest(relPath: string, configs: RunConfig[]): RunConfig | null
     isTest: true,
     debugAdapter: "debugpy",
   };
-  return applyPytestTemplate(base);
+  return runner === "pytest" ? applyPytestTemplate(base) : base;
 }
 
 /**
@@ -199,6 +230,22 @@ function applyPytestTemplate(config: RunConfig): RunConfig {
   return { ...config, command: line.command, args: line.args };
 }
 
+/**
+ * The docstring examples of `relPath`, or of the class or function `qualname` in it (PyCharm's
+ * "Doctests in …"), on the project's interpreter.
+ */
+export function doctestConfig(relPath: string, configs: RunConfig[], qualname = ""): RunConfig {
+  const base = implicitPythonTests(relPath, configs, "doctest");
+  const file = relToCwd(relPath, base);
+  const name = `Doctests in ${qualname.split(".").pop() || stem(relPath)}`;
+  return {
+    ...base,
+    id: `context:doctest:${relPath}:${qualname}`,
+    name,
+    args: [...base.args, qualname ? `${file}::${qualname}` : file],
+  };
+}
+
 /** A Playwright spec: it imports Playwright Test, or uses its `test.describe` / `test.step` / `test.use`. */
 export function isPlaywrightSpec(content: string): boolean {
   return /['"]@playwright\/test['"]|\btest\.(?:describe|step|use)\s*[.(]/.test(content);
@@ -212,22 +259,34 @@ function byRunner(bases: RunConfig[], content: string): RunConfig[] {
 }
 
 /**
+ * Cypress specs (`*.cy.*`, files in `cypress/`) run on the project's Cypress configurations, however far, when it
+ * has any; other files never do, so they keep their runner (Vitest at the workspace root…) as before.
+ */
+function byCypress(candidates: RunConfig[], relPath: string): RunConfig[] {
+  const cypress = candidates.filter((c) => frameworkFor(c) === "cypress");
+  const spec = /\.cy\.[cm]?[jt]sx?$|(^|\/)cypress\//.test(relPath);
+  return spec && cypress.length ? cypress : candidates.filter((c) => !cypress.includes(c));
+}
+
+/**
  * Test configurations that can run `relPath` equally well (same, closest working
  * directory: `npm run test` and `npm run test:unit`…); the default one first.
  * `content` (the file's text) tells a Playwright spec from other JS tests.
  */
 export function testBasesFor(relPath: string, configs: RunConfig[], content?: string): RunConfig[] {
   const kinds = testKinds(relPath);
+  // The chosen default test runner sets the other one's configurations aside (Autodetect keeps both).
+  const runner = pythonTestRunner();
+  const other = runner === "pytest" ? "unittest" : runner === "unittest" ? "pytest" : null;
   // Configurations produced from a test or file are results of narrowing, never bases for it.
   const candidates = configs
-    .filter((c) => c.isTest && kinds.includes(c.kind) && !c.id.startsWith("context:"))
+    .filter((c) => c.isTest && kinds.includes(c.kind) && c.kind !== other && !c.id.startsWith("context:"))
     // `node` configurations run a file of their own; only Playwright's (`npx playwright test`) take a test file.
     .filter((c) => c.kind !== "node" || frameworkFor(c) === "playwright")
     .sort((a, b) => kinds.indexOf(a.kind) - kinds.indexOf(b.kind));
-  const best = allClosest(candidates, relPath);
+  const best = allClosest(byCypress(candidates, relPath), relPath);
   if (best.length) return content === undefined ? best : byRunner(best, content);
-  const fallback = implicitPytest(relPath, configs);
-  return fallback ? [fallback] : [];
+  return /\.py$/.test(relPath) ? [implicitPythonTests(relPath, configs, implicitPythonRunner(content ?? ""))] : [];
 }
 
 /**
@@ -243,6 +302,13 @@ export function testConfigFor(
   base ??= testBasesFor(relPath, configs, content)[0];
   if (!base) return null;
   const file = relToCwd(relPath, base);
+  if (frameworkFor(base) === "cypress") {
+    return derived(
+      base,
+      relPath,
+      cypressSelection(base, [file], { component: isCypressComponentSpec(relPath, content) }),
+    );
+  }
   switch (base.kind) {
     case "dotnet-test": {
       const methods = csharpTargets(content ?? "")
@@ -266,6 +332,9 @@ export function testConfigFor(
     case "python":
     case "rspec":
       return derived(base, relPath, { args: [...base.args, file] });
+    case "unittest":
+      // unittest's dotted name of the module, which also runs a module of a namespace package.
+      return derived(base, relPath, { args: [...base.args, djangoLabel(file)] });
     case "phpunit":
       return derived(base, relPath, { args: phpunitArgs(base.args, { target: file }) });
     case "rake": {
