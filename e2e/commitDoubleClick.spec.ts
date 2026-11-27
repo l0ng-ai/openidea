@@ -3,7 +3,7 @@
  * menu, the modal Commit dialog and the non-modal Commit window defaults. Git is stubbed at the IPC layer.
  */
 import type { Locator, Page } from "@playwright/test";
-import { expect, openFromTree, stubDesktop, test } from "./fixtures";
+import { expect, openFromTree, stubDesktop, stubSettingsWrites, test } from "./fixtures";
 
 const ROOT = "/dev/acme-api";
 const FILE = "build.gradle.kts";
@@ -43,33 +43,8 @@ async function stubRepository(page: Page) {
 }
 
 /**
- * Settings writes land in the project store the way the backend answers `settings_set`: the dotted
- * key is set, `null` removes it, and the store takes the returned settings.
+ * Sets a commit setting in the store directly, before the window that reads it opens.
  */
-async function stubSettingsWrites(page: Page) {
-  await page.evaluate(async () => {
-    const storeModule = "/src/platform/project.ts";
-    const { useProject } = await import(/* @vite-ignore */ storeModule);
-    window.__ipc.handlers.settings_set = (args) => {
-      const { key, value } = args as { key: string; value: string };
-      const next = structuredClone(useProject.getState().settings ?? {}) as Record<string, unknown>;
-      const path = key.split(".");
-      let node = next;
-      for (const seg of path.slice(0, -1)) {
-        node[seg] ??= {};
-        node = node[seg] as Record<string, unknown>;
-      }
-      const last = path[path.length - 1]!;
-      const parsed: unknown = JSON.parse(value);
-      if (parsed === null) delete node[last];
-      else node[last] = parsed;
-      useProject.setState({ settings: next as never });
-      return next;
-    };
-  });
-}
-
-/** Sets a commit setting in the store directly, before the window that reads it opens. */
 async function setCommitSetting(page: Page, key: "nonModal" | "doubleClickOpensDiff", value: boolean | null) {
   await page.evaluate(
     async ({ key, value }) => {
