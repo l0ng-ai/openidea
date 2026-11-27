@@ -140,6 +140,16 @@ exclude = ["**/.git", "**/node_modules", "**/target", "**/dist"]
 
 `[editor.general]`、`[editor.appearance]`、`[editor.completion]`、`[editor.tabs]`、`[editor.codeStyle]`、`[editor.encodings]` 等子表保存对应编辑器页面的选项。
 
+项目 `.openidea/settings.toml` 中的 `[editor.encodings.mappings]` 为单个文件或文件夹指定编码。键是相对于项目的路径，使用 `/` 分隔。在状态栏中选择编码时，该文件会被添加到这里；使用 **Convert** 时，在保存文件之后添加。
+
+```toml
+[editor.encodings.mappings]
+"src/main/java" = "iso-8859-15"   # 文件夹中的所有文件
+"web/legacy/index.jsp" = "windows-1252"
+```
+
+文件自身的条目优先于 `.editorconfig`。文件夹的条目在 `.editorconfig` 未设置 `charset` 时生效，并优先于项目编码；最近的文件夹优先。编码未知或路径在项目之外的条目会被忽略。
+
 ### `[files]`
 
 | 键                       | 默认值                                        | 说明                                                                              |

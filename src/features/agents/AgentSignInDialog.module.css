@@ -9,7 +9,7 @@
   width: 100%;
   height: 300px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-small);
   background: var(--bg-editor, var(--bg));
   overflow: hidden;
   padding: 6px 8px;

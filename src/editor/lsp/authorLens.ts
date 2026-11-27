@@ -35,7 +35,7 @@ export function authorSummary(blame: readonly BlameLine[], from: number, to: num
 }
 
 /**
- * The date exactly as the blame gutter renders it (`features/vcs/model.ts` `formatDate`): the user's
+ * The date as the blame gutter renders it: the user's
  * pattern when the Date Formats override is on, the system's compact date otherwise. One commit then
  * reads the same in the gutter, the hints and the Git log.
  */

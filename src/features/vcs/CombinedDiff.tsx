@@ -243,6 +243,8 @@ export function CombinedDiffView({
   const [viewStates] = useState(() => new Map<string, DiffViewState>());
   const [entriesCache] = useState<DiffEntriesCache>(() => new Map());
   const keys = useMemo(() => entries.map((e) => e.key), [entries]);
+  // Each diff's own key, hashing its texts: worked out once, not on every scroll frame.
+  const diffKeys = useMemo(() => items.map((item) => diffInput(item).key), [items]);
 
   // Blocks that stay mounted when scrolled away: the one holding the keyboard focus, so typing still
   // reaches it, and with autosave off those with unsaved staged edits, which unmounting would save.
@@ -253,12 +255,12 @@ export function CombinedDiffView({
       const slot = scrollRef.current?.contains(active) ? active?.closest<HTMLElement>("[data-index]") : null;
       if (slot) shown.add(Number(slot.dataset.index));
       if (useProject.getState().settings?.files?.autoSave === false)
-        items.forEach((item, index) => {
-          if (ownedStagedDocument(combinedDiffDocumentOwner(tabKey, diffInput(item).key))?.dirty) shown.add(index);
+        diffKeys.forEach((key, index) => {
+          if (ownedStagedDocument(combinedDiffDocumentOwner(tabKey, key))?.dirty) shown.add(index);
         });
       return [...shown].sort((a, b) => a - b);
     },
-    [items, tabKey],
+    [diffKeys, tabKey],
   );
   const virtualizer = useVirtualizer({
     count: items.length,

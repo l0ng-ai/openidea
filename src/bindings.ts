@@ -623,6 +623,13 @@ export const commands = {
 	docRearrange: (doc: DocId) => typedError<TextEdit[], IdeError>(__TAURI_INVOKE("doc_rearrange", { doc })),
 	/**  Load Changes from Disk: discards the buffer's unsaved changes and reads its file again. */
 	docReloadFromDisk: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_reload_from_disk", { doc })),
+	/**
+	 *  Keeps the encoding the user chose for a project file in the project's File Encodings
+	 *  mappings, so the file opens in it again. A converted document is kept once it is saved:
+	 *  until then its file is still in the old encoding. Nothing is kept for a document without
+	 *  a file in the project.
+	 */
+	docRememberEncoding: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_remember_encoding", { doc })),
 	docSave: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_save", { doc })),
 	docSaveAll: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_save_all")),
 	/**
@@ -6737,7 +6744,10 @@ export type EditorConfigProps = {
 	indentSize: number | null,
 	tabWidth: number | null,
 	endOfLine: LineEnding | null,
-	/**  `utf-8`, `utf-8-bom`, `utf-16le`, `utf-16be` or `latin1`. */
+	/**
+	 *  `utf-8`, `utf-8-bom`, `utf-16le`, `utf-16be`, `latin1` or an encoding
+	 *  Settings › Editor › File Encodings lists (`iso-8859-15`, `windows-1252`, `gbk`, …).
+	 */
 	charset: string | null,
 	trimTrailingWhitespace: boolean | null,
 	insertFinalNewline: boolean | null,
@@ -6864,7 +6874,7 @@ export type EditorSettings_Deserialize = {
 	gutterIconsDisabled?: string[],
 	showGutterIcons?: boolean,
 	codeStyle?: CodeStyleSettings_Deserialize,
-	encodings?: EncodingSettings,
+	encodings?: EncodingSettings_Deserialize,
 };
 
 export type EditorSettings_Serialize = {
@@ -6924,7 +6934,7 @@ export type EditorSettings_Serialize = {
 	gutterIconsDisabled: string[],
 	showGutterIcons: boolean,
 	codeStyle: CodeStyleSettings_Serialize,
-	encodings: EncodingSettings,
+	encodings: EncodingSettings_Serialize,
 };
 
 /**  Editor › General › Editor Tabs. */
@@ -6957,7 +6967,10 @@ export type EditorTabsSettings = {
 export type EmptyCherryPickAction = "skip" | "createEmpty";
 
 /**  Editor › File Encodings. */
-export type EncodingSettings = {
+export type EncodingSettings = EncodingSettings_Serialize | EncodingSettings_Deserialize;
+
+/**  Editor › File Encodings. */
+export type EncodingSettings_Deserialize = {
 	/**  Fallback for files outside the project that are not valid UTF-8 (WHATWG label). */
 	global?: string,
 	/**  Encoding of new files and fallback for project files that are not valid UTF-8. */
@@ -6968,6 +6981,30 @@ export type EncodingSettings = {
 	nativeToAscii?: boolean,
 	/**  Create UTF-8 files: `never` (no BOM) | `always` (with BOM) | `windows` (with BOM on Windows). */
 	utf8Bom?: string,
+	/**
+	 *  Encoding (WHATWG label) of a file or of the files in a folder, by its path
+	 *  relative to the project with `/` separators. The status bar's choice is kept here.
+	 */
+	mappings?: { [key in string]: string },
+};
+
+/**  Editor › File Encodings. */
+export type EncodingSettings_Serialize = {
+	/**  Fallback for files outside the project that are not valid UTF-8 (WHATWG label). */
+	global: string,
+	/**  Encoding of new files and fallback for project files that are not valid UTF-8. */
+	project: string,
+	/**  Fallback for `.properties` files. */
+	properties: string,
+	/**  Display properties Unicode escapes as characters and save non-ASCII as escapes. */
+	nativeToAscii: boolean,
+	/**  Create UTF-8 files: `never` (no BOM) | `always` (with BOM) | `windows` (with BOM on Windows). */
+	utf8Bom: string,
+	/**
+	 *  Encoding (WHATWG label) of a file or of the files in a folder, by its path
+	 *  relative to the project with `/` separators. The status bar's choice is kept here.
+	 */
+	mappings: { [key in string]: string },
 };
 
 export type EntryKind = "file" | "dir" | "symlink";
