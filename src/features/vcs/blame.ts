@@ -177,6 +177,57 @@ function setAnnotateNames(names: AnnotateNames, save = true) {
   }
 }
 
+/** How the gutter is tinted (IDEA's annotate Options › Colors; Order by default, as there); kept across sessions. */
+const COLORS_KEY = "openidea.vcs.annotateColors";
+const COLOR_MODES = ["author", "order", "hide"] as const;
+type AnnotateColors = (typeof COLOR_MODES)[number];
+
+export function readAnnotateColors(): AnnotateColors {
+  try {
+    const raw = localStorage.getItem(COLORS_KEY);
+    return COLOR_MODES.find((m) => m === raw) ?? "order";
+  } catch {
+    return "order";
+  }
+}
+
+export const useAnnotateColors = create<{ colors: AnnotateColors }>(() => ({ colors: readAnnotateColors() }));
+
+if (typeof window !== "undefined")
+  window.addEventListener("storage", (e) => {
+    if (e.key === COLORS_KEY) setAnnotateColors(readAnnotateColors(), false);
+  });
+
+function setAnnotateColors(colors: AnnotateColors, save = true) {
+  if (useAnnotateColors.getState().colors === colors) return;
+  useAnnotateColors.setState({ colors });
+  if (!save) return;
+  try {
+    localStorage.setItem(COLORS_KEY, colors);
+  } catch {
+    // ignore
+  }
+}
+
+/** IDEA's ColorMode.AUTHOR: authors sorted by name take the palette colours in turn, keyed by commit. */
+function authorBackgrounds(lines: readonly BlameLine[]): Map<string, string> {
+  const committed = lines.filter((l) => !isUncommitted(l));
+  const authors = [...new Set(committed.map((l) => l.author))].sort();
+  const tint = new Map(
+    authors.map((a, i) => [
+      a,
+      `color-mix(in srgb, ${BLAME_PALETTE[i % BLAME_PALETTE.length]!} 18%, var(--bg-editor-gutter))`,
+    ]),
+  );
+  return new Map(committed.map((l) => [l.commit, tint.get(l.author)!]));
+}
+
+function backgrounds(lines: readonly BlameLine[]): Map<string, string> {
+  const { colors } = useAnnotateColors.getState();
+  if (colors === "hide") return new Map();
+  return colors === "author" ? authorBackgrounds(lines) : commitBackgrounds(lines);
+}
+
 /** Characters IDEA's ShortNameType splits an email's local part and initials on. */
 const NAME_DELIMITERS = /[.,<>()":_-]/g;
 
@@ -251,11 +302,13 @@ const NAME_LABELS: Record<AnnotateNames, string> = {
   firstName: "First Name",
   fullName: "Full Name",
 };
+const COLOR_LABELS: Record<AnnotateColors, string> = { author: "Author", order: "Order", hide: "Hide" };
 
 function optionsMenu(): MenuItem {
   const c = useAnnotateColumns.getState();
   const shown = COLUMNS.filter((k) => c[k]).length;
   const { names } = useAnnotateNames.getState();
+  const { colors } = useAnnotateColors.getState();
   const { ignoreWhitespace, movement } = workflowSettings().vcs.git.annotate;
   return {
     label: "Options",
@@ -266,6 +319,14 @@ function optionsMenu(): MenuItem {
         disabled: c[k] && shown === 1,
         run: () => setAnnotateColumn(k, !c[k]),
       })),
+      {
+        label: "Colors",
+        submenu: COLOR_MODES.map((m) => ({
+          label: COLOR_LABELS[m],
+          checked: colors === m,
+          run: () => setAnnotateColors(m),
+        })),
+      },
       {
         label: "Names",
         submenu: NAME_TYPES.map((t) => ({
@@ -308,7 +369,7 @@ interface BlameState {
 }
 
 function build(lines: BlameLine[], doc: Text): BlameState {
-  const bgs = commitBackgrounds(lines);
+  const bgs = backgrounds(lines);
   const { names } = useAnnotateNames.getState();
   const labels = new Map<string, BlameLabels>();
   const out = [];
@@ -388,6 +449,7 @@ class BlameRefresher implements PluginValue {
         () => this.schedule(0),
       ),
       useAnnotateNames.subscribe(() => this.schedule(0)),
+      useAnnotateColors.subscribe(() => this.schedule(0)),
     ];
     if (this.live) {
       this.off.push(
