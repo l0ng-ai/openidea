@@ -10669,5 +10669,6 @@
   "Unsafe query: 'Alter' statement deletes the history of all rows": "不安全的查询：'Alter' 语句会删除所有行的历史记录",
   "Unsafe query: 'Merge' statement deletes all rows in the table because 'on' condition is always true": "不安全的查询：'on' 条件始终为真，'Merge' 语句会删除表中的所有行",
   "Unsafe query: 'Merge' statement updates all rows in the table because 'on' condition is always true": "不安全的查询：'on' 条件始终为真，'Merge' 语句会更新表中的所有行",
-  "Execute and Suppress": "执行并不再提示"
+  "Execute and Suppress": "执行并不再提示",
+  "Executed": "已执行"
 }

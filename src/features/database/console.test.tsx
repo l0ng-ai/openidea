@@ -19,13 +19,16 @@ const FROM = DOC.indexOf("DELETE");
 const TO = DOC.length - 1;
 
 /** Runs the console's statement through `executeInView`, recording the unsafe-query answer. */
-function run(view: EditorView, path: string) {
+function run(view: EditorView, path: string, ready?: Promise<void>) {
   let answer: boolean | undefined;
-  vi.mocked(executeConsole).mockImplementationOnce(async (_p, _t, _f, _to, _start, _progress, confirm?: ConfirmUnsafe) => {
-    const text = DOC.slice(FROM, TO);
-    answer = await confirm!({ from: FROM, to: TO, text }, unsafeStatement(text, "postgres")!);
-    return [];
-  });
+  vi.mocked(executeConsole).mockImplementationOnce(
+    async (_p, _t, _f, _to, _start, _progress, confirm?: ConfirmUnsafe) => {
+      await ready;
+      const text = DOC.slice(FROM, TO);
+      answer = await confirm!({ from: FROM, to: TO, text }, unsafeStatement(text, "postgres")!);
+      return [];
+    },
+  );
   const done = executeInView(view, path);
   return { done, answer: () => answer };
 }
@@ -59,6 +62,7 @@ describe("unsafe query warning", () => {
       "Unsafe query: 'Delete' statement clears all data in the table because 'where' condition is always true",
     );
     expect(view.dom.querySelector(".cm-openidea-db-warning")?.textContent).toBe("1=1");
+    expect(view.dom.querySelector(".cm-openidea-db-run-warning")).not.toBeNull();
     expect(first.answer()).toBeUndefined();
 
     button(view, "Close").click();
@@ -88,6 +92,37 @@ describe("unsafe query warning", () => {
     expect(view.dom.querySelector(".cm-openidea-db-warning")).toBeNull();
   });
 
+  it.each(["before", "during"])("keeps confirmation when save adds a final newline %s the warning", async (when) => {
+    const path = `/p/save-${when}.sql`;
+    const view = open(path);
+    let proceed!: () => void;
+    const gate = new Promise<void>((resolve) => (proceed = resolve));
+    const pending = run(view, path, gate);
+    if (when === "during") {
+      proceed();
+      await flush();
+      expect(banner(view)).not.toBeNull();
+    }
+    view.dispatch({ changes: { from: DOC.length, insert: "\n" }, userEvent: "input.save" });
+    proceed();
+    await flush();
+    expect(banner(view)).not.toBeNull();
+    button(view, "Execute").click();
+    await pending.done;
+    expect(pending.answer()).toBe(true);
+  });
+
+  it("cancels the run when the console closes while it asks", async () => {
+    const view = open("/p/closed.sql");
+    const pending = run(view, "/p/closed.sql");
+    await flush();
+    expect(banner(view)).not.toBeNull();
+    views.splice(views.indexOf(view), 1);
+    view.destroy();
+    await pending.done;
+    expect(pending.answer()).toBe(false);
+  });
+
   it("stops asking in that console after Execute and Suppress", async () => {
     const view = open("/p/other.sql");
     const first = run(view, "/p/other.sql");
@@ -101,5 +136,4 @@ describe("unsafe query warning", () => {
     expect(second.answer()).toBe(true);
     expect(banner(view)).toBeNull();
   });
-
 });

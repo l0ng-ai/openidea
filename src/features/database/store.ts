@@ -1493,13 +1493,6 @@ export async function openDdl(id: string, schema: string, name: string): Promise
   }
 }
 
-/**
- * Runs the statement at `from` (or the selection `from..to`, UTF-16 offsets)
- * of console `path` on its data source. Result sets open as `Result N` tabs
- * of the Services view, replacing the console's unpinned ones; everything is
- * logged to its Output tab; returns the outcomes (errors included) for the
- * editor's marks.
- */
 interface BoundStatements {
   /** The statements with their parameters' values in their text; `[]` when cancelled. */
   statements: SqlStatement[];
@@ -1531,6 +1524,14 @@ async function withParams(statements: SqlStatement[], driver: DbDriver): Promise
 
 /** Asks whether to run an unsafe statement (see `sql/unsafe`); false cancels the run. */
 export type ConfirmUnsafe = (statement: SqlStatement, unsafe: UnsafeStatement) => Promise<boolean>;
+
+/**
+ * Runs the statement at `from` (or the selection `from..to`, UTF-16 offsets)
+ * of console `path` on its data source. Result sets open as `Result N` tabs
+ * of the Services view, replacing the console's unpinned ones; everything is
+ * logged to its Output tab; returns the outcomes (errors included) for the
+ * editor's marks.
+ */
 export async function executeConsole(
   path: string,
   text: string,
@@ -1740,6 +1741,7 @@ async function consoleStatements(
       const original = statements[i]!;
       // A mark inside a parameter's value marks the whole statement.
       const at = bound.unbind(i, unsafe.from, unsafe.to) ?? { from: 0, to: original.text.length };
+      // oxlint-disable-next-line no-await-in-loop -- each warning must be answered before asking the next
       if (!(await confirmUnsafe(original, { ...unsafe, ...at }))) return [];
     }
   return bound.statements;

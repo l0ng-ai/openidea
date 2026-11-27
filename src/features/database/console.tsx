@@ -28,6 +28,8 @@ import {
   StateEffect,
   StateField,
   type Extension,
+  type Text,
+  type Transaction,
 } from "@codemirror/state";
 import {
   Decoration,
@@ -161,12 +163,23 @@ interface RunState {
 const setRun = StateEffect.define<RunState>();
 const setAsk = StateEffect.define<AskMark | null>();
 
+/** Saving can append the final newline without changing any submitted SQL or statement offsets. */
+function savedFinalNewline(tr: Transaction): boolean {
+  if (!tr.docChanged || !tr.isUserEvent("input.save")) return false;
+  const end = tr.startState.doc.length;
+  let only = true;
+  tr.changes.iterChanges((from, to, _f, _t, insert) => {
+    only &&= from === end && to === end && insert.toString() === "\n";
+  });
+  return only;
+}
+
 const runField = StateField.define<RunState>({
   create: () => ({ marks: [], banner: null, executing: null }),
   update(value, tr) {
     for (const e of tr.effects) if (e.is(setRun)) value = { ...e.value, ask: value.ask };
     for (const e of tr.effects) if (e.is(setAsk)) value = { ...value, ask: e.value };
-    if (!tr.docChanged) return value;
+    if (!tr.docChanged || savedFinalNewline(tr)) return value;
     // The request runs the text it was sent; edits only move where that shows.
     const ex = value.executing;
     const executing = ex && {
@@ -382,7 +395,13 @@ function askBanner(mark: AskMark) {
  */
 const cancelAskOnEdit = [
   EditorView.updateListener.of((u) => {
-    if (u.docChanged && u.startState.field(runField).ask) askAnswers.get(u.view)?.("cancel");
+    if (!u.docChanged) return;
+    if (u.transactions.every((tr) => !tr.docChanged || savedFinalNewline(tr))) {
+      const preparing = preparingViews.get(u.view);
+      if (preparing?.doc === u.startState.doc) preparing.doc = u.state.doc;
+      return;
+    }
+    if (u.startState.field(runField).ask) askAnswers.get(u.view)?.("cancel");
   }),
   ViewPlugin.define((view) => ({
     destroy: () => {
@@ -424,19 +443,21 @@ function confirmUnsafe(view: EditorView, path: string, current: () => boolean): 
 }
 
 let nextExecution = 0;
-const preparingViews = new WeakMap<EditorView, number>();
+const preparingViews = new WeakMap<EditorView, { doc: Text }>();
 
 /** Runs `from`–`to` of `view`, following each statement as it executes. */
 async function executeRange(view: EditorView, path: string, from: number, to: number) {
   const token = ++nextExecution;
   const sent = view.state.doc;
   askAnswers.get(view)?.("cancel");
-  preparingViews.set(view, token);
-  const current = () => !closedViews.has(view) && view.state.doc === sent && preparingViews.get(view) === token;
+  const preparing = { doc: sent };
+  preparingViews.set(view, preparing);
+  const current = () =>
+    !closedViews.has(view) && view.state.doc === preparing.doc && preparingViews.get(view) === preparing;
   const start = (statements: readonly SqlStatement[]) => {
     const st = view.state.field(runField, false);
     // The offsets are into the text sent; an edit since (while asking for parameters) leaves them unplaced.
-    if (!st || view.state.doc !== sent) return;
+    if (!st || !current()) return;
     const spans = statements.map((st) => ({ from: st.from, to: st.to }));
     const first = spans[0]!;
     const last = spans[spans.length - 1]!;
@@ -444,36 +465,44 @@ async function executeRange(view: EditorView, path: string, from: number, to: nu
     view.dispatch({ effects: setRun.of({ marks, banner: null, executing: { token, spans, active: null } }) });
   };
   try {
-    await executeConsole(path, sent.toString(), from, to, start, (events) => {
-      const st = view.state.field(runField, false);
-      const ex = st?.executing;
-      if (!st || ex?.token !== token) return;
-      const last = events[events.length - 1]!;
-      const active = last.type === "started" ? { index: last.index, startedAt: Date.now() } : null;
-      const marks = [...st.marks];
-      let banner = st.banner;
-      const placed = new Map<number, DbStatementOutcome>();
-      for (const event of events) {
-        if (event.type === "started") continue;
-        const span = ex.spans[event.index];
-        if (!span || span.from >= span.to) continue;
-        const { from, to } = span;
-        const { error, result } = event.outcome;
-        marks.push({
-          from,
-          to,
-          timingAt: view.state.sliceDoc(to, to + 1) === ";" ? to + 1 : to,
-          error,
-          ms: result?.elapsedMs ?? null,
-        });
-        if (error) banner = `[${sourceById(consoleSource(path))?.name ?? ""}] ${error}`;
-        placed.set(event.index, { ...event.outcome, statement: { ...event.outcome.statement, ...span } });
-      }
-      view.dispatch({ effects: setRun.of({ marks, banner, executing: { ...ex, active } }) });
-      return placed;
-    }, confirmUnsafe(view, path, current));
+    await executeConsole(
+      path,
+      sent.toString(),
+      from,
+      to,
+      start,
+      (events) => {
+        const st = view.state.field(runField, false);
+        const ex = st?.executing;
+        if (!st || ex?.token !== token) return;
+        const last = events[events.length - 1]!;
+        const active = last.type === "started" ? { index: last.index, startedAt: Date.now() } : null;
+        const marks = [...st.marks];
+        let banner = st.banner;
+        const placed = new Map<number, DbStatementOutcome>();
+        for (const event of events) {
+          if (event.type === "started") continue;
+          const span = ex.spans[event.index];
+          if (!span || span.from >= span.to) continue;
+          const { from, to } = span;
+          const { error, result } = event.outcome;
+          marks.push({
+            from,
+            to,
+            timingAt: view.state.sliceDoc(to, to + 1) === ";" ? to + 1 : to,
+            error,
+            ms: result?.elapsedMs ?? null,
+          });
+          if (error) banner = `[${sourceById(consoleSource(path))?.name ?? ""}] ${error}`;
+          placed.set(event.index, { ...event.outcome, statement: { ...event.outcome.statement, ...span } });
+        }
+        view.dispatch({ effects: setRun.of({ marks, banner, executing: { ...ex, active } }) });
+        return placed;
+      },
+      confirmUnsafe(view, path, current),
+    );
   } finally {
-    if (preparingViews.get(view) === token) preparingViews.delete(view);
+    if (preparingViews.get(view) === preparing) preparingViews.delete(view);
     const st = view.state.field(runField, false);
     if (st?.executing?.token === token) view.dispatch({ effects: setRun.of({ ...st, executing: null }) });
   }
