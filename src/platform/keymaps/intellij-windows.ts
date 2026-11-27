@@ -104,6 +104,7 @@ export const intellijWindows: Record<string, string[]> = {
   "code.duplicateLine": ["Ctrl+D"],
   "code.duplicateEntireLines": [],
   "code.deleteLine": ["Ctrl+Y"],
+  "code.transpose": [],
   "code.deleteToLineStart": [],
   "code.deleteToLineEnd": [],
   "code.cutLineEnd": [],
