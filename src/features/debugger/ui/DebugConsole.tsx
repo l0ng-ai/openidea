@@ -55,19 +55,22 @@ const DebugLine = memo(
     marks,
     rules,
     cwd,
+    module,
   }: {
     line: ConsoleLine;
     marks?: readonly SegmentMark[];
     rules?: ConsoleRuleMatch;
     length: number;
     cwd: string;
+    /** The run's owning module, which picks between same-named files of a multi-module build. */
+    module?: string | null;
   }) {
     const spans = rules ? styleSpans(line.spans, rules) : line.spans;
     const segments = segmentLine(spans, line.category === "system" ? [] : findOutputLinks(line.text), marks);
     const activate = (e: MouseEvent, link: OutputLink) => {
       e.preventDefault();
       if (window.getSelection()?.toString()) return;
-      if (link.kind !== "url") void openTarget(link.target, cwd);
+      if (link.kind !== "url") void openTarget(link.target, cwd, true, module);
       else if (!debugConsoleUrl(e, link.url)) void openUrl(link.url);
     };
     if (segments.length === 0) return <>{"\u200B"}</>;
@@ -111,7 +114,13 @@ const DebugLine = memo(
       </>
     );
   },
-  (a, b) => a.line === b.line && a.length === b.length && a.cwd === b.cwd && a.marks === b.marks && a.rules === b.rules,
+  (a, b) =>
+    a.line === b.line &&
+    a.length === b.length &&
+    a.cwd === b.cwd &&
+    a.module === b.module &&
+    a.marks === b.marks &&
+    a.rules === b.rules,
 );
 
 export function DebugServiceConsole({ sessionId }: { sessionId: number }) {
@@ -194,6 +203,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
     () => runDirectory(session.launch?.cwd ?? session.runConfig?.cwd),
     [session.launch?.cwd, session.runConfig?.cwd],
   );
+  const module = session.runConfig?.module;
 
   // Find (⌘F): search the whole buffer, not just the rendered rows.
   const found = useMemo(
@@ -495,6 +505,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
                     rules={ruled}
                     length={l.text.length}
                     cwd={cwd}
+                    module={module}
                   />
                 </span>
               );
