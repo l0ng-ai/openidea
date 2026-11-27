@@ -1,9 +1,10 @@
 /**
  * Sticky selection (IDEA's Toggle Sticky Selection): while it is on, every caret move selects
- * from the selection's anchor, which starts at the caret when it is turned on.
+ * from the selection's anchor, which starts at the caret when it is turned on. As in IDEA, an edit
+ * of the document or a copy turns it off.
  */
 import { EditorSelection, EditorState, StateEffect, StateField } from "@codemirror/state";
-import { type EditorView, type KeyBinding, keymap } from "@codemirror/view";
+import { EditorView, type KeyBinding, keymap } from "@codemirror/view";
 
 const setSticky = StateEffect.define<boolean>();
 
@@ -64,8 +65,20 @@ const escapeSticky = keymap.of([
   },
 ]);
 
+/** A copy turns it off and removes the selection (IDEA's `CopyAction`), once the editor has copied. */
+const copySticky = EditorView.domEventHandlers({
+  copy: (_event, view) => {
+    if (isStickySelection(view.state))
+      queueMicrotask(() => {
+        if (isStickySelection(view.state)) toggleStickySelection(view);
+      });
+    return false;
+  },
+});
+
 export const stickySelectionField = StateField.define<boolean>({
   create: () => false,
-  update: (on, tr) => tr.effects.reduce((acc, e) => (e.is(setSticky) ? e.value : acc), on),
-  provide: () => [keepAnchors, escapeSticky],
+  // Any document change ends it (IDEA's `EditorImpl.beforeChangedUpdate`).
+  update: (on, tr) => tr.effects.reduce((acc, e) => (e.is(setSticky) ? e.value : acc), tr.docChanged ? false : on),
+  provide: () => [keepAnchors, escapeSticky, copySticky],
 });

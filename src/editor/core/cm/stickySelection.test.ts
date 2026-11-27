@@ -150,14 +150,25 @@ describe("Toggle Sticky Selection", () => {
     expect(v.state.selection.main.head).toBe(1);
   });
 
-  it("stays on after typing over the selection and selects from there", () => {
+  it("turns off when the document changes, as in IDEA", () => {
     const v = make("|abc");
     toggleStickySelection(v);
     press(v, "ArrowRight");
     v.dispatch(v.state.replaceSelection("X"));
     expect(show(v)).toBe("X|bc");
+    expect(isStickySelection(v.state)).toBe(false);
     press(v, "ArrowRight");
-    expect(show(v)).toBe("X[b]c");
+    expect(show(v)).toBe("Xb|c");
+  });
+
+  it("turns off and removes the selection after a copy", async () => {
+    const v = make("|abc");
+    toggleStickySelection(v);
+    press(v, "ArrowRight");
+    v.contentDOM.dispatchEvent(new Event("copy", { bubbles: true, cancelable: true }));
+    await Promise.resolve();
+    expect(isStickySelection(v.state)).toBe(false);
+    expect(show(v)).toBe("a|bc");
   });
 
   it("works in a read-only editor", () => {
