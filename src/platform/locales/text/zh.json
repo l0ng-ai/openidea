@@ -10753,5 +10753,20 @@
   "unittest": "unittest",
   "1 file of the report is not in this project.": "报告中有 1 个文件不在此项目中。",
   "{count} files of the report are not in this project.": "报告中有 {count} 个文件不在此项目中。",
-  "Show Table Comments": "显示表注释"
+  "Show Table Comments": "显示表注释",
+  "Rename Data Source Folder": "重命名数据源文件夹",
+  "New Data Source Folder": "新建数据源文件夹",
+  "Folder name:": "文件夹名称：",
+  "The {length} selected data sources will be moved into this folder.": "选中的 {length} 个数据源将移动到该文件夹。",
+  "Cannot read data source folders": "无法读取数据源文件夹",
+  "Delete Data Source Folder": "删除数据源文件夹",
+  "Delete folder '{name}'? Its data sources move back to the root.": "删除文件夹“{name}”？其中的数据源将移回根目录。",
+  "New Data Source Folder…": "新建数据源文件夹…",
+  "Rename Data Source Folder…": "重命名数据源文件夹…",
+  "Delete Data Source Folder…": "删除数据源文件夹…",
+  "Folder…": "文件夹…",
+  "Move to Folder": "移动到文件夹",
+  "Move to Root": "移动到根目录",
+  "Rename Folder…": "重命名文件夹…",
+  "Delete Folder…": "删除文件夹…"
 }

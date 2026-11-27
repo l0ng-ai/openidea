@@ -5,7 +5,7 @@
  * with counts and column types, loaded lazily. Double-click a table to open its data, a data
  * source to open its query console.
  */
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { DbDatabases, DbTableDetails } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
@@ -16,6 +16,7 @@ import {
   Icon,
   IconButton,
   Menu,
+  registerDropTarget,
   Toolbar,
   Tree,
   showContextMenu,
@@ -44,7 +45,9 @@ import {
   loadDetails,
   loadSchemas,
   loadSources,
+  loadSourceFolders,
   loadTables,
+  moveSourcesToFolder,
   openConsole,
   openObjectDdl,
   saveSourceVisibility,
@@ -102,6 +105,7 @@ const SEPARATE_FOLDERS: readonly Folder[] = [
   "sequences",
   ...OTHERS,
 ];
+const SOURCE_DRAG = "application/x-openidea-db-sources";
 
 function status<T>(key: string, l: Loaded<T> | undefined, map: (v: T) => Node[]): Node[] | undefined {
   if (!l) return undefined;
@@ -135,9 +139,41 @@ export function DatabaseView() {
   const st = useDatabase();
   const folders = st.separateProceduresAndFunctions ? SEPARATE_FOLDERS : FOLDERS;
   const tree = useRef<TreeHandle>(null);
+  const treeHost = useRef<HTMLDivElement>(null);
+  const [dropFolder, setDropFolder] = useState<string | null>(null);
   useEffect(() => {
     if (!st.loaded) void loadSources();
   }, [st.loaded]);
+  useEffect(() => {
+    if (!st.foldersLoaded) void loadSourceFolders();
+  }, [st.foldersLoaded]);
+  useEffect(() => {
+    const host = treeHost.current;
+    if (!host) return;
+    const folderAt = (x: number, y: number) => {
+      const key = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-tree-key]")?.dataset.treeKey;
+      return key?.startsWith("source-folder:")
+        ? useDatabase.getState().folders.find((folder) => key === `source-folder:${folder.id}`)
+        : undefined;
+    };
+    return registerDropTarget(host, {
+      accepts: (type) => type === SOURCE_DRAG,
+      over: (_data, x, y) => setDropFolder(folderAt(x, y)?.id ?? null),
+      leave: () => setDropFolder(null),
+      drop: (data, x, y) => {
+        const folder = folderAt(x, y);
+        setDropFolder(null);
+        if (!folder) return;
+        try {
+          const sources = JSON.parse(data.payload) as unknown;
+          if (Array.isArray(sources) && sources.every((source) => typeof source === "string"))
+            void moveSourcesToFolder(sources, folder.id);
+        } catch {
+          // A malformed payload can only come from this view; ignore it.
+        }
+      },
+    });
+  }, [st.folders.length, st.sources.length]);
   // Go to Declaration from a console, Select Opened File: the rows exist once the expanded nodes render.
   useEffect(() => {
     if (!st.treeReveal) return;
@@ -150,10 +186,17 @@ export function DatabaseView() {
     return () => cancelAnimationFrame(frame);
   }, [st.treeReveal]);
 
-  const roots = useMemo<Node[]>(
-    () => st.sources.map((source) => ({ kind: "source", key: source.id ?? "", source })),
-    [st.sources],
-  );
+  const roots = useMemo<Node[]>(() => {
+    const grouped = new Set(st.folders.flatMap((folder) => folder.sources));
+    return [
+      ...[...st.folders]
+        .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name))
+        .map((folder): Node => ({ kind: "sourceFolder", key: `source-folder:${folder.id}`, folder })),
+      ...st.sources
+        .filter((source) => !grouped.has(source.id ?? ""))
+        .map((source): Node => ({ kind: "source", key: source.id ?? "", source })),
+    ];
+  }, [st.folders, st.sources]);
 
   /** Schemas tab › Object filter of the data source of target `id`. */
   const shown = (id: string) => {
@@ -218,6 +261,11 @@ export function DatabaseView() {
 
   const children = (n: Node): readonly Node[] | undefined => {
     switch (n.kind) {
+      case "sourceFolder":
+        return n.folder.sources.flatMap((id) => {
+          const source = st.sources.find((candidate) => candidate.id === id);
+          return source ? [{ kind: "source" as const, key: source.id ?? "", source }] : [];
+        });
       case "source": {
         const id = n.source.id ?? "";
         if (listsDatabases(n.source))
@@ -433,6 +481,7 @@ export function DatabaseView() {
 
   const expandable = (n: Node) =>
     n.kind === "source" ||
+    n.kind === "sourceFolder" ||
     n.kind === "database" ||
     n.kind === "schema" ||
     n.kind === "folder" ||
@@ -476,6 +525,8 @@ export function DatabaseView() {
     switch (n.kind) {
       case "source":
         return n.source.pluginOwner ? `${n.source.name} (${n.source.pluginOwner})` : (n.source.name ?? "");
+      case "sourceFolder":
+        return n.folder.name;
       case "database":
         return n.name;
       case "schema":
@@ -519,6 +570,8 @@ export function DatabaseView() {
         const s = st.schemas[id];
         return s?.status === "ok" ? String(shownSchemas(id, s.value, null).length) : undefined;
       }
+      case "sourceFolder":
+        return String(n.folder.sources.length);
       case "folder":
         return String(folderSize(n.id, n.schema, n.folder));
       case "routine":
@@ -555,6 +608,8 @@ export function DatabaseView() {
     switch (n.kind) {
       case "source":
         return sourceIcon(n.source);
+      case "sourceFolder":
+        return "db-folder";
       case "database":
         return "db-database";
       case "schema":
@@ -587,13 +642,16 @@ export function DatabaseView() {
     }
   };
 
-  if (st.loaded && !st.sources.length)
+  if (st.loaded && st.foldersLoaded && !st.sources.length && !st.folders.length)
     return (
       <div className={styles.dbView}>
         <DatabaseToolbar />
         <EmptyState title="No data sources">
           <Button variant="ghost" onClick={() => void executeAction("db.newDataSource")}>
             <T>New Data Source…</T>
+          </Button>
+          <Button variant="ghost" onClick={() => void executeAction("db.newSourceFolder")}>
+            <T>New Folder…</T>
           </Button>
         </EmptyState>
       </div>
@@ -602,7 +660,7 @@ export function DatabaseView() {
   return (
     <div className={styles.dbView}>
       <DatabaseToolbar />
-      <div className={styles.treeHost}>
+      <div className={styles.treeHost} ref={treeHost}>
         <Tree<Node>
           aria-label="Data sources"
           focusContext={DB_VIEW_FOCUS}
@@ -624,6 +682,9 @@ export function DatabaseView() {
                 ? n.table.comment?.trim() || undefined
                 : undefined
           }
+          rowClassName={(n) =>
+            n.kind === "sourceFolder" && dropFolder === n.folder.id ? styles.sourceFolderDrop : undefined
+          }
           getColor={(n) => (n.kind === "message" && n.error ? "var(--danger)" : undefined)}
           rowTint={(n) => {
             // IDEA tints every row of a coloured data source across its full width and height.
@@ -633,10 +694,15 @@ export function DatabaseView() {
           }}
           speedSearchField
           horizontalScroll
+          getDragData={(nodes) => {
+            const ids = nodes.flatMap((node) => (node.kind === "source" ? [node.source.id ?? ""] : [])).filter(Boolean);
+            return ids.length ? { type: SOURCE_DRAG, payload: JSON.stringify(ids) } : null;
+          }}
           renderNode={(n: Node, state) => {
             const i = icon(n);
             const d = detail(n);
-            const counted = n.kind === "source" || n.kind === "folder" || n.kind === "group";
+            const counted =
+              n.kind === "source" || n.kind === "sourceFolder" || n.kind === "folder" || n.kind === "group";
             const labelClass =
               n.kind === "message" && n.error
                 ? styles.treeError
@@ -702,8 +768,8 @@ export function DatabaseView() {
             }
           }}
           activateExpandable={(n) => n.kind === "table"}
-          onContextMenu={(n, _sel, e) => {
-            const items = nodeMenu(n);
+          onContextMenu={(n, selection, e) => {
+            const items = nodeMenu(n, shownNodes(selection));
             if (items.length) showContextMenu(e, items);
           }}
           speedSearch
@@ -749,7 +815,12 @@ function DatabaseToolbar() {
         onClose={() => setNewOpen(false)}
         aria-label="New"
       />
-      <IconButton {...button} icon="db-properties" action="db.properties" disabled={!sources.length} />
+      <IconButton
+        {...button}
+        icon="db-properties"
+        action="db.properties"
+        disabled={!sources.length || node?.kind === "sourceFolder"}
+      />
       <span className={styles.dbToolbarSep} />
       <IconButton {...button} icon="refresh" action="db.refresh" disabled={!sources.length} />
       <IconButton {...button} icon="db-disconnect" action="db.disconnect" disabled={node ? !active : !connected.size} />
