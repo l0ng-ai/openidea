@@ -163,12 +163,21 @@ async fn append_body(
     progress: &mut impl FnMut(u64, Option<u64>),
 ) -> IdeResult<u64> {
     let mut downloaded = offset;
-    while let Some(chunk) = response.chunk().await.map_err(|error| IdeError::unavailable(error.to_string()))? {
-        file.write_all(&chunk).await?;
-        downloaded += chunk.len() as u64;
-        progress(downloaded, total);
-    }
+    let body = loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                file.write_all(&chunk).await?;
+                downloaded += chunk.len() as u64;
+                progress(downloaded, total);
+            }
+            Ok(None) => break Ok(()),
+            Err(error) => break Err(IdeError::unavailable(error.to_string())),
+        }
+    };
+    // tokio writes in the background: flush even when the body broke off, so the bytes
+    // received so far are on disk before a resume measures the file.
     file.flush().await?;
+    body?;
     file.sync_all().await?;
     Ok(downloaded)
 }
