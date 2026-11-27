@@ -652,6 +652,46 @@ async fn saved_conversation_reads_do_not_start_or_load_the_agent() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_archived_task_keeps_no_command_list_and_completes_the_known_one() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("hello"),
+            provider: "claude".into(),
+            config: Vec::new(),
+            isolation: Isolation::Local,
+            base: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    let names = |list: Vec<AgentCommand>| list.into_iter().map(|c| c.name).collect::<Vec<_>>();
+    let snapshot = |mgr: &AgentManager| mgr.task(&task.id).unwrap().state.lock().snapshot();
+    assert!(names(snapshot(&mgr).commands).contains(&"review".to_owned()));
+
+    mgr.archive(&task.id).unwrap();
+    assert!(snapshot(&mgr).commands.is_empty());
+    assert!(names(mgr.commands("claude", Some(&task.id)).await.unwrap()).contains(&"review".to_owned()));
+    mgr.shutdown();
+
+    // A list saved with an archived task (by an earlier version) isn't read back.
+    let other = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(other.path().join("store")).unwrap();
+    let name = format!("{}.json", task.id);
+    let mut file: Value =
+        serde_json::from_slice(&std::fs::read(tmp.path().join("store").join(&name)).unwrap()).unwrap();
+    assert_eq!(file["task"]["status"], json!("archived"));
+    file["task"]["commands"] = json!([{"name": "old", "description": "Old", "hint": null}]);
+    std::fs::write(other.path().join("store").join(&name), serde_json::to_vec(&file).unwrap()).unwrap();
+    let restored = manager(other.path(), Arc::new(FakeAgent::default()));
+    assert!(snapshot(&restored).commands.is_empty());
+    restored.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_ephemeral_task_is_not_saved_and_asks_for_an_unsaved_session() {
     let tmp = tempfile::tempdir().unwrap();
     for ephemeral in [true, false] {
