@@ -10726,5 +10726,14 @@
   "For the imports the TypeScript server adds.": "用于 TypeScript 服务器添加的导入。",
   "Files matching these globs, e.g. **/index.ts.": "匹配这些 glob 的文件，例如 **/index.ts。",
   "Regular expressions for the import path, e.g. ^node: or /index$.": "匹配导入路径的正则表达式，例如 ^node: 或 /index$。",
-  "No expressions": "没有表达式"
+  "No expressions": "没有表达式",
+  "Remove Data Sources": "移除数据源",
+  "Remove {length} data sources? Their query console files stay on disk.\n\n{n}{more}": "移除 {length} 个数据源？其查询控制台文件会保留在磁盘上。\n\n{n}{more}",
+  "Cannot remove the data source": "无法移除数据源",
+  "Cannot remove the data sources": "无法移除数据源",
+  "Failed to refresh {failed} of {total} data sources": "{total} 个数据源中有 {failed} 个刷新失败",
+  "Failed to deactivate {failed} of {total} data sources": "{total} 个数据源中有 {failed} 个停用失败",
+  "Refresh {count} Data Sources": "刷新 {count} 个数据源",
+  "Deactivate {count} Data Sources": "停用 {count} 个数据源",
+  "Remove {count} Data Sources…": "移除 {count} 个数据源…"
 }
