@@ -16,12 +16,8 @@ impl Plugin for ExecutionOutput {
                     _ => None,
                 };
                 let debug = parts.next() == Some("debug");
-                host::start_run_with_options(
-                    config,
-                    &["extra".into()],
-                    &RunStartOptions { debug, output_mode: mode },
-                )
-                .map(Some)
+                host::start_run_with_options(config, &["extra".into()], &RunStartOptions { debug, output_mode: mode })
+                    .map(Some)
             }
             "start-legacy" => host::start_run(arg.unwrap_or("pty-default"), &["legacy".into()], false).map(Some),
             "events" => host::storage::get("events"),
@@ -30,10 +26,8 @@ impl Plugin for ExecutionOutput {
     }
 
     fn handle_events(&mut self, events: &[Event], _: &Invocation) {
-        let mut received: Vec<serde_json::Value> = host::storage::get("events")
-            .unwrap()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+        let mut received: Vec<serde_json::Value> =
+            host::storage::get("events").unwrap().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         for event in events {
             if let Event::Other { kind, data } = event {
                 received.push(serde_json::json!({"kind": kind, "data": data}));

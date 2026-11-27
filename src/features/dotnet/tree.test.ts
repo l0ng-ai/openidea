@@ -137,6 +137,69 @@ describe("the .NET solution tree", () => {
     dispose = activateTree();
     await vi.waitFor(() => expect(useDotnet.getState().busy).toBe(false));
     expect(dotnetRoots()).toEqual([]);
+    // Idle and empty also means no state placeholder: the root hides entirely.
+    expect(useProjectViewRoots.getState().roots.get("dotnetDiscovery")).toBeUndefined();
+  });
+
+  it("shows a scanning placeholder while the shared scan runs", async () => {
+    indexed(["/repo/App.sln"]);
+    let resolveScan!: (model: platform.DotnetWorkspace) => void;
+    vi.spyOn(platform, "dotnetWorkspace").mockImplementation(
+      () => new Promise<platform.DotnetWorkspace>((resolve) => (resolveScan = resolve)),
+    );
+    dispose = activateTree();
+    await gateChecked();
+    // The model is still loading: one placeholder root carries the state as grey detail text.
+    await vi.waitFor(() => expect(useDotnet.getState().busy).toBe(true));
+    const loading = useProjectViewRoots.getState().roots.get("dotnetDiscovery")!;
+    expect([loading.label, loading.detail, loading.beforeProject]).toEqual([".NET", "Scanning…", true]);
+    expect(loading.children).toBeUndefined();
+    // Once the scan lands, the placeholder gives way to the discovered roots.
+    resolveScan({
+      projects: [project("/repo/src/App/App.csproj", "App")],
+      solutions: [{ path: "/repo/App.sln", projects: ["/repo/src/App/App.csproj"] }],
+    });
+    await vi.waitFor(() => expect(rootIds()).toContain("dotnetSolution:/repo/App.sln"));
+    expect(useProjectViewRoots.getState().roots.get("dotnetDiscovery")).toBeUndefined();
+  });
+
+  it("shows a scan-failed placeholder when discovery fails", async () => {
+    indexed(["/repo/App.sln"]);
+    const scan = vi.spyOn(platform, "dotnetWorkspace").mockRejectedValue(new Error("dotnet not found"));
+    dispose = activateTree();
+    // The failure shows where discovery lives; the store's retry-on-next-use behaviour is untouched.
+    await vi.waitFor(() => {
+      const failed = useProjectViewRoots.getState().roots.get("dotnetDiscovery");
+      expect([failed?.label, failed?.detail]).toEqual([".NET", "Scan failed"]);
+    });
+    expect(useDotnet.getState().busy).toBe(false);
+    // A retry (a context action or the NuGet window calling the shared scan) replaces it.
+    scan.mockResolvedValue({
+      projects: [project("/repo/App/App.csproj", "App")],
+      solutions: [],
+    });
+    await reloadDotnet();
+    await vi.waitFor(() => expect(rootIds()).toContain("dotnetProject:/repo/App/App.csproj"));
+    expect(useProjectViewRoots.getState().roots.get("dotnetDiscovery")).toBeUndefined();
+  });
+
+  it("shows the state text through the tx template", async () => {
+    await setLocale("zh");
+    indexed(["/repo/App.sln"]);
+    let settleScan!: (model: platform.DotnetWorkspace | Error) => void;
+    vi.spyOn(platform, "dotnetWorkspace").mockImplementation(
+      () =>
+        new Promise<platform.DotnetWorkspace>((resolve, reject) => {
+          settleScan = (model) => (model instanceof Error ? reject(model) : resolve(model));
+        }),
+    );
+    dispose = activateTree();
+    await vi.waitFor(() => expect(useDotnet.getState().busy).toBe(true));
+    expect(useProjectViewRoots.getState().roots.get("dotnetDiscovery")!.detail).toBe("正在扫描…");
+    settleScan(new Error("boom"));
+    await vi.waitFor(() =>
+      expect(useProjectViewRoots.getState().roots.get("dotnetDiscovery")!.detail).toBe("扫描失败"),
+    );
   });
 
   it("does not scan a workspace whose index holds no .NET files", async () => {

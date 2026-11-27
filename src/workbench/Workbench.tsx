@@ -8,6 +8,7 @@ import { useSyncExternalStore } from "react";
 import { useEditorRegistry } from "@/editor/api";
 import { Breadcrumbs } from "@/editor/core";
 import { basename, useProject } from "@/platform/project";
+import { remoteLocation, useRemote } from "@/platform/remote";
 import { isUntitledUri, untitledTitle } from "@/platform/virtualDocs";
 import { useT } from "@/platform/i18n";
 import { ProgressBar } from "@/ui";
@@ -88,6 +89,7 @@ export function Workbench() {
   const lightEdit = useProject((s) => s.lightEdit);
   const standaloneTitle = useStandaloneEditor((s) => s.title);
   const openingPath = useProject((s) => s.openingPath);
+  const remoteTarget = useRemote((s) => s.session?.target ?? null);
   const root = project?.root ?? null;
   const distractionFree = useDistractionFree((s) => s.active);
   const mainToolbar = useAppearanceFlag("showMainToolbar");
@@ -95,7 +97,7 @@ export function Workbench() {
   const navBarPosition = useNavigationBarPosition();
   const frame = project ? styles.framed : lightEdit || standaloneTitle ? styles.lightEditFrame : undefined;
   const tintName = openingPath ? basename(openingPath) || openingPath : project?.name;
-  const tintRoot = openingPath ?? root;
+  const tintRoot = openingPath ?? (remoteTarget && root ? remoteLocation(remoteTarget, root) : root);
 
   return (
     <div
