@@ -4222,5 +4222,9 @@
   "Use {suggested} for this project": "Use {suggested} for this project",
   "GitHub account: @{activeLogin}": "GitHub account: @{activeLogin}",
   "Uses GitHub CLI's active account without setting GH_TOKEN in the project environment.": "Uses GitHub CLI's active account without setting GH_TOKEN in the project environment.",
-  "Passes this account's GH_TOKEN to processes started in this project (terminals, agents, Git, and run configurations).": "Passes this account's GH_TOKEN to processes started in this project (terminals, agents, Git, and run configurations)."
+  "Passes this account's GH_TOKEN to processes started in this project (terminals, agents, Git, and run configurations).": "Passes this account's GH_TOKEN to processes started in this project (terminals, agents, Git, and run configurations).",
+  "Export to Text File…": "Export to Text File…",
+  "Export to Text File": "Export to Text File",
+  "Save the Find Usages results as a text file": "Save the Find Usages results as a text file",
+  "Cannot export the usages": "Cannot export the usages"
 }

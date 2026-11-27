@@ -4,7 +4,7 @@
  */
 import type { Page } from "@playwright/test";
 import type { RunConfig } from "../src/bindings";
-import { expect, ipcCalls, stubDesktop, test } from "./fixtures";
+import { expect, ipcCalls, stubDesktop, stubSettingsWrites, test } from "./fixtures";
 
 const RUN_ID = 7;
 
@@ -16,6 +16,7 @@ async function stubRun(
   overrides: Partial<RunConfig> = {},
 ) {
   await stubDesktop(page);
+  await stubSettingsWrites(page);
   await page.evaluate(
     async ({ output, exit, runId, overrides }) => {
       const config = {

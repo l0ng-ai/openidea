@@ -199,6 +199,8 @@ export interface TestTreeViewProps {
   results: TestResults;
   version: number;
   cwd: string;
+  /** The run's owning module, which picks between same-named files of a multi-module build. */
+  module?: string | null;
   selected: string | null;
   onSelect: (id: string | null) => void;
   running: boolean;
@@ -218,6 +220,7 @@ export function TestTreeView({
   results,
   version,
   cwd,
+  module,
   selected,
   onSelect,
   running,
@@ -262,13 +265,13 @@ export function TestTreeView({
 
   const jumpToSource = (n: TestNode) => {
     const target = n.location ?? firstLocated(n)?.location;
-    if (target) void openTarget(target, cwd, true);
+    if (target) void openTarget(target, cwd, true, module);
   };
 
   // The agents feature's action: the failure becomes a draft the user reviews and sends.
   const diagnose = async (n: TestNode, name: string) => {
     const located = n.location ?? firstLocated(n)?.location;
-    const path = located ? await resolveTarget(located, cwd).catch(() => null) : null;
+    const path = located ? await resolveTarget(located, cwd, module).catch(() => null) : null;
     // Rust's `left` / `right` don't say which side is expected; the output excerpt shows them as written.
     const parsed = parseComparison(n.output);
     const comparison = parsed?.labels ? null : parsed;
@@ -424,7 +427,7 @@ export function TestTreeView({
     const step = tree.current?.selectOccurrence(dir);
     if (!step) return null;
     const n = step.node as TestNode;
-    if (n.location) void openTarget(n.location, cwd, focus);
+    if (n.location) void openTarget(n.location, cwd, focus, module);
     return step;
   });
   const hasPrevFailed = findOccurrence(roots, selected, -1, treeModel) !== null;
