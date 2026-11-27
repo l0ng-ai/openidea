@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 const ASYNC_PROFILER_HOME: &str = "https://github.com/async-profiler/async-profiler/releases";
 const PY_SPY_HOME: &str = "https://github.com/benfred/py-spy";
+const PYTHON_LAUNCHER: &str = include_str!("python_profile.py");
 
 fn s(v: &str) -> String {
     v.to_owned()
@@ -140,17 +141,42 @@ fn python(
     ready("py-spy", launch, spec)
 }
 
-/// `python -m cProfile -o <out>/profile.pstats <script or -m module> …` with the configuration's
-/// own interpreter (`uv run python`, a virtualenv's). cProfile writes the file when the program
-/// ends, also when Stop interrupts it.
+/// Runs the script, module or `-c` code under cProfile with the configuration's own interpreter
+/// (`uv run python`, a virtualenv's) through `python_profile.py`, written to `out`.
+/// `python -m cProfile` would end every run with exit code 0, take no `-c` and not run a
+/// module as `__main__`. The profile is written when the program ends, also when Stop
+/// interrupts it.
 fn cprofile(config: &RunConfig, dir: &Path, out: &Path, py: wrap::PythonCommand) -> ProfilePrepared {
-    let file = out.join("profile.pstats");
+    python_launcher(config, dir, out, py, "cprofile", "cProfile")
+}
+
+fn python_launcher(
+    config: &RunConfig,
+    dir: &Path,
+    out: &Path,
+    py: wrap::PythonCommand,
+    mode: &str,
+    profiler: &str,
+) -> ProfilePrepared {
+    let launcher = out.join("python_profile.py");
+    if let Err(e) = std::fs::write(&launcher, PYTHON_LAUNCHER) {
+        return unsupported(format!("Cannot write {}: {e}", launcher.display()));
+    }
     let mut argv = py.interpreter;
-    argv.extend([s("-m"), s("cProfile"), s("-o"), path(&file)]);
+    argv.extend([path(&launcher), s(mode), path(out)]);
+    let mut launch = config.clone();
+    // Stop on Windows ends the process tree at once; the configuration's stop command
+    // runs first, and the launcher saves the profile when it sees the file appear.
+    if cfg!(windows) && launch.extras.stop_command.is_none() {
+        let stop = out.join("stop");
+        launch.extras.stop_command = Some(format!("type nul > \"{}\"", path(&stop)));
+        argv.extend([s("--stop"), path(&stop)]);
+    }
     argv.extend(py.target);
-    let (command, args) = argv.split_first().map(|(c, a)| (c.clone(), a.to_vec())).unwrap_or_default();
-    let launch = RunConfig { command, args, ..config.clone() };
-    ready("cProfile", launch, ProfileSpec::SnapshotFile { path: file.into(), root: Some(dir.to_path_buf().into()) })
+    (launch.command, launch.args) = argv.split_first().map(|(c, a)| (c.clone(), a.to_vec())).unwrap_or_default();
+    let spec =
+        ProfileSpec::PythonRun { profiler: s(profiler), dir: out.to_path_buf().into(), root: dir.to_path_buf().into() };
+    ready(profiler, launch, spec)
 }
 
 /// `libasyncProfiler.{so,dylib}` from `ASYNC_PROFILER_HOME` or next to `asprof` on the search path.
@@ -376,15 +402,18 @@ mod tests {
         std::fs::write(&python, "").unwrap();
         let mut c = cfg("python", &python, &["-X", "utf8", "main.py", "--fast"]);
         c.env.insert("PATH".into(), dir.path().join("nothing").to_string_lossy().into_owned());
-        let file = dir.path().join("profile.pstats").to_string_lossy().into_owned();
-
         // Nothing installed: cProfile, whatever the platform.
         let (profiler, launch, spec) = python_plan(&c, dir.path(), "auto");
         assert_eq!(profiler, "cProfile");
         assert_eq!(launch.command, python);
-        assert_eq!(launch.args, ["-X", "utf8", "-m", "cProfile", "-o", &file, "main.py", "--fast"]);
-        let root = Some(dir.path().to_path_buf().into());
-        assert_eq!(spec, ProfileSpec::SnapshotFile { path: PathBuf::from(&file).into(), root });
+        assert_eq!(
+            launch.args,
+            [v(&["-X", "utf8"]), launcher_args(dir.path(), "cprofile"), v(&["main.py", "--fast"])].concat()
+        );
+        assert_eq!(std::fs::read_to_string(dir.path().join("python_profile.py")).unwrap(), PYTHON_LAUNCHER);
+        let (out, root) = (dir.path().to_path_buf().into(), dir.path().to_path_buf().into());
+        assert_eq!(spec, ProfileSpec::PythonRun { profiler: "cProfile".into(), dir: out, root });
+        assert_eq!(launch.extras.stop_command.is_some(), cfg!(windows));
 
         // py-spy installed: Automatic takes it except on macOS, where it would need root.
         std::fs::write(bin.join(if cfg!(windows) { "py-spy.exe" } else { "py-spy" }), "").unwrap();
@@ -397,18 +426,38 @@ mod tests {
     #[test]
     fn cprofile_keeps_the_configurations_interpreter() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("profile.pstats").to_string_lossy().into_owned();
         let launch = |c: RunConfig| python_plan(&c, dir.path(), "cprofile").1;
+        let profiled = launcher_args(dir.path(), "cprofile");
 
         let uv = launch(cfg("python", "uv", &["run", "--frozen", "python", "-m", "app.cli", "serve"]));
         assert_eq!(uv.command, "uv");
-        assert_eq!(uv.args, ["run", "--frozen", "python", "-m", "cProfile", "-o", &file, "-m", "app.cli", "serve"]);
+        assert_eq!(
+            uv.args,
+            [v(&["run", "--frozen", "python"]), profiled.clone(), v(&["-m", "app.cli", "serve"])].concat()
+        );
 
         let bin = dir.path().join(".venv/bin");
         std::fs::create_dir_all(&bin).unwrap();
         let pytest = launch(cfg("pytest", &bin.join("pytest").to_string_lossy(), &["tests", "-k", "slow"]));
         assert!(Path::new(&pytest.command).starts_with(&bin), "{}", pytest.command);
-        assert_eq!(pytest.args, ["-m", "cProfile", "-o", &file, "-m", "pytest", "tests", "-k", "slow"]);
+        assert_eq!(pytest.args, [profiled.clone(), v(&["-m", "pytest", "tests", "-k", "slow"])].concat());
+
+        // `-c` code is what runs, not an interpreter option.
+        let code = launch(cfg("python", "python3", &["-u", "-c", "print(1)", "x"]));
+        assert_eq!(code.args, [v(&["-u"]), profiled, v(&["-c", "print(1)", "x"])].concat());
+    }
+
+    fn v(args: &[&str]) -> Vec<String> {
+        args.iter().map(|a| s(a)).collect()
+    }
+
+    /// `python_profile.py <mode> <out> [--stop <out>/stop]`, as the launch passes them.
+    fn launcher_args(out: &Path, mode: &str) -> Vec<String> {
+        let mut args = vec![path(&out.join("python_profile.py")), s(mode), path(out)];
+        if cfg!(windows) {
+            args.extend([s("--stop"), path(&out.join("stop"))]);
+        }
+        args
     }
 
     #[test]

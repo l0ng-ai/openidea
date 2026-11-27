@@ -11992,6 +11992,11 @@ export type ProfileSpec =
  */
 { kind: "snapshotFile"; path: IpcPath; root: IpcPath | null } | 
 /**
+ *  What `python_profile.py` wrote in `dir` for a profiled Python run: `profile.pstats`.
+ *  Relative source files resolve against `root`.
+ */
+{ kind: "pythonRun"; profiler: string; dir: IpcPath; root: IpcPath } | 
+/**
  *  Collapsed-stack files with extension `ext` in `dir`; relative frame files resolve
  *  against `base`. `jvm_root`: map JVM class frames to sources below it. For the
  *  allocation modes the last frame of a JVM stack is the allocated type.

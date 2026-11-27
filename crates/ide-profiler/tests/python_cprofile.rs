@@ -1,5 +1,5 @@
 //! Profiling `fixtures/python-profiling` under cProfile with a real Python 3, to the end and
-//! when Stop interrupts it. Without `python3` (`python` on Windows) on the search path the
+//! when Stop interrupts it; exit codes, `-c` code and `-m` modules run as Python runs them. Without `python3` (`python` on Windows) on the search path the
 //! tests return early.
 
 use ide_profiler::{Profile, ProfileMode, ProfilePrepared, collect, prepare};
@@ -92,4 +92,75 @@ fn a_stopped_run_still_writes_its_profile() {
     let p = collect(&spec).unwrap();
     // One completed fib(22) followed by one completed fib(18).
     assert!(method(&p, "fib").calls.unwrap() >= 65_674.0, "both completed passes were profiled");
+}
+
+/// Waits up to a minute: a run that hangs fails the test instead of the whole suite.
+fn finish(mut child: std::process::Child) -> std::process::ExitStatus {
+    for _ in 0..600 {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    child.kill().unwrap();
+    panic!("the profiled run did not end");
+}
+
+#[test]
+fn the_runs_exit_code_and_c_code_are_kept() {
+    let Some(python) = python() else { return };
+    let out = tempfile::tempdir().unwrap();
+    let (mut cmd, spec) =
+        plan(&python, &["-c", "import sys\ndef work(): return sum(range(9))\nwork()\nsys.exit(3)"], out.path());
+    assert_eq!(finish(cmd.spawn().unwrap()).code(), Some(3));
+    let p = collect(&spec).unwrap();
+    assert_eq!(method(&p, "work (<string>:2)").calls, Some(1.0));
+}
+
+#[test]
+fn a_module_runs_as_main_so_multiprocessing_finds_its_functions() {
+    let Some(python) = python() else { return };
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(
+        project.path().join("pooled.py"),
+        "import multiprocessing as mp\n\ndef square(x):\n    return x * x\n\nif __name__ == '__main__':\n    with mp.get_context('spawn').Pool(2) as pool:\n        print(pool.map(square, [1, 2, 3]))\n",
+    )
+    .unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let (mut cmd, spec) = plan(&python, &["-m", "pooled"], out.path());
+    // A free-threaded CPython (3.14t) hangs a Pool under cProfile, with `-m cProfile` too.
+    cmd.current_dir(project.path()).env("PYTHON_GIL", "1");
+    let mut child = cmd.spawn().unwrap();
+    let mut printed = String::new();
+    BufReader::new(child.stdout.take().unwrap()).read_line(&mut printed).unwrap();
+    assert_eq!(printed.trim(), "[1, 4, 9]");
+    assert!(finish(child).success());
+    collect(&spec).unwrap();
+}
+
+/// What Stop does on Windows: the stop command creates the file the launcher watches. A run
+/// blocked in a call that the interrupt does not wake is saved by the watcher.
+#[test]
+fn a_stop_file_ends_the_run_and_keeps_its_profile() {
+    let Some(python) = python() else { return };
+    let out = tempfile::tempdir().unwrap();
+    let code = "import time\ndef wait():\n    while True:\n        time.sleep(30)\nprint('done', flush=True)\nwait()";
+    let (mut cmd, spec) = plan(&python, &["-c", code], out.path());
+    let stop = out.path().join("stop");
+    let launch: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+    if !launch.iter().any(|a| a == "--stop") {
+        let at = launch.iter().position(|a| a == "-c").unwrap();
+        let mut args = launch[..at].to_vec();
+        args.extend(["--stop".to_owned(), stop.to_string_lossy().into_owned()]);
+        args.extend(launch[at..].iter().cloned());
+        let program = cmd.get_program().to_owned();
+        cmd = Command::new(program);
+        cmd.args(args).current_dir(fixture()).stdout(Stdio::piped());
+    }
+    let mut child = cmd.spawn().unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+    std::fs::write(&stop, "").unwrap();
+    assert!(!finish(child).success());
+    assert!(collect(&spec).unwrap().methods.iter().any(|m| m.calls.is_some()));
 }
