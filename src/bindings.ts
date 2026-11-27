@@ -397,6 +397,7 @@ export const commands = {
 	 */
 	dbRunTool: (request: RequestId, id: string, executable: string, job: DbToolJob, onOutput: Channel<DbToolLine[]>) => typedError<number | null, IdeError>(__TAURI_INVOKE("db_run_tool", { request, id, executable, job, onOutput })),
 	dbSaveJdbcDriver: (driver: DbJdbcDriver_Deserialize) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_jdbc_driver", { driver })),
+	dbSaveSourceFolders: (folders: DbSourceFolder_Deserialize[]) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_source_folders", { folders })),
 	dbSaveSourceVisibility: (id: string, available: string[], change: DbVisibilityChange) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_source_visibility", { id, available, change })),
 	dbSaveSources: (sources: DataSource_Deserialize[]) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_sources", { sources })),
 	dbSavedCatalog: (id: string) => typedError<{
@@ -410,6 +411,7 @@ export const commands = {
 	dbSetManualCommit: (id: string, manual: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_set_manual_commit", { id, manual })),
 	dbSetPassword: (id: string, password: string | null, save: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_set_password", { id, password, save })),
 	dbSetSshSecret: (id: string, secret: string | null, save: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_set_ssh_secret", { id, secret, save })),
+	dbSourceFolders: () => typedError<DbSourceFolder_Serialize[], IdeError>(__TAURI_INVOKE("db_source_folders")),
 	dbSources: () => typedError<DataSource_Serialize[], IdeError>(__TAURI_INVOKE("db_sources")),
 	dbStatements: (id: string, text: string, from: number, to: number) => typedError<SqlStatement[], IdeError>(__TAURI_INVOKE("db_statements", { id, text, from, to })),
 	dbTableDetails: (id: string, schema: string, table: string) => typedError<DbTableDetails, IdeError>(__TAURI_INVOKE("db_table_details", { id, schema, table })),
@@ -5743,6 +5745,29 @@ export type DbSourceCatalog = {
 	databases?: DbCatalogDatabase[],
 };
 
+/**  A user folder grouping data sources in one project's Database tree. */
+export type DbSourceFolder = DbSourceFolder_Serialize | DbSourceFolder_Deserialize;
+
+/**  A user folder grouping data sources in one project's Database tree. */
+export type DbSourceFolder_Deserialize = {
+	id: string,
+	name: string,
+	/**  Reserved for nested folders; the first UI version only creates root folders. */
+	parent?: string | null,
+	order: number,
+	sources: string[],
+};
+
+/**  A user folder grouping data sources in one project's Database tree. */
+export type DbSourceFolder_Serialize = {
+	id: string,
+	name: string,
+	/**  Reserved for nested folders; the first UI version only creates root folders. */
+	parent?: string | null,
+	order: number,
+	sources: string[],
+};
+
 /**  Connect through an SSH tunnel: the database host and port are reached from `host`. */
 export type DbSsh = {
 	enabled?: boolean,
@@ -10394,9 +10419,11 @@ export type McpTransport = "stdio" | "http" | "sse";
 /**
  *  What a built-in MCP tool asks the project window for. `AgentRun` runs `command` (a shell
  *  line) in the Run tool window's agent tab `name`, on pipes, answered once the process
- *  started or failed to.
+ *  started or failed to. `RunConfiguration` starts a run configuration (a serialized
+ *  `RunConfig`, its before launch tasks already done) in the Run tool window as the user's
+ *  Run would, answered the same way.
  */
-export type McpUiRequest = { type: "confirm"; client: string; tool: string; subject: string; project: string; detail: string | null } | { type: "openFile"; path: IpcPath; line: number | null; column: number | null } | { type: "agentRun"; name: string; command: string; cwd: IpcPath; env: { [key in string]: string } };
+export type McpUiRequest = { type: "confirm"; client: string; tool: string; subject: string; project: string; detail: string | null } | { type: "openFile"; path: IpcPath; line: number | null; column: number | null } | { type: "agentRun"; name: string; command: string; cwd: IpcPath; env: { [key in string]: string } } | { type: "runConfiguration"; config: unknown };
 
 export type MemoryCategory = 
 /**  The backend and its WebView processes. */
