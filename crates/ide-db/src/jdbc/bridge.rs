@@ -166,7 +166,7 @@ impl Bridge {
         }
         let id = self
             .sequence
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| next.checked_add(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |next| next.checked_add(1))
             .map_err(|_| IdeError::internal("JDBC request IDs exhausted"))?;
         let frame = encode(id, session, fields)?;
         let (sender, incoming) = mpsc::channel(2);
