@@ -2190,6 +2190,8 @@
   "Ignore Whitespaces": "忽略空白",
   "Detect Movements Within File": "检测文件内的行移动",
   "Detect Movements Across Files": "检测跨文件的行移动",
+  "Colors": "颜色",
+  "Order": "顺序",
   "Names": "姓名",
   "Initials": "首字母缩写",
   "Last Name": "姓",

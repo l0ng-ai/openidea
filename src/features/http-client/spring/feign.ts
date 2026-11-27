@@ -5,7 +5,7 @@ import { allClasses, parseSource, type Annotation, type Expr, type Method, type 
 
 const WEB = "org.springframework.web.bind.annotation";
 const FEIGN = "org.springframework.cloud.openfeign.FeignClient";
-const VERBS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE"]);
+export const VERBS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE"]);
 const SHORTCUTS: Record<string, string> = {
   GetMapping: "GET",
   PostMapping: "POST",
@@ -52,7 +52,7 @@ function owned(a: Annotation, file: SourceFile, qualified: string): boolean {
   return file.imports.includes(`${qualified.slice(0, qualified.lastIndexOf("."))}.*`);
 }
 
-function literal(t: Tok | undefined): string | null {
+export function literal(t: Tok | undefined): string | null {
   return t?.kind === "str" && /^"[^"\\\r\n]*"$/.test(t.text) && !t.value?.includes("$") ? (t.value ?? "") : null;
 }
 
