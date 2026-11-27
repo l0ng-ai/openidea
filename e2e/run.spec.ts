@@ -4,7 +4,7 @@
  */
 import type { Page } from "@playwright/test";
 import type { RunConfig } from "../src/bindings";
-import { expect, ipcCalls, stubDesktop, test } from "./fixtures";
+import { expect, ipcCalls, stubDesktop, stubSettingsWrites, test } from "./fixtures";
 
 const RUN_ID = 7;
 
@@ -16,6 +16,7 @@ async function stubRun(
   overrides: Partial<RunConfig> = {},
 ) {
   await stubDesktop(page);
+  await stubSettingsWrites(page);
   await page.evaluate(
     async ({ output, exit, runId, overrides }) => {
       const config = {
@@ -32,20 +33,6 @@ async function stubRun(
         ...overrides,
       };
       const h = window.__ipc.handlers;
-      // Settings writes land in the project store the way the backend answers `settings_set`;
-      // the console toolbar's Soft-Wrap toggle writes `console.softWrap`.
-      const projectModule = "/src/platform/project.ts";
-      const { useProject } = await import(/* @vite-ignore */ projectModule);
-      h.settings_set = (args) => {
-        const { key, value } = args as { key: string; value: string };
-        const next = structuredClone(useProject.getState().settings ?? {}) as Record<string, unknown>;
-        const path = key.split(".");
-        let node = next;
-        for (const part of path.slice(0, -1)) node = (node[part] ??= {}) as Record<string, unknown>;
-        node[path.at(-1)!] = JSON.parse(value);
-        useProject.setState({ settings: next as never });
-        return next;
-      };
       h.run_configs = () => [config];
       h.run_apply_settings = (args) => args.configs;
       h.run_start = (args) => {
