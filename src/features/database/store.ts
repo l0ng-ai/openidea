@@ -607,14 +607,18 @@ export async function removeSources(sources: readonly DataSource[]): Promise<voi
   const unique = [...new Map(sources.flatMap((source) => (source.id ? [[source.id, source] as const] : []))).values()];
   if (!unique.length) return;
   const one = unique.length === 1;
+  const count = unique.length;
+  const names = unique
+    .slice(0, 8)
+    .map((source) => source.name)
+    .join("\n");
+  const n = count - 8;
+  const more = n > 0 ? `\n${tx`and ${n} more`}` : "";
   const ok = await confirm({
     title: one ? "Remove Data Source" : "Remove Data Sources",
     message: one
       ? tx`Remove data source '${unique[0]!.name}'? Its query console file stays on disk.`
-      : tx`Remove ${unique.length} data sources? Their query console files stay on disk.\n\n${unique
-          .slice(0, 8)
-          .map((source) => source.name)
-          .join("\n")}${unique.length > 8 ? `\n… ${unique.length - 8} more` : ""}`,
+      : tx`Remove ${count} data sources? Their query console files stay on disk.\n\n${names}${more}`,
     ok: "Remove",
   });
   if (!ok) return;

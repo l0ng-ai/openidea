@@ -10764,7 +10764,7 @@
   "{count} files of the report are not in this project.": "报告中有 {count} 个文件不在此项目中。",
   "Show Table Comments": "显示表注释",
   "Remove Data Sources": "移除数据源",
-  "Remove {length} data sources? Their query console files stay on disk.\n\n{n}{more}": "移除 {length} 个数据源？其查询控制台文件会保留在磁盘上。\n\n{n}{more}",
+  "Remove {count} data sources? Their query console files stay on disk.\n\n{names}{more}": "移除 {count} 个数据源？其查询控制台文件会保留在磁盘上。\n\n{names}{more}",
   "Cannot remove the data source": "无法移除数据源",
   "Cannot remove the data sources": "无法移除数据源",
   "Failed to refresh {failed} of {total} data sources": "{total} 个数据源中有 {failed} 个刷新失败",
