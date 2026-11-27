@@ -173,6 +173,23 @@ describe("the .NET solution tree", () => {
     expect(scan).toHaveBeenCalledTimes(1);
   });
 
+  it("retries the gate when the project opened before its first index pass started", async () => {
+    const scan = vi.spyOn(platform, "dotnetWorkspace").mockResolvedValue({
+      projects: [project("/repo/App/App.csproj", "App")],
+      solutions: [],
+    });
+    indexed([]);
+    mocks.indexStatus.mockResolvedValue({ status: "ok", data: { indexing: false, files: 0, symbols: 0 } });
+    dispose = activateTree();
+    await gateChecked();
+    expect(scan).not.toHaveBeenCalled();
+    indexed(["/repo/App/App.csproj"]);
+    indexing(false);
+    indexSettled();
+    await vi.waitFor(() => expect(rootIds()).toContain("dotnetProject:/repo/App/App.csproj"));
+    expect(scan).toHaveBeenCalledTimes(1);
+  });
+
   it("re-registers in place when the model changes", async () => {
     indexed(["/repo/App.sln"]);
     const scan = vi.spyOn(platform, "dotnetWorkspace").mockResolvedValue({

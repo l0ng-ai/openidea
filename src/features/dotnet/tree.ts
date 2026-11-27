@@ -108,15 +108,18 @@ export function activateTree(): () => void {
    * workspace has no .NET and pays nothing; the model still loads on demand.
    */
   const scanIfDotnet = async () => {
-    let dotnet = false;
+    // Armed first: an index pass that settles while this check runs asks again.
+    retryWhenIndexed = true;
     try {
-      dotnet = (await dotnetCandidates()).length > 0;
-      if (!dotnet && !(await call(commands.indexStatus())).indexing) return;
+      const status = await call(commands.indexStatus());
+      const dotnet = (await dotnetCandidates()).length > 0;
+      // Settled before the lookup, so its answer is final. An empty index that isn't indexing
+      // belongs to a project that just opened, before its first index pass started.
+      if (dotnet || (!status.indexing && status.files > 0)) retryWhenIndexed = false;
+      if (dotnet) void ensureDotnetModel();
     } catch {
-      return;
+      // No index to ask yet: the armed retry asks again once it settles.
     }
-    if (dotnet) void ensureDotnetModel();
-    else retryWhenIndexed = true;
   };
   const subscriptions = [
     useDotnet.subscribe(sync),
