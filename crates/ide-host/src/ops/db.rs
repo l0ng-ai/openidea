@@ -5,11 +5,11 @@
 use super::Channel;
 use crate::Host;
 use ide_command::command;
-use ide_core::{IdeError, IdeResult, IpcPath, RequestId};
+use ide_core::{CancellationToken, IdeError, IdeResult, IpcPath, RequestId};
 use ide_db::split::SqlStatement;
 use ide_db::{
-    CompletionModel, DataSource, Databases, DbObjectKind, DbRowEdit, DbSourceFolder, DbVisibilityChange, HistoryEntry,
-    PlanNode, QueryResult, SchemaObjects, SortKey, TableDetails, TableGrant, TableInfo, TablePage,
+    CompletionModel, ConsoleId, DataSource, Databases, DbObjectKind, DbRowEdit, DbSourceFolder, DbVisibilityChange,
+    HistoryEntry, PlanNode, QueryResult, SchemaObjects, SortKey, TableDetails, TableGrant, TableInfo, TablePage,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -348,6 +348,18 @@ pub async fn db_object_ddl(
     db.object_ddl(&id, &schema, kind, &name).await
 }
 
+fn console_request<'a>(
+    host: &Host,
+    window: &'a str,
+    request: RequestId,
+    path: Option<&'a str>,
+) -> (CancellationToken, Option<ConsoleId<'a>>) {
+    match path {
+        Some(path) => (host.begin_project_request(window, request), Some(ConsoleId { window, path })),
+        None => (host.begin_request(request), None),
+    }
+}
+
 #[command(trust = trusted)]
 pub async fn db_explain(
     host: &Host,
@@ -356,11 +368,12 @@ pub async fn db_explain(
     id: String,
     statement: String,
     schema: Option<String>,
+    #[default] console: Option<String>,
 ) -> IdeResult<Vec<PlanNode>> {
     // Explain Plan: the execution plan of `statement` on `id`, without running it.
     let db = host.project(window)?.db.clone();
-    let cancel = host.begin_request(request);
-    let result = db.explain(&id, &statement, &cancel, schema.as_deref()).await;
+    let (cancel, console) = console_request(host, window, request, console.as_deref());
+    let result = db.explain_in_console(&id, &statement, &cancel, schema.as_deref(), console).await;
     host.end_request(request);
     result
 }
@@ -418,21 +431,33 @@ pub async fn db_execute(
     schema: Option<String>,
     // Cells longer than this many UTF-16 units come back cut (`truncated` lists them); none: whole.
     #[default] cell_limit: Option<u32>,
+    #[default] console: Option<String>,
 ) -> IdeResult<Vec<StatementOutcome>> {
     let mut outcomes = Vec::new();
     let limits = Limits { skip, max_rows, cell_limit };
-    execute_statements(host, window, request, &id, statements, limits, schema.as_deref(), |event| {
-        if let ExecutionEvent::Completed { outcome, .. } = event {
-            outcomes.push(outcome);
-        }
-        Ok(())
-    })
+    execute_statements(
+        host,
+        window,
+        request,
+        &id,
+        statements,
+        limits,
+        schema.as_deref(),
+        console.as_deref(),
+        |event| {
+            if let ExecutionEvent::Completed { outcome, .. } = event {
+                outcomes.push(outcome);
+            }
+            Ok(())
+        },
+    )
     .await?;
     Ok(outcomes)
 }
 
 /// Row `row` (from 0) of the result of `statement`, whole: what a page of a run with a
 /// `cell_limit` shows cut short.
+#[allow(clippy::too_many_arguments)]
 #[command(trust = trusted)]
 pub async fn db_result_row(
     host: &Host,
@@ -442,10 +467,11 @@ pub async fn db_result_row(
     statement: SqlStatement,
     row: u32,
     schema: Option<String>,
+    #[default] console: Option<String>,
 ) -> IdeResult<QueryResult> {
     let db = host.project(window)?.db.clone();
-    let cancel = host.begin_request(request);
-    let result = db.read_row(&id, &statement.text, row as usize, &cancel, schema.as_deref()).await;
+    let (cancel, console) = console_request(host, window, request, console.as_deref());
+    let result = db.read_console_row(&id, &statement.text, row as usize, &cancel, schema.as_deref(), console).await;
     host.end_request(request);
     result
 }
@@ -463,6 +489,12 @@ pub fn db_release_result(
     Ok(())
 }
 
+#[command(trust = trusted)]
+pub fn db_release_console(host: &Host, window: &str, console: String) -> IdeResult<()> {
+    host.project(window)?.db.release_console(ConsoleId { window, path: &console });
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 #[command(trust = trusted)]
 pub async fn db_execute_stream(
@@ -475,11 +507,20 @@ pub async fn db_execute_stream(
     schema: Option<String>,
     #[default] cell_limit: Option<u32>,
     on_progress: Channel<ExecutionEvent>,
+    #[default] console: Option<String>,
 ) -> IdeResult<()> {
     let limits = Limits { skip: 0, max_rows, cell_limit };
-    let result = execute_statements(host, window, request, &id, statements, limits, schema.as_deref(), |event| {
-        on_progress.send(event)
-    })
+    let result = execute_statements(
+        host,
+        window,
+        request,
+        &id,
+        statements,
+        limits,
+        schema.as_deref(),
+        console.as_deref(),
+        |event| on_progress.send(event),
+    )
     .await;
     // The invocation reply can reach the viewer before a large result frame.
     on_progress.send(ExecutionEvent::Done { error: result.err() })
@@ -503,10 +544,11 @@ async fn execute_statements(
     statements: Vec<SqlStatement>,
     Limits { skip, max_rows, cell_limit }: Limits,
     schema: Option<&str>,
+    console: Option<&str>,
     mut emit: impl FnMut(ExecutionEvent) -> IdeResult<()>,
 ) -> IdeResult<()> {
     let db = host.project(window)?.db.clone();
-    let cancel = host.begin_request(request);
+    let (cancel, console) = console_request(host, window, request, console);
     let result = async {
         db.validate_script(id, &statements).await?;
         for (index, statement) in statements.into_iter().enumerate() {
@@ -515,7 +557,15 @@ async fn execute_statements(
             }
             emit(ExecutionEvent::Started { index: index as u32 })?;
             let outcome = match db
-                .execute_from(id, &statement.text, skip as usize, max_rows.max(1) as usize, &cancel, schema)
+                .execute_in_console(
+                    id,
+                    &statement.text,
+                    skip as usize,
+                    max_rows.max(1) as usize,
+                    &cancel,
+                    schema,
+                    console,
+                )
                 .await
             {
                 Ok(mut result) => {
@@ -713,6 +763,7 @@ ide_command::domain!(
     db_remove_jdbc_driver,
     db_object_ddl,
     db_release_result,
+    db_release_console,
     db_result_row,
     db_remove_history,
     db_retain_catalog,
@@ -782,6 +833,7 @@ mod tests {
             statements,
             Limits { skip: 0, max_rows: 10, cell_limit: None },
             None,
+            None,
             |event| match event {
                 ExecutionEvent::Started { index: 0 } => Ok(()),
                 ExecutionEvent::Completed { index: 0, outcome } => {
@@ -803,7 +855,8 @@ mod tests {
             "SELECT 99 AS n UNION ALL SELECT count(*) FROM items ORDER BY n DESC",
             DbDriver::Sqlite,
         );
-        let outcomes = db_execute(&host, window, RequestId(2), id.into(), query, 1, 10, None, None).await.unwrap();
+        let outcomes =
+            db_execute(&host, window, RequestId(2), id.into(), query, 1, 10, None, None, None).await.unwrap();
         assert_eq!(outcomes[0].result.as_ref().unwrap().rows, vec![vec![Some("0".into())]]);
     }
 
@@ -819,10 +872,11 @@ mod tests {
             ),
             DbDriver::Sqlite,
         );
-        db_execute(&host, window, RequestId(1), id.into(), setup, 0, 10, None, None).await.unwrap();
+        db_execute(&host, window, RequestId(1), id.into(), setup, 0, 10, None, None, None).await.unwrap();
 
         let query = || ide_db::split::split("SELECT n, body FROM docs ORDER BY n", DbDriver::Sqlite);
-        let capped = db_execute(&host, window, RequestId(2), id.into(), query(), 0, 10, None, Some(100)).await.unwrap();
+        let capped =
+            db_execute(&host, window, RequestId(2), id.into(), query(), 0, 10, None, Some(100), None).await.unwrap();
         let page = capped[0].result.as_ref().unwrap();
         // The page no longer carries more than the limit of each cell.
         let size: usize = page.rows.iter().flatten().flatten().map(String::len).sum();
@@ -843,7 +897,7 @@ mod tests {
         // The row of a cut cell, read alone and without a limit, is the whole value.
         for row in [1, 2] {
             let statement = query().remove(0);
-            let one = db_result_row(&host, window, RequestId(3), id.into(), statement, row, None).await.unwrap();
+            let one = db_result_row(&host, window, RequestId(3), id.into(), statement, row, None, None).await.unwrap();
             assert!(one.truncated.is_empty());
             let full = one.rows[0][1].clone().unwrap();
             assert_eq!(full.encode_utf16().count(), whole as usize);
@@ -851,7 +905,7 @@ mod tests {
         }
 
         // Without a limit nothing is cut or listed.
-        let all = db_execute(&host, window, RequestId(4), id.into(), query(), 0, 10, None, None).await.unwrap();
+        let all = db_execute(&host, window, RequestId(4), id.into(), query(), 0, 10, None, None, None).await.unwrap();
         let all = all[0].result.as_ref().unwrap();
         assert!(all.truncated.is_empty());
         assert_eq!(all.rows[2][1].as_deref(), Some(wide.as_str()));

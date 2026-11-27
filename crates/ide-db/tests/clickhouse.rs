@@ -1,5 +1,5 @@
 use ide_core::{CancellationToken, IdeError, IdeResult};
-use ide_db::{CellValue, DataSource, DbDriver, DbManager, DbRowEdit, DbSslMode, SortKey, sql};
+use ide_db::{CellValue, ConsoleId, DataSource, DbDriver, DbManager, DbRowEdit, DbSslMode, SortKey, sql};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -132,5 +132,95 @@ async fn clickhouse_cloud_manager_catalogs_and_session_table() -> IdeResult<()> 
     db.disconnect("clickhouse").await;
     checked?;
     cleanup?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires a disposable loopback ClickHouse console fixture"]
+async fn clickhouse_named_console_sessions_run_concurrently_and_preserve_state() -> IdeResult<()> {
+    use std::time::Duration;
+
+    let port = std::env::var("CLICKHOUSE_CONSOLE_TEST_PORT")
+        .expect("set the disposable loopback console fixture's port")
+        .parse()
+        .expect("numeric console fixture port");
+    let password = std::env::var("CLICKHOUSE_CONSOLE_TEST_PASSWORD").expect("set the console fixture password");
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path().to_path_buf();
+    let ssh = Arc::new(ide_ssh::SshManager::new(root.join("ssh-passwords.json")));
+    let db = DbManager::new(root.clone(), root.join("passwords.json"), root.join("history.json"), ssh);
+    let source = DataSource {
+        id: "clickhouse".into(),
+        name: "ClickHouse console fixture".into(),
+        driver: DbDriver::Clickhouse,
+        host: "127.0.0.1".into(),
+        port: Some(port),
+        user: "console_fixture".into(),
+        database: "default".into(),
+        ..Default::default()
+    };
+    let observer = DataSource { id: "observer".into(), ..source.clone() };
+    db.save_sources(vec![source, observer]).await?;
+    for id in ["clickhouse", "observer"] {
+        db.set_password(id, Some(password.clone()), false).await?;
+        db.execute(id, "SELECT 1", 1, &CancellationToken::new()).await?;
+    }
+
+    let a = ConsoleId { window: "window-a", path: "/console.sql" };
+    let b = ConsoleId { window: "window-a", path: "/console_1.sql" };
+    let other_window = ConsoleId { window: "window-b", path: "/console.sql" };
+    let idle = CancellationToken::new();
+    let run = |console, sql, cancel| db.execute_in_console("clickhouse", sql, 0, 1, cancel, None, Some(console));
+    run(b, "SELECT 1", &idle).await?;
+    run(a, "SET max_threads = 2", &idle).await?;
+    run(a, "CREATE TEMPORARY TABLE console_state (id UInt8)", &idle).await?;
+    run(a, "INSERT INTO console_state VALUES (17)", &idle).await?;
+
+    let cancel = CancellationToken::new();
+    let long_sql = "SELECT sum(sleepEachRow(1)) FROM numbers(12) SETTINGS max_block_size=1";
+    let running = run(a, long_sql, &cancel);
+    let other = async {
+        let checked = tokio::time::timeout(Duration::from_secs(4), async {
+            loop {
+                let observed = db
+                    .execute(
+                        "observer",
+                        "SELECT count() FROM system.processes WHERE startsWith(query, 'SELECT sum(sleepEachRow(1))')",
+                        1,
+                        &idle,
+                    )
+                    .await?;
+                if observed.rows[0][0].as_deref() == Some("1") {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+            run(b, "SELECT 2", &idle).await
+        })
+        .await;
+        cancel.cancel();
+        checked.map_err(|_| IdeError::invalid("console B did not complete while console A was active"))?
+    };
+    let (cancelled, other) = tokio::time::timeout(Duration::from_secs(17), async { tokio::join!(running, other) })
+        .await
+        .expect("console queries and cancellation should drain");
+    assert_eq!(other?.rows, vec![vec![Some("2".into())]]);
+    assert_eq!(cancelled.unwrap_err().kind, ide_core::error::ErrorKind::Cancelled);
+
+    let first = run(a, "SELECT getSetting('max_threads'), id FROM console_state", &idle).await?;
+    assert_eq!(first.rows, vec![vec![Some("2".into()), Some("17".into())]]);
+    for console in [b, other_window] {
+        let second = run(console, "SELECT id FROM console_state", &idle).await;
+        assert!(second.is_err_and(|error| error.message.contains("UNKNOWN_TABLE")));
+    }
+    run(b, "CREATE TEMPORARY TABLE console_state (id UInt8)", &idle).await?;
+    db.release_console(a);
+    let reopened = run(a, "SELECT id FROM console_state", &idle).await;
+    assert!(reopened.is_err_and(|error| error.message.contains("UNKNOWN_TABLE")));
+    assert!(run(b, "SELECT id FROM console_state", &idle).await?.rows.is_empty());
+
+    db.disconnect_source("clickhouse").await;
+    let reset = run(b, "SELECT id FROM console_state", &idle).await;
+    assert!(reset.is_err_and(|error| error.message.contains("UNKNOWN_TABLE")));
     Ok(())
 }
