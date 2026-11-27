@@ -604,6 +604,7 @@ export function contributedQuickFixes(view: EditorView, from: number, to: number
 /**
  * Extra rows for the ⌥↵ submenu of inspection `inspectionId` at the caret (after Edit
  * inspection profile setting and Disable inspection), such as Suppress for statement.
+ * The producer's suppressed-rule list is part of `intentionControls` itself.
  */
 export const inspectionControlProviders =
   Facet.define<(view: EditorView, inspectionId: string) => readonly ContributedIntention[]>();
