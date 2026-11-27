@@ -1,0 +1,13 @@
+# Nextest runs tests in separate processes. These three tests write the same Windows clipboard.
+[test-groups.windows-clipboard]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = '''
+package(=ide-clipboard) & (
+    test(=tests::text_reads_on_one_thread_do_not_corrupt_the_heap)
+    | test(=tests::text_reads_taking_turns_do_not_corrupt_the_heap)
+    | test(=tests::concurrent_text_reads_do_not_corrupt_the_heap)
+)
+'''
+test-group = "windows-clipboard"
