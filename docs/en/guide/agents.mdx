@@ -132,7 +132,7 @@ Tasks are saved per project and survive restarts. When the agent supports resumi
 
 For a built-in ACP agent launched directly, such as OMP, **Launch › Additional arguments** appends arguments to its existing launch command. Separate arguments with spaces and quote values that contain spaces. **Apply** saves the arguments for the next process launch; the command preview shows the saved result. **Reset additional arguments** clears just this field, leaving the executable, environment and any hand-written `args` in the agent file alone.
 
-For **GitHub Copilot**, **Sign In › GitHub account** selects which GitHub account's Copilot subscription is used for AI model requests—either Copilot CLI's own default login (**Sign In…**) or any account signed into GitHub CLI (**Add account…**). **New Tasks** model options are loaded for the authenticated account after sign-in or **Apply**.
+For **GitHub Copilot**, **Sign In › GitHub account** selects which GitHub account's Copilot subscription is used for AI model requests—either Copilot CLI's own default login (**Sign In…**) or any account signed into GitHub CLI (**Add account…**). **New Tasks** model options load automatically for the selected authenticated account, and **Apply** / **OK** saves the selection for new sessions.
 
 **Settings › Agents › Chat** chooses what the task header shows: **Context window usage**, **Time spent on the task**, **Usage limits** (when the agent reports them, such as Claude Code) and **Session cost**.
 

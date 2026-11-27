@@ -493,7 +493,7 @@ async fn start_inner(
     }
     // A Python configuration pointing at a missing interpreter fails in the depth of
     // process spawn otherwise; name the cause and the fix like PyCharm's "Invalid SDK".
-    let is_python = matches!(config.kind.as_str(), "python" | "pytest" | "django-test");
+    let is_python = matches!(config.kind.as_str(), "python" | "pytest" | "unittest" | "django-test");
     if is_python && Path::new(&config.command).components().count() > 1 {
         let cwd = project.root.join(config.cwd.as_deref().unwrap_or(Path::new("")));
         let executable = ide_core::project_roots::resolve(&cwd, Path::new(&config.command));

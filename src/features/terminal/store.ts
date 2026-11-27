@@ -438,6 +438,18 @@ export async function requestCloseTab(id: string): Promise<boolean> {
   return true;
 }
 
+/**
+ * User-initiated Close Tab / Other Tabs / All Tabs: closes the tabs one after another,
+ * each confirming as Close Tab does; a running command the user keeps stops
+ * the rest. A tab that is gone by its turn (its shell exited) is skipped.
+ * Resolves true unless the user kept one open.
+ */
+export async function requestCloseTabs(ids: readonly string[]): Promise<boolean> {
+  const open = (id: string) => useTerminals.getState().tabs.some((t) => t.id === id);
+  for (const id of ids) if (open(id) && !(await requestCloseTab(id))) return false;
+  return true;
+}
+
 /** User-initiated Close Session: closes the session's tab, confirming first when a command is running. */
 export function requestCloseSession(key: string): Promise<boolean> {
   const tab = tabOfSession(key);

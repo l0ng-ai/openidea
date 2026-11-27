@@ -40,7 +40,7 @@ import {
   syncTerminalProject,
   renameTab,
   requestCloseSession,
-  requestCloseTab,
+  requestCloseTabs,
   selectTab,
   tabFullTitle,
   tabTitle,
@@ -425,11 +425,12 @@ function GroupTabs({ group }: { group: string }) {
     };
   });
 
-  const onClose = async (id: string) => {
-    if (!(await requestCloseTab(id))) return;
+  const closeTabs = async (ids: string[]) => {
+    if (!(await requestCloseTabs(ids))) return;
     if (useTerminals.getState().tabs.length === 0) toolWindowService().hide("terminal");
     else focusActiveTab(focusRaf);
   };
+  const onClose = (id: string) => closeTabs([id]);
 
   const tabMenu = (id: string, e: MouseEvent) => {
     e.preventDefault();
@@ -439,14 +440,13 @@ function GroupTabs({ group }: { group: string }) {
       { label: "Rename Session…", icon: "edit", run: () => setRenaming({ id, anchor }) },
       { kind: "action", action: "terminal.moveToEditor", arg: id },
       { kind: "separator" },
+      // IDEA's content tab menu: Close Tab, Close All Tabs, Close Other Tabs.
       { label: "Close Tab", icon: "close", run: () => void onClose(id) },
+      { label: "Close All Tabs", run: () => void closeTabs(tabs.map((t) => t.id)) },
       {
         label: "Close Other Tabs",
         disabled: !others,
-        run: async () => {
-          for (const t of tabs.filter((x) => x.id !== id)) if (!(await requestCloseTab(t.id))) return;
-          focusActiveTab(focusRaf);
-        },
+        run: () => void closeTabs(tabs.filter((x) => x.id !== id).map((t) => t.id)),
       },
       { kind: "separator" },
       // IDEA's tool window splits: each part gets its own tabs.

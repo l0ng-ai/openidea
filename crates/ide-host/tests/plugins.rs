@@ -6794,6 +6794,8 @@ fn net_http_setting_grants_reach_plain_http_per_transport() {
                 let mut req = vec![0; len];
                 let _ = reader.read_exact(&mut req);
                 let body = "plain ok";
+                // Recorded before the reply: the client may assert as soon as it reads it.
+                seen.lock().push("served".into());
                 let _ = writer.write_all(
                     format!(
                         "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: {}\r\n\r\n{body}",
@@ -6801,7 +6803,6 @@ fn net_http_setting_grants_reach_plain_http_per_transport() {
                     )
                     .as_bytes(),
                 );
-                seen.lock().push("served".into());
             }
         });
     }

@@ -11,7 +11,7 @@ use ide_spell::{Region, RegionKind, SpellScope, Speller, Typo};
 use std::path::{Path, PathBuf};
 
 /// Languages checked as prose (all text but code spans).
-const PROSE: &[&str] = &["plaintext", "markdown", "restructuredtext", "asciidoc", "latex"];
+const PROSE: &[&str] = &["plaintext", "markdown", "mdx", "restructuredtext", "asciidoc", "latex"];
 
 /// Custom dictionary paths: `~/…` from home, relative ones from the project root.
 fn dictionary_paths(settings: &SpellingSettings, root: &Path) -> Vec<PathBuf> {

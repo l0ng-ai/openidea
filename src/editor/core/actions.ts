@@ -71,7 +71,7 @@ import {
   unfoldAtCaret,
 } from "./cm/folding";
 import { fillParagraph } from "./cm/fillParagraph";
-import { convertIndentsToSpaces, convertIndentsToTabs, reverseLines, sortLines } from "./cm/lines";
+import { convertIndentsToSpaces, convertIndentsToTabs, reverseLines, sortLines, uniqueLines } from "./cm/lines";
 import { hardWrapAt } from "./cm/setup";
 import { customRegions } from "./cm/regions";
 import { toggleRenderedViewAtCaret } from "./cm/renderedDocs";
@@ -89,6 +89,8 @@ import {
   cursorParagraphForward,
   scrollDown,
   scrollDownAndMove,
+  scrollLeft,
+  scrollRight,
   scrollToBottom,
   scrollToCenter,
   scrollToTop,
@@ -125,6 +127,7 @@ import {
   resetAllEditorsFontZoom,
   resetConfiguredEditorsFontZoom,
   stepConfiguredEditorsFontZoom,
+  stepEveryEditorFontZoom,
 } from "./cm/prefs";
 import { useProject } from "@/platform/project";
 import { call, commands } from "@/platform/ipc";
@@ -1084,6 +1087,8 @@ export function registerEditorActions(): () => void {
     caret("editor.scrollToCenter", "Scroll to Center", (v) => scrollToCenter(v), { category: "Editor Actions" }),
     caret("editor.scrollUp", "Scroll Up", (v) => scrollUp(v), { category: "Editor Actions" }),
     caret("editor.scrollDown", "Scroll Down", (v) => scrollDown(v), { category: "Editor Actions" }),
+    caret("editor.scrollLeft", "Scroll Left", (v) => scrollLeft(v), { category: "Editor Actions" }),
+    caret("editor.scrollRight", "Scroll Right", (v) => scrollRight(v), { category: "Editor Actions" }),
     caret("editor.scrollUpAndMove", "Scroll Up and Move if Necessary", (v) => scrollUpAndMove(v), {
       category: "Editor Actions",
     }),
@@ -1272,6 +1277,10 @@ export function registerEditorActions(): () => void {
     }),
     edit("code.sortLines", "Sort Lines", (v) => sortLines(v), { category: "Edit" }),
     edit("code.reverseLines", "Reverse Lines", (v) => reverseLines(v), { category: "Edit" }),
+    edit("code.uniqueLines", "Delete Duplicate Lines", (v) => uniqueLines(v), {
+      category: "Edit",
+      keywords: ["unique", "dedupe", "remove duplicates"],
+    }),
     text(
       "code.fillParagraph",
       "Fill Paragraph",
@@ -1360,6 +1369,22 @@ export function registerEditorActions(): () => void {
       keywords: ["zoom", "font size", "mouse wheel"],
       when: "projectOpen",
       run: resetAllFontSize,
+    },
+    {
+      id: "editor.increaseFontSizeAll",
+      title: "Increase Font Size in All Editors",
+      category: "View",
+      keywords: ["zoom", "font size"],
+      when: "projectOpen",
+      run: () => stepEveryEditorFontZoom(focusedCellEditor() ?? activeSlot()?.view ?? null, 1),
+    },
+    {
+      id: "editor.decreaseFontSizeAll",
+      title: "Decrease Font Size in All Editors",
+      category: "View",
+      keywords: ["zoom", "font size"],
+      when: "projectOpen",
+      run: () => stepEveryEditorFontZoom(focusedCellEditor() ?? activeSlot()?.view ?? null, -1),
     },
     {
       id: "editor.increaseFontSize",

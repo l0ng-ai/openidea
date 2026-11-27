@@ -92,6 +92,32 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Compare File with Editor", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="C" parent="$default"><action id="CompareFileWithEditor"><keyboard-shortcut first-keystroke="ctrl alt D"/></action></keymap>`,
+    );
+    expect(k.overrides["diff.compareFileWithEditor"]).toEqual([normalizeBinding("Ctrl+Alt+D")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Increase / Decrease Font Size in All Editors", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="F" parent="Mac OS X 10.5+"><action id="EditorIncreaseFontSizeGlobal"><keyboard-shortcut first-keystroke="shift meta EQUALS"/></action><action id="EditorDecreaseFontSizeGlobal"><keyboard-shortcut first-keystroke="shift meta MINUS"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.increaseFontSizeAll"]).toEqual([normalizeBinding("Meta+Shift+=")]);
+    expect(k.overrides["editor.decreaseFontSizeAll"]).toEqual([normalizeBinding("Meta+Shift+-")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Scroll Left / Scroll Right", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="Mac OS X 10.5+"><action id="EditorScrollLeft"><keyboard-shortcut first-keystroke="meta alt LEFT"/></action><action id="EditorScrollRight"><keyboard-shortcut first-keystroke="meta alt RIGHT"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.scrollLeft"]).toEqual([normalizeBinding("Meta+Alt+Left")]);
+    expect(k.overrides["editor.scrollRight"]).toEqual([normalizeBinding("Meta+Alt+Right")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Scroll Up / Scroll Down and Move if Necessary", () => {
     const k = parseIdeaKeymap(
       `<keymap name="E" parent="$default"><action id="EditorScrollUpAndMove"><keyboard-shortcut first-keystroke="alt UP"/></action><action id="EditorScrollDownAndMove"><keyboard-shortcut first-keystroke="alt DOWN"/></action></keymap>`,
@@ -126,6 +152,14 @@ describe("IntelliJ IDEA keymap import", () => {
       `<keymap name="E" parent="Mac OS X 10.5+"><action id="ToggleZenMode"><keyboard-shortcut first-keystroke="control meta Z"/></action></keymap>`,
     );
     expect(k.overrides["view.toggleZenMode"]).toEqual([normalizeBinding("Ctrl+Meta+Z")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Save as Live Template, which has no shortcut in the presets", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="E" parent="$default"><action id="SaveAsTemplate"><keyboard-shortcut first-keystroke="ctrl alt shift T"/></action></keymap>`,
+    );
+    expect(k.overrides["code.saveAsLiveTemplate"]).toEqual([normalizeBinding("Ctrl+Alt+Shift+T")]);
     expect(k.unknownActions).toEqual([]);
   });
 
@@ -267,6 +301,14 @@ describe("IntelliJ IDEA keymap import", () => {
       "toolwindow.resizeUp": [normalizeBinding("Ctrl+Alt+Up")],
       "toolwindow.resizeDown": [normalizeBinding("Ctrl+Alt+Down")],
     });
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Delete Duplicate Lines", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="Mac OS X 10.5+"><action id="EditorUniqueLines"><keyboard-shortcut first-keystroke="shift meta 7"/></action></keymap>`,
+    );
+    expect(k.overrides["code.uniqueLines"]).toEqual([normalizeBinding("Shift+Meta+7")]);
     expect(k.unknownActions).toEqual([]);
   });
 

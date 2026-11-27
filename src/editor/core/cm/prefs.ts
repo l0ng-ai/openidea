@@ -475,10 +475,15 @@ export function stepAllEditorsFontZoom(origin: EditorView, delta: number): void 
   if (current === undefined) return;
   const next = Math.max(-6, Math.min(36, current + delta));
   if (next === current) return;
-  sharedFontZoom = next;
+  setEveryEditorFontZoom(next);
+}
+
+/** Sets the font zoom of every open editor, and the value new editors start from. */
+function setEveryEditorFontZoom(zoom: number): void {
+  sharedFontZoom = zoom;
   for (const ed of useEditorRegistry.getState().editors) {
     if (ed.view.state.field(fontZoom, false) === undefined) continue;
-    if (ed.view.state.field(fontZoom) !== next) ed.view.dispatch({ effects: setFontZoom.of(next) });
+    if (ed.view.state.field(fontZoom) !== zoom) ed.view.dispatch({ effects: setFontZoom.of(zoom) });
   }
 }
 
@@ -503,6 +508,29 @@ export function stepConfiguredEditorsFontZoom(origin: EditorView, delta: number)
   const before = origin.state.field(fontZoom, false);
   if (editorPrefs().general.wheelZoomScope === "all") stepAllEditorsFontZoom(origin, delta);
   else stepFontZoom(origin, delta);
+  showFontZoom(origin, before);
+}
+
+/**
+ * Increase / Decrease Font Size in All Editors: sets every open editor, whatever `wheelZoomScope`
+ * says, to `origin`'s zoom stepped by `delta`, or to the zoom new editors start with stepped by
+ * `delta` when `origin` has none.
+ */
+export function stepEveryEditorFontZoom(origin: EditorView | null, delta: number): void {
+  const before = origin?.state.field(fontZoom, false);
+  const next = Math.max(-6, Math.min(36, (before ?? sharedFontZoom) + delta));
+  // A notebook cell is not in the registry.
+  if (before !== undefined && before !== next) origin!.dispatch({ effects: setFontZoom.of(next) });
+  setEveryEditorFontZoom(next);
+  if (origin && before !== undefined && fontZoomListeners.has(origin)) showFontZoom(origin, before);
+  else {
+    activeFontZoomListener?.(null);
+    activeFontZoomListener = undefined;
+  }
+}
+
+/** Shows `origin`'s zoom in its indicator after a step from `before`, hiding the one shown elsewhere. */
+function showFontZoom(origin: EditorView, before: number | undefined): void {
   const zoom = origin.state.field(fontZoom, false);
   const listener = fontZoomListeners.get(origin);
   if (zoom === undefined || zoom === before || !listener) return;

@@ -105,6 +105,8 @@ export const commands = {
 	agentMcpSetEnabled: (id: string, enabled: boolean) => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_set_enabled", { id, enabled })),
 	/**  Tests an MCP server by connecting (`initialize`) and listing its tools (`tools/list`). */
 	agentMcpTest: (id: string) => typedError<McpProbeResult, IdeError>(__TAURI_INVOKE("agent_mcp_test", { id })),
+	/**  Probes Copilot's model catalog for a staged GitHub account without persisting until Apply. */
+	agentPreviewCopilotModels: (account: string, model: string | null) => typedError<AgentModelCatalog, IdeError>(__TAURI_INVOKE("agent_preview_copilot_models", { account, model })),
 	/**
 	 *  What the agent reports about itself when it starts (no session: no MCP servers, hooks
 	 *  or sign-in run). Remembered until `refresh`.
@@ -9294,6 +9296,17 @@ export type LanguageCodeStyle_Deserialize = {
 	quotes?: string | null,
 	/**  JavaScript / TypeScript › Spaces, by tsserver format option (`insertSpaceAfterCommaDelimiter`). */
 	spaces?: { [key in string]: boolean },
+	/**
+	 *  JavaScript / TypeScript › Imports › Import paths:
+	 *  `shortest` | `relative` | `non-relative` | `project-relative`.
+	 */
+	importModuleSpecifier?: string | null,
+	/**  JavaScript / TypeScript › Imports › Import path ending: `auto` | `minimal` | `index` | `js`. */
+	importModuleSpecifierEnding?: string | null,
+	/**  JavaScript / TypeScript › Imports › Do not auto-import from (globs). */
+	autoImportFileExcludePatterns?: string[],
+	/**  JavaScript / TypeScript › Imports › Do not auto-import specifiers matching (regexes). */
+	autoImportSpecifierExcludeRegexes?: string[],
 };
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
@@ -9336,6 +9349,17 @@ export type LanguageCodeStyle_Serialize = {
 	quotes?: string | null,
 	/**  JavaScript / TypeScript › Spaces, by tsserver format option (`insertSpaceAfterCommaDelimiter`). */
 	spaces?: { [key in string]: boolean },
+	/**
+	 *  JavaScript / TypeScript › Imports › Import paths:
+	 *  `shortest` | `relative` | `non-relative` | `project-relative`.
+	 */
+	importModuleSpecifier?: string | null,
+	/**  JavaScript / TypeScript › Imports › Import path ending: `auto` | `minimal` | `index` | `js`. */
+	importModuleSpecifierEnding?: string | null,
+	/**  JavaScript / TypeScript › Imports › Do not auto-import from (globs). */
+	autoImportFileExcludePatterns?: string[],
+	/**  JavaScript / TypeScript › Imports › Do not auto-import specifiers matching (regexes). */
+	autoImportSpecifierExcludeRegexes?: string[],
 };
 
 /**  Language identifier, e.g. `rust`, `typescript`, `kotlin`. Matches LSP `languageId`. */
@@ -12107,6 +12131,11 @@ export type PythonSettings = {
 	 *  by interpreter executable; absolute or `~/`.
 	 */
 	interpreterPaths?: { [key in string]: string[] },
+	/**
+	 *  Default test runner (Settings › Python › Testing): `auto` (pytest when the project uses
+	 *  it, else unittest), `pytest` or `unittest`.
+	 */
+	testRunner?: string,
 };
 
 export type PythonStubLinks = {

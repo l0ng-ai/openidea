@@ -64,6 +64,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "code.autoIndentLines": [],
   "code.showErrorDescription": [],
   "code.surroundWithLiveTemplate": [],
+  "code.saveAsLiveTemplate": [],
   "code.moveElementLeft": [],
   "code.moveElementRight": [],
   "analyze.inspectFile": [],
@@ -192,6 +193,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "code.pasteFromHistory": [],
   "code.sortLines": [],
   "code.reverseLines": [],
+  "code.uniqueLines": [],
   "code.fillParagraph": [],
   "code.convertIndentsToSpaces": [],
   "code.convertIndentsToTabs": [],
@@ -257,6 +259,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "editor.scrollToCenter": [],
   "editor.scrollUp": [],
   "editor.scrollDown": [],
+  "editor.scrollLeft": [],
+  "editor.scrollRight": [],
   "editor.scrollUpAndMove": [],
   "editor.scrollDownAndMove": [],
   "editor.moveUpAndScroll": [],
@@ -308,6 +312,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "project.reformatCode": ["Alt+Shift+F"],
   "project.optimizeImports": ["Alt+Shift+O"],
   "project.compareWith": [],
+  "diff.compareFileWithEditor": [],
 
   // Views / panels
   "toolwindow.project": ["Meta+Shift+E"],
@@ -414,6 +419,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "view.resetZoom": [],
   "editor.increaseFontSize": [],
   "editor.decreaseFontSize": [],
+  "editor.increaseFontSizeAll": [],
+  "editor.decreaseFontSizeAll": [],
   // Editing extras, image viewer (keyWhen: image focused) and Markdown editor layouts
   "code.cyclicExpandWord": [],
   "code.cyclicExpandWordBackward": [],
