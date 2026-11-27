@@ -17,11 +17,25 @@ const token = (type: string, modifiers: string[], language: string) =>
 describe("Java semantic tokens", () => {
   it.each([
     ["class", ["cm-sem-type"]],
-    ["interface", ["cm-sem-type"]],
+    ["interface", ["cm-sem-type", "cm-sem-java-interface"]],
     ["method", ["cm-sem-function"]],
   ])("colours JDK %s references like library and workspace ones", (type, classes) => {
     expect(token(type, ["defaultLibrary"], "java")).toEqual(classes);
     expect(token(type, ["defaultLibrary"], "java")).toEqual(token(type, [], "java"));
+  });
+
+  it.each([
+    ["interface", [], "cm-sem-java-interface"],
+    ["enum", [], "cm-sem-java-enum"],
+    ["typeParameter", [], "cm-sem-java-type-parameter"],
+    ["class", ["abstract"], "cm-sem-java-abstract-class"],
+  ])("gives %s names IntelliJ's own colour (#6415)", (type, modifiers, cls) => {
+    expect(token(type, modifiers, "java")).toContain(cls);
+  });
+
+  it("leaves concrete classes and abstract methods the class and method colours", () => {
+    expect(token("class", [], "java")).toEqual(["cm-sem-type"]);
+    expect(token("method", ["abstract"], "java")?.join(" ")).not.toMatch(/java-/);
   });
 
   it("keeps the other modifiers of JDK symbols", () => {
@@ -32,7 +46,7 @@ describe("Java semantic tokens", () => {
   });
 
   it.each(["class", "interface", "enum", "record"])("does not italicise static nested %s names", (type) => {
-    expect(token(type, ["static"], "java")).toEqual(["cm-sem-type"]);
+    expect(token(type, ["static"], "java")).not.toContain("cm-sem-static");
   });
 
   it.each([

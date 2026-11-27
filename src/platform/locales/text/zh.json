@@ -10472,6 +10472,8 @@
   "Interface name": "接口名",
   "Type alias": "类型别名",
   "Type parameter": "类型参数",
+  "Abstract class name": "抽象类名",
+  "Enum name": "枚举名",
   "Change Project Icon…": "更改项目图标…",
   "Reset Project Icon": "重置项目图标",
   "Cannot change the project icon": "无法更改项目图标",
@@ -10796,5 +10798,11 @@
   "Deactivate {count} Data Sources": "停用 {count} 个数据源",
   "Remove {count} Data Sources…": "移除 {count} 个数据源…",
   "1 file of the data has no source in this project. Map it with [paths] in the coverage.py configuration.": "数据中有 1 个文件在此项目中找不到源码。请在 coverage.py 配置的 [paths] 中映射它。",
-  "{count} files of the data have no source in this project. Map them with [paths] in the coverage.py configuration.": "数据中有 {count} 个文件在此项目中找不到源码。请在 coverage.py 配置的 [paths] 中映射它们。"
+  "{count} files of the data have no source in this project. Map them with [paths] in the coverage.py configuration.": "数据中有 {count} 个文件在此项目中找不到源码。请在 coverage.py 配置的 [paths] 中映射它们。",
+  "Python doctest": "Python doctest 测试",
+  "Run the examples in Python docstrings": "运行 Python 文档字符串中的示例",
+  "calc.py": "calc.py",
+  "Files, or a class or function in one: calc.py::Stock.take": "文件，或文件中的某个类或函数：calc.py::Stock.take",
+  "e.g. -o ELLIPSIS -o NORMALIZE_WHITESPACE": "例如 -o ELLIPSIS -o NORMALIZE_WHITESPACE",
+  "Run doctests": "运行 doctest"
 }

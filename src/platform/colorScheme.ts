@@ -496,6 +496,18 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
     ...syn(`javascript.${id}`, name, [JS], token, { inherit: "type" }),
     language: JS,
   })),
+  // IntelliJ's Java kinds of type: unset, they keep the class name's colour.
+  ...(
+    [
+      ["interface", "Classes › Interface name", "java-interface"],
+      ["abstractClass", "Classes › Abstract class name", "java-abstract-class"],
+      ["enum", "Classes › Enum name", "java-enum"],
+      ["typeParameter", "Classes › Type parameter", "java-type-parameter"],
+    ] as const
+  ).map(([id, name, token]) => ({
+    ...syn(`java.${id}`, name, ["Java"], token, { inherit: "type" }),
+    language: "Java",
+  })),
   // IntelliJ's Kotlin page: calls of top-level functions, and enum entries (IntelliJ falls back to
   // static method and static field, which are a function call and a constant here).
   ...(

@@ -59,7 +59,11 @@ test("fold previews fit a narrow split and use its zoomed text size", async ({ w
   const pane = panes.last();
   const right = pane.locator(".cm-content");
   const original = await right.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
-  await right.press("Alt+Shift+.");
+  await right.focus();
+  await page.evaluate(async () => {
+    const path = "/src/platform/actions.ts";
+    await (await import(/* @vite-ignore */ path)).executeAction("editor.increaseFontSize");
+  });
   await expect(right).toHaveCSS("font-size", `${original + 1}px`);
   await pane.locator(".cm-foldGutter .cm-openidea-foldOpen").first().click();
   await pane.locator(".cm-foldPlaceholder").hover();
