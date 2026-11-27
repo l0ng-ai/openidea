@@ -94,7 +94,7 @@
   min-width: 0;
   color: var(--fg-secondary);
   --icon-color: var(--fg-muted);
-  font-size: var(--fs-tiny);
+  font-size: var(--fs-small);
   line-height: 15px;
 }
 .remoteHost {
