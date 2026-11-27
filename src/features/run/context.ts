@@ -246,9 +246,6 @@ export function doctestConfig(relPath: string, configs: RunConfig[], qualname = 
   };
 }
 
-/** Whether a module has docstring examples for doctest. */
-export const hasDoctests = (content: string) => /^[ \t]*>>>(?:[ \t]|$)/m.test(content);
-
 /** A Playwright spec: it imports Playwright Test, or uses its `test.describe` / `test.step` / `test.use`. */
 export function isPlaywrightSpec(content: string): boolean {
   return /['"]@playwright\/test['"]|\btest\.(?:describe|step|use)\s*[.(]/.test(content);
