@@ -105,6 +105,7 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   SaveAll: "file.save",
   ShowSettings: "file.settings",
   NewScratchFile: "file.newScratchFile",
+  NewScratchBuffer: "file.newScratchBuffer",
   CloseContent: "editor.closeTab",
   CloseEditor: "editor.closeTab",
   CloseAllEditors: "editor.closeAllTabs",
