@@ -1,4 +1,5 @@
 use super::blocking;
+use super::pytest_fixtures::{PytestFixtureAt, fixture_at};
 use super::python_stubs::{
     PythonStubLinks, counterpart_candidates, match_declarations, module_name, site_packages, stub_path,
 };
@@ -478,6 +479,23 @@ pub async fn nav_python_stubs(host: &Host, window: &str, doc: DocId) -> IdeResul
     .await
 }
 
+/// pytest fixtures at `pos` of a Python document: the definition pytest uses for the fixture
+/// named there (a test's parameter, a `usefixtures` / `getfixturevalue` string), and the
+/// fixtures visible where a fixture name goes, for completion.
+#[command(trust = always)]
+pub async fn nav_pytest_fixtures(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<PytestFixtureAt> {
+    let project = host.project(window)?;
+    let syntax = host.syntax();
+    blocking(move || {
+        let snap = project.documents.snapshot(doc)?;
+        if snap.large || snap.language.as_str() != "python" {
+            return Ok(Default::default());
+        }
+        Ok(fixture_at(&project, &syntax, &snap.path, &snap.text, pos))
+    })
+    .await
+}
+
 ide_command::domain!(
     nav:
     find_dirs,
@@ -491,6 +509,7 @@ ide_command::domain!(
     mark_recent,
     nav_index_definitions,
     nav_inheritance,
+    nav_pytest_fixtures,
     nav_python_stubs,
     nav_resolve_module,
     path_completions,
