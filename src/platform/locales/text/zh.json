@@ -1678,6 +1678,7 @@
   "Create Test for {file}": "为 {file} 创建测试",
   "No functions or methods to test": "没有可测试的函数或方法",
   "The chosen tests already exist": "所选测试已存在",
+  "The test file can't be edited": "无法编辑该测试文件",
   "Choose Test Subject for {stem} ({count} found)": "选择 {stem} 的被测代码（找到 {count} 项）",
   "Create Patch": "创建补丁",
   "Create Patch…": "创建补丁…",

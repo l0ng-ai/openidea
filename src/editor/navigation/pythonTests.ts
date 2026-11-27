@@ -21,15 +21,19 @@ const testable = (name: string) => !name.startsWith("_") || name === "__init__";
 /** The module's top-level functions and its top-level classes' methods, in source order. */
 export function pythonTestSubjects(outline: readonly OutlineItem[]): PythonTestSubject[] {
   const out: PythonTestSubject[] = [];
+  const push = (s: PythonTestSubject) => {
+    // `@overload`s and conditional definitions repeat a name: one test each.
+    if (!out.some((o) => o.id === s.id)) out.push(s);
+  };
   for (const item of outline) {
     const name = declaredName(item);
     if (CALLABLE.has(item.kind) && testable(name)) {
-      out.push({ id: name, cls: null, name, lines: { from: item.range.start.line, to: item.range.end.line } });
+      push({ id: name, cls: null, name, lines: { from: item.range.start.line, to: item.range.end.line } });
     } else if (item.kind === "class" && !name.startsWith("_")) {
       for (const m of item.children) {
         const method = declaredName(m);
         if (!CALLABLE.has(m.kind) || !testable(method)) continue;
-        out.push({
+        push({
           id: `${name}.${method}`,
           cls: name,
           name: method,
@@ -77,20 +81,56 @@ function lineStarts(lines: readonly string[]): number[] {
   return starts;
 }
 
+const IDENT = /^[A-Za-z_]\w*$/;
+
 /**
- * The file's top-level `import …` / `from … import …` statements (lines `first`..`last`, a
- * parenthesized or backslash-continued list included) and the names `from` imports bind.
+ * The dotted module a test imports `path` from: relative to the innermost source root that
+ * holds it (else the project, a leading `src/` dropped), `__init__` folded. Null when a part
+ * is no identifier (`my-tool.py`), which no import can name.
  */
-function importStatements(lines: readonly string[]): Array<{ first: number; last: number; names: string[] }> {
-  const out: Array<{ first: number; last: number; names: string[] }> = [];
+export function pythonImportPath(path: string, root: string | null, sourceRoots: readonly string[]): string | null {
+  const base = [...sourceRoots].filter((r) => path.startsWith(`${r}/`)).sort((a, b) => b.length - a.length)[0];
+  let parts: string[];
+  if (base)
+    parts = path
+      .slice(base.length + 1)
+      .replace(/\.pyi?$/, "")
+      .split("/");
+  else {
+    const rel = root && path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
+    parts = rel.replace(/\.pyi?$/, "").split("/");
+    const src = parts.lastIndexOf("src");
+    if (src >= 0 && src < parts.length - 1) parts.splice(0, src + 1);
+  }
+  if (parts.length > 1 && parts[parts.length - 1] === "__init__") parts.pop();
+  return parts.length && parts.every((p) => IDENT.test(p)) ? parts.join(".") : null;
+}
+
+interface ImportStatement {
+  /** First and last line (a parenthesised or `\\`-continued import spans several). */
+  from: number;
+  to: number;
+  module: string | null;
+  names: string[];
+  /** `from m import a, b` on one line, which can be extended in place. */
+  simple: boolean;
+}
+
+/** The file's top-level `import` / `from … import …` statements. */
+function importStatements(lines: readonly string[]): ImportStatement[] {
+  const out: ImportStatement[] = [];
   for (let i = 0; i < lines.length; i++) {
     if (!/^(import|from)\s/.test(lines[i]!)) continue;
-    const first = i;
-    let text = lines[i]!.replace(/#.*$/, "");
-    const open = () => (text.includes("(") && !text.includes(")")) || /\\\s*$/.test(text);
-    while (open() && i + 1 < lines.length) text = `${text.replace(/\\\s*$/, "")} ${lines[++i]!.replace(/#.*$/, "")}`;
-    const from = /^from\s+\S+\s+import\s+\(?([^)]*)/.exec(text);
-    const names = (from?.[1] ?? "")
+    let end = i;
+    let body = lines[i]!.replace(/#.*/, "");
+    const open = () => (body.match(/\(/g)?.length ?? 0) > (body.match(/\)/g)?.length ?? 0);
+    while (end + 1 < lines.length && (open() || /\\\s*$/.test(body))) {
+      end++;
+      body += `\n${lines[end]!.replace(/#.*/, "")}`;
+    }
+    const m = /^from\s+(\S+)\s+import\s+([\s\S]*)$/.exec(body);
+    const names = (m?.[2] ?? "")
+      .replace(/[()\\]/g, " ")
       .split(",")
       .map((n) =>
         n
@@ -99,9 +139,23 @@ function importStatements(lines: readonly string[]): Array<{ first: number; last
           .pop()!,
       )
       .filter(Boolean);
-    out.push({ first, last: i, names });
+    out.push({ from: i, to: end, module: m?.[1] ?? null, names, simple: end === i && !!m && !/[()\\]/.test(body) });
+    i = end;
   }
   return out;
+}
+
+/** The line after the file's leading comments (shebang, coding line) and module docstring. */
+function headerEnd(lines: readonly string[]): number {
+  let i = 0;
+  while (i < lines.length && /^\s*(#.*)?$/.test(lines[i]!)) i++;
+  const quote = /^[rRuUbB]{0,2}("""|'''|"|')/.exec(lines[i] ?? "");
+  if (!quote) return lines.slice(0, i).some((l) => l.trim()) ? i : 0;
+  const q = quote[1]!;
+  const rest = lines[i]!.slice(quote[0].length);
+  if (rest.includes(q)) return i + 1;
+  for (let j = i + 1; j < lines.length; j++) if (lines[j]!.includes(q)) return j + 1;
+  return lines.length;
 }
 
 /**
@@ -111,7 +165,7 @@ function importStatements(lines: readonly string[]): Array<{ first: number; last
  */
 export function pytestStubEdit(
   text: string,
-  module: string,
+  module: string | null,
   chosen: readonly PythonTestSubject[],
   unit = "    ",
 ): TestFileEdit | null {
@@ -121,21 +175,22 @@ export function pytestStubEdit(
 
   // Top-level tests and `class Test…:` blocks already in the file.
   const topTests = new Set<string>();
-  const classes = new Map<string, { end: number; tests: Set<string> }>();
-  let current: { end: number; tests: Set<string> } | null = null;
+  const classes = new Map<string, { end: number; tests: Set<string>; indent: string | null }>();
+  let current: { end: number; tests: Set<string>; indent: string | null } | null = null;
   lines.forEach((line, i) => {
     if (blank(line)) return;
     const indent = indentOf(line);
     if (indent === 0) {
       current = null;
       const cls = /^class\s+(\w+)/.exec(line);
-      if (cls) classes.set(cls[1]!, (current = { end: i, tests: new Set() }));
+      if (cls) classes.set(cls[1]!, (current = { end: i, tests: new Set(), indent: null }));
       const def = /^(?:async\s+)?def\s+(\w+)/.exec(line);
       if (def) topTests.add(def[1]!);
       return;
     }
     if (current) {
       current.end = i;
+      current.indent ??= line.slice(0, indent);
       const def = /^\s+(?:async\s+)?def\s+(\w+)/.exec(line);
       if (def) current.tests.add(def[1]!);
     }
@@ -153,29 +208,33 @@ export function pytestStubEdit(
   // Imports: names the file already imports, from this module or another (`from pkg import X`), stay as they are.
   const statements = importStatements(lines);
   const imported = new Set(statements.flatMap((st) => st.names));
-  const names = [...new Set(missing.map((s) => s.cls ?? s.name))].filter((n) => !imported.has(n));
-  const escaped = module.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const importRe = new RegExp(`^from\\s+${escaped}\\s+import\\s+([^()#\\\\]+?)\\s*(#.*)?$`);
-  const importLine = statements.find((st) => st.first === st.last && importRe.test(lines[st.first]!))?.first ?? -1;
-  if (names.length && importLine >= 0) {
-    const m = importRe.exec(lines[importLine]!)!;
-    changes.push({ from: at(importLine) + m[0].indexOf(m[1]!) + m[1]!.length, insert: `, ${names.join(", ")}` });
+  const names = module ? [...new Set(missing.map((s) => s.cls ?? s.name))].filter((n) => !imported.has(n)) : [];
+  const own = statements.find((st) => st.simple && st.module === module);
+  /** Inserts whole lines before line `line`, keeping a file without a final newline intact. */
+  const insertLines = (line: number, insert: string): Change => {
+    const from = at(line);
+    return { from, insert: from === text.length && !text.endsWith("\n") ? `\n${insert.replace(/\n$/, "")}` : insert };
+  };
+  if (names.length && own) {
+    const line = lines[own.from]!;
+    const code = line.replace(/#.*$/, "").trimEnd();
+    changes.push({ from: at(own.from) + code.length, insert: `, ${names.join(", ")}` });
   } else if (names.length) {
-    let last = -1;
-    for (let i = 0; i < lines.length; i++) {
-      const l = lines[i]!;
-      const st = statements.find((s) => s.first === i);
-      if (st) last = i = st.last;
-      else if (!blank(l) && indentOf(l) === 0 && !/^["']/.test(l)) break;
-    }
     const line = `from ${module} import ${names.join(", ")}\n`;
-    changes.push(
-      last >= 0 ? { from: at(last + 1), insert: line } : { from: 0, insert: text.trim() ? `${line}\n\n` : line },
-    );
+    const last = statements[statements.length - 1];
+    if (last) changes.push(insertLines(last.to + 1, line));
+    else if (!text.trim()) changes.push({ from: 0, insert: line });
+    else {
+      // After a shebang, coding line or module docstring; two blank lines before the code below.
+      const h = headerEnd(lines);
+      const next = lines[h];
+      const after = next !== undefined && next.trim() ? "\n\n" : "";
+      changes.push(h ? insertLines(h, `\n${line}${after}`) : { from: 0, insert: `${line}\n\n` });
+    }
   }
 
-  const stub = (s: PythonTestSubject, indent: string) =>
-    `${indent}def ${testName(s)}(${s.cls ? "self" : ""}):\n${indent}${unit}assert False\n`;
+  const stub = (s: PythonTestSubject, indent: string, inner = unit) =>
+    `${indent}def ${testName(s)}(${s.cls ? "self" : ""}):\n${indent}${inner}assert False\n`;
   /** Appends `piece` to `out`, noting where its body starts. */
   const add = (out: { text: string; bodies: number[] }, sep: string, piece: string) => {
     out.text += sep;
@@ -194,8 +253,11 @@ export function pytestStubEdit(
   }
   for (const [cls, list] of intoClasses) {
     const out = { text: "", bodies: [] as number[] };
-    for (const s of list) add(out, "\n", stub(s, unit));
-    const from = at(classes.get(`Test${cls}`)!.end + 1);
+    // The class's own indentation (tabs, two spaces), whatever the editor's unit.
+    const existing = classes.get(`Test${cls}`)!;
+    const indent = existing.indent ?? unit;
+    for (const s of list) add(out, "\n", stub(s, indent, indent));
+    const from = at(existing.end + 1);
     // A class on the file's last line without a newline after it.
     const lead = from === text.length && !text.endsWith("\n") ? "\n" : "";
     const change = { from, insert: lead + out.text };
@@ -214,12 +276,15 @@ export function pytestStubEdit(
     let change: Change;
     if (!text.trim()) {
       // A new file: the stubs follow the import line, which becomes part of this change.
-      const head = changes.pop()!;
-      change = { from: 0, to: text.length, insert: head.insert + tail.text };
-      for (const rel of tail.bodies) bodies.push({ change, rel: rel + head.insert.length });
+      const head = names.length ? changes.pop()!.insert : "";
+      const body = head ? tail.text : tail.text.replace(/^\n+/, "");
+      const shift = head.length - (tail.text.length - body.length);
+      change = { from: 0, to: text.length, insert: head + body };
+      for (const rel of tail.bodies) bodies.push({ change, rel: rel + shift });
     } else {
       // A class insertion at the very end already ends the line.
-      const lead = text.endsWith("\n") || changes.some((c) => c.from === text.length) ? "" : "\n";
+      const lead =
+        text.endsWith("\n") || changes.some((c) => c.from === text.length && c.insert.endsWith("\n")) ? "" : "\n";
       change = { from: text.length, insert: lead + tail.text };
       for (const rel of tail.bodies) bodies.push({ change, rel: rel + lead.length });
     }

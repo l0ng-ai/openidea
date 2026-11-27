@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { OutlineItem } from "@/platform/ipc";
-import { pytestStubEdit, pythonTestSubjects, subjectsAtLine, type PythonTestSubject } from "./pythonTests";
+import {
+  pytestStubEdit,
+  pythonImportPath,
+  pythonTestSubjects,
+  subjectsAtLine,
+  type PythonTestSubject,
+} from "./pythonTests";
 
 const range = (from: number, to: number) => ({ start: { line: from, col: 0 }, end: { line: to, col: 0 } });
 const item = (name: string, kind: OutlineItem["kind"], from: number, to: number, children: OutlineItem[] = []) =>
@@ -33,6 +39,15 @@ describe("pythonTestSubjects", () => {
     expect(subjects.map((s) => s.id)).toEqual(["TaskList.__init__", "TaskList.add", "TaskList.pending", "parse"]);
   });
 
+  it("lists a repeated name once (overloads, conditional definitions)", () => {
+    const repeated = pythonTestSubjects([
+      item("f", "function", 0, 1),
+      item("f", "function", 3, 4),
+      item("f", "function", 6, 7),
+    ]);
+    expect(repeated.map((s) => s.id)).toEqual(["f"]);
+  });
+
   it("preselects the function at the caret, else the class's methods", () => {
     expect(subjectsAtLine(subjects, 10).map((s) => s.id)).toEqual(["TaskList.add"]);
     expect(subjectsAtLine(subjects, 5).map((s) => s.id)).toEqual([
@@ -42,6 +57,15 @@ describe("pythonTestSubjects", () => {
     ]);
     expect(subjectsAtLine(subjects, 23).map((s) => s.id)).toEqual(["parse"]);
     expect(subjectsAtLine(subjects, 30)).toEqual([]);
+  });
+});
+
+describe("pythonImportPath", () => {
+  it("is relative to the innermost source root, else the project with `src/` dropped", () => {
+    expect(pythonImportPath("/p/backend/app/core.py", "/p", ["/p/backend"])).toBe("app.core");
+    expect(pythonImportPath("/p/src/tasks/models.py", "/p", [])).toBe("tasks.models");
+    expect(pythonImportPath("/p/pkg/__init__.py", "/p", [])).toBe("pkg");
+    expect(pythonImportPath("/p/scripts/my-tool.py", "/p", [])).toBeNull();
   });
 });
 
@@ -118,12 +142,38 @@ def test_parse():
     );
   });
 
-  it("keeps a class on the last line without a trailing newline apart from its new method", () => {
+  it("keeps a class on the last line without a trailing newline apart from its new method, in the class's indent", () => {
     const text = `from m import TaskList\n\n\nclass TestTaskList:\n    def test_add(self):\n        pass`;
     const out = apply(text, pytestStubEdit(text, "m", pick("TaskList.pending", "parse"), "  ")!);
     expect(out).toBe(
-      `from m import TaskList, parse\n\n\nclass TestTaskList:\n    def test_add(self):\n        pass\n\n  def test_pending(self):\n    assert False\n\n\ndef test_parse():\n  assert False\n`,
+      `from m import TaskList, parse\n\n\nclass TestTaskList:\n    def test_add(self):\n        pass\n\n    def test_pending(self):\n        assert False\n\n\ndef test_parse():\n  assert False\n`,
     );
+  });
+
+  it("adds methods to a tab-indented class with tabs", () => {
+    const text = `from m import TaskList\n\n\nclass TestTaskList:\n\tdef test_add(self):\n\t\tpass\n`;
+    const out = apply(text, pytestStubEdit(text, "m", pick("TaskList.pending"))!);
+    expect(out).toBe(`${text}\n\tdef test_pending(self):\n\t\tassert False\n`);
+  });
+
+  it("puts an import after a last import line that has no newline", () => {
+    const out = apply("import pytest", pytestStubEdit("import pytest", "m", pick("parse"))!);
+    expect(out).toBe(`import pytest\nfrom m import parse\n\n\ndef test_parse():\n    assert False\n`);
+  });
+
+  it("puts the first import below a shebang, coding line and module docstring", () => {
+    const text = `#!/usr/bin/env python\n# -*- coding: utf-8 -*-\n"""Tests.\n\nMore.\n"""\n\n\ndef test_a():\n    pass\n`;
+    const out = apply(text, pytestStubEdit(text, "m", pick("parse"))!);
+    expect(
+      out.startsWith(
+        `#!/usr/bin/env python\n# -*- coding: utf-8 -*-\n"""Tests.\n\nMore.\n"""\n\nfrom m import parse\n\n\ndef test_a():`,
+      ),
+    ).toBe(true);
+  });
+
+  it("writes stubs without an import when the module has no importable name", () => {
+    const out = apply("", pytestStubEdit("", null, pick("parse"))!);
+    expect(out).toBe(`\n\ndef test_parse():\n    assert False\n`.replace(/^\n+/, ""));
   });
 
   it("does not import a name the file already imports from elsewhere (a package re-export)", () => {
