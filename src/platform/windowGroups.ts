@@ -4,6 +4,7 @@ import { startupLaunchHandled, useProject } from "./project";
 import { setContext } from "./context";
 
 export const useWindowGroup = create<{ tabs: WindowTab[] }>(() => ({ tabs: [] }));
+useWindowGroup.subscribe((s) => setContext("windowGrouped", s.tabs.length > 1));
 
 export function reorderedTabs(tabs: readonly WindowTab[], source: string, target: string): string[] {
   const labels = tabs.map((tab) => tab.label);
