@@ -1212,6 +1212,12 @@ export const commands = {
 	 */
 	navInheritance: () => typedError<ClassInheritance[], IdeError>(__TAURI_INVOKE("nav_inheritance")),
 	/**
+	 *  pytest fixtures at `pos` of a Python document: the definition pytest uses for the fixture
+	 *  named there (a test's parameter, a `usefixtures` / `getfixturevalue` string), and the
+	 *  fixtures visible where a fixture name goes, for completion.
+	 */
+	navPytestFixtures: (doc: DocId, pos: Pos) => typedError<PytestFixtureAt, IdeError>(__TAURI_INVOKE("nav_pytest_fixtures", { doc, pos })),
+	/**
 	 *  The stub (`.pyi`) of a Python document, or the implementation of a stub, and the
 	 *  functions and classes declared in both: PyCharm's stub gutter markers.
 	 */
@@ -12135,6 +12141,29 @@ export type PypiPackage = {
 	latest: string,
 	/**  Releases with files to install, most recently uploaded first; yanked ones left out. */
 	versions: string[],
+};
+
+export type PytestFixtureAt = {
+	/**  The fixture name at the position, and the definition pytest uses for it. */
+	reference: PytestFixtureReference | null,
+	/**
+	 *  At a place a fixture name goes (a test's parameters, a `usefixtures` string): the
+	 *  fixtures visible there, nearest first.
+	 */
+	completions: PytestFixtureItem[] | null,
+};
+
+export type PytestFixtureItem = {
+	name: string,
+	/**  The file defining it. */
+	path: IpcPath,
+};
+
+export type PytestFixtureReference = {
+	name: string,
+	range: Range,
+	/**  None when no visible module defines it (`request`, a fixture from a hook). */
+	definition: Location | null,
 };
 
 /**  A class definition and the methods it declares. */
