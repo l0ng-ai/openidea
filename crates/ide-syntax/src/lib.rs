@@ -26,6 +26,7 @@ mod locals;
 mod nodes;
 mod tree;
 mod types;
+mod xml_comments;
 
 #[cfg(test)]
 mod tests;
@@ -193,7 +194,16 @@ impl StructureService {
 
     /// `ERROR` and `MISSING` nodes in document order.
     pub fn syntax_errors(&self, snap: &Snapshot, cancel: &CancellationToken) -> StructureResult<SyntaxErrors> {
-        self.run(snap, cancel, nodes::syntax_errors)
+        let errors = self.run(snap, cancel, nodes::syntax_errors)?;
+        if errors.errors.is_empty() || self.cache.syntax().grammar_name(snap.language) != Some("xml") {
+            return Ok(errors);
+        }
+        // A comment between a start tag's attributes counts as whitespace (as in IDEA), but the
+        // grammar follows the spec and rejects it: check the text with those comments blanked.
+        match xml_comments::blank_in_start_tags(snap.text) {
+            Some(text) => self.run(&Snapshot::text(snap.language, &text), cancel, nodes::syntax_errors),
+            None => Ok(errors),
+        }
     }
 
     /// Scope analysis for the identifier at `pos` (`locals.scm`).
