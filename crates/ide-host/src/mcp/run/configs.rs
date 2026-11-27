@@ -15,8 +15,9 @@ use ide_core::{IdeError, IdeResult, RunId, Severity};
 use ide_run::{OutputChunk, RunConfig};
 use parking_lot::Mutex;
 use serde_json::{Map, Value, json};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
@@ -285,6 +286,79 @@ workingDirectory, envs).",
 /// The runs `execute_run_configuration` started: `stop_run` takes their `runId`, and only theirs,
 /// not the user's own runs.
 static STARTED: LazyLock<Mutex<HashSet<RunId>>> = LazyLock::new(Default::default);
+
+/// Run configuration parameter naming the `execute_run_configuration` call a start belongs to.
+pub const CONFIG_RUN_PARAM: &str = "mcp.configRun";
+
+/// The `execute_run_configuration` calls waiting for the Run tool window to start their run.
+struct ConfigLaunch {
+    output: Arc<Mutex<OutputCollector>>,
+    started: Option<Result<ide_run::RunInfo, String>>,
+}
+static LAUNCHES: LazyLock<Mutex<HashMap<u64, ConfigLaunch>>> = LazyLock::new(Default::default);
+static NEXT_LAUNCH: AtomicU64 = AtomicU64::new(1);
+
+/// The Run tool window's start of an `execute_run_configuration` run: its output also goes to
+/// the call's output file, and the call learns the run it started.
+pub(crate) struct ConfigRunLaunch {
+    token: u64,
+    output: Arc<Mutex<OutputCollector>>,
+}
+
+/// The call `config` was started for (its first start only; a rerun from the tab is the user's).
+pub(crate) fn config_run_launch(config: &RunConfig) -> Option<ConfigRunLaunch> {
+    let token = config.extras.params.get(CONFIG_RUN_PARAM)?.parse().ok()?;
+    let launches = LAUNCHES.lock();
+    let launch = launches.get(&token).filter(|l| l.started.is_none())?;
+    Some(ConfigRunLaunch { token, output: launch.output.clone() })
+}
+
+impl ConfigRunLaunch {
+    pub(crate) fn wrap_output(&self, on_output: crate::ops::Emit<OutputChunk>) -> crate::ops::Emit<OutputChunk> {
+        let output = self.output.clone();
+        Arc::new(move |chunk: OutputChunk| {
+            // As JetBrains skips `ProcessOutputType.SYSTEM` (`Process finished…`).
+            if let OutputChunk::Stdout { text } | OutputChunk::Stderr { text } = &chunk {
+                output.lock().append(text);
+            }
+            on_output(chunk);
+        })
+    }
+
+    pub(crate) fn started(&self, result: &IdeResult<ide_run::RunInfo>) {
+        if let Some(launch) = LAUNCHES.lock().get_mut(&self.token) {
+            launch.started = Some(result.clone().map_err(|e| e.message));
+        }
+    }
+}
+
+/// Starts `config` in the Run tool window, as the user's Run would: a tab with its console and
+/// Stop. Its before launch tasks already ran.
+async fn start_in_run_window(
+    call: &Call,
+    mut config: RunConfig,
+    output: Arc<Mutex<OutputCollector>>,
+) -> IdeResult<ide_run::RunInfo> {
+    struct Forget(u64);
+    impl Drop for Forget {
+        fn drop(&mut self) {
+            LAUNCHES.lock().remove(&self.0);
+        }
+    }
+    let token = NEXT_LAUNCH.fetch_add(1, Ordering::Relaxed);
+    LAUNCHES.lock().insert(token, ConfigLaunch { output, started: None });
+    let _forget = Forget(token);
+    config.extras.params.insert(CONFIG_RUN_PARAM.into(), token.to_string());
+    let config = serde_json::to_value(&config).map_err(|e| IdeError::invalid(e.to_string()))?;
+    let asked = call.ask(ide_core::event::McpUiRequest::RunConfiguration { config }).await;
+    let started = LAUNCHES.lock().get_mut(&token).and_then(|l| l.started.take());
+    match (asked, started) {
+        (_, Some(Ok(info))) => Ok(info),
+        (_, Some(Err(message))) => Err(IdeError::invalid(message)),
+        (Err(e), None) => Err(e),
+        (Ok(()), None) => Err(IdeError::invalid("the run did not start")),
+    }
+}
 
 pub(super) fn started_by_mcp(id: RunId) -> bool {
     STARTED.lock().contains(&id)
@@ -753,9 +827,9 @@ Behavior:
 
 Returns the execution result including current output snapshot, optional exit code, and optional `fullOutputPath`.
 In OpenIDEA the user is asked first for every call; `programArguments` replace the configuration's \
-arguments (appended to a command that is one shell line, such as `npm run dev`); the run does not appear in the Run \
-tool window: while it is still running, the result carries `runId`, which `stop_run` stops; output files are private \
-and deleted after a day.",
+arguments (appended to a command that is one shell line, such as `npm run dev`); the run appears in the Run tool \
+window like a run the user started, with its console and Stop; while it is still running, the result carries `runId`, \
+which `stop_run` stops; output files are private and deleted after a day.",
         |call| async move {
             let target = execution_target(
                 call.opt_str("configurationName")?,
@@ -811,9 +885,15 @@ one by one",
             };
             let collector = Arc::new(Mutex::new(OutputCollector::create(&config.name)?));
             let output_path = collector.lock().path.clone();
-            let sink = collector.clone();
-            let emit = process_output(move |text| sink.lock().append(text));
-            let info = match crate::ops::run::run_start(&call.host(), call.window(), config, emit, None).await {
+            let started = if call.has_window() {
+                start_in_run_window(&call, config, collector.clone()).await
+            } else {
+                // A project loaded for MCP alone has no Run tool window to show it in.
+                let sink = collector.clone();
+                let emit = process_output(move |text| sink.lock().append(text));
+                crate::ops::run::run_start(&call.host(), call.window(), config, emit, None).await
+            };
+            let info = match started {
                 Ok(info) => info,
                 Err(e) => {
                     let _ = std::fs::remove_file(&output_path);

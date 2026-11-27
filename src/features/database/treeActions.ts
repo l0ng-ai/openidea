@@ -16,6 +16,7 @@ import {
   DB_TOOL_WINDOW,
   OUTPUT_TAB,
   connect,
+  connectedTargets,
   createsDatabases,
   RESULTS_VIEW,
   detailsKey,
@@ -37,6 +38,7 @@ import {
   openSourceDialog,
   readableDdl,
   refresh,
+  removeSourceFolder,
   revealInTree,
   revealOpened,
   runSql,
@@ -46,7 +48,7 @@ import {
   toggleShowTableComments,
   useDatabase,
   withConnection,
-  removeSource,
+  removeSources,
 } from "./store";
 import { tableInput } from "./tableInput";
 import { DIAGRAM_TABLE_LIMIT, diagramInput, type DiagramData, type DiagramTable } from "./erDiagram";
@@ -112,6 +114,71 @@ function nodesFrom(arg: unknown): DbNode[] {
   const { selectedNodes } = useDatabase.getState();
   if (!isNode(arg)) return selectedNodes;
   return selectedNodes.some((n) => n.key === arg.key) ? selectedNodes : [arg];
+}
+
+function sourceIdsFrom(arg: unknown): string[] {
+  return nodesFrom(arg).flatMap((node) => {
+    const id = node.kind === "source" ? node.source.id : null;
+    return id ? [id] : [];
+  });
+}
+
+/** Selected data source roots; nested schema/table rows in a range selection are ignored. */
+function sourcesFrom(arg: unknown): Extract<DbNode, { kind: "source" }>[] {
+  const seen = new Set<string>();
+  return nodesFrom(arg).flatMap((node) => {
+    if (node.kind !== "source") return [];
+    const id = node.source.id ?? "";
+    if (!id || seen.has(id)) return [];
+    seen.add(id);
+    return [node];
+  });
+}
+
+function failureText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+/** Refreshes every selected data source in parallel and reports failures once. */
+async function refreshSources(sources: Extract<DbNode, { kind: "source" }>[]): Promise<void> {
+  const failures: string[] = [];
+  await Promise.all(
+    sources.map(async (source) => {
+      try {
+        await refresh(source.source.id ?? "");
+      } catch (e) {
+        failures.push(`${source.source.name}: ${failureText(e)}`);
+      }
+    }),
+  );
+  if (failures.length) {
+    const failed = failures.length;
+    const total = sources.length;
+    notifications().notify({
+      level: "error",
+      title: tx`Failed to refresh ${failed} of ${total} data sources`,
+      body: failures.slice(0, 6).join("\n"),
+    });
+  }
+}
+
+/** Disconnects the connected data sources among `sources`, keeping successful deactivations. */
+async function deactivateSources(sources: Extract<DbNode, { kind: "source" }>[]): Promise<void> {
+  const connected = sources.filter((source) => connectedTargets(source.source.id ?? "").length > 0);
+  if (!connected.length) return;
+  const results = await Promise.allSettled(connected.map((source) => disconnect(source.source.id ?? "")));
+  const failures = results.flatMap((result, i) =>
+    result.status === "rejected" ? [`${connected[i]!.source.name}: ${failureText(result.reason)}`] : [],
+  );
+  if (failures.length) {
+    const failed = failures.length;
+    const total = connected.length;
+    notifications().notify({
+      level: "error",
+      title: tx`Failed to deactivate ${failed} of ${total} data sources`,
+      body: failures.slice(0, 6).join("\n"),
+    });
+  }
 }
 
 /**
@@ -286,6 +353,10 @@ function refreshNode(n: DbNode | null) {
     for (const c of useDatabase.getState().connected) void refresh(c);
     return;
   }
+  if (n.kind === "sourceFolder") {
+    for (const id of n.folder.sources) void refresh(id);
+    return;
+  }
   const id = nodeTarget(n);
   if (!id) return;
   if (n.kind === "schema" || n.kind === "folder") void loadTables(id, n.schema);
@@ -309,7 +380,9 @@ export function registerDatabaseTreeActions(): () => void {
       icon: "db-properties",
       keywords: ["data sources", "connection settings"],
       run: ({ arg }) => {
-        const src = sourceOf(nodeFrom(arg));
+        const node = nodeFrom(arg);
+        if (node?.kind === "sourceFolder") return;
+        const src = sourceOf(node);
         const { sources } = useDatabase.getState();
         openSourceDialog(src ?? (sources.length === 1 ? sources[0]! : null));
       },
@@ -319,7 +392,11 @@ export function registerDatabaseTreeActions(): () => void {
       title: "Refresh",
       icon: "refresh",
       keywords: ["synchronize", "introspect"],
-      run: ({ arg }) => refreshNode(nodeFrom(arg)),
+      run: ({ arg }) => {
+        const sources = sourcesFrom(arg);
+        if (sources.length > 1) return void refreshSources(sources);
+        refreshNode(nodeFrom(arg));
+      },
     }),
     tree({
       id: "db.introspect",
@@ -338,6 +415,8 @@ export function registerDatabaseTreeActions(): () => void {
       icon: "db-disconnect",
       keywords: ["disconnect", "close connection"],
       run: ({ arg }) => {
+        const sources = sourcesFrom(arg);
+        if (sources.length > 1) return void deactivateSources(sources);
         const n = nodeFrom(arg);
         const id = n ? nodeTarget(n) : null;
         if (!id) {
@@ -391,7 +470,8 @@ export function registerDatabaseTreeActions(): () => void {
       icon: "info",
       run: ({ arg }) => {
         const n = nodeFrom(arg);
-        if (n && n.kind !== "message") openDialog({ kind: "quickDoc", node: n, anchor: rowAnchor() });
+        if (n && n.kind !== "message" && n.kind !== "sourceFolder")
+          openDialog({ kind: "quickDoc", node: n, anchor: rowAnchor() });
       },
     }),
     tree({
@@ -401,6 +481,7 @@ export function registerDatabaseTreeActions(): () => void {
       run: ({ arg }) => {
         const n = nodeFrom(arg);
         if (!n) return;
+        if (n.kind === "sourceFolder") return openDialog({ kind: "sourceFolder", folder: n.folder });
         const id = nodeTarget(n);
         if (n.kind === "source" && id) return openDialog({ kind: "rename", id, object: null });
         const source = sourceById(id);
@@ -416,10 +497,13 @@ export function registerDatabaseTreeActions(): () => void {
       icon: "trash",
       keywords: ["delete", "remove data source"],
       run: ({ arg }) => {
+        const sources = sourcesFrom(arg);
+        if (sources.length > 1) return void removeSources(sources.map((source) => source.source));
         const n = nodeFrom(arg);
         if (!n) return;
+        if (n.kind === "sourceFolder") return void removeSourceFolder(n.folder);
         const id = nodeTarget(n);
-        if (n.kind === "source") return void removeSource(n.source);
+        if (n.kind === "source") return void removeSources([n.source]);
         const source = sourceById(id);
         if (n.kind === "database" && !n.current && !source?.readOnly && createsDatabases(source))
           return openDialog({ kind: "dropDatabase", id: splitTarget(n.id).id, database: n.name });
@@ -686,6 +770,35 @@ export function registerDatabaseTreeActions(): () => void {
       run: () => {
         toolWindowService().show(DB_TOOL_WINDOW, false);
         useDatabase.setState({ newMenuOpen: true });
+      },
+    }),
+    tree({
+      id: "db.newSourceFolder",
+      title: "New Data Source Folder…",
+      icon: "folder",
+      run: ({ arg }) =>
+        openDialog({
+          kind: "sourceFolder",
+          folder: null,
+          sources: sourceIdsFrom(arg),
+        }),
+    }),
+    tree({
+      id: "db.renameSourceFolder",
+      title: "Rename Data Source Folder…",
+      icon: "edit",
+      run: ({ arg }) => {
+        const node = nodeFrom(arg);
+        if (node?.kind === "sourceFolder") openDialog({ kind: "sourceFolder", folder: node.folder });
+      },
+    }),
+    tree({
+      id: "db.deleteSourceFolder",
+      title: "Delete Data Source Folder…",
+      icon: "trash",
+      run: ({ arg }) => {
+        const node = nodeFrom(arg);
+        if (node?.kind === "sourceFolder") void removeSourceFolder(node.folder);
       },
     }),
     tree({

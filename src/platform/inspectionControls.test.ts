@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Settings } from "@/bindings";
 
-const settingsSet = vi.fn(async (_scope: string, _key: string, _value: string) => ({
+const settingsSet = vi.fn(async (_scope: string, key: string, value: string) => ({
   status: "ok" as const,
-  data: {} as Settings,
+  // The backend echoes the effective settings; the next update reads them back.
+  data: { inspections: { [key.slice("inspections.".length)]: JSON.parse(value) } } as unknown as Settings,
 }));
 const executeAction = vi.fn(async () => true);
+const promptInput = vi.fn<() => Promise<string | null>>(async () => null);
 vi.mock("./ipc", async (orig) => {
   const actual = await orig<typeof import("./ipc")>();
   return { ...actual, commands: { ...actual.commands, settingsSet } };
@@ -17,11 +19,15 @@ const {
   intentionControls,
   patchOverride,
   problemControls,
+  provideRulePrompt,
   setInspectionOption,
   setInspectionSeverity,
 } = await import("./inspectionControls");
 const { diagnosticInspection, inspectionOption, SPELLING_INSPECTION } = await import("./inspections");
 const { useProject } = await import("./project");
+// The workbench's input dialog; the rule row only needs its answer.
+provideRulePrompt(promptInput);
+type ControlItem = Awaited<ReturnType<(typeof import("./inspectionControls"))["suppressedRuleControls"]>>[number];
 
 afterEach(() => {
   useProject.setState({ project: null, settings: null });
@@ -111,6 +117,8 @@ describe("inspection controls", () => {
     expect(rows.map((r) => ("label" in r ? r.label : "-"))).toEqual([
       "Edit inspection profile setting",
       "Disable inspection",
+      "-",
+      "Add rule…",
     ]);
     (rows[0] as { run: () => void }).run();
     expect(executeAction).toHaveBeenCalledWith("file.settings", "editor.inspections#lsp:ruff:F401");
@@ -122,9 +130,74 @@ describe("inspection controls", () => {
     expect(menu.map((r) => ("label" in r ? r.label : "-"))).toEqual([
       "Disable Inspection 'ruff F401'",
       "Change Severity",
+      "Suppressed rules",
       "Edit Inspection Profile Setting…",
     ]);
     const severity = menu[1] as { submenu: { label: string; checked?: boolean }[] };
     expect(severity.submenu.filter((s) => s.checked).map((s) => s.label)).toEqual(["Error"]);
+    // No rule of the producer is suppressed yet: only the add row below the separator.
+    const rules = menu[2] as { submenu: ControlItem[] };
+    expect(rules.submenu.map((r) => ("label" in r ? r.label : "-"))).toEqual(["-", "Add rule…"]);
+  });
+
+  it("offers no rule list for an inspection that reports no codes", () => {
+    const typo = { id: SPELLING_INSPECTION, name: "Typo" };
+    const labels = (items: ControlItem[]) => items.flatMap((i) => ("label" in i ? [i.label] : []));
+    expect(labels(intentionControls(typo))).not.toContain("Add rule…");
+    expect(labels(problemControls(typo))).not.toContain("Suppressed rules");
+    expect(labels(problemControls({ id: "lsp:ruff:F401", name: "ruff F401" }))).toContain("Suppressed rules");
+  });
+
+  it("manages the producer's suppressed rules from the menus", async () => {
+    const { codeInspectionId } = await import("./inspections");
+    const ref = { id: "lsp:ruff:UP045", name: "ruff UP045" };
+    useProject.setState({
+      settings: {
+        inspections: {
+          default: {
+            "lsp:ruff:UP045": { enabled: false },
+            "lsp:ruff:F401": { enabled: false, severity: "weakWarning" },
+            "lsp:pyright:reportU": { enabled: false },
+          },
+        },
+      } as never,
+    });
+    const checkedLabels = (rows: readonly ControlItem[]) =>
+      rows.filter((r) => "label" in r && r.checked).map((r) => ("label" in r ? r.label : ""));
+    // The ⌥↵ submenu lists every suppressed code of the same producer, sorted, each checked.
+    expect(checkedLabels(intentionControls(ref))).toEqual(["F401", "UP045"]);
+    // Problems' Suppressed rules submenu lists the same.
+    const rulesRow = problemControls(ref).find((r) => "label" in r && r.label === "Suppressed rules") as {
+      submenu: ControlItem[];
+    };
+    expect(checkedLabels(rulesRow.submenu)).toEqual(["F401", "UP045"]);
+
+    // Unchecking a rule removes the entry (nothing else kept) but leaves the others alone.
+    const up045 = rulesRow.submenu.find((r) => "label" in r && r.label === "UP045") as { run: () => void };
+    await up045.run();
+    expect(written()).toEqual({
+      scope: "global",
+      key: "inspections.default",
+      value: {
+        "lsp:ruff:F401": { enabled: false, severity: "weakWarning" },
+        "lsp:pyright:reportU": { enabled: false },
+      },
+    });
+
+    // Add rule… writes a new entry to the profile in effect.
+    const add = rulesRow.submenu.find((r) => "label" in r && r.label === "Add rule…") as { run?: () => void };
+    promptInput.mockResolvedValueOnce("E501");
+    await add.run?.();
+    expect(promptInput).toHaveBeenCalled();
+    expect(written()).toEqual({
+      scope: "global",
+      key: "inspections.default",
+      value: {
+        "lsp:ruff:F401": { enabled: false, severity: "weakWarning" },
+        "lsp:ruff:E501": { enabled: false },
+        "lsp:pyright:reportU": { enabled: false },
+      },
+    });
+    expect(codeInspectionId("lsp:ruff", "E501")).toBe("lsp:ruff:E501");
   });
 });

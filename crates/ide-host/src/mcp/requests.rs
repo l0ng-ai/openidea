@@ -38,6 +38,11 @@ impl Requests {
         let _ = pending.answer.send(error.map_or(Ok(allow), Err));
         Ok(())
     }
+    /// Whether `window` answers requests (a project loaded for MCP alone has no window).
+    pub(super) fn window_ready(&self, window: &str) -> bool {
+        self.0.lock().ready.contains(window)
+    }
+
     pub(super) async fn ask(&self, call: &Call, request: McpUiRequest) -> IdeResult<()> {
         let id = super::tool::request_id().0;
         let (tx, rx) = oneshot::channel();

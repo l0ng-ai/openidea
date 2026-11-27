@@ -14,6 +14,8 @@ export interface ChooserMember {
   icon: string;
   /** Heading of the members' group (the declaring class). */
   group?: string;
+  /** Checked when the dialog opens. */
+  checked?: boolean;
 }
 
 export interface MemberChooserRequest {

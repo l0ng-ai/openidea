@@ -159,7 +159,7 @@ export function projectPython(configs: RunConfig[], relPath?: string): { command
 }
 
 /** Kinds of a Python project's configurations. */
-export const PYTHON_KINDS = ["python", "pytest", "unittest", "django-test"];
+export const PYTHON_KINDS = ["python", "pytest", "unittest", "doctest", "django-test"];
 
 /** Settings › Python › Testing › Default test runner. */
 export function pythonTestRunner(): PythonTestRunner {
@@ -186,7 +186,11 @@ function implicitPythonRunner(content: string): "pytest" | "unittest" {
  * detected. The "Edit configuration templates…" › pytest values win over both the interpreter and
  * the runner arguments, like a template a new config inherits.
  */
-export function implicitPythonTests(relPath: string, configs: RunConfig[], runner: "pytest" | "unittest"): RunConfig {
+export function implicitPythonTests(
+  relPath: string,
+  configs: RunConfig[],
+  runner: "pytest" | "unittest" | "doctest",
+): RunConfig {
   const owners = allClosest(
     configs.filter((c) => PYTHON_KINDS.includes(c.kind)),
     relPath,
@@ -194,7 +198,7 @@ export function implicitPythonTests(relPath: string, configs: RunConfig[], runne
   const py = projectPython(owners);
   const base: RunConfig = {
     id: `${runner}:implicit`,
-    name: runner === "pytest" ? "pytest" : "python -m unittest",
+    name: runner === "pytest" ? "pytest" : `python -m ${runner}`,
     kind: runner,
     command: py?.command ?? systemPython(),
     args: [...(py?.prefix ?? []), "-m", runner],
@@ -224,6 +228,22 @@ function applyPytestTemplate(config: RunConfig): RunConfig {
   const line = type.commandLine(params);
   if (!line) return config;
   return { ...config, command: line.command, args: line.args };
+}
+
+/**
+ * The docstring examples of `relPath`, or of the class or function `qualname` in it (PyCharm's
+ * "Doctests in …"), on the project's interpreter.
+ */
+export function doctestConfig(relPath: string, configs: RunConfig[], qualname = ""): RunConfig {
+  const base = implicitPythonTests(relPath, configs, "doctest");
+  const file = relToCwd(relPath, base);
+  const name = `Doctests in ${qualname.split(".").pop() || stem(relPath)}`;
+  return {
+    ...base,
+    id: `context:doctest:${relPath}:${qualname}`,
+    name,
+    args: [...base.args, qualname ? `${file}::${qualname}` : file],
+  };
 }
 
 /** A Playwright spec: it imports Playwright Test, or uses its `test.describe` / `test.step` / `test.use`. */

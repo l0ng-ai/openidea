@@ -326,7 +326,8 @@ fn python(config: &RunConfig, dir: &Path, out: &Path, py: wrap::PythonCommand) -
     argv.extend(py.target.iter().cloned());
     let report = CoverageReportSpec::Exported {
         runner: s("coverage.py"),
-        argv: with(&["-m", "coverage", "lcov", "-o", &path(&lcov)]),
+        // `--fail-under=0`: a `[report] fail_under` the run misses must not lose its report.
+        argv: with(&["-m", "coverage", "lcov", "--fail-under=0", "-o", &path(&lcov)]),
         cwd: dir.to_path_buf().into(),
         env: config.env.clone(),
         lcov: lcov.into(),

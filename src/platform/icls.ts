@@ -115,6 +115,13 @@ for (const [name, id] of Object.entries(LANGUAGE_KEYS)) {
   ATTRIBUTE_NAMES[`KOTLIN_${name}`] = `kotlin.${id}`;
   ATTRIBUTE_NAMES[name] = id;
 }
+/** IntelliJ's Java kinds of type; they outrank the shared defaults that also colour them. */
+const JAVA_TYPE_KEYS: Record<string, string> = {
+  INTERFACE_NAME_ATTRIBUTES: "java.interface",
+  ABSTRACT_CLASS_NAME_ATTRIBUTES: "java.abstractClass",
+  ENUM_NAME_ATTRIBUTES: "java.enum",
+  TYPE_PARAMETER_NAME_ATTRIBUTES: "java.typeParameter",
+};
 Object.assign(ATTRIBUTE_NAMES, {
   KOTLIN_MUTABLE_VARIABLE: "kotlin.identifier",
   KOTLIN_PACKAGE_PROPERTY: "kotlin.field",
@@ -130,6 +137,7 @@ Object.assign(ATTRIBUTE_NAMES, {
   KDOC_TAG_NAME: "kotlin.docCommentTag",
   KDOC_LINK: "kotlin.docCommentTagValue",
   CLASS_NAME_ATTRIBUTES: "className",
+  ...JAVA_TYPE_KEYS,
   // IDEA DiffColors (Diff & Merge page): Import/export the four change types by their
   // exchange names, so a scheme exported here carries the same keys IDEA reads.
   DIFF_MODIFIED: "diffChanged",
@@ -304,17 +312,22 @@ const PARENT_ANNOTATIONS: Record<string, string> = { Default: "#808000", Darcula
 const KEY_ORDER = new Map(Object.keys(ATTRIBUTE_NAMES).map((name, i) => [name, i]));
 const LANGUAGE_PRECEDENCE = ["TS.", "JS.", "PY."];
 const precedence = (name: string) => {
-  const language = LANGUAGE_PRECEDENCE.findIndex((prefix) => name.startsWith(prefix));
-  return (language < 0 ? LANGUAGE_PRECEDENCE.length : language) * KEY_ORDER.size + KEY_ORDER.get(name)!;
+  const prefixed = LANGUAGE_PRECEDENCE.findIndex((prefix) => name.startsWith(prefix));
+  const language =
+    prefixed >= 0 ? prefixed : LANGUAGE_PRECEDENCE.length + (Object.hasOwn(JAVA_TYPE_KEYS, name) ? 0 : 1);
+  return language * KEY_ORDER.size + KEY_ORDER.get(name)!;
 };
-// Keys that also colour another attribute as its fallback. TypeScript's interface falls back to the
-// language default Interface name, as it does in WebStorm; an explicit JS./TS.INTERFACE outranks it.
-const ALSO_TARGETS: Record<string, string> = { DEFAULT_INTERFACE_NAME: "javascript.interface" };
+// Keys that also colour other attributes as their fallback. TypeScript's and Java's interfaces fall
+// back to the language default Interface name, as they do in WebStorm and IntelliJ; an explicit
+// JS./TS.INTERFACE or INTERFACE_NAME_ATTRIBUTES outranks it.
+const ALSO_TARGETS: Record<string, readonly string[]> = {
+  DEFAULT_INTERFACE_NAME: ["javascript.interface", "java.interface"],
+};
 const targets = (name: string): string[] =>
   Object.hasOwn(ATTRIBUTE_NAMES, name)
     ? ALSO_CALLS.has(name)
       ? [ATTRIBUTE_NAMES[name]!, "javascript.functionCall"]
-      : [ATTRIBUTE_NAMES[name]!, ...(Object.hasOwn(ALSO_TARGETS, name) ? [ALSO_TARGETS[name]!] : [])]
+      : [ATTRIBUTE_NAMES[name]!, ...(Object.hasOwn(ALSO_TARGETS, name) ? ALSO_TARGETS[name]! : [])]
     : [];
 
 // IntelliJ's EFFECT_TYPE codes. The box (0) and faded text (6) have no counterpart here; the bold and the

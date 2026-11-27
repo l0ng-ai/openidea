@@ -9284,6 +9284,8 @@
   "Interface name": "介面名稱",
   "Type alias": "型別別名",
   "Type parameter": "型別參數",
+  "Abstract class name": "抽象類別名稱",
+  "Enum name": "列舉名稱",
   "Change Project Icon…": "變更專案圖示…",
   "Reset Project Icon": "重設專案圖示",
   "Cannot change the project icon": "無法變更專案圖示",

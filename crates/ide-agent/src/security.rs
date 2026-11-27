@@ -32,7 +32,7 @@ pub fn widens_access(params: &Value) -> bool {
     tool.and_then(|t| t.pointer("/rawInput/networkApprovalContext")).is_some_and(|c| !c.is_null())
 }
 
-fn command_from_value(val: &Value) -> Option<String> {
+pub(crate) fn command_from_value(val: &Value) -> Option<String> {
     match val {
         Value::String(s) => {
             let trimmed = s.trim();

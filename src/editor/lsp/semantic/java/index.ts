@@ -8,6 +8,13 @@ import { javaUnterminatedLiteralRanges } from "./unterminated";
 
 const TYPE_TOKENS = new Set(["class", "interface", "enum", "record", "annotation", "type", "typeParameter"]);
 
+/** IntelliJ's Java kinds of type, each with its own colour (unset, the class name's). */
+const TYPE_KIND_CLASS: Record<string, string> = {
+  interface: "cm-sem-java-interface",
+  enum: "cm-sem-java-enum",
+  typeParameter: "cm-sem-java-type-parameter",
+};
+
 /** Contextual keywords `@lezer/java` parses as their own nodes but leaves uncoloured (`var` is coloured, but jdtls sends it as a type). */
 const KEYWORD_NODES = new Set(["sealed", "permits", "record", "var"]);
 const NAME_NODES = new Set(["Identifier", "Definition", "TypeName"]);
@@ -64,7 +71,7 @@ const javaSemantics: LanguageSemantics = {
     ...javaUnterminatedLiteralRanges(tree, doc),
   ],
   fallbackRanges: (tree) => javaDeclarationRanges(tree),
-  tokenClasses({ type, classes, from, doc, tree }) {
+  tokenClasses({ type, modifiers, classes, from, doc, tree }) {
     // Relies on jdtls sending only contextual keywords (`sealed`, `permits`, `record`, `non-sealed`) as `modifier` tokens.
     if (type === "modifier" || type === "keyword") classes.push("cm-sem-keyword");
     // Java colours JDK types and calls like any other: `defaultLibrary` (sent for JDK symbols) gets no colour of its own.
@@ -75,6 +82,8 @@ const javaSemantics: LanguageSemantics = {
       const s = classes.indexOf("cm-sem-static");
       if (s >= 0) classes.splice(s, 1);
     }
+    if (Object.hasOwn(TYPE_KIND_CLASS, type)) classes.push(TYPE_KIND_CLASS[type]!);
+    else if (type === "class" && modifiers.includes("abstract")) classes.push("cm-sem-java-abstract-class");
     if (tree && isReassignedAt(tree, doc, from)) classes.push("cm-sem-mutable");
   },
 };
