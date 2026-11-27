@@ -1425,3 +1425,81 @@ async fn jdtls_build_reports_cross_module_errors_in_open_and_closed_files() {
     .await;
     tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
 }
+
+/// Indented Sass through the built-in `sass` definition: completion, Go to
+/// Declaration and hover across `@use`, and syntax errors as diagnostics.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires some-sass-language-server on PATH"]
+async fn some_sass_indented_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let theme = root.join("_theme.sass");
+    std::fs::write(
+        &theme,
+        "/// Brand colour\n$brand: #336699\n\n/// Rounded corners\n@mixin rounded($r: 4px)\n  border-radius: $r\n",
+    )
+    .unwrap();
+    let main = root.join("main.sass");
+    let source = "@use \"theme\"\n\n.button\n  color: theme.$brand\n  +theme.rounded(2px)\n";
+    std::fs::write(&main, source).unwrap();
+    let sass = LanguageRegistry::load(None).unwrap().get(&LanguageId::new("sass")).unwrap();
+    let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![sass]));
+    let doc = DocId::next();
+    mgr.did_open(doc, &main, &LanguageId::new("sass"), 1, source);
+    let name = "some-sass-language-server";
+    retry("some-sass ready", Duration::from_secs(30), || {
+        let status = last_status(&events, name);
+        if let Some((ServerStatus::Crashed | ServerStatus::Missing | ServerStatus::Misconfigured, msg)) = &status {
+            panic!("some-sass failed: {msg:?}");
+        }
+        async move { matches!(status, Some((ServerStatus::Ready | ServerStatus::Busy, _))).then_some(()) }
+    })
+    .await;
+
+    // `theme.$brand` and the `+theme.rounded` mixin, both in `_theme.sass`.
+    for (pos, line) in [(Pos::new(3, 17), 1), (Pos::new(4, 10), 4)] {
+        let defs = retry("definition", Duration::from_secs(30), || {
+            let mgr = mgr.clone();
+            async move { mgr.goto(doc, pos, GotoKind::Definition).await.ok().filter(|d| !d.is_empty()) }
+        })
+        .await;
+        assert_eq!((defs[0].path.to_path_buf(), defs[0].range.start.line), (theme.clone(), line), "{pos:?}");
+    }
+    // The `@use` path is a document link, which Go to Declaration follows.
+    let links = mgr.document_links(doc).await.unwrap();
+    assert!(
+        links
+            .iter()
+            .any(|l| l.range.start.line == 0 && l.path.as_ref().map(|p| p.to_path_buf()) == Some(theme.clone())),
+        "{links:?}"
+    );
+    let hover = mgr.hover(doc, Pos::new(3, 17), Default::default()).await.unwrap().unwrap();
+    assert!(hover.contents.value.contains("#336699") && hover.contents.value.contains("Brand colour"));
+    let hover = mgr.hover(doc, Pos::new(4, 10), Default::default()).await.unwrap().unwrap();
+    assert!(hover.contents.value.contains("Rounded corners"), "{}", hover.contents.value);
+
+    // `$` lists the module's variables, `+` its mixins.
+    let edited = format!("{source}  margin: theme.$\n  +theme.\n");
+    mgr.did_change(
+        doc,
+        2,
+        &[AppliedChange { range: Range::point(Pos::new(5, 0)), text: edited[source.len()..].into() }],
+        &|| unreachable!(),
+    );
+    let labels = |list: ide_lsp::types::CompletionList| list.items.into_iter().map(|i| i.label).collect::<Vec<_>>();
+    let vars = labels(mgr.completion(doc, Pos::new(5, 16), Some("$".into()), Default::default()).await.unwrap());
+    assert!(vars.iter().any(|l| l.contains("$brand")), "{vars:?}");
+    let mixins = labels(mgr.completion(doc, Pos::new(6, 9), Some(".".into()), Default::default()).await.unwrap());
+    assert!(mixins.iter().any(|l| l.contains("rounded")), "{mixins:?}");
+
+    let errors = retry("diagnostics", Duration::from_secs(30), || {
+        let found = events.lock().iter().rev().find_map(|event| match event {
+            IdeEvent::Diagnostics { source, items, .. } if source == name && !items.is_empty() => Some(items.clone()),
+            _ => None,
+        });
+        async move { found }
+    })
+    .await;
+    assert!(errors.iter().any(|d| d.range.start.line >= 5), "{errors:?}");
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+}
