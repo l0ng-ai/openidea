@@ -542,6 +542,11 @@ export function ConsoleView({
         shortcut: formatBinding(hostBinding("Meta+F")),
         run: openFind,
       },
+      {
+        label: "Search with Google",
+        disabled: !selection.trim(),
+        run: () => void openUrl(`https://www.google.com/search?q=${encodeURIComponent(selection.trim())}`),
+      },
       { kind: "separator" },
       {
         label: "Fold Lines Like This",
