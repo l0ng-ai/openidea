@@ -4287,5 +4287,9 @@
   "tests.test_models": "tests.test_models",
   "unittest": "unittest",
   "1 file of the report is not in this project.": "1 file of the report is not in this project.",
-  "{count} files of the report are not in this project.": "{count} files of the report are not in this project."
+  "{count} files of the report are not in this project.": "{count} files of the report are not in this project.",
+  "Pull request link {text}": "Pull request link {text}",
+  "Issue link {text}": "Issue link {text}",
+  "Commit link {text}": "Commit link {text}",
+  "Link {text}": "Link {text}"
 }
