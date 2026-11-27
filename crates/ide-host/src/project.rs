@@ -211,6 +211,8 @@ impl Host {
                 crate::ts_code_style::configure(cfg, server_root, &effective);
                 ide_sdk::apply::configure_vue_module_resolution(cfg, &data_dir);
                 ide_sdk::apply::configure_path_aliases(cfg, server_root, &data_dir);
+                let css_modules = ide_tools::managed_npm_plugin(&data_dir, "css-modules-kit");
+                ide_sdk::apply::configure_css_modules(cfg, server_root, css_modules.as_deref());
                 let container_python = effective.languages.python.run_target().is_some();
                 crate::ops::sdk::container_python::configure_server(cfg, &data_dir, root, &effective);
                 // Attached dependency projects are source, so basedpyright/Pyright should
@@ -360,8 +362,13 @@ impl Host {
         }
         {
             let settings = settings.clone();
+            let data_dir = self.local_data_dir.clone();
             lsp.set_servers_hook(Box::new(move |language, defined| {
-                ide_sdk::apply::language_servers(language.as_str(), defined, &settings.effective())
+                let mut servers = ide_sdk::apply::language_servers(language.as_str(), defined, &settings.effective());
+                if language.as_str() == "css" && ide_tools::managed_npm_plugin(&data_dir, "css-modules-kit").is_none() {
+                    ide_sdk::apply::drop_css_modules_route(&mut servers);
+                }
+                servers
             }));
         }
         {

@@ -1628,6 +1628,26 @@ pub fn configure_path_aliases(cfg: &mut LanguageServerConfig, server_root: &Path
     let Some(plugin) = crate::path_aliases::tsserver_plugin(data_dir, server_root, &packages) else {
         return false;
     };
+    push_global_plugin(cfg, plugin);
+    true
+}
+
+/// Registers CSS Modules Kit (`@css-modules-kit/ts-plugin`, installed under `location`) as a
+/// vtsls global plugin when a tsconfig.json at, above or below `server_root` sets
+/// `cmkOptions.enabled` (#6071). No-op elsewhere, and without the plugin (`None`).
+pub fn configure_css_modules(cfg: &mut LanguageServerConfig, server_root: &Path, location: Option<&Path>) -> bool {
+    if cfg.name != "vtsls" || !cfg.tsserver_project {
+        return false;
+    }
+    let Some(location) = location.filter(|_| crate::css_modules::enabled(server_root)) else {
+        return false;
+    };
+    push_global_plugin(cfg, crate::css_modules::tsserver_plugin(location));
+    true
+}
+
+/// Adds `plugin` to vtsls' `globalPlugins`, replacing an entry of the same name.
+fn push_global_plugin(cfg: &mut LanguageServerConfig, plugin: Value) {
     let mut current =
         cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or_else(|| json!({}));
     let mut node = &mut current;
@@ -1640,13 +1660,18 @@ pub fn configure_path_aliases(cfg: &mut LanguageServerConfig, server_root: &Path
         *plugins = json!([]);
     }
     let plugins = plugins.as_array_mut().expect("made an array above");
-    plugins.retain(|p| p.get("name").and_then(Value::as_str) != Some(crate::path_aliases::PLUGIN));
+    plugins.retain(|p| p.get("name") != plugin.get("name"));
     plugins.push(plugin);
     match toml::Value::try_from(current) {
         Ok(v) => cfg.initialization_options = Some(v),
         Err(e) => tracing::warn!("{}: cannot apply settings to initialization options: {e}", cfg.name),
     }
-    true
+}
+
+/// Leaves out CSS's vtsls route (`languages/css.toml`) while the CSS Modules Kit plugin is not
+/// installed: without it vtsls has nothing for CSS files.
+pub fn drop_css_modules_route(servers: &mut Vec<LanguageServerConfig>) {
+    servers.retain(|c| c.name != "vtsls" || !c.root_markers.iter().any(|m| m == crate::css_modules::MARKER));
 }
 
 /// The servers `language` uses after Settings › Language Servers: the

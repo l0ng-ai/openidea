@@ -3686,3 +3686,52 @@ fn one_pip_run_at_a_time_per_environment() {
     drop(busy);
     assert!(crate::python::Busy::take(&python).is_ok());
 }
+
+#[test]
+fn vtsls_gets_css_modules_kit_where_a_tsconfig_enables_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (root, tools) = (tmp.path().join("app"), tmp.path().join("tools"));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("tsconfig.json"), "{\n  // comments are fine\n  \"compilerOptions\": {}\n}").unwrap();
+    let mut cfg = server("vtsls");
+    cfg.tsserver_project = true;
+    assert!(!crate::apply::configure_css_modules(&mut cfg, &root, Some(&tools)), "no cmkOptions");
+    std::fs::write(root.join("tsconfig.json"), r#"{ "cmkOptions": { "enabled": true } }"#).unwrap();
+    assert!(!crate::apply::configure_css_modules(&mut cfg, &root, None), "plugin not installed");
+    let mut native = server("vtsls");
+    assert!(!crate::apply::configure_css_modules(&mut native, &root, Some(&tools)), "TypeScript 7 hosts no plugins");
+    for _ in 0..2 {
+        assert!(crate::apply::configure_css_modules(&mut cfg, &root, Some(&tools)));
+    }
+    let init = serde_json::to_value(cfg.initialization_options.as_ref().unwrap()).unwrap();
+    assert_eq!(
+        init.pointer("/vtsls/tsserver/globalPlugins").unwrap(),
+        &serde_json::json!([{
+            "name": "@css-modules-kit/ts-plugin",
+            "location": tools.to_string_lossy(),
+            "languages": ["css"],
+            "enableForWorkspaceTypeScriptVersions": true,
+        }]),
+        "once"
+    );
+}
+
+#[test]
+fn css_files_reach_vtsls_only_once_css_modules_kit_is_installed() {
+    let reg = ide_language::LanguageRegistry::load(None).unwrap();
+    let css = reg.get(&ide_core::LanguageId::new("css")).unwrap().language_servers;
+    let route = css.iter().find(|c| c.name == "vtsls").expect("css.toml routes CSS Modules to vtsls");
+    assert!(route.require_root_marker);
+    assert_eq!(route.root_markers, [crate::css_modules::MARKER]);
+    // The rest of the definition is TypeScript's: whichever file starts the shared server, it runs the same.
+    let ts = reg.get(&ide_core::LanguageId::new("typescript")).unwrap().language_servers;
+    let ts = ts.iter().find(|c| c.name == "vtsls").unwrap();
+    assert_eq!(
+        (&route.command, &route.args, &route.initialization_options, route.tsserver_project),
+        (&ts.command, &ts.args, &ts.initialization_options, ts.tsserver_project)
+    );
+    let mut servers = css.clone();
+    crate::apply::drop_css_modules_route(&mut servers);
+    assert_eq!(servers.len(), css.len() - 1);
+    assert!(servers.iter().all(|c| c.name != "vtsls"));
+}

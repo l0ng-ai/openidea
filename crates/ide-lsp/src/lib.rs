@@ -4463,6 +4463,9 @@ impl LspManager {
             self.stop_instance(&s, false).await;
             s.reset_for_restart();
             self.ensure_started(&s);
+            // Open files it now serves (a root marker or plugin added before the restart: CSS
+            // Modules Kit) join it.
+            self.attach_fallbacks();
             // Started again: it shadows the fallbacks that took over while it was down.
             self.detach_shadowed_fallbacks().await;
             s

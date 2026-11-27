@@ -89,12 +89,15 @@ fn has_toml_table(file: &Path, table: &str) -> bool {
     table.split('.').try_fold(&value, |v, key| v.get(key)).is_some_and(toml::Value::is_table)
 }
 
-/// `file` parses as JSON and has the dotted `key` with a value other than `null`:
-/// an object (`eslintConfig`) or a dependency's version (`dependencies.tailwindcss`).
+/// `file` parses as JSON (with comments: `tsconfig.json`) and has the dotted `key` with a value
+/// other than `null` or `false`: an object (`eslintConfig`), a dependency's version
+/// (`dependencies.tailwindcss`) or a switch that is on (`cmkOptions.enabled`).
 fn has_json_key(file: &Path, key: &str) -> bool {
     let Ok(text) = std::fs::read_to_string(file) else { return false };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else { return false };
-    key.split('.').try_fold(&value, |v, key| v.get(key)).is_some_and(|v| !v.is_null())
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&ide_core::jsonc::strip(&text)) else { return false };
+    key.split('.')
+        .try_fold(&value, |v, key| v.get(key))
+        .is_some_and(|v| !v.is_null() && *v != serde_json::Value::Bool(false))
 }
 
 /// `path` is (or, after its creation or removal, was) a root marker of the
@@ -191,6 +194,14 @@ mod tests {
         std::fs::write(dir.join("package.json"), r#"{"eslintConfig": null}"#).unwrap();
         assert!(!has_marker(dir, "package.json#eslintConfig"));
         assert!(is_marker_path(&dir.join("package.json"), marker));
+        // tsconfig.json is JSON with comments; a switch that is off is no marker.
+        let cmk = "tsconfig.json#cmkOptions.enabled";
+        let tsconfig =
+            |enabled: &str| format!("{{\n  // CSS Modules Kit\n  \"cmkOptions\": {{ \"enabled\": {enabled} }},\n}}");
+        std::fs::write(dir.join("tsconfig.json"), tsconfig("true")).unwrap();
+        assert!(has_marker(dir, cmk));
+        std::fs::write(dir.join("tsconfig.json"), tsconfig("false")).unwrap();
+        assert!(!has_marker(dir, cmk));
     }
 
     #[test]

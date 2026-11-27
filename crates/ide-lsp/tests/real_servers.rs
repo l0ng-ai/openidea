@@ -969,6 +969,88 @@ async fn bundler_path_aliases_resolve_below_tsconfig_paths() {
     tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
 }
 
+/// CSS Modules Kit (`@css-modules-kit/ts-plugin`) on vtsls, which serves the `.module.css`
+/// files too (`languages: ["css"]`, as the settings hook registers it): definition and
+/// completion from TSX, references and rename from the stylesheet (#6071). Set
+/// `OPENIDEA_TEST_NPM_TOOLS` to a dir with `npm i @vtsls/language-server typescript@6 @css-modules-kit/ts-plugin`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires @vtsls/language-server and @css-modules-kit/ts-plugin (OPENIDEA_TEST_NPM_TOOLS)"]
+async fn css_modules_kit_navigates_between_tsx_and_module_css() {
+    let tools = std::path::PathBuf::from(std::env::var("OPENIDEA_TEST_NPM_TOOLS").expect("OPENIDEA_TEST_NPM_TOOLS"));
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("package.json"), "{\"name\":\"app\",\"private\":true}").unwrap();
+    std::fs::write(
+        root.join("tsconfig.json"),
+        "{\n  // JSON with comments\n  \"compilerOptions\": { \"strict\": true, \"jsx\": \"preserve\", \"module\": \"ESNext\", \"moduleResolution\": \"Bundler\" },\n  \"include\": [\"src\"],\n  \"cmkOptions\": { \"enabled\": true }\n}\n",
+    )
+    .unwrap();
+    let css_path = root.join("src/Button.module.css");
+    let css = ".button { color: red; }\n.label { color: blue; }\n";
+    std::fs::write(&css_path, css).unwrap();
+    let tsx_path = root.join("src/Button.tsx");
+    let tsx = "import styles from './Button.module.css';\nexport const a = styles.button;\nexport const b = styles.";
+    std::fs::write(&tsx_path, tsx).unwrap();
+    let init = serde_json::json!({ "vtsls": { "tsserver": { "globalPlugins": [{
+        "name": "@css-modules-kit/ts-plugin",
+        "location": tools.to_string_lossy(),
+        "languages": ["css"],
+        "enableForWorkspaceTypeScriptVersions": true,
+    }] } } });
+    let vtsls = npm_server(&tools, "vtsls", "vtsls", Some(init));
+    let registry =
+        LanguageRegistry::from_configs(vec![lang("typescriptreact", "tsx", vtsls.clone()), lang("css", "css", vtsls)]);
+    let (mgr, _events) = manager(&root, registry);
+    let tsx_doc = DocId::next();
+    mgr.did_open(tsx_doc, &tsx_path, &LanguageId::new("typescriptreact"), 1, tsx);
+    let css_doc = DocId::next();
+    mgr.did_open(css_doc, &css_path, &LanguageId::new("css"), 1, css);
+    assert_eq!(mgr.servers().iter().filter(|s| s.name == "vtsls").count(), 1, "one vtsls for both");
+
+    // `styles.button` → `.button`.
+    let defs = retry("definition in the stylesheet", Duration::from_secs(90), || {
+        let (mgr, css_path) = (mgr.clone(), css_path.clone());
+        async move {
+            let defs = mgr.goto(tsx_doc, Pos::new(1, 26), GotoKind::Definition).await.ok()?;
+            defs.into_iter().find(|d| d.path == css_path)
+        }
+    })
+    .await;
+    assert_eq!((defs.range.start.line, defs.range.start.col), (0, 1));
+    let list = retry("class name completion", Duration::from_secs(30), || {
+        let mgr = mgr.clone();
+        async move {
+            let list = mgr.completion(tsx_doc, Pos::new(2, 24), Some(".".into()), Default::default()).await.ok()?;
+            list.items.iter().any(|i| i.label == "label").then_some(list)
+        }
+    })
+    .await;
+    assert!(
+        list.items.iter().any(|i| i.label == "button"),
+        "{:?}",
+        list.items.iter().map(|i| &i.label).collect::<Vec<_>>()
+    );
+
+    // `.button` in the stylesheet → its use in the component.
+    let refs = retry("references from the stylesheet", Duration::from_secs(30), || {
+        let (mgr, tsx_path) = (mgr.clone(), tsx_path.clone());
+        async move {
+            let refs = mgr
+                .references_streaming(css_doc, Pos::new(0, 3), true, true, false, Default::default(), None)
+                .await
+                .ok()?;
+            Some(refs.locations).filter(|l| l.iter().any(|l| l.path == tsx_path))
+        }
+    })
+    .await;
+    assert!(refs.iter().any(|l| l.path == tsx_path && l.range.start.line == 1), "{refs:?}");
+    let renamed = mgr.rename(css_doc, Pos::new(0, 3), "primary".into(), Default::default()).await.unwrap().edit;
+    assert_eq!(edited_lines(&renamed, &css_path), [0]);
+    assert_eq!(edited_lines(&renamed, &tsx_path), [1]);
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+}
+
 const NG_APP_TS: &str = "import { Component } from '@angular/core';\n\n@Component({\n  selector: 'app-root',\n  templateUrl: './app.html',\n})\nexport class App {\n  title = 'demo';\n}\n";
 const NG_APP_HTML: &str = "<h1>{{ title }}</h1>\n<p>{{ missing }}</p>\n";
 const NG_INLINE_TS: &str = "import { Component } from '@angular/core';\n\n@Component({\n  selector: 'app-inline',\n  template: `<b>{{ count }}</b>`,\n})\nexport class Inline {\n  count = 1;\n}\n";

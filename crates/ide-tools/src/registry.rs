@@ -135,6 +135,10 @@ const fn ver(cmd: &'static str) -> Option<(&'static str, &'static [&'static str]
 /// TypeScript 7 (the native port) ships neither, and `@latest` resolves to it.
 pub const TYPESCRIPT: &str = "typescript@6";
 
+/// The CSS Modules tsserver plugin vtsls loads, at an exact version: a newer one comes with a
+/// new pin here (the installed one then reads as missing and is offered again).
+pub const CSS_MODULES_KIT: &str = "@css-modules-kit/ts-plugin@1.4.2";
+
 pub static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "unity-debug",
@@ -301,6 +305,18 @@ pub static TOOLS: &[ToolSpec] = &[
         fallback: None,
         version: V,
         homepage: "https://github.com/yioneko/vtsls",
+        needs: &[],
+    },
+    ToolSpec {
+        name: "css-modules-kit",
+        display: "CSS Modules Kit (tsserver plugin)",
+        kind: Plugin,
+        // An npm plugin has no executable: this is the package vtsls loads from `<tools>/node_modules`.
+        commands: &["@css-modules-kit/ts-plugin"],
+        method: Method::Npm { packages: &[CSS_MODULES_KIT] },
+        fallback: None,
+        version: V,
+        homepage: "https://github.com/mizdra/css-modules-kit",
         needs: &[],
     },
     ToolSpec {
@@ -1355,7 +1371,7 @@ pub static TOOLS: &[ToolSpec] = &[
 ];
 
 /// Plugin tools and the tool that loads them.
-pub const PLUGIN_HOSTS: &[(&str, &str)] = &[("lombok", "jdtls")];
+pub const PLUGIN_HOSTS: &[(&str, &str)] = &[("lombok", "jdtls"), ("css-modules-kit", "vtsls")];
 
 pub fn find(name: &str) -> Option<&'static ToolSpec> {
     TOOLS.iter().find(|t| t.name == name)

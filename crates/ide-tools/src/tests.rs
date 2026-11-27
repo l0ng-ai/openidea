@@ -1452,3 +1452,27 @@ fn managed_gh_is_detected_on_tools_bin_dirs_and_available_to_http() {
     let http = env.tools().http().unwrap();
     assert_eq!(http.gh_path(), Some(gh_bin.join("gh").as_path()));
 }
+
+#[test]
+fn an_npm_tsserver_plugin_is_installed_at_its_pinned_version_only() {
+    let env = Env::new();
+    let app_data = env.root.parent().unwrap();
+    let pkg = env.root.join("node_modules/@css-modules-kit/ts-plugin");
+    let status = || env.tools().info("css-modules-kit", &langs()).unwrap();
+    assert_eq!(status().status, ToolStatus::Missing);
+    assert_eq!(managed_npm_plugin(app_data, "css-modules-kit"), None);
+
+    fs::create_dir_all(&pkg).unwrap();
+    let pinned = registry::CSS_MODULES_KIT.rsplit_once('@').unwrap().1;
+    fs::write(pkg.join("package.json"), format!(r#"{{"version":"{pinned}"}}"#)).unwrap();
+    let info = status();
+    assert_eq!((info.status, info.version.as_deref()), (ToolStatus::Installed, Some(pinned)));
+    assert_eq!(info.kind, ToolKind::Plugin);
+    assert!(info.can_uninstall);
+    assert_eq!(managed_npm_plugin(app_data, "css-modules-kit"), Some(env.root.clone()));
+
+    // An older pin's copy is offered again, as the new pin.
+    fs::write(pkg.join("package.json"), r#"{"version":"0.0.1"}"#).unwrap();
+    assert_eq!(status().status, ToolStatus::Missing);
+    assert_eq!(managed_npm_plugin(app_data, "css-modules-kit"), None);
+}
