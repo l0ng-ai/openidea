@@ -1,0 +1,27 @@
+.list {
+  height: 100%;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+}
+
+.row {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-0-5) var(--space-2);
+  white-space: nowrap;
+}
+
+.name {
+  color: var(--fg-editor);
+}
+
+.type {
+  color: var(--fg-muted);
+}
+
+.value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-editor);
+}

@@ -1473,6 +1473,8 @@ export interface ProjectViewRootEntry {
   icon: string;
   /** Folder whose contents the node lists (outside the project); omitted for a group of `children`. */
   path?: string;
+  /** `path` is a file: shown as a leaf (a project file under a solution group), not a folder listing. */
+  file?: boolean;
   /** Child nodes of a group node (one per SDK, then its library folders). */
   children?: readonly ProjectViewRootEntry[];
   /** Grey text after the label ("library root"). */
