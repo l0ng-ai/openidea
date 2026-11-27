@@ -21,11 +21,17 @@ interface WorkspaceTableReference {
 export const WORKSPACE_SQL_LIMIT = 65_536;
 
 /** Resolve a whole project list once, retaining ambiguity instead of choosing the first duplicate. */
-export function workspaceSourceResolver(sources: readonly WorkspaceSourceReference[]) {
+export function workspaceSourceResolver(
+  sources: readonly WorkspaceSourceReference[],
+  bindings?: { legacySources?: { left: string; right: string }; sourceAliases?: Record<string, string> },
+) {
   type Matches = Map<string, WorkspaceSourceReference | null>;
   const exact: Matches = new Map();
   const folded: Matches = new Map();
-  const legacy = new Map<string, WorkspaceSourceReference>();
+  const legacy = new Map<string, WorkspaceSourceReference | undefined>();
+  for (const side of ["left", "right"] as const) {
+    if (bindings?.legacySources?.[side]) legacy.set(side, undefined);
+  }
   const put = (index: Matches, key: string, source: WorkspaceSourceReference) => {
     const previous = index.get(key);
     index.set(key, previous === undefined || previous?.id === source.id ? source : null);
@@ -38,15 +44,23 @@ export function workspaceSourceResolver(sources: readonly WorkspaceSourceReferen
     }
     if (source.legacy) legacy.set(source.legacy, source);
   }
+  if (bindings?.sourceAliases) {
+    const available = new Set(sources.map((source) => source.id));
+    for (const [id, alias] of Object.entries(bindings.sourceAliases)) {
+      if (alias.trim() && !available.has(id)) folded.set(alias.trim().toLowerCase(), null);
+    }
+  }
   return (name: string, quoted = false) => {
     if (quoted) return exact.get(name) ?? undefined;
     const key = name.toLowerCase();
-    return legacy.get(key) ?? folded.get(key) ?? undefined;
+    return legacy.has(key) ? legacy.get(key) : (folded.get(key) ?? undefined);
   };
 }
 
-export function workspaceSourceAliasError(sources: readonly WorkspaceSourceReference[]): string | null {
-  const resolve = workspaceSourceResolver(sources);
+export function workspaceSourceAliasError(
+  sources: readonly WorkspaceSourceReference[],
+  resolve = workspaceSourceResolver(sources),
+): string | null {
   for (const source of sources) {
     const alias = source.alias?.trim();
     if (!alias) continue;
@@ -57,16 +71,17 @@ export function workspaceSourceAliasError(sources: readonly WorkspaceSourceRefer
   return null;
 }
 
+type ResolveSource = ReturnType<typeof workspaceSourceResolver>;
+
 type Column = { relation: number; column: string };
 type Projection = { relation: number; column: string | null };
 type Join = { left: Column; rightColumn: string };
 
 function parseJoin(
   tokens: readonly Token[],
-  sources: readonly WorkspaceSourceReference[],
+  resolveSource: ResolveSource,
   complete?: (table: WorkspaceTableReference) => void,
 ) {
-  const resolveSource = workspaceSourceResolver(sources);
   let cursor = 0;
   const take = (expected: string) => {
     if (tokens[cursor]?.upper !== expected) return false;
@@ -194,13 +209,13 @@ export function workspaceStatementRanges(sql: string, caret?: number): { from: n
 }
 
 /** The host receives resolved identifiers and equality edges, never editor SQL. */
-export function workspaceJoinQuery(sql: string, sources: readonly WorkspaceSourceReference[], caret?: number) {
+export function workspaceJoinQuery(sql: string, resolveSource: ResolveSource, caret?: number) {
   if (sql.length > WORKSPACE_SQL_LIMIT) throw new Error(tx("Workspace SQL exceeds 65,536 characters."));
   if (caret !== undefined) {
     const range = workspaceStatementRanges(sql, caret)[0];
     sql = range ? sql.slice(range.from, range.to) : "";
   }
-  return parseJoin(lex(sql, "postgres").tokens, sources);
+  return parseJoin(lex(sql, "postgres").tokens, resolveSource);
 }
 
 export interface WorkspaceJoinColumnTarget extends WorkspaceTableReference {
@@ -211,7 +226,7 @@ export interface WorkspaceJoinColumnTarget extends WorkspaceTableReference {
 
 export function workspaceJoinColumnTarget(
   sql: string,
-  sources: readonly WorkspaceSourceReference[],
+  resolveSource: ResolveSource,
   lexed?: Lexed,
 ): WorkspaceJoinColumnTarget | null {
   if (sql.length > WORKSPACE_SQL_LIMIT) return null;
@@ -225,7 +240,7 @@ export function workspaceJoinColumnTarget(
   if (tokens.at(partial ? -2 : -1)?.text !== ".") return null;
   let target: WorkspaceJoinColumnTarget | null = null;
   try {
-    parseJoin(partial ? tokens.slice(0, -1) : tokens, sources, (table) => {
+    parseJoin(partial ? tokens.slice(0, -1) : tokens, resolveSource, (table) => {
       target = {
         ...table,
         from: partial?.from ?? sql.length,

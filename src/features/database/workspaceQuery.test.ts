@@ -14,6 +14,7 @@ const refs = [
   { id: "pg", name: 'Sales "EU"', alias: "crm", legacy: "left" },
   { id: "ch", name: "events", alias: "logs", legacy: "right" },
 ] as const;
+const resolve = workspaceSourceResolver(refs);
 const basic = "SELECT * FROM #left.public.users a JOIN #right.events.users b ON ";
 const pair = (a: string, b: string) => `SELECT * FROM #${a}.public.users a JOIN #${b}.db.log b ON b.id=a.id`;
 
@@ -24,7 +25,7 @@ describe("saved workspace references", () => {
       ["CRM", "logs"],
       ["left", "right"],
     ]) {
-      expect(workspaceJoinQuery(pair(a!, b!), refs).tables.map((t) => t.sourceId)).toEqual(["pg", "ch"]);
+      expect(workspaceJoinQuery(pair(a!, b!), resolve).tables.map((t) => t.sourceId)).toEqual(["pg", "ch"]);
     }
     const fresh = [
       { id: "a", name: "left" },
@@ -32,7 +33,21 @@ describe("saved workspace references", () => {
     ];
     expect(workspaceSourceResolver(fresh)("left")?.id).toBe("a");
     expect(workspaceSourceResolver(fresh)("right")).toBeUndefined();
-    expect(() => workspaceJoinQuery(pair('""', "logs"), refs)).toThrow();
+    expect(() => workspaceJoinQuery(pair('""', "logs"), resolve)).toThrow();
+  });
+  it("never rebinds a deleted source's saved alias or old positional name", () => {
+    const available = [
+      { id: "new", name: "left" },
+      { id: "fresh", name: "crm" },
+    ];
+    const resolve = workspaceSourceResolver(available, {
+      legacySources: { left: "removed", right: "" },
+      sourceAliases: { removed: "crm" },
+    });
+    expect(resolve("left")).toBeUndefined();
+    expect(resolve("CRM")).toBeUndefined();
+    expect(resolve("left", true)?.id).toBe("new");
+    expect(resolve("crm", true)?.id).toBe("fresh");
   });
   it("resolves quoted display names exactly and rejects ambiguous bare names", () => {
     const sources = [
@@ -43,7 +58,7 @@ describe("saved workspace references", () => {
     expect(workspaceSourceResolver(sources)("Sales", true)?.id).toBe("a");
     expect(workspaceSourceAliasError(sources)).toBeNull();
     expect(workspaceSourceResolver(sources)("ASIA")?.id).toBe("b");
-    expect(() => workspaceJoinQuery(pair("sales", "asia"), sources)).toThrow(/ambiguous/);
+    expect(() => workspaceJoinQuery(pair("sales", "asia"), workspaceSourceResolver(sources))).toThrow(/ambiguous/);
   });
   it.each(["events", "right", "two words", "a.b", "#crm", "1crm"])(
     "rejects conflicting or invalid optional alias %s",
@@ -56,7 +71,7 @@ describe("saved workspace references", () => {
     for (const predicate of ["users.pk=log.pk", "left.pk=right.pk"]) {
       const plan = workspaceJoinQuery(
         "select * from #left.users /* first */ inner join #right.db.log on " + predicate,
-        refs,
+        resolve,
       );
       expect(plan.joins).toEqual([{ left: { relation: 0, column: "pk" }, rightColumn: "pk" }]);
       expect(plan.tables[0]).toEqual({ sourceId: "pg", database: "", schema: "", table: "users" });
@@ -64,12 +79,12 @@ describe("saved workspace references", () => {
   });
   it("keeps old unaliased same-table-name drafts bound by source", () => {
     const sql = "SELECT * FROM #left.public.t JOIN #right.logs.t ON left.id=right.id";
-    expect(workspaceJoinQuery(sql, refs).joins[0]?.left.relation).toBe(0);
-    expect(() => workspaceJoinQuery(sql.replace("left.id", "t.id"), refs)).toThrow();
+    expect(workspaceJoinQuery(sql, resolve).joins[0]?.left.relation).toBe(0);
+    expect(() => workspaceJoinQuery(sql.replace("left.id", "t.id"), resolve)).toThrow();
   });
   it("preserves quoted identifiers and reversed keys", () => {
     const q = 'SELECT * FROM #left."odd.schema"."a""b" AS a JOIN #right.events.lookup b ON b."Key"=a.id;';
-    const plan = workspaceJoinQuery(q, refs);
+    const plan = workspaceJoinQuery(q, resolve);
     expect(plan.tables[0]).toMatchObject({ sourceId: "pg", schema: "odd.schema", table: 'a"b' });
     expect(plan.joins).toEqual([{ left: { relation: 0, column: "id" }, rightColumn: "Key" }]);
     expect(plan.projection).toBeNull();
@@ -77,16 +92,16 @@ describe("saved workspace references", () => {
   it.each(["a.id = a.id", "missing.id = b.id", "a.id = b.id; select 1", "a.id = b.id OR true", 'a.id = b."oops'])(
     "rejects unsupported predicates %s",
     (predicate) => {
-      expect(() => workspaceJoinQuery(basic + predicate, refs)).toThrow();
+      expect(() => workspaceJoinQuery(basic + predicate, resolve)).toThrow();
     },
   );
   it("bounds relations and rejects a projection referencing an unknown qualifier", () => {
     const chain = (n: number) =>
       "SELECT * FROM #left.s.t a0" +
       Array.from({ length: n - 1 }, (_, i) => ` JOIN #right.s.t a${i + 1} ON a0.id=a${i + 1}.id`).join("");
-    expect(workspaceJoinQuery(chain(8), refs).tables).toHaveLength(8);
-    expect(() => workspaceJoinQuery(chain(9), refs)).toThrow(/eight/);
-    expect(() => workspaceJoinQuery(chain(2).replace("*", "other.id"), refs)).toThrow();
+    expect(workspaceJoinQuery(chain(8), resolve).tables).toHaveLength(8);
+    expect(() => workspaceJoinQuery(chain(9), resolve)).toThrow(/eight/);
+    expect(() => workspaceJoinQuery(chain(2).replace("*", "other.id"), resolve)).toThrow();
   });
   it("uses only the statement at the caret and ignores escaped delimiters and nested comments", () => {
     const first = '-- 👋 ;\nSELECT * FROM #left.public."odd;name" a JOIN #right.db.t b ON a.id=b.id';
@@ -97,11 +112,11 @@ describe("saved workspace references", () => {
       { from: 2, to: first.length + 2 },
       { from: start, to: start + second.length },
     ]);
-    expect(workspaceJoinQuery(text, refs, text.indexOf("odd")).tables[0]?.table).toBe("odd;name");
-    expect(workspaceJoinQuery(text, refs, text.indexOf("nested")).tables[0]?.table).toBe("other");
-    expect(workspaceJoinQuery(text, refs, text.length).tables[0]?.table).toBe("other");
+    expect(workspaceJoinQuery(text, resolve, text.indexOf("odd")).tables[0]?.table).toBe("odd;name");
+    expect(workspaceJoinQuery(text, resolve, text.indexOf("nested")).tables[0]?.table).toBe("other");
+    expect(workspaceJoinQuery(text, resolve, text.length).tables[0]?.table).toBe("other");
     expect(workspaceStatementRanges("-- nothing;\n;; ")).toEqual([]);
-    expect(() => workspaceJoinQuery(text, refs)).toThrow();
+    expect(() => workspaceJoinQuery(text, resolve)).toThrow();
   });
 });
 
@@ -110,7 +125,7 @@ describe("completion in workspace join keys", () => {
     const first = pair("left", "right") + ";\n";
     const prefix = first + 'SELECT * FROM #logs."Log DB"."Event.Table" "b.Name" JOIN #crm."o.dd"."a""b" a ON ';
     const a = prefix + "a.";
-    expect(workspaceJoinColumnTarget(a, refs, lex(a, "postgres"))).toEqual({
+    expect(workspaceJoinColumnTarget(a, resolve, lex(a, "postgres"))).toEqual({
       sourceId: "pg",
       database: "",
       schema: "o.dd",
@@ -120,7 +135,7 @@ describe("completion in workspace join keys", () => {
       quoted: false,
     });
     const b = prefix + 'a."User ID" /* comment */ = "b.Name"."Cust';
-    expect(workspaceJoinColumnTarget(b, refs)).toEqual({
+    expect(workspaceJoinColumnTarget(b, resolve)).toEqual({
       sourceId: "ch",
       database: "",
       schema: "Log DB",
@@ -141,16 +156,16 @@ describe("completion in workspace join keys", () => {
     "a.id = b.id; SELECT x.",
     "a.id = b.id ",
   ])("does not complete invalid or literal context %s", (predicate) => {
-    expect(workspaceJoinColumnTarget(basic + predicate, refs)).toBeNull();
+    expect(workspaceJoinColumnTarget(basic + predicate, resolve)).toBeNull();
   });
   it("rejects missing sources, duplicate table aliases, oversized SQL and unfinished nested comments", () => {
-    const complete = (s: string) => workspaceJoinColumnTarget(s, refs);
+    const complete = (s: string) => workspaceJoinColumnTarget(s, resolve);
     expect(complete(basic.replace("#left", "#gone") + "a.")).toBeNull();
     expect(complete(basic.replace("users b", "users a") + "a.")).toBeNull();
     expect(complete(basic + "a." + " ".repeat(65_536))).toBeNull();
     expect(complete(basic + "/* outer /* inner */ a.")).toBeNull();
     expect(complete(basic + "/* outer /* inner */ a. */ b.")).toMatchObject({ sourceId: "ch" });
-    expect(() => workspaceJoinQuery(basic + "/* outer /* inner */ a.id=b.id", refs)).toThrow();
+    expect(() => workspaceJoinQuery(basic + "/* outer /* inner */ a.id=b.id", resolve)).toThrow();
   });
   it.each(["sqlite", "mysql", "clickhouse"] as const)("preserves non-nested %s block comments", (driver) => {
     expect(lex("/* outer /* inner */ value", driver).tokens.map((t) => t.text)).toEqual(["value"]);
@@ -179,7 +194,7 @@ describe("completion in workspace join keys", () => {
         },
       ],
     };
-    const target = workspaceJoinColumnTarget(basic + "a.", refs)!;
+    const target = workspaceJoinColumnTarget(basic + "a.", resolve)!;
     expect(workspaceJoinColumnOptions(target, catalog).map(({ label, apply }) => [label, apply])).toEqual([
       ["id", "id"],
       ["ID", '"ID"'],
@@ -188,10 +203,10 @@ describe("completion in workspace join keys", () => {
       ["select", '"select"'],
     ]);
     expect(
-      workspaceJoinColumnOptions(workspaceJoinColumnTarget(basic + "a.i", refs)!, catalog).map((x) => x.label),
+      workspaceJoinColumnOptions(workspaceJoinColumnTarget(basic + "a.i", resolve)!, catalog).map((x) => x.label),
     ).toEqual(["id", "ID"]);
     expect(
-      workspaceJoinColumnOptions(workspaceJoinColumnTarget(basic + 'a."I', refs)!, catalog).map((x) => x.label),
+      workspaceJoinColumnOptions(workspaceJoinColumnTarget(basic + 'a."I', resolve)!, catalog).map((x) => x.label),
     ).toEqual(["ID"]);
     expect(workspaceJoinColumnOptions({ ...target, table: "unknown" }, catalog)).toEqual([]);
   });
@@ -204,6 +219,7 @@ describe("saved sources in a Workspace", () => {
     { id: "duck", name: "Regional data", alias: "geo" },
     { id: "sq", name: "labels" },
   ];
+  const resolve = workspaceSourceResolver(sources);
   const statement = `SELECT a.*, e.*, g.region, t.channel
 FROM #accounts.workspace_fixture.public.customers a
 JOIN #events.events.purchases e ON e.customer_id = a.id
@@ -211,7 +227,7 @@ JOIN #geo.geo.main.region_map g ON g.id = a.id
 JOIN #labels.main.tags t ON t.zone = g.zone`;
 
   it("compiles a real four-engine JOIN without assigning sides", () => {
-    expect(workspaceJoinQuery(statement, sources)).toEqual({
+    expect(workspaceJoinQuery(statement, resolve)).toEqual({
       tables: [
         { sourceId: "pg", database: "workspace_fixture", schema: "public", table: "customers" },
         { sourceId: "ch", database: "", schema: "events", table: "purchases" },
@@ -232,7 +248,7 @@ JOIN #labels.main.tags t ON t.zone = g.zone`;
     });
   });
   it("completes columns for the third and fourth inputs without an assigned side", () => {
-    expect(workspaceJoinColumnTarget(statement.slice(0, statement.lastIndexOf("g.zone") + 2), sources)).toMatchObject({
+    expect(workspaceJoinColumnTarget(statement.slice(0, statement.lastIndexOf("g.zone") + 2), resolve)).toMatchObject({
       sourceId: "duck",
       database: "geo",
       schema: "main",
@@ -240,7 +256,7 @@ JOIN #labels.main.tags t ON t.zone = g.zone`;
     });
   });
   it("rejects a join which does not link the new table to an earlier one", () => {
-    expect(() => workspaceJoinQuery(statement.replace("t.zone = g.zone", "a.id = e.customer_id"), sources)).toThrow();
-    expect(() => workspaceJoinQuery(statement.replace("g.id = a.id", "g.id = t.id"), sources)).toThrow();
+    expect(() => workspaceJoinQuery(statement.replace("t.zone = g.zone", "a.id = e.customer_id"), resolve)).toThrow();
+    expect(() => workspaceJoinQuery(statement.replace("g.id = a.id", "g.id = t.id"), resolve)).toThrow();
   });
 });
