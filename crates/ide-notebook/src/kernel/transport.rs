@@ -1,5 +1,5 @@
 use super::process::Process;
-use super::{ExecutionResult, KernelOutput, KernelState, OutputCallback, StatusCallback};
+use super::{ExecutionResult, KernelOutput, KernelState, KernelTarget, OutputCallback, StatusCallback};
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use jupyter_protocol::{ExecuteRequest, JupyterMessage, KernelInfoRequest, ShutdownRequest};
 use jupyter_zmq_client::{ClientControlConnection, Connection, DealerSendConnection, RawMessage};
@@ -15,6 +15,8 @@ use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior};
 use uuid::Uuid;
 use zeromq::SocketRecv;
+
+pub(crate) mod remote;
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const INTERRUPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -44,7 +46,7 @@ struct Execution {
 }
 
 pub(super) struct Running {
-    pub python: PathBuf,
+    pub target: KernelTarget,
     pub stop: CancellationToken,
     requests: mpsc::Sender<Execution>,
     task: Option<JoinHandle<()>>,
@@ -55,14 +57,14 @@ impl Running {
     pub fn spawn(
         runtime: PathBuf,
         notebook: PathBuf,
-        python: PathBuf,
+        target: KernelTarget,
         status: StatusCallback,
     ) -> (Self, oneshot::Receiver<IdeResult<()>>) {
         let stop = CancellationToken::new();
         let (requests, receiver) = mpsc::channel(1);
         let (ready, ready_rx) = oneshot::channel();
-        let task = tokio::spawn(supervise(runtime, notebook, python.clone(), status, stop.clone(), receiver, ready));
-        (Self { python, stop, requests, task: Some(task), busy: Arc::new(AtomicBool::new(false)) }, ready_rx)
+        let task = tokio::spawn(supervise(runtime, notebook, target.clone(), status, stop.clone(), receiver, ready));
+        (Self { target, stop, requests, task: Some(task), busy: Arc::new(AtomicBool::new(false)) }, ready_rx)
     }
 
     pub fn is_finished(&self) -> bool {
@@ -225,21 +227,63 @@ fn protocol(error: impl std::fmt::Display) -> IdeError {
     IdeError::new(ide_core::error::ErrorKind::Protocol, format!("Jupyter protocol: {error}"))
 }
 
+/// How messages reach the kernel: ZeroMQ to a process the IDE owns, or a Jupyter server.
+#[expect(clippy::large_enum_variant, reason = "one per running kernel")]
+enum Link {
+    Local { process: Process, shell: DealerSendConnection, control: ClientControlConnection },
+    Remote(remote::Link),
+}
+
+impl Link {
+    async fn send(&mut self, message: JupyterMessage) -> IdeResult<()> {
+        match self {
+            Self::Local { shell, .. } => send(shell, message).await,
+            Self::Remote(link) => link.send(message).await,
+        }
+    }
+
+    async fn interrupt(&mut self) -> IdeResult<()> {
+        match self {
+            Self::Local { process, .. } => process.interrupt(),
+            Self::Remote(link) => link.interrupt().await,
+        }
+    }
+
+    /// Why a local process exited; a remote kernel's death closes its reader instead.
+    fn death(&mut self) -> IdeResult<Option<String>> {
+        match self {
+            Self::Local { process, .. } => process.death(),
+            Self::Remote(_) => Ok(None),
+        }
+    }
+
+    fn stderr(&self) -> String {
+        match self {
+            Self::Local { process, .. } => process.stderr(),
+            Self::Remote(_) => String::new(),
+        }
+    }
+}
+
 struct Session {
-    process: Process,
-    shell: DealerSendConnection,
-    control: ClientControlConnection,
+    link: Link,
     frames: mpsc::Receiver<Frame>,
     failure: Failure,
     _readers: Readers,
 }
 
 impl Session {
-    async fn connect(
-        runtime: &std::path::Path,
-        notebook: &std::path::Path,
-        python: &std::path::Path,
-    ) -> IdeResult<Self> {
+    async fn connect(runtime: &std::path::Path, notebook: &std::path::Path, target: &KernelTarget) -> IdeResult<Self> {
+        let python = match target {
+            KernelTarget::Local(python) => python,
+            KernelTarget::Remote(kernel) => {
+                let (tx, frames) = mpsc::channel(QUEUED_MESSAGES);
+                let failure = Failure::new();
+                let queued = Arc::new(Semaphore::new(QUEUED_BYTES));
+                let (link, reader) = remote::connect(kernel, tx, failure.clone(), queued).await?;
+                return Ok(Self { link: Link::Remote(link), frames, failure, _readers: Readers(vec![reader]) });
+            }
+        };
         let (process, info) = Process::spawn(runtime, notebook, python).await?;
         let session = Uuid::new_v4().to_string();
         let identity = jupyter_zmq_client::peer_identity_for_session(&session).map_err(protocol)?;
@@ -257,7 +301,7 @@ impl Session {
             reader(iopub, Channel::Iopub, tx.clone(), failure.clone(), queued.clone()),
             reader(shell_recv, Channel::Shell, tx, failure.clone(), queued),
         ]);
-        Ok(Self { process, shell, control, frames, failure, _readers: readers })
+        Ok(Self { link: Link::Local { process, shell, control }, frames, failure, _readers: readers })
     }
 
     async fn ready(&mut self, stop: &CancellationToken) -> IdeResult<()> {
@@ -273,9 +317,9 @@ impl Session {
                 _ = stop.cancelled() => return Err(IdeError::cancelled()),
                 _ = self.failure.token.cancelled() => return Err(self.failure.error()),
                 _ = tokio::time::sleep_until(deadline) => return Err(IdeError::unavailable(format!(
-                    "selected Python kernel was not ready within 30 seconds; {}", self.process.stderr()))),
+                    "selected Python kernel was not ready within 30 seconds; {}", self.link.stderr()))),
                 _ = probe.tick() => {
-                    if let Some(message) = self.process.death()? {
+                    if let Some(message) = self.link.death()? {
                         return Err(IdeError::unavailable(message));
                     }
                     // Only readiness probes are retried, never user execution.
@@ -284,7 +328,7 @@ impl Session {
                         let message: JupyterMessage = KernelInfoRequest {}.into();
                         request = message.header.msg_id.clone();
                         idle = false;
-                        send(&mut self.shell, message).await?;
+                        self.link.send(message).await?;
                     } else if !idle {
                         // A slow subscriber can miss the first idle. Probe again
                         // after a reply, proving BOTH live shell and subscription.
@@ -326,7 +370,7 @@ impl Session {
         let request_id = request.header.msg_id.clone();
         // If sending fails/times out, delivery is uncertain. Supervisor closes
         // the process; no caller may retry user code automatically.
-        send(&mut self.shell, request).await?;
+        self.link.send(request).await?;
         if !silent {
             status(notebook, KernelState::Busy, None);
         }
@@ -342,19 +386,19 @@ impl Session {
                 _ = stop.cancelled() => return Err(IdeError::cancelled()),
                 _ = self.failure.token.cancelled() => return Err(self.failure.error()),
                 _ = execution.cancel.cancelled(), if !interrupted => {
-                    self.process.interrupt()?;
+                    self.link.interrupt().await?;
                     interrupted = true;
                     interrupt_deadline = Some(Instant::now() + INTERRUPT_TIMEOUT);
                 },
                 // Also after a read's time limit, which leaves no deadline.
                 _ = execution.interrupt.cancelled(), if interrupt_deadline.is_none() => {
-                    self.process.interrupt()?;
+                    self.link.interrupt().await?;
                     interrupted = true;
                     interrupt_deadline = Some(Instant::now() + INTERRUPT_TIMEOUT);
                 },
                 _ = death.tick() => {
                     if execution.reply.is_closed() && !interrupted {
-                        self.process.interrupt()?;
+                        self.link.interrupt().await?;
                         interrupted = true;
                         interrupt_deadline = Some(Instant::now() + INTERRUPT_TIMEOUT);
                     }
@@ -365,7 +409,7 @@ impl Session {
                         }
                         interrupt_deadline = None;
                     }
-                    if let Some(message) = self.process.death()? { return Err(IdeError::unavailable(message)); }
+                    if let Some(message) = self.link.death()? { return Err(IdeError::unavailable(message)); }
                 },
                 frame = self.frames.recv() => {
                     let frame = frame.ok_or_else(|| IdeError::unavailable("kernel readers closed during execution"))?;
@@ -390,19 +434,23 @@ impl Session {
     }
 
     async fn shutdown(&mut self) {
+        let (process, control) = match &mut self.link {
+            Link::Local { process, control, .. } => (process, control),
+            Link::Remote(link) => return link.shutdown().await,
+        };
         // Stop is separate from user interrupt: graceful shutdown, then kill only
         // our process group/job. It must remain bounded even for wedged Python.
         let request: JupyterMessage = ShutdownRequest { restart: false }.into();
-        let _ = tokio::time::timeout(Duration::from_millis(500), self.control.send(request)).await;
+        let _ = tokio::time::timeout(Duration::from_millis(500), control.send(request)).await;
         let deadline = Instant::now() + Duration::from_millis(750);
         while Instant::now() < deadline {
-            match self.process.death() {
+            match process.death() {
                 Ok(None) => {}
                 _ => break,
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        self.process.shutdown().await;
+        process.shutdown().await;
     }
 }
 
@@ -490,7 +538,7 @@ impl Budget {
 async fn supervise(
     runtime: PathBuf,
     notebook: PathBuf,
-    python: PathBuf,
+    target: KernelTarget,
     status: StatusCallback,
     stop: CancellationToken,
     mut requests: mpsc::Receiver<Execution>,
@@ -498,7 +546,7 @@ async fn supervise(
 ) {
     status(&notebook, KernelState::Starting, None);
     let startup = async {
-        let mut session = Session::connect(&runtime, &notebook, &python).await?;
+        let mut session = Session::connect(&runtime, &notebook, &target).await?;
         session.ready(&stop).await?;
         IdeResult::Ok(session)
     };
@@ -510,12 +558,15 @@ async fn supervise(
     let mut session = match result {
         Ok(session) => session,
         Err(error) => {
-            let message = format!(
-                "{}; selected Python: {}. Ensure ipykernel is installed in this exact environment ({} -m pip install ipykernel); no fallback interpreter was used",
-                error.message,
-                python.display(),
-                python.display()
-            );
+            let message = match &target {
+                KernelTarget::Local(python) => format!(
+                    "{}; selected Python: {}. Ensure ipykernel is installed in this exact environment ({} -m pip install ipykernel); no fallback interpreter was used",
+                    error.message,
+                    python.display(),
+                    python.display()
+                ),
+                KernelTarget::Remote(kernel) => format!("{}; Jupyter server: {}", error.message, kernel.base),
+            };
             let error = IdeError::new(error.kind, message);
             status(&notebook, KernelState::Dead, Some(error.message.clone()));
             let _ = ready.send(Err(error));
@@ -535,7 +586,7 @@ async fn supervise(
             biased;
             _ = stop.cancelled() => break,
             _ = failure.token.cancelled() => { reason = Some(failure.error().message); break; },
-            _ = death.tick() => match session.process.death() {
+            _ = death.tick() => match session.link.death() {
                 Ok(None) => {},
                 Ok(Some(message)) => { reason = Some(message); break; },
                 Err(error) => { reason = Some(error.message); break; },

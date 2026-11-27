@@ -79,6 +79,7 @@ function model() {
     open: async () => structuredClone(document),
     get: async () => structuredClone(document),
     environments: async () => [[], null],
+    servers: async () => [],
     close: async () => null,
     interrupt: async () => null,
     cancel: async () => {},

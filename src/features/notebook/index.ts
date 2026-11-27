@@ -8,6 +8,7 @@ import {
   maybeEditorService,
   registerEditorKind,
   registerFileEditorProvider,
+  registerOverlay,
   registerToolWindow,
   registerUriOpener,
   toolWindowService,
@@ -16,6 +17,7 @@ import {
 import { isTauri } from "@/platform/ipc";
 import { ProviderAcquisitions } from "@/workbench/providerAcquisition";
 import { registerConversions } from "./convert";
+import { connectJupyterServer, JupyterServerDialog } from "./jupyterServer";
 import {
   closeNotebook,
   existingNotebookSession,
@@ -74,6 +76,7 @@ export function activate(): () => void {
       order: 28,
       component: lazyComponent(() => import("./VariablesView").then((m) => m.VariablesView)),
     }),
+    registerOverlay({ id: "notebook.jupyterServer", component: JupyterServerDialog }),
     registerActions([
       {
         id: "notebook.variables.show",
@@ -81,6 +84,13 @@ export function activate(): () => void {
         category: "Tools",
         when: "projectOpen",
         run: () => toolWindowService().show(VARIABLES, true),
+      },
+      {
+        id: "notebook.connectJupyterServer",
+        title: "Connect to Jupyter Server…",
+        category: "Tools",
+        when: "projectOpen",
+        run: () => connectJupyterServer(),
       },
     ]),
     registerEditorKind({

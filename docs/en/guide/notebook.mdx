@@ -42,6 +42,17 @@ Your choice is remembered per notebook. Change it while no cell is running.
 
 Each open notebook gets its own kernel process. Closing the notebook shuts its kernel down.
 
+## Run on a Jupyter server
+
+To run a notebook where the data or the GPU is, choose **Connect to Jupyter Server…** at the bottom of the interpreter list (or run it from Find Action) and enter:
+
+- **URL**: the server's address, for example `http://localhost:8888/`, or a JupyterHub user server such as `https://hub.example.com/user/alice/`. A URL copied from JupyterLab, with `/lab` or `?token=…`, works too.
+- **Token**: the server's token, or a JupyterHub API token. Not needed when the URL carries `?token=`.
+
+OpenIDEA checks them against the server, keeps the token in the system credential store and lists the server's kernels in every notebook's interpreter list. The choice is remembered per notebook, like an interpreter.
+
+Running, interrupting and restarting work as with a local kernel. OpenIDEA starts a kernel on the server for the notebook and shuts it down when you close the notebook. Only the source of the cells you run is sent; the notebook file stays on your computer and is saved there. Signing in to JupyterHub through the browser is not supported; create an API token on the Hub's Token page instead.
+
 ## Edit cells
 
 Every cell has a small toolbar:
@@ -107,6 +118,6 @@ The list is read from the kernel without a visible run: it adds no output, histo
 
 ## Limits
 
-- Only Python kernels are supported. Kernels for other languages and remote Jupyter servers are not.
+- Local kernels are Python only. A Jupyter server's other kernels can run cells, but code intelligence is for Python.
 - Interactive widgets (ipywidgets) and JavaScript outputs do not run.
 - Undo and redo are not available while cells are running.

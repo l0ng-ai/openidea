@@ -1,6 +1,14 @@
 import { Channel } from "@tauri-apps/api/core";
 import type { EditorState } from "@codemirror/state";
-import type { NotebookCellDoc, NotebookSnapshot, NotebookEdit, NotebookOutputEvent, Sdk, RequestId } from "@/bindings";
+import type {
+  JupyterServer,
+  NotebookCellDoc,
+  NotebookSnapshot,
+  NotebookEdit,
+  NotebookOutputEvent,
+  Sdk,
+  RequestId,
+} from "@/bindings";
 import { call, commands, IpcError, isTauri, nextRequestId, onIdeEvent } from "@/platform/ipc";
 import { notifyEditorDocumentChanged } from "@/workbench/contributions";
 import { OutputReducer } from "./outputs";
@@ -25,6 +33,7 @@ export const notebookBackend = {
     output: Channel<NotebookOutputEvent>,
   ) => call(commands.notebookExecute(id, cells, python, request, output)),
   environments: () => Promise.all([call(commands.sdkDetect("python")), call(commands.sdkPythonEffective(null))]),
+  servers: () => call(commands.jupyterServers()),
   cancel: (request: RequestId) => commands.cancelRequest(request),
 };
 
@@ -48,6 +57,8 @@ export interface NotebookViewState {
   kernel: string;
   python: string | null;
   environments: Sdk[];
+  /** Saved Jupyter servers and their kernel specs. */
+  servers: JupyterServer[];
   pending: number;
   /** Language-server documents of the code cells, by cell id (none without a server). */
   cellDocs: ReadonlyMap<string, NotebookCellDoc>;
@@ -109,6 +120,7 @@ export class NotebookSession {
     kernel: "idle",
     python: null,
     environments: [],
+    servers: [],
     pending: 0,
     cellDocs: new Map(),
     reveal: null,
@@ -289,9 +301,13 @@ export class NotebookSession {
   }
   async detectEnvironments() {
     try {
-      const [environments, effective] = await this.backend.environments();
+      const [[environments, effective], servers] = await Promise.all([
+        this.backend.environments(),
+        // Servers are optional: an untrusted project or an unreachable store leaves local interpreters.
+        this.backend.servers().catch(() => []),
+      ]);
       if (!this.disposed) {
-        this.publish({ environments, python: this.state.python ?? effective });
+        this.publish({ environments, servers, python: this.state.python ?? effective });
         this.recover("environment");
       }
     } catch (error) {
