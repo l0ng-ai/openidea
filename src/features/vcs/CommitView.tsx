@@ -518,7 +518,8 @@ export function nodeMenu(
           run: () => commitFiles(paths),
         },
         ...rollback,
-        ...(nodes.some((n) => n.changelist)
+        // Group By Staging State hides the lists, but its files still belong to one, as in IDEA (#6422).
+        ...(nodes.some((n) => n.changelist || n.group === "staged" || n.group === "unstaged")
           ? [
               {
                 kind: "action" as const,
@@ -526,6 +527,7 @@ export function nodeMenu(
                 arg: paths,
                 label: "Move to Another Changelist…",
               },
+              { kind: "action" as const, action: "vcs.changelist.new" },
             ]
           : []),
       ];
