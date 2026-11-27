@@ -10,6 +10,7 @@ import { SCRIPT_LABELS, canDrop, canModifyTable, canRename, type ScriptKind } fr
 import {
   connectedTargets,
   createsDatabases,
+  moveSourcesToFolder,
   newSchemaTarget,
   openDialog,
   openSourceDialog,
@@ -79,7 +80,13 @@ async function sourceFromClipboard() {
 
 /** The toolbar's "+" menu (IDEA: New). */
 export function newMenu(): MenuItem[] {
-  return [{ kind: "action", action: "db.newConsole", label: "Query Console" }, sep, ...dataSourceItems()];
+  return [
+    { kind: "action", action: "db.newConsole", label: "Query Console" },
+    sep,
+    ...dataSourceItems(),
+    sep,
+    { kind: "action", action: "db.newSourceFolder", label: "Folder…", icon: "folder" },
+  ];
 }
 
 function sqlScripts(n: DbNode, table: boolean): MenuItem {
@@ -117,6 +124,34 @@ const diagrams = (n: DbNode): MenuItem => ({
   submenu: [act("db.showDiagram", n), act("db.showDiagramPopup", n)],
 });
 
+/** Move data source `sources` into one of the project's folders, a new one, or the root. */
+function moveSourcesMenu(sources: Extract<DbNode, { kind: "source" }>[]): MenuItem {
+  const ids = sources.map((source) => source.source.id ?? "").filter(Boolean);
+  const folders = [...useDatabase.getState().folders].sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
+  return {
+    label: "Move to Folder",
+    icon: "folder",
+    submenu: [
+      ...folders.map((folder) => ({
+        label: folder.name,
+        icon: "db-folder",
+        run: () => void moveSourcesToFolder(ids, folder.id),
+      })),
+      ...(folders.length ? [sep] : []),
+      {
+        label: "New Folder…",
+        icon: "folder",
+        run: () => openDialog({ kind: "sourceFolder", folder: null, sources: ids }),
+      },
+      {
+        label: "Move to Root",
+        disabled: !folders.some((folder) => folder.sources.some((id) => ids.includes(id))),
+        run: () => void moveSourcesToFolder(ids, null),
+      },
+    ],
+  };
+}
+
 /** The short menu of several selected data sources: only the operations with batch semantics. */
 function batchSourceMenu(sources: Extract<DbNode, { kind: "source" }>[]): MenuItem[] {
   const count = sources.length;
@@ -127,6 +162,8 @@ function batchSourceMenu(sources: Extract<DbNode, { kind: "source" }>[]): MenuIt
       label: tx`Deactivate ${count} Data Sources`,
       disabled: !connected,
     }),
+    sep,
+    moveSourcesMenu(sources),
     sep,
     act("db.drop", sources[0]!, { label: tx`Remove ${count} Data Sources…` }),
   ];
@@ -156,7 +193,7 @@ export function nodeMenu(n: DbNode | null, selection: readonly DbNode[] = []): M
     submenu: [...extra, act("db.jumpToConsole", n)],
   });
 
-  if (driver === "jdbc" && n.kind !== "source") {
+  if (driver === "jdbc" && n.kind !== "source" && n.kind !== "sourceFolder") {
     return [
       newConsole,
       ...(t ? [act("db.editData", n)] : []),
@@ -167,8 +204,20 @@ export function nodeMenu(n: DbNode | null, selection: readonly DbNode[] = []): M
   }
 
   switch (n.kind) {
+    case "sourceFolder":
+      return [
+        act("db.refresh", n, { label: "Refresh", icon: "refresh" }),
+        sep,
+        act("db.renameSourceFolder", n, { label: "Rename Folder…", icon: "edit" }),
+        sep,
+        act("db.deleteSourceFolder", n, { label: "Delete Folder…", icon: "trash" }),
+      ];
     case "source": {
       const connected = connectedTargets(n.source.id ?? "").length > 0;
+      const selectedSources = selection.filter(
+        (node): node is Extract<DbNode, { kind: "source" }> => node.kind === "source",
+      );
+      const movable = selectedSources.length ? selectedSources : [n];
       return [
         act("db.properties", n, { label: "Properties" }),
         sep,
@@ -185,6 +234,7 @@ export function nodeMenu(n: DbNode | null, selection: readonly DbNode[] = []): M
           ],
         },
         { label: "Copy/Paste", submenu: [copyRef, act("db.duplicateSource", n)] },
+        moveSourcesMenu(movable),
         refresh,
         ...(n.source.driver === "snowflake" ? [act("db.introspect", n)] : []),
         act("db.disconnect", n, { disabled: !connected }),
