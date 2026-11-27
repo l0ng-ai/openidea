@@ -969,6 +969,64 @@ async fn bundler_path_aliases_resolve_below_tsconfig_paths() {
     tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
 }
 
+/// A tsserver plugin reporting `from <name>` at the start of every file.
+const DIAGNOSTIC_PLUGIN: &str = "module.exports = () => ({ create(info) {\n  const ls = info.languageService;\n  const proxy = Object.create(null);\n  for (const k of Object.keys(ls)) proxy[k] = (...a) => ls[k](...a);\n  proxy.getSemanticDiagnostics = (f) => [...ls.getSemanticDiagnostics(f), { file: ls.getProgram().getSourceFile(f), start: 0, length: 1, messageText: 'from ' + NAME, category: 1, code: 99001 }];\n  return proxy;\n} });\n";
+
+/// tsconfig `compilerOptions.plugins` load from the project's `node_modules` with vtsls' own
+/// TypeScript once the project folder is a plugin probe location (`pluginPaths`, #6336); one
+/// that isn't installed is skipped, and the IDE's global plugins keep loading. Set
+/// `OPENIDEA_TEST_NPM_TOOLS` to a dir with `npm i @vtsls/language-server typescript@5`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires @vtsls/language-server (OPENIDEA_TEST_NPM_TOOLS)"]
+async fn tsconfig_plugins_load_from_the_project_with_the_bundled_typescript() {
+    let tools = std::path::PathBuf::from(std::env::var("OPENIDEA_TEST_NPM_TOOLS").expect("OPENIDEA_TEST_NPM_TOOLS"));
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
+    // Outside the project: a probe location resolves plugins from its ancestors' node_modules too.
+    let ide = tempfile::tempdir().unwrap();
+    let ide = dunce::canonicalize(ide.path()).unwrap();
+    for (dir, name) in [(&root, "project-plugin"), (&ide, "global-plugin")] {
+        let dir = dir.join("node_modules").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("index.js"), DIAGNOSTIC_PLUGIN.replace("NAME", &format!("'{name}'"))).unwrap();
+    }
+    std::fs::write(root.join("package.json"), "{\"name\":\"app\",\"private\":true}").unwrap();
+    let plugins = r#"[{"name":"not-installed"},{"name":"project-plugin"}]"#;
+    std::fs::write(root.join("tsconfig.json"), format!("{{\"compilerOptions\":{{\"plugins\":{plugins}}}}}")).unwrap();
+    let main = root.join("main.ts");
+    let text = "export const n: number = 1;\n";
+    std::fs::write(&main, text).unwrap();
+    let global = serde_json::json!({ "vtsls": { "tsserver": { "globalPlugins": [{
+        "name": "global-plugin",
+        "location": ide.to_string_lossy(),
+        "enableForWorkspaceTypeScriptVersions": true,
+    }] } } });
+    let mut probing = global.clone();
+    probing["typescript"] = serde_json::json!({ "tsserver": { "pluginPaths": [root.to_string_lossy()] } });
+
+    for (init, project_plugin) in [(global, false), (probing, true)] {
+        let ts = lang("typescript", "ts", npm_server(&tools, "vtsls", "vtsls", Some(init)));
+        let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![ts]));
+        let doc = DocId::next();
+        mgr.did_open(doc, &main, &LanguageId::new("typescript"), 1, text);
+        let messages = retry("the global plugin's diagnostic", Duration::from_secs(90), || {
+            let found = events.lock().iter().rev().find_map(|e| match e {
+                IdeEvent::Diagnostics { path, items, .. } if path == &main => {
+                    let messages: Vec<String> = items.iter().map(|d| d.message.clone()).collect();
+                    messages.iter().any(|m| m == "from global-plugin").then_some(messages)
+                }
+                _ => None,
+            });
+            async move { found }
+        })
+        .await;
+        assert_eq!(messages.iter().any(|m| m == "from project-plugin"), project_plugin, "{messages:?}");
+        let crashed = matches!(last_status(&events, "vtsls"), Some((ServerStatus::Crashed, _)));
+        assert!(!crashed, "{:?}", last_status(&events, "vtsls"));
+        tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+    }
+}
+
 const NG_APP_TS: &str = "import { Component } from '@angular/core';\n\n@Component({\n  selector: 'app-root',\n  templateUrl: './app.html',\n})\nexport class App {\n  title = 'demo';\n}\n";
 const NG_APP_HTML: &str = "<h1>{{ title }}</h1>\n<p>{{ missing }}</p>\n";
 const NG_INLINE_TS: &str = "import { Component } from '@angular/core';\n\n@Component({\n  selector: 'app-inline',\n  template: `<b>{{ count }}</b>`,\n})\nexport class Inline {\n  count = 1;\n}\n";

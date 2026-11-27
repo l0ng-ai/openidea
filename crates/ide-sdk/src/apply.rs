@@ -1508,6 +1508,13 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     if name == "vtsls" && memory > 0 {
         merge_init_options(cfg, json!({ "typescript": { "tsserver": { "maxTsServerMemory": memory } } }));
     }
+    // The plugins the project's tsconfig declares (Next.js), for any TypeScript version (#6336).
+    if name == "vtsls" {
+        let dirs = crate::tsconfig_plugins::probe_dirs(server_root);
+        if !dirs.is_empty() {
+            merge_init_options(cfg, json!({ "typescript": { "tsserver": { "pluginPaths": dirs } } }));
+        }
+    }
     if name == "vtsls"
         && cfg.tsserver_project
         && !server_root.ancestors().any(|d| d.join("tsconfig.json").is_file() || d.join("jsconfig.json").is_file())
@@ -2687,6 +2694,24 @@ mod maven_linkage_tests {
         configure_server(&mut cfg, root, root, &s);
         let options = serde_json::to_value(cfg.initialization_options).unwrap();
         assert_eq!(options.pointer("/typescript/tsserver/maxTsServerMemory"), Some(&json!(6144)));
+    }
+
+    #[test]
+    fn vtsls_probes_the_folders_whose_tsconfig_declares_plugins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let plugin_paths = |root: &Path| {
+            let mut cfg = custom_server("vtsls", &LanguageServerSettings::default());
+            configure_server(&mut cfg, root, root, &Settings::default());
+            serde_json::to_value(cfg.initialization_options)
+                .unwrap()
+                .pointer("/typescript/tsserver/pluginPaths")
+                .cloned()
+        };
+        std::fs::write(root.join("tsconfig.json"), r#"{"compilerOptions":{"strict":true}}"#).unwrap();
+        assert_eq!(plugin_paths(root), None);
+        std::fs::write(root.join("tsconfig.json"), r#"{"compilerOptions":{"plugins":[{"name":"next"}]}}"#).unwrap();
+        assert_eq!(plugin_paths(root), Some(json!([root])));
     }
 
     #[test]
