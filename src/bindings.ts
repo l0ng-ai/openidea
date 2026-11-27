@@ -9212,7 +9212,7 @@ export type JetBrainsSettings = {
 	entries: string[],
 	/**
 	 *  Entry name → text, for the files OpenIDEA reads: `colors/*.icls`, `keymaps/*.xml`,
-	 *  `codestyles/*.xml` and some of `options/`.
+	 *  `codestyles/*.xml`, `templates/*.xml` and some of `options/`.
 	 */
 	files: { [key in string]: string },
 };
