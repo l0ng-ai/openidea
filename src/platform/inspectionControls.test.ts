@@ -13,19 +13,20 @@ vi.mock("./ipc", async (orig) => {
   return { ...actual, commands: { ...actual.commands, settingsSet } };
 });
 vi.mock("./actions", async (orig) => ({ ...(await orig<typeof import("./actions")>()), executeAction }));
-// The real input dialog pulls in the workbench UI; the rule row only needs its answer.
-vi.mock("@/workbench/inputDialogs", () => ({ promptInput }));
 
 const {
   disableInspection,
   intentionControls,
   patchOverride,
   problemControls,
+  provideRulePrompt,
   setInspectionOption,
   setInspectionSeverity,
 } = await import("./inspectionControls");
 const { diagnosticInspection, inspectionOption, SPELLING_INSPECTION } = await import("./inspections");
 const { useProject } = await import("./project");
+// The workbench's input dialog; the rule row only needs its answer.
+provideRulePrompt(promptInput);
 type ControlItem = Awaited<ReturnType<(typeof import("./inspectionControls"))["suppressedRuleControls"]>>[number];
 
 afterEach(() => {
@@ -137,6 +138,14 @@ describe("inspection controls", () => {
     // No rule of the producer is suppressed yet: only the add row below the separator.
     const rules = menu[2] as { submenu: ControlItem[] };
     expect(rules.submenu.map((r) => ("label" in r ? r.label : "-"))).toEqual(["-", "Add rule…"]);
+  });
+
+  it("offers no rule list for an inspection that reports no codes", () => {
+    const typo = { id: SPELLING_INSPECTION, name: "Typo" };
+    const labels = (items: ControlItem[]) => items.flatMap((i) => ("label" in i ? [i.label] : []));
+    expect(labels(intentionControls(typo))).not.toContain("Add rule…");
+    expect(labels(problemControls(typo))).not.toContain("Suppressed rules");
+    expect(labels(problemControls({ id: "lsp:ruff:F401", name: "ruff F401" }))).toContain("Suppressed rules");
   });
 
   it("manages the producer's suppressed rules from the menus", async () => {

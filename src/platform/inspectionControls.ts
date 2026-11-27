@@ -95,6 +95,13 @@ function inspectionBaseName(base: string): string {
   return builtin?.name ?? (base.startsWith("lsp:") ? base.slice(4) : base);
 }
 
+/**
+ * Whether `base` reports each code as an inspection of its own (a language server, a
+ * built-in such as PHPStan), so its codes can be turned off one by one.
+ */
+const splitByCode = (base: string) =>
+  base.startsWith("lsp:") || BUILTIN_INSPECTIONS.some((b) => b.id === base && b.byCode);
+
 /** The codes of `base` the profile in effect suppresses, sorted. */
 function suppressedCodes(base: string): string[] {
   const profile = inspectionProfile();
@@ -116,11 +123,28 @@ function toggleRule(id: string): Promise<void> {
   return updateInspection(id, (o) => (o.enabled === false ? { ...o, enabled: undefined } : { ...o, enabled: false }));
 }
 
+/** A one-line input dialog (the workbench's), for the code of a new rule. */
+export interface RulePrompt {
+  title: string;
+  label: string;
+  initial?: string;
+  hint: string;
+  validate: (value: string) => string | null;
+}
+
+let rulePrompt: ((options: RulePrompt) => Promise<string | null>) | null = null;
+
+/** The dialog Add rule… asks with; the workbench provides it. */
+export function provideRulePrompt(prompt: (options: RulePrompt) => Promise<string | null>): () => void {
+  rulePrompt = prompt;
+  return () => {
+    if (rulePrompt === prompt) rulePrompt = null;
+  };
+}
+
 /** Asks for a code and writes its rule to the profile in effect. */
 async function addSuppressedRule(base: string, initial?: string): Promise<void> {
-  // The input dialog lives above the platform layer; loaded only on use.
-  const { promptInput } = await import("@/workbench/inputDialogs");
-  const code = await promptInput({
+  const code = await rulePrompt?.({
     title: tx`Add rule for ${txPart(inspectionBaseName(base))}`,
     label: tx("Rule:"),
     initial,
@@ -145,6 +169,7 @@ async function addSuppressedRule(base: string, initial?: string): Promise<void> 
  */
 export function suppressedRuleControls(inspectionId: string): ControlItem[] {
   const { base, code } = baseInspectionOf(inspectionId);
+  if (!splitByCode(base)) return [];
   return [
     { kind: "separator" },
     ...suppressedCodes(base).map((c): ControlItem => ({
@@ -191,6 +216,7 @@ export function intentionControls(inspection: InspectionRef): ControlItem[] {
 /** Problems / Inspection Results context menu rows for a problem's inspection. */
 export function problemControls(inspection: InspectionRef): ControlItem[] {
   const current = inspectionProfile()[inspection.id]?.severity;
+  const rules = suppressedRuleControls(inspection.id);
   return [
     {
       id: "inspection.disable",
@@ -216,12 +242,7 @@ export function problemControls(inspection: InspectionRef): ControlItem[] {
         })),
       ],
     },
-    {
-      id: "inspection.rules",
-      label: "Suppressed rules",
-      icon: "filter",
-      submenu: suppressedRuleControls(inspection.id),
-    },
+    ...(rules.length ? [{ id: "inspection.rules", label: "Suppressed rules", icon: "filter", submenu: rules }] : []),
     {
       id: "inspection.edit",
       label: "Edit Inspection Profile Setting…",
