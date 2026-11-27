@@ -28,9 +28,9 @@ export function workspaceSourceResolver(
   type Matches = Map<string, WorkspaceSourceReference | null>;
   const exact: Matches = new Map();
   const folded: Matches = new Map();
-  const legacy = new Map<string, WorkspaceSourceReference | undefined>();
+  const reserved = new Map<string, WorkspaceSourceReference | undefined>();
   for (const side of ["left", "right"] as const) {
-    if (bindings?.legacySources?.[side]) legacy.set(side, undefined);
+    if (bindings?.legacySources?.[side]) reserved.set(side, undefined);
   }
   const put = (index: Matches, key: string, source: WorkspaceSourceReference) => {
     const previous = index.get(key);
@@ -42,18 +42,19 @@ export function workspaceSourceResolver(
       put(exact, name, source);
       put(folded, name.toLowerCase(), source);
     }
-    if (source.legacy) legacy.set(source.legacy, source);
+    if (source.legacy) reserved.set(source.legacy, source);
   }
   if (bindings?.sourceAliases) {
     const available = new Set(sources.map((source) => source.id));
     for (const [id, alias] of Object.entries(bindings.sourceAliases)) {
-      if (alias.trim() && !available.has(id)) folded.delete(alias.trim().toLowerCase());
+      if (alias.trim() && !available.has(id)) reserved.set(alias.trim().toLowerCase(), undefined);
     }
   }
   return (name: string, quoted = false) => {
-    if (quoted) return exact.get(name);
     const key = name.toLowerCase();
-    return legacy.has(key) ? legacy.get(key) : folded.get(key);
+    // A saved draft can quote a bound alias. Its owner must survive renames and deletion.
+    if (reserved.has(key)) return reserved.get(key);
+    return quoted ? exact.get(name) : folded.get(key);
   };
 }
 

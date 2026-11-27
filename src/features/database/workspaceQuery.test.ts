@@ -46,8 +46,17 @@ describe("saved workspace references", () => {
     });
     expect(resolve("left")).toBeUndefined();
     expect(resolve("CRM")).toBeUndefined();
-    expect(resolve("left", true)?.id).toBe("new");
-    expect(resolve("crm", true)?.id).toBe("fresh");
+    expect(resolve("left", true)).toBeUndefined();
+    expect(resolve("crm", true)).toBeUndefined();
+    expect(resolve("CRM", true)).toBeUndefined();
+  });
+  it("keeps quoted positional references bound when a source is renamed", () => {
+    const resolve = workspaceSourceResolver([
+      { id: "old", name: "Renamed", legacy: "left" },
+      { id: "new", name: "left", alias: "replacement" },
+    ]);
+    expect(resolve("left", true)?.id).toBe("old");
+    expect(resolve("replacement")?.id).toBe("new");
   });
   it("resolves quoted display names exactly and rejects ambiguous bare names", () => {
     const sources = [
