@@ -1229,9 +1229,27 @@ export const commands = {
 	navInheritance: () => typedError<ClassInheritance[], IdeError>(__TAURI_INVOKE("nav_inheritance")),
 	/**
 	 *  Rename of the pytest fixture at `pos`: its definition, every place that gets it and the
-	 *  uses of those parameters in their functions. Cancellable.
+	 *  reads of those parameters in their functions; or the parameter or fixture the new name
+	 *  would clash with. Cancellable.
 	 */
-	navPytestFixtureRename: (doc: DocId, pos: Pos, newName: string, request: RequestId) => typedError<WorkspaceEdit, IdeError>(__TAURI_INVOKE("nav_pytest_fixture_rename", { doc, pos, newName, request })),
+	navPytestFixtureRename: (doc: DocId, pos: Pos, newName: string, request: RequestId) => typedError<PytestFixtureRename, IdeError>(__TAURI_INVOKE("nav_pytest_fixture_rename", { doc, pos, newName, request })),
+	/**
+	 *  The pytest fixture at `pos` (its definition, a place asking for it, or a read of such a
+	 *  parameter in a function body), without searching the project: what Rename renames.
+	 */
+	navPytestFixtureTarget: (doc: DocId, pos: Pos) => typedError<{
+	name: string,
+	/**
+	 *  The name at the position: a definition, a place asking for the fixture, or a read of
+	 *  such a parameter in a function body.
+	 */
+	range: Range,
+	definition: Location,
+	/**  Defined in the project (not by a plugin or pytest): it may be renamed. */
+	inProject: boolean,
+	/**  Named by its function (no `name=`): Python code may refer to the function too. */
+	functionName: boolean,
+} | null, IdeError>(__TAURI_INVOKE("nav_pytest_fixture_target", { doc, pos })),
 	/**
 	 *  Find Usages of the pytest fixture at `pos` (its definition, or a place asking for it): every
 	 *  test and fixture parameter, `usefixtures` and `getfixturevalue` string that gets it.
@@ -1240,8 +1258,6 @@ export const commands = {
 	navPytestFixtureUsages: (doc: DocId, pos: Pos, request: RequestId) => typedError<{
 	name: string,
 	definition: Location,
-	/**  Defined in the project (not by a plugin or pytest): it may be renamed. */
-	inProject: boolean,
 	/**  Every place that gets this fixture: parameters, `usefixtures` and `getfixturevalue` strings. */
 	usages: Location[],
 } | null, IdeError>(__TAURI_INVOKE("nav_pytest_fixture_usages", { doc, pos, request })),
@@ -12310,11 +12326,36 @@ export type PytestFixtureReference = {
 	definition: Location | null,
 };
 
-export type PytestFixtureUsages = {
+export type PytestFixtureRename = {
+	edit: WorkspaceEdit,
+	/**
+	 *  A parameter or fixture that already has the new name, which the rename would clash with
+	 *  (the edit is empty then).
+	 */
+	clash: Location | null,
+};
+
+/**
+ *  The pytest fixture at a position, found without searching the project (for Rename to
+ *  decide what it renames before asking for the new name).
+ */
+export type PytestFixtureTarget = {
 	name: string,
+	/**
+	 *  The name at the position: a definition, a place asking for the fixture, or a read of
+	 *  such a parameter in a function body.
+	 */
+	range: Range,
 	definition: Location,
 	/**  Defined in the project (not by a plugin or pytest): it may be renamed. */
 	inProject: boolean,
+	/**  Named by its function (no `name=`): Python code may refer to the function too. */
+	functionName: boolean,
+};
+
+export type PytestFixtureUsages = {
+	name: string,
+	definition: Location,
 	/**  Every place that gets this fixture: parameters, `usefixtures` and `getfixturevalue` strings. */
 	usages: Location[],
 };

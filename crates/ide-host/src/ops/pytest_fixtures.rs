@@ -143,16 +143,30 @@ struct Definition {
     name: String,
     path: PathBuf,
     selection: Range,
+    /// Named by its function (no `name=`): renaming it renames the function.
+    function_name: bool,
+}
+
+impl Definition {
+    fn of(path: &Path, fixture: &ide_language::PytestFixture) -> Self {
+        Self {
+            name: fixture.name.clone(),
+            path: path.to_path_buf(),
+            selection: fixture.selection,
+            function_name: !fixture.by_argument,
+        }
+    }
 }
 
 /// Where pytest finds the fixture `u` asks for, seen from `layers`.
 fn definition_of(layers: &[Layer], u: &ide_language::PytestFixtureUse) -> Option<Definition> {
     let modules: Vec<&PytestModule> = layers.iter().map(|(_, m)| m.as_ref()).collect();
     let (l, f) = resolve_fixture(&modules, &u.name, u.class.as_deref(), u.in_fixture.as_deref() == Some(&u.name))?;
-    Some(Definition { name: u.name.clone(), path: layers[l].0.clone(), selection: modules[l].fixtures[f].selection })
+    Some(Definition::of(&layers[l].0, &modules[l].fixtures[f]))
 }
 
-/// The fixture at `pos` of `path`: the one defined there, or the one a test asks for there.
+/// The fixture at `pos` of `path` and the range of its name there: the one defined there, the
+/// one a test asks for there, or the one whose parameter a function body reads there.
 fn target_at(
     project: &Project,
     syntax: &Syntax,
@@ -160,13 +174,50 @@ fn target_at(
     path: &Path,
     own: &Arc<PytestModule>,
     pos: Pos,
-) -> Option<Definition> {
+) -> Option<(Definition, Range)> {
     if let Some(f) = own.definition_at(pos) {
         let fixture = &own.fixtures[f];
-        return Some(Definition { name: fixture.name.clone(), path: path.to_path_buf(), selection: fixture.selection });
+        return Some((Definition::of(path, fixture), fixture.selection));
     }
-    let usage = own.use_at(pos)?;
-    definition_of(&scope.layers(project, syntax, path, own.clone()), usage)
+    let (usage, range) = own.use_or_read_at(pos)?;
+    Some((definition_of(&scope.layers(project, syntax, path, own.clone()), usage)?, range))
+}
+
+/// The pytest fixture at a position, found without searching the project (for Rename to
+/// decide what it renames before asking for the new name).
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PytestFixtureTarget {
+    pub name: String,
+    /// The name at the position: a definition, a place asking for the fixture, or a read of
+    /// such a parameter in a function body.
+    pub range: Range,
+    pub definition: Location,
+    /// Defined in the project (not by a plugin or pytest): it may be renamed.
+    pub in_project: bool,
+    /// Named by its function (no `name=`): Python code may refer to the function too.
+    pub function_name: bool,
+}
+
+pub(crate) fn fixture_target(
+    project: &Project,
+    syntax: &Syntax,
+    path: &Path,
+    text: &str,
+    pos: Pos,
+) -> Option<PytestFixtureTarget> {
+    let own = Arc::new(syntax.pytest_module(&python(), text));
+    if own.definition_at(pos).is_none() && own.use_or_read_at(pos).is_none() {
+        return None;
+    }
+    let (target, range) = target_at(project, syntax, &Scope::new(project), path, &own, pos)?;
+    Some(PytestFixtureTarget {
+        name: target.name.clone(),
+        range,
+        in_project: is_project_file(project, &target.path),
+        function_name: target.function_name,
+        definition: Location { path: IpcPath::from(target.path), range: target.selection, uri: None },
+    })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -174,8 +225,6 @@ fn target_at(
 pub struct PytestFixtureUsages {
     pub name: String,
     pub definition: Location,
-    /// Defined in the project (not by a plugin or pytest): it may be renamed.
-    pub in_project: bool,
     /// Every place that gets this fixture: parameters, `usefixtures` and `getfixturevalue` strings.
     pub usages: Vec<Location>,
 }
@@ -185,7 +234,8 @@ struct Usage {
     use_: ide_language::PytestFixtureUse,
 }
 
-/// The fixture at `pos` of the Python document `path` / `text` and every place that gets it.
+/// The fixture at `pos` of the Python document `path` / `text` (a definition or a place asking
+/// for it) and every place that gets it.
 pub(crate) fn fixture_usages(
     project: &Project,
     syntax: &Syntax,
@@ -194,10 +244,14 @@ pub(crate) fn fixture_usages(
     pos: Pos,
     cancelled: &dyn Fn() -> bool,
 ) -> IdeResult<Option<PytestFixtureUsages>> {
-    let Some((target, usages)) = usages_of(project, syntax, path, text, pos, cancelled)? else { return Ok(None) };
+    let own = Arc::new(syntax.pytest_module(&python(), text));
+    // Find Usages on a read in a body stays the language server's (the parameter's uses).
+    if own.definition_at(pos).is_none() && own.use_at(pos).is_none() {
+        return Ok(None);
+    }
+    let Some((target, usages)) = usages_of(project, syntax, path, own, pos, cancelled)? else { return Ok(None) };
     Ok(Some(PytestFixtureUsages {
         name: target.name.clone(),
-        in_project: is_project_file(project, &target.path),
         definition: Location { path: IpcPath::from(target.path), range: target.selection, uri: None },
         usages: usages
             .into_iter()
@@ -206,8 +260,17 @@ pub(crate) fn fixture_usages(
     }))
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PytestFixtureRename {
+    pub edit: WorkspaceEdit,
+    /// A parameter or fixture that already has the new name, which the rename would clash with
+    /// (the edit is empty then).
+    pub clash: Option<Location>,
+}
+
 /// Rename of the fixture at `pos`: its definition (the `name=` string, else the function name),
-/// every place that gets it, and the uses of a renamed parameter in its function's body.
+/// every place that gets it, and the reads of a renamed parameter in its function's body.
 pub(crate) fn rename_fixture(
     project: &Project,
     syntax: &Syntax,
@@ -216,12 +279,16 @@ pub(crate) fn rename_fixture(
     pos: Pos,
     new_name: &str,
     cancelled: &dyn Fn() -> bool,
-) -> IdeResult<WorkspaceEdit> {
-    let Some((target, usages)) = usages_of(project, syntax, path, text, pos, cancelled)? else {
+) -> IdeResult<PytestFixtureRename> {
+    let own = Arc::new(syntax.pytest_module(&python(), text));
+    let Some((target, usages)) = usages_of(project, syntax, path, own, pos, cancelled)? else {
         return Err(IdeError::invalid("No pytest fixture here"));
     };
     if !is_project_file(project, &target.path) {
         return Err(IdeError::invalid("The fixture is defined outside the project"));
+    }
+    if let Some(clash) = clash(project, syntax, &target, &usages, new_name) {
+        return Ok(PytestFixtureRename { edit: WorkspaceEdit::default(), clash: Some(clash) });
     }
     let mut by_file: Vec<(PathBuf, Vec<TextEdit>)> = Vec::new();
     let mut edit = |file: &Path, range: Range| {
@@ -250,25 +317,42 @@ pub(crate) fn rename_fixture(
             FileEdit::Edit { path: IpcPath::from(p), edits, version: None }
         })
         .collect();
-    Ok(WorkspaceEdit { files, preconditions: Vec::new() })
+    Ok(PytestFixtureRename { edit: WorkspaceEdit { files, preconditions: Vec::new() }, clash: None })
+}
+
+/// Where `new_name` is already taken: another parameter of a function that gets the fixture,
+/// or another fixture of the definition's scope.
+fn clash(
+    project: &Project,
+    syntax: &Syntax,
+    target: &Definition,
+    usages: &[Usage],
+    new_name: &str,
+) -> Option<Location> {
+    for u in usages {
+        if u.use_.params.iter().any(|p| p == new_name) {
+            return Some(Location { path: IpcPath::from(u.path.clone()), range: u.use_.range, uri: None });
+        }
+    }
+    let module = module_of(project, syntax, &target.path)?;
+    let class = module.fixtures.iter().find(|f| f.selection == target.selection)?.class.clone();
+    let other = module.fixtures.iter().find(|f| f.name == new_name && f.class == class)?;
+    Some(Location { path: IpcPath::from(target.path.clone()), range: other.selection, uri: None })
 }
 
 fn usages_of(
     project: &Project,
     syntax: &Syntax,
     path: &Path,
-    text: &str,
+    own: Arc<PytestModule>,
     pos: Pos,
     cancelled: &dyn Fn() -> bool,
 ) -> IdeResult<Option<(Definition, Vec<Usage>)>> {
-    let own = Arc::new(syntax.pytest_module(&python(), text));
-    if own.definition_at(pos).is_none() && own.use_at(pos).is_none() {
-        return Ok(None);
-    }
     let scope = Scope::new(project);
-    let Some(target) = target_at(project, syntax, &scope, path, &own, pos) else { return Ok(None) };
-    let mut files = candidate_files(project, &target.path);
-    if !files.iter().any(|f| f == path) && path.starts_with(&project.root) {
+    let Some((target, _)) = target_at(project, syntax, &scope, path, &own, pos) else { return Ok(None) };
+    let patterns = test_file_patterns(&project.root);
+    let mut files = candidate_files(project, &target.path, &patterns);
+    if !files.iter().any(|f| f == path) && is_project_file(project, path) {
         files.push(path.to_path_buf());
     }
     let mut usages = Vec::new();
@@ -291,16 +375,48 @@ fn usages_of(
     Ok(Some((target, usages)))
 }
 
-/// The files that may get a fixture defined in `definition`: that test module alone, the test
-/// modules and `conftest.py` files below a `conftest.py`, all of the project's for a plugin's.
-fn candidate_files(project: &Project, definition: &Path) -> Vec<PathBuf> {
-    let in_project = is_project_file(project, definition);
-    let is_conftest = definition.file_name().is_some_and(|n| n == "conftest.py");
-    if in_project && !is_conftest {
-        return vec![definition.to_path_buf()];
+/// Where the files that may get a fixture are.
+#[derive(Debug, PartialEq, Eq)]
+enum Searched<'a> {
+    /// A test module's fixtures are its own.
+    Itself,
+    /// A `conftest.py`'s: the test files below its folder; any other module's (one that
+    /// `pytest_plugins` loads or a conftest imports) and a plugin's: the whole project's.
+    Below(&'a Path),
+}
+
+fn searched<'a>(root: &'a Path, definition: &'a Path, in_project: bool, patterns: &[String]) -> Searched<'a> {
+    let name = definition.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    match () {
+        _ if !in_project => Searched::Below(root),
+        _ if name == "conftest.py" => Searched::Below(definition.parent().unwrap_or(root)),
+        _ if is_test_module(name, patterns) => Searched::Itself,
+        _ => Searched::Below(root),
     }
-    let dir = if in_project { definition.parent().unwrap_or(&project.root) } else { &project.root };
-    let mut files = project.index.files_matching(dir, is_test_file, MAX_FILES).unwrap_or_default();
+}
+
+/// The files that may get a fixture defined in `definition`, from the file index (or the disk,
+/// while the index is still being built).
+fn candidate_files(project: &Project, definition: &Path, patterns: &[String]) -> Vec<PathBuf> {
+    let dir = match searched(&project.root, definition, is_project_file(project, definition), patterns) {
+        Searched::Itself => return vec![definition.to_path_buf()],
+        Searched::Below(dir) => dir,
+    };
+    let wanted = |rel: &Path| rel.file_name().and_then(|n| n.to_str()).is_some_and(|n| is_test_file(n, patterns));
+    let mut files = project.index.files_matching(dir, wanted, MAX_FILES).unwrap_or_else(|| {
+        ignore::WalkBuilder::new(dir)
+            .build()
+            .flatten()
+            .map(|e| e.into_path())
+            .filter(|p| p.strip_prefix(dir).is_ok_and(wanted))
+            .take(MAX_FILES)
+            .collect()
+    });
+    files.retain(|f| is_project_file(project, f));
+    // A module `pytest_plugins` loads is searched too (it may use its own fixtures).
+    if is_project_file(project, definition) && !files.iter().any(|f| f == definition) {
+        files.push(definition.to_path_buf());
+    }
     files.sort();
     files
 }
@@ -313,11 +429,74 @@ fn is_project_file(project: &Project, path: &Path) -> bool {
     path.starts_with(&project.root) && !path.components().any(|c| c.as_os_str() == "site-packages")
 }
 
-/// `test_*.py`, `*_test.py` and `conftest.py`: the files pytest collects or loads.
-fn is_test_file(rel: &Path) -> bool {
-    let Some(name) = rel.file_name().and_then(|n| n.to_str()) else { return false };
-    let Some(stem) = name.strip_suffix(".py") else { return false };
-    stem == "conftest" || stem.starts_with("test_") || stem.ends_with("_test")
+/// The test modules pytest collects (`python_files`, default `test_*.py` and `*_test.py`) and
+/// `conftest.py`, which it loads.
+fn is_test_file(name: &str, patterns: &[String]) -> bool {
+    name == "conftest.py" || is_test_module(name, patterns)
+}
+
+fn is_test_module(name: &str, patterns: &[String]) -> bool {
+    patterns.iter().any(|p| glob_match(p, name))
+}
+
+/// `python_files` from the project's pytest configuration (`pytest.ini`, `pyproject.toml`,
+/// `tox.ini`, `setup.cfg`, the first that has a pytest section), else pytest's default.
+fn test_file_patterns(root: &Path) -> Vec<String> {
+    let read = |name: &str| std::fs::read_to_string(root.join(name)).ok();
+    let from_ini = |text: String, section: &str| -> Option<Option<String>> {
+        let mut inside = false;
+        let mut found = None;
+        for line in text.lines() {
+            let line = line.trim();
+            if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+                inside = name == section;
+                if inside {
+                    found = Some(None);
+                }
+            } else if inside
+                && let Some((key, value)) = line.split_once('=')
+                && key.trim() == "python_files"
+            {
+                found = Some(Some(value.trim().to_owned()));
+            }
+        }
+        found
+    };
+    let from_toml = |text: String| -> Option<Option<String>> {
+        let table = text.parse::<toml::Table>().ok()?;
+        let options = table.get("tool")?.get("pytest")?.get("ini_options")?;
+        Some(match options.get("python_files") {
+            Some(toml::Value::String(s)) => Some(s.clone()),
+            Some(toml::Value::Array(a)) => Some(a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" ")),
+            _ => None,
+        })
+    };
+    // pytest uses the first file with a pytest section, in this order.
+    let configured = read("pytest.ini")
+        .and_then(|t| from_ini(t, "pytest"))
+        .or_else(|| read("pyproject.toml").and_then(from_toml))
+        .or_else(|| read("tox.ini").and_then(|t| from_ini(t, "pytest")))
+        .or_else(|| read("setup.cfg").and_then(|t| from_ini(t, "tool:pytest")))
+        .flatten();
+    match configured {
+        Some(value) if !value.trim().is_empty() => value.split_whitespace().map(str::to_owned).collect(),
+        _ => vec!["test_*.py".to_owned(), "*_test.py".to_owned()],
+    }
+}
+
+/// `fnmatch` with `*` and `?`, as pytest matches `python_files` against a file name.
+fn glob_match(pattern: &str, name: &str) -> bool {
+    fn go(p: &[char], n: &[char]) -> bool {
+        match p.split_first() {
+            None => n.is_empty(),
+            Some(('*', rest)) => (0..=n.len()).any(|i| go(rest, &n[i..])),
+            Some(('?', rest)) => !n.is_empty() && go(rest, &n[1..]),
+            Some((c, rest)) => n.first() == Some(c) && go(rest, &n[1..]),
+        }
+    }
+    let p: Vec<char> = pattern.chars().collect();
+    let n: Vec<char> = name.chars().collect();
+    go(&p, &n)
 }
 
 /// The `site-packages` of the project's interpreter: its virtualenv's, else its install prefix's.
@@ -432,15 +611,48 @@ mod tests {
 
     #[test]
     fn test_files_are_the_ones_pytest_loads() {
-        for (rel, expected) in [
-            ("tests/test_a.py", true),
+        let default = vec!["test_*.py".to_owned(), "*_test.py".to_owned()];
+        for (name, expected) in [
+            ("test_a.py", true),
             ("a_test.py", true),
-            ("pkg/conftest.py", true),
-            ("pkg/helpers.py", false),
-            ("test_data.json", false),
+            ("conftest.py", true),
+            ("helpers.py", false),
+            ("test_a.json", false),
         ] {
-            assert_eq!(is_test_file(Path::new(rel)), expected, "{rel}");
+            assert_eq!(is_test_file(name, &default), expected, "{name}");
         }
+        let custom = vec!["check_*.py".to_owned(), "tests.py".to_owned()];
+        assert!(is_test_file("check_cli.py", &custom) && is_test_file("tests.py", &custom));
+        assert!(!is_test_file("test_a.py", &custom));
+    }
+
+    #[test]
+    fn reads_python_files_from_the_first_pytest_configuration() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(test_file_patterns(dir.path()), ["test_*.py", "*_test.py"]);
+        std::fs::write(dir.path().join("setup.cfg"), "[tool:pytest]\npython_files = check_*.py\n").unwrap();
+        assert_eq!(test_file_patterns(dir.path()), ["check_*.py"]);
+        std::fs::write(
+            dir.path().join("pyproject.toml"),
+            "[tool.pytest.ini_options]\npython_files = [\"tests.py\", \"t_*.py\"]\n",
+        )
+        .unwrap();
+        assert_eq!(test_file_patterns(dir.path()), ["tests.py", "t_*.py"]);
+        // A pytest.ini section without python_files means pytest's default, even with the others.
+        std::fs::write(dir.path().join("pytest.ini"), "[pytest]\naddopts = -q\n").unwrap();
+        assert_eq!(test_file_patterns(dir.path()), ["test_*.py", "*_test.py"]);
+    }
+
+    #[test]
+    fn a_fixture_is_searched_where_pytest_lets_tests_see_it() {
+        let root = Path::new("/p");
+        let default = vec!["test_*.py".to_owned(), "*_test.py".to_owned()];
+        let at = |path: &'static str, in_project: bool| searched(root, Path::new(path), in_project, &default);
+        assert_eq!(at("/p/tests/test_a.py", true), Searched::Itself);
+        assert_eq!(at("/p/tests/conftest.py", true), Searched::Below(Path::new("/p/tests")));
+        // A module that `pytest_plugins` loads, or that a conftest imports.
+        assert_eq!(at("/p/tests/fixtures.py", true), Searched::Below(root));
+        assert_eq!(at("/p/.venv/lib/python3.12/site-packages/_pytest/tmpdir.py", false), Searched::Below(root));
     }
 
     #[test]
