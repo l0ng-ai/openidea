@@ -4317,5 +4317,11 @@
   "calc.py": "calc.py",
   "Files, or a class or function in one: calc.py::Stock.take": "Files, or a class or function in one: calc.py::Stock.take",
   "e.g. -o ELLIPSIS -o NORMALIZE_WHITESPACE": "e.g. -o ELLIPSIS -o NORMALIZE_WHITESPACE",
-  "Run doctests": "Run doctests"
+  "Run doctests": "Run doctests",
+  "Cannot read the file as a table": "Cannot read the file as a table",
+  "First row is header": "First row is header",
+  "Delimiter: {delimiter}": "Delimiter: {delimiter}",
+  "Table view of the file": "Table view of the file",
+  "Data": "Data",
+  "CSV editor view": "CSV editor view"
 }

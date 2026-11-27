@@ -10820,5 +10820,11 @@
   "Files, or a class or function in one: calc.py::Stock.take": "文件，或文件中的某个类或函数：calc.py::Stock.take",
   "e.g. -o ELLIPSIS -o NORMALIZE_WHITESPACE": "例如 -o ELLIPSIS -o NORMALIZE_WHITESPACE",
   "Run doctests": "运行 doctest",
-  "Select a Docker server for '{0}' before running it": "运行“{0}”前请选择 Docker 服务器"
+  "Select a Docker server for '{0}' before running it": "运行“{0}”前请选择 Docker 服务器",
+  "Cannot read the file as a table": "无法将文件读取为表格",
+  "First row is header": "首行为标题",
+  "Delimiter: {delimiter}": "分隔符：{delimiter}",
+  "Table view of the file": "文件的表格视图",
+  "Data": "数据",
+  "CSV editor view": "CSV 编辑器视图"
 }
