@@ -10893,5 +10893,8 @@
   "cProfile": "cProfile",
   "py-spy": "py-spy",
   "Automatic uses py-spy where it is installed and can sample without root (not on macOS), else cProfile from the standard library.": "自动：已安装 py-spy 且无需 root 即可采样时（macOS 除外）使用 py-spy，否则使用标准库的 cProfile。",
-  "No safe lint fixes to apply": "没有可应用的安全 lint 修复"
+  "No safe lint fixes to apply": "没有可应用的安全 lint 修复",
+  "Run manage.py Task…": "运行 manage.py 任务…",
+  "No manage.py in this project": "此项目中没有 manage.py",
+  "manage.py Tasks": "manage.py 任务"
 }

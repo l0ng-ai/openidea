@@ -4367,5 +4367,8 @@
   "cProfile": "cProfile",
   "py-spy": "py-spy",
   "Automatic uses py-spy where it is installed and can sample without root (not on macOS), else cProfile from the standard library.": "Automatic uses py-spy where it is installed and can sample without root (not on macOS), else cProfile from the standard library.",
-  "No safe lint fixes to apply": "No safe lint fixes to apply"
+  "No safe lint fixes to apply": "No safe lint fixes to apply",
+  "Run manage.py Task…": "Run manage.py Task…",
+  "No manage.py in this project": "No manage.py in this project",
+  "manage.py Tasks": "manage.py Tasks"
 }
