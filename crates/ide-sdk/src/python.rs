@@ -635,43 +635,42 @@ pub fn install_package(
     stream(&program, &args, dir.as_ref().map(|d| d.path()), &pip_env(python), cancel, on_line).map(|_| ())
 }
 
-/// Run by the interpreter itself, so markers and PEP 440 specifiers are judged as pip would:
-/// prints, per requirement of `argv[1]` (a JSON list), `null` when satisfied or not applicable
-/// there, else `{"installed": <version or null>}`.
-const CHECK_REQUIREMENTS: &str = r#"
-import json, re, sys
-try:
-    from packaging.requirements import Requirement
-except Exception:
-    try:
-        from pip._vendor.packaging.requirements import Requirement
-    except Exception:
-        Requirement = None
+/// Prints the interpreter's installed distributions (PEP 503 names) and its PEP 508 marker
+/// environment, with the standard library only: uv's environments have no pip or packaging.
+const ENVIRONMENT_SCRIPT: &str = r#"
+import json, os, platform, re, sys
 from importlib import metadata
-norm = lambda n: re.sub(r"[-_.]+", "-", n).lower()
+def fmt(v):
+    s = "%d.%d.%d" % (v.major, v.minor, v.micro)
+    return s if v.releaselevel == "final" else s + v.releaselevel[0] + str(v.serial)
 installed = {}
 for d in metadata.distributions():
-    name = d.metadata["Name"]
-    if name:
-        installed.setdefault(norm(name), d.version)
-out = []
-for line in json.loads(sys.argv[1]):
-    try:
-        if Requirement:
-            r = Requirement(line)
-            name, spec, applies = r.name, r.specifier, r.marker is None or r.marker.evaluate({"extra": ""})
-        else:
-            # Without packaging only names are compared; a marker can't be judged.
-            name, spec, applies = re.match(r"[A-Za-z0-9._-]+", line).group(0), None, ";" not in line
-        version = installed.get(norm(name))
-        if not applies or (version is not None and (spec is None or spec.contains(version, prereleases=True))):
-            out.append(None)
-        else:
-            out.append({"installed": version})
-    except Exception:
-        out.append(None)
-print(json.dumps(out))
+    # A broken install can lack its name or version.
+    name, version = d.metadata["Name"], d.version
+    if name and version:
+        installed.setdefault(re.sub(r"[-_.]+", "-", name).lower(), version)
+env = {
+    "implementation_name": sys.implementation.name,
+    "implementation_version": fmt(sys.implementation.version),
+    "os_name": os.name,
+    "platform_machine": platform.machine(),
+    "platform_python_implementation": platform.python_implementation(),
+    "platform_release": platform.release(),
+    "platform_system": platform.system(),
+    "platform_version": platform.version(),
+    # A development build says "3.14.0a1+", which isn't a PEP 440 version.
+    "python_full_version": platform.python_version().rstrip("+"),
+    "python_version": ".".join(platform.python_version_tuple()[:2]),
+    "sys_platform": sys.platform,
+}
+print(json.dumps({"installed": installed, "env": env}))
 "#;
+
+#[derive(Deserialize)]
+pub(crate) struct Environment {
+    pub installed: std::collections::HashMap<String, String>,
+    pub env: std::collections::HashMap<String, String>,
+}
 
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct Unsatisfied {
@@ -681,34 +680,87 @@ pub struct Unsatisfied {
 
 /// Which of `requirements` (PEP 508 strings) `python` doesn't satisfy, in order;
 /// `None` for satisfied ones, for ones whose marker excludes this interpreter, and
-/// for ones it can't parse.
+/// for ones that don't parse.
 pub fn unsatisfied_requirements(
     python: &Path,
     requirements: &[&str],
     cancel: &CancellationToken,
 ) -> IdeResult<Vec<Option<Unsatisfied>>> {
-    let list = serde_json::to_string(requirements).map_err(|e| IdeError::internal(e.to_string()))?;
     let dir = neutral_dir().ok_or_else(|| IdeError::internal("no temporary directory"))?;
-    let out = query_in_cancellable(
-        python,
-        &["-c", CHECK_REQUIREMENTS, &list],
-        dir.path(),
-        &[],
-        Duration::from_secs(20),
-        cancel,
-    );
+    let out =
+        query_in_cancellable(python, &["-c", ENVIRONMENT_SCRIPT], dir.path(), &[], Duration::from_secs(20), cancel);
     if cancel.is_cancelled() {
         return Err(IdeError::cancelled());
     }
     let out =
         out.ok_or_else(|| IdeError::unavailable(format!("cannot check requirements with {}", python.display())))?;
-    let json = out.lines().rev().find(|l| l.starts_with('[')).unwrap_or("");
-    let result: Vec<Option<Unsatisfied>> =
+    let json = out.lines().rev().find(|l| l.starts_with('{')).unwrap_or("");
+    let found: Environment =
         serde_json::from_str(json).map_err(|e| IdeError::internal(format!("unexpected output: {e}")))?;
-    if result.len() != requirements.len() {
-        return Err(IdeError::internal("unexpected output: wrong number of results"));
+    Ok(judge(&found, requirements))
+}
+
+pub(crate) fn judge(found: &Environment, requirements: &[&str]) -> Vec<Option<Unsatisfied>> {
+    use pep508_rs::pep440_rs::{Version, VersionSpecifiers};
+    use pep508_rs::{MarkerEnvironment, MarkerEnvironmentBuilder, Requirement, VersionOrUrl};
+    use std::str::FromStr;
+    let var = |k: &str| found.env.get(k).map(String::as_str).unwrap_or_default();
+    let env = MarkerEnvironment::try_from(MarkerEnvironmentBuilder {
+        implementation_name: var("implementation_name"),
+        implementation_version: var("implementation_version"),
+        os_name: var("os_name"),
+        platform_machine: var("platform_machine"),
+        platform_python_implementation: var("platform_python_implementation"),
+        platform_release: var("platform_release"),
+        platform_system: var("platform_system"),
+        platform_version: var("platform_version"),
+        python_full_version: var("python_full_version"),
+        python_version: var("python_version"),
+        sys_platform: var("sys_platform"),
+    })
+    .ok();
+    requirements
+        .iter()
+        .map(|text| {
+            let requirement = Requirement::<pep508_rs::VerbatimUrl>::from_str(text).ok()?;
+            // An unknown environment (an odd version string) can't rule a marker out.
+            if env.as_ref().is_some_and(|env| !requirement.marker.evaluate(env, &[])) {
+                return None;
+            }
+            let Some(installed) = found.installed.get(requirement.name.as_ref()) else {
+                return Some(Unsatisfied { installed: None });
+            };
+            let specifiers: Option<&VersionSpecifiers> = match &requirement.version_or_url {
+                Some(VersionOrUrl::VersionSpecifier(specifiers)) => Some(specifiers),
+                _ => None,
+            };
+            // A version pip itself can't parse (legacy) isn't judged.
+            let version = Version::from_str(installed).ok()?;
+            specifiers
+                .is_some_and(|s| !s.contains(&version))
+                .then(|| Unsatisfied { installed: Some(installed.clone()) })
+        })
+        .collect()
+}
+
+/// Installs the lines of a requirements file (`-r`): global options such as `--index-url`
+/// or `-c constraints.txt` (paths absolute) and requirement lines with their `--hash`es.
+pub fn install_requirements(
+    python: &Path,
+    lines: &[String],
+    cancel: &CancellationToken,
+    on_line: &dyn Fn(String),
+) -> IdeResult<()> {
+    if lines.iter().any(|l| l.contains('\n')) {
+        return Err(IdeError::invalid("one requirement or option per line"));
     }
-    Ok(result)
+    let installer = installer(python)?;
+    let dir = neutral_dir().ok_or_else(|| IdeError::internal("no temporary directory"))?;
+    let file = dir.path().join("requirements.txt");
+    std::fs::write(&file, lines.join("\n") + "\n")?;
+    let file = file.to_string_lossy().into_owned();
+    let (program, args) = pip_command(python, &installer, &["install", "-r", &file]);
+    stream(&program, &args, Some(dir.path()), &pip_env(python), cancel, on_line).map(|_| ())
 }
 
 pub fn uninstall_package(

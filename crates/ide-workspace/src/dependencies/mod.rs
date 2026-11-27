@@ -58,6 +58,8 @@ pub struct UnsatisfiedRequirement {
     pub dependency: ManifestDependency,
     /// The installed version that misses the specifier; `None` when not installed.
     pub installed: Option<String>,
+    /// The requirements-file line that installs it; `None` when the IDE can't install it faithfully.
+    pub install: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -66,4 +68,6 @@ pub struct PythonRequirements {
     /// The interpreter checked, which installs go to.
     pub python: ide_core::IpcPath,
     pub unsatisfied: Vec<UnsatisfiedRequirement>,
+    /// Lines every install from this manifest starts with (its indexes, constraints, hash mode).
+    pub options: Vec<String>,
 }

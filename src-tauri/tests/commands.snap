@@ -655,6 +655,7 @@ sdk_project_libraries                        trusted            project_host bin
 sdk_python_create_venv                       outside_restricted project_host bindings async
 sdk_python_effective                         trusted            project_host bindings async
 sdk_python_hatch_envs                        outside_restricted project_host bindings async
+sdk_python_install_requirements              outside_restricted project_host bindings async
 sdk_python_interpreter                       outside_restricted project_host bindings async
 sdk_python_package_index                     outside_restricted project_host bindings async
 sdk_python_packages                          outside_restricted project_host bindings async
