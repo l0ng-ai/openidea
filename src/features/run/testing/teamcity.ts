@@ -33,7 +33,7 @@ export function serviceMessage(line: string): ServiceMessage | null {
  * Console text of a run reporting through service messages: the messages feed the test tree. With
  * `testOutput`, a test's own stdout / stderr (`testStdOut`, `testStdErr`) and its failure are shown in
  * the console too, so the run reads like the program's output with no test selected (OpenIDEA's JUnit
- * runner and the Gradle init script report them only through these messages).
+ * runner and the Gradle init script report them only through these messages), `testStdErr` as stderr.
  */
 export class TeamcityOutput extends TestStdout {
   constructor(feedLine: (line: string) => void, testOutput = false) {
@@ -41,7 +41,8 @@ export class TeamcityOutput extends TestStdout {
       if (!MESSAGE_RE.test(line)) return line + "\n";
       if (!testOutput) return "";
       const message = serviceMessage(line);
-      if (message?.kind === "testStdOut" || message?.kind === "testStdErr") return message.attrs.out ?? "";
+      if (message?.kind === "testStdOut") return message.attrs.out ?? "";
+      if (message?.kind === "testStdErr") return { kind: "stderr", text: message.attrs.out ?? "" };
       if (message?.kind !== "testFailed") return "";
       const failure = (message.attrs.details || message.attrs.message || "").replace(/\n$/, "");
       return failure ? failure + "\n" : "";

@@ -237,3 +237,17 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* The New Project window */
+.windowBody {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.windowBody .form {
+  padding-top: 0;
+}
+.windowBody .progress {
+  height: 100%;
+  padding-top: 0;
+}

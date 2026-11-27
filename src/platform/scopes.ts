@@ -149,12 +149,14 @@ export interface ScopeContext {
   ownFolders?: readonly string[];
 }
 
+const isAbsolute = (path: string) => path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);
+
 /** The innermost module holding the file (`rel` in the project, `path` absolute). */
 function moduleOf(rel: string, path: string, modules: readonly ProjectModule[]): ProjectModule | undefined {
   let best: ProjectModule | undefined;
   for (const m of modules) {
-    // Workspace members have absolute paths.
-    const at = m.path.startsWith("/") ? path : rel;
+    // Workspace members and external modules have absolute paths.
+    const at = isAbsolute(m.path) ? path : rel;
     const holds = m.path === "" || at === m.path || at.startsWith(`${m.path}/`);
     if (holds && (!best || m.path.length > best.path.length)) best = m;
   }

@@ -19,7 +19,7 @@ import {
   type SqlWordCase,
 } from "@/platform/editorSettings";
 import { NATIVE_TO_ASCII_ACTION } from "../../nativeToAscii";
-import { FormGroup, NumberInput, Row, Select, Toggle } from "../../components/Form";
+import { FormGroup, GlobListEditor, NumberInput, Row, Select, Toggle } from "../../components/Form";
 import { useSetting } from "../../components/context";
 import type { PageSpec } from "../spec";
 import {
@@ -165,6 +165,11 @@ const IMPORTS = {
 
 const SPACES = { id: "spaces", label: "Spaces", keywords: ["Space", "Around binary operators", "Within braces"] };
 const PUNCTUATION = { id: "punctuation", label: "Punctuation", keywords: ["Semicolons", "Quotes"] };
+const TS_IMPORTS = {
+  id: "imports",
+  label: "Imports",
+  keywords: ["Import paths", "Import path ending", "Do not auto-import from", "Do not auto-import specifiers matching"],
+};
 
 /** The TypeScript server's code style: JavaScript (and JSX) and TypeScript (and TSX). */
 const TS_STYLE_LANGUAGES = new Set(["javascript", "typescript"]);
@@ -205,6 +210,20 @@ const QUOTES: SelectOption<NonNullable<LanguageCodeStyle["quotes"]>>[] = [
   { value: "auto", label: "As in the file" },
   { value: "single", label: "Single quotes" },
   { value: "double", label: "Double quotes" },
+];
+
+const IMPORT_PATHS: SelectOption<NonNullable<LanguageCodeStyle["importModuleSpecifier"]>>[] = [
+  { value: "shortest", label: "Shortest" },
+  { value: "relative", label: "Relative" },
+  { value: "non-relative", label: "Non-relative (paths, baseUrl)" },
+  { value: "project-relative", label: "Relative within the project" },
+];
+
+const IMPORT_ENDINGS: SelectOption<NonNullable<LanguageCodeStyle["importModuleSpecifierEnding"]>>[] = [
+  { value: "auto", label: "Automatic" },
+  { value: "minimal", label: "Minimal (./components)" },
+  { value: "index", label: "Index file (./components/index)" },
+  { value: "js", label: "Extension (./components/index.js)" },
 ];
 
 const WORD_CASES: SelectOption<SqlWordCase>[] = [
@@ -373,6 +392,53 @@ function LanguageStyle({ lang }: { lang: LanguageInfo }) {
                 options={QUOTES}
                 onChange={(quotes) => set({ quotes })}
                 aria-label="Quotes"
+              />
+            </Row>
+          </FormGroup>
+        ),
+      },
+      {
+        ...TS_IMPORTS,
+        content: (
+          <FormGroup>
+            <Row label="Import paths" hint="For the imports the TypeScript server adds.">
+              <Select
+                value={own.importModuleSpecifier ?? "shortest"}
+                options={IMPORT_PATHS}
+                onChange={(importModuleSpecifier) => set({ importModuleSpecifier })}
+                aria-label="Import paths"
+              />
+            </Row>
+            <Row label="Import path ending">
+              <Select
+                value={own.importModuleSpecifierEnding ?? "auto"}
+                options={IMPORT_ENDINGS}
+                onChange={(importModuleSpecifierEnding) => set({ importModuleSpecifierEnding })}
+                aria-label="Import path ending"
+              />
+            </Row>
+            <Row label="Do not auto-import from" stacked hint="Files matching these globs, e.g. **/index.ts.">
+              <GlobListEditor
+                value={own.autoImportFileExcludePatterns ?? []}
+                onChange={(autoImportFileExcludePatterns) => set({ autoImportFileExcludePatterns })}
+                placeholder="**/index.ts"
+                aria-label="Do not auto-import from"
+                fullWidth
+              />
+            </Row>
+            <Row
+              label="Do not auto-import specifiers matching"
+              stacked
+              hint="Regular expressions for the import path, e.g. ^node: or /index$."
+            >
+              <GlobListEditor
+                value={own.autoImportSpecifierExcludeRegexes ?? []}
+                onChange={(autoImportSpecifierExcludeRegexes) => set({ autoImportSpecifierExcludeRegexes })}
+                placeholder="/index$"
+                emptyText="No expressions"
+                itemLabel="Expression"
+                aria-label="Do not auto-import specifiers matching"
+                fullWidth
               />
             </Row>
           </FormGroup>
@@ -553,7 +619,7 @@ export async function codeStyleLanguagePages(): Promise<PageSpec[]> {
         ...(lang.id === "php" ? ["Alignment", "Align key-value pairs", "Align consecutive assignments"] : []),
         ...(lang.id === "sql" ? [CASE.label, ...CASE.keywords, "Do not change"] : []),
         ...(TS_STYLE_LANGUAGES.has(lang.id)
-          ? [SPACES, PUNCTUATION].flatMap(({ label, keywords }) => [label, ...keywords])
+          ? [SPACES, PUNCTUATION, TS_IMPORTS].flatMap(({ label, keywords }) => [label, ...keywords])
           : []),
       ],
       component: () => <LanguageStyle lang={lang} />,

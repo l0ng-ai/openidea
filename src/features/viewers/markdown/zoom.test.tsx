@@ -3,7 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { _addEditor, _removeEditor, editorContributions, type EditorDocContext } from "@/editor/api";
+import {
+  _addEditor,
+  _removeEditor,
+  _setFocusedCellEditor,
+  editorContributions,
+  type EditorDocContext,
+} from "@/editor/api";
 import { fontZoom, resetAllEditorsFontZoom, setFontZoom } from "@/editor/core/cm/prefs";
 import { fontExtension } from "@/editor/core/cm/setup";
 import type { EditorSlot } from "@/editor/core/model/slot";
@@ -116,6 +122,72 @@ describe("editor font size actions", () => {
     await executeAction("editor.resetFontSize");
     expect(zoom(ts)).toBe(0);
     expect(zoom(md)).toBe(0);
+  });
+
+  it("zooms every open editor with Increase / Decrease Font Size in All Editors, whatever wheelZoomScope says", async () => {
+    const md = open(mdCtx);
+    const ts = open(tsCtx);
+    activate(md);
+    await executeAction("editor.increaseFontSize");
+    await executeAction("editor.increaseFontSize");
+    expect(zoom(md)).toBe(2);
+    expect(zoom(ts)).toBe(0);
+
+    // From the active editor's size, like ⌘/Ctrl+wheel with the "All editors" scope.
+    await executeAction("editor.increaseFontSizeAll");
+    expect(zoom(md)).toBe(3);
+    expect(zoom(ts)).toBe(3);
+    activate(ts);
+    await executeAction("editor.decreaseFontSizeAll");
+    expect(zoom(ts)).toBe(2);
+    expect(zoom(md)).toBe(2);
+    // Editors opened afterwards start from it; Increase Font Size still zooms only the active one.
+    const later = open({ ...tsCtx, doc: 3, path: "/p/b.ts" });
+    expect(zoom(later)).toBe(2);
+    await executeAction("editor.increaseFontSize");
+    expect(zoom(ts)).toBe(3);
+    expect(zoom(md)).toBe(2);
+
+    await executeAction("editor.resetFontSizeAll");
+    expect([zoom(md), zoom(ts), zoom(later)]).toEqual([0, 0, 0]);
+  });
+
+  it("steps all editors from the shared size when no editor is active and stops at -6", async () => {
+    const md = open(mdCtx);
+    const ts = open(tsCtx);
+    md.dispatch({ effects: setFontZoom.of(4) });
+    activeSlot = null;
+    await executeAction("editor.increaseFontSizeAll");
+    expect(zoom(md)).toBe(1);
+    expect(zoom(ts)).toBe(1);
+    expect(zoom(open({ ...tsCtx, doc: 3, path: "/p/b.ts" }))).toBe(1);
+
+    md.dispatch({ effects: setFontZoom.of(-5) });
+    activate(md);
+    await executeAction("editor.decreaseFontSizeAll");
+    expect(zoom(md)).toBe(-6);
+    expect(zoom(ts)).toBe(-6);
+    // At the limit the other editors still come to the same size.
+    ts.dispatch({ effects: setFontZoom.of(1) });
+    await executeAction("editor.decreaseFontSizeAll");
+    expect(zoom(md)).toBe(-6);
+    expect(zoom(ts)).toBe(-6);
+  });
+
+  it("steps from the focused notebook cell, which is not in the editor registry", async () => {
+    const md = open(mdCtx);
+    activate(md);
+    const cell = new EditorView({ state: EditorState.create({ extensions: [fontZoom] }) });
+    views.push(cell);
+    cell.dispatch({ effects: setFontZoom.of(5) });
+    _setFocusedCellEditor(cell);
+    try {
+      await executeAction("editor.increaseFontSizeAll");
+      expect(zoom(cell)).toBe(6);
+      expect(zoom(md)).toBe(6);
+    } finally {
+      _setFocusedCellEditor(null);
+    }
   });
 
   it("scales only the focused Markdown preview tab (keyboard and ⌘/Ctrl+wheel) and resets with it", async () => {
@@ -410,16 +482,21 @@ describe("editor font size actions", () => {
   });
 
   it("leaves ⌘= / ⌘- to fold and unfold", () => {
-    for (const km of [intellijMacos, intellijWindows]) {
-      expect(km["editor.increaseFontSize"]).toEqual(["Alt+Shift+."]);
-      expect(km["editor.decreaseFontSize"]).toEqual(["Alt+Shift+,"]);
-    }
+    expect(intellijWindows["editor.increaseFontSizeAll"]).toEqual(["Alt+Shift+."]);
+    expect(intellijWindows["editor.decreaseFontSizeAll"]).toEqual(["Alt+Shift+,"]);
+    expect(intellijMacos["editor.increaseFontSizeAll"]).toEqual(["Ctrl+Shift+."]);
+    expect(intellijMacos["editor.decreaseFontSizeAll"]).toEqual(["Ctrl+Shift+,"]);
     expect(intellijMacos["code.fold"]).toEqual(["Meta+-"]);
     expect(intellijMacos["code.unfold"]).toEqual(["Meta+="]);
     expect(intellijWindows["code.fold"]).toEqual(["Ctrl+-"]);
     expect(intellijWindows["code.unfold"]).toEqual(["Ctrl+="]);
     for (const km of [intellijMacos, intellijWindows, vscodeMacos]) {
-      const keys = [...(km["editor.increaseFontSize"] ?? []), ...(km["editor.decreaseFontSize"] ?? [])];
+      const keys = [
+        "editor.increaseFontSize",
+        "editor.decreaseFontSize",
+        "editor.increaseFontSizeAll",
+        "editor.decreaseFontSizeAll",
+      ].flatMap((id) => km[id] ?? []);
       expect(keys.filter((k) => /^(Meta|Ctrl)\+(Shift\+)?[=-]$/.test(k))).toEqual([]);
       expect(Object.keys(km).filter((id) => id.startsWith("markdown.zoom"))).toEqual([]);
     }

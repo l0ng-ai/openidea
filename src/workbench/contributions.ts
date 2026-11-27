@@ -1842,14 +1842,22 @@ export interface RunConfigTypeField {
   rows?: number;
   placeholder?: string;
   options?: ReadonlyArray<{ value: string; label: string; detail?: string }>;
-  /** A `select`'s further options, read when the form shows it (installed JDKs, build modules). */
-  loadOptions?(): Promise<ReadonlyArray<{ value: string; label: string; detail?: string }>>;
+  /**
+   * A `select`'s further options, read when the form shows it and when its value changes
+   * (installed JDKs, build modules); `value` is the current one.
+   */
+  loadOptions?(value: string): Promise<ReadonlyArray<{ value: string; label: string; detail?: string }>>;
   /** Values offered while typing (e.g. the scripts of detected configurations). */
   suggestions?(configs: readonly RunConfig[], params: Readonly<Record<string, string>>): string[];
   required?: boolean;
   visible?(params: Readonly<Record<string, string>>): boolean;
-  /** An `output` field's text. */
+  /**
+   * An `output` field's text; for a `select`, the value it shows when that is worked out
+   * from other params (with `set` writing them back).
+   */
   value?(params: Readonly<Record<string, string>>): string;
+  /** The params after choosing `value`, for a field that stands for other params (see `value`). */
+  set?(value: string, params: Readonly<Record<string, string>>): Record<string, string>;
   /** Why a non-empty value is invalid, or null. */
   validate?(value: string, params: Readonly<Record<string, string>>): string | null;
   /** Shown under the control. */

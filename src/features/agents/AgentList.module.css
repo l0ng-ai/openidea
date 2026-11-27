@@ -230,11 +230,39 @@
   color: var(--fg);
   overflow-wrap: anywhere;
 }
+.statusNote {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  margin: 4px 0;
+  color: var(--fg-subtle);
+  overflow-wrap: anywhere;
+}
 .text code,
 .launch {
   font-family: var(--font-mono);
 }
 .text code {
+  color: var(--fg-strong);
+}
+.signInRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 4px 0;
+}
+.signInHint {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: 0;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.signInHint code {
+  font-family: var(--font-mono);
   color: var(--fg-strong);
 }
 /* "Label: control" rows; a hint sits under its control. */
@@ -284,6 +312,14 @@
 }
 .field > :first-child {
   flex: 1;
+  min-width: 0;
+}
+.accountField {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1-5);
   min-width: 0;
 }
 .select {

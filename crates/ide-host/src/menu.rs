@@ -754,6 +754,8 @@ pub fn spec(os: Os) -> Vec<Entry> {
     ));
 
     let mut tools = vec![
+        act("code.saveAsLiveTemplate", "Save as Live Template…"),
+        SEP,
         act("http.newRequest", "New HTTP Request"),
         act("http.showToolWindow", "HTTP Client"),
         SEP,

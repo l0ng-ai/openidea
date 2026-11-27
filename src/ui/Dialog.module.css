@@ -83,9 +83,8 @@
   touch-action: none;
 }
 .macTitleBar {
-  height: var(--h-dialog-titlebar-mac, 28px);
-  padding: 0 12px 0 8px;
-  gap: var(--space-3);
+  height: var(--h-dialog-titlebar-mac, 40px);
+  padding: 0 var(--space-4);
 }
 .popupHeader {
   height: 32px;
@@ -107,54 +106,9 @@
 .macTitleBar .title {
   font-size: var(--fs-ui);
 }
-
-/* NSWindow standard buttons: 12px, 8px apart; close red, minimise / zoom disabled (modal). */
-.lights {
-  flex: none;
-  display: inline-flex;
-  gap: var(--space-2);
-}
-.light {
-  position: relative;
-  width: 12px;
-  height: 12px;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: var(--traffic-off);
-  box-shadow: inset 0 0 0 0.5px var(--traffic-off-border);
-  cursor: default;
-}
-.lightClose {
-  background: var(--traffic-close);
-  box-shadow: inset 0 0 0 0.5px var(--traffic-close-border);
-}
-[data-inactive] .lightClose {
-  background: var(--traffic-off);
-  box-shadow: inset 0 0 0 0.5px var(--traffic-off-border);
-}
-.lightGlyph {
-  --icon-color: var(--traffic-glyph);
-  color: var(--traffic-glyph);
-  opacity: 0;
-}
-.lights:hover .lightClose,
-.lightClose:focus-visible {
-  background: var(--traffic-close);
-  box-shadow: inset 0 0 0 0.5px var(--traffic-close-border);
-}
-.lights:hover .lightGlyph,
-.lightClose:focus-visible .lightGlyph {
-  opacity: 1;
-}
-.lightClose:active {
-  background: var(--traffic-close-pressed);
-}
-.lightClose:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
+/* An inactive window's title dims, as AppKit's does. */
+[data-inactive] .macTitleBar .title {
+  color: var(--fg-muted);
 }
 
 .body {
@@ -186,6 +140,10 @@
   justify-content: flex-end;
   gap: var(--space-3);
   padding: 12px 16px;
+}
+/* macOS: the buttons sit in the content's corner, as in the dialog windows. */
+[data-platform="mac"] > .footer:not(.messageFooter) {
+  padding-bottom: var(--space-4);
 }
 .footerStart {
   flex: 1 1 0;

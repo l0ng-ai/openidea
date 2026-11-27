@@ -52,8 +52,13 @@ pub async fn gh_availability(
     state: State<'_, AppState>,
     repo: Option<PathBuf>,
 ) -> IdeResult<GhAvailability> {
+    let project = state.project(window.label())?;
     let root = root(&window, &state, repo)?;
-    blocking(move || Ok(ide_github::availability(&root))).await
+    blocking(move || {
+        ide_host::github_auth::apply_to_project(&project);
+        Ok(ide_github::availability(&root))
+    })
+    .await
 }
 
 #[desktop_command(trust = trusted)]

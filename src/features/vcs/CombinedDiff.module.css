@@ -50,10 +50,11 @@
   min-height: 0;
 }
 .scroll {
+  --scroll-pad-top: var(--space-2);
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--space-2) var(--space-3);
+  padding: var(--scroll-pad-top) var(--space-3) var(--space-2);
 }
 /* Only the blocks near the viewport are rendered, each at its offset in the full height. */
 .blocks {
@@ -71,24 +72,50 @@
   border-radius: var(--radius-popup-large);
   background: var(--bg-editor);
 }
-/* The file's header stays at the top while its diff scrolls by. */
+/* The file's header stays at the top while its diff scrolls by. It sticks flush with the top
+   edge (past the list's top padding) and draws its own top border over the block's, so a stuck
+   header still reads as the top of a card. */
 .header {
   position: sticky;
-  top: 0;
+  top: calc(-1 * var(--scroll-pad-top));
   z-index: 3;
   display: flex;
   align-items: center;
   gap: var(--space-1);
+  margin: -1px -1px 0;
   padding: var(--space-3) 10px;
-  background: var(--bg-editor);
-  border-bottom: 1px solid var(--border);
+  border: 1px solid var(--border);
   border-start-start-radius: inherit;
   border-start-end-radius: inherit;
   font-size: var(--fs-ui);
 }
+/* Covers the diff scrolling by above a stuck header and outside its rounded corners. */
+.header::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: calc(-1px - var(--scroll-pad-top));
+  left: -1px;
+  right: -1px;
+  height: calc(var(--scroll-pad-top) + var(--radius-popup-large) + 1px);
+  background: var(--bg-app);
+}
+/* The header's own background, painted over the cover. */
+.header::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  border-start-start-radius: calc(var(--radius-popup-large) - 1px);
+  border-start-end-radius: calc(var(--radius-popup-large) - 1px);
+  background: var(--bg-editor);
+}
+.block[data-collapsed] .header::after {
+  border-radius: calc(var(--radius-popup-large) - 1px);
+}
 .block[data-collapsed] .header {
+  margin-bottom: -1px;
   border-radius: inherit;
-  border-bottom: 0;
 }
 .file {
   display: flex;
@@ -138,7 +165,8 @@
   padding-block: 1px;
 }
 :global(:root[data-compact]) .scroll {
-  padding: var(--space-1) var(--space-1-5);
+  --scroll-pad-top: var(--space-1);
+  padding: var(--scroll-pad-top) var(--space-1-5) var(--space-1);
 }
 :global(:root[data-compact]) .header {
   padding-block: 7px;

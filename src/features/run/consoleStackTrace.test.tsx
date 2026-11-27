@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useState } from "react";
-import { act, cleanup, render, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, within } from "@testing-library/react";
 import { useProject } from "@/platform/project";
 import { occurrenceNavigator } from "@/workbench/contributions";
 import { ConsoleModel } from "./console";
@@ -123,7 +123,7 @@ describe("stepFileLink", () => {
 });
 
 describe("Up / Down the Stack Trace in the console", () => {
-  function setup(occurrences: string | undefined, text = PANIC.join("\n") + "\n") {
+  function setup(occurrences: string | undefined, text = PANIC.join("\n") + "\n", module?: string) {
     const onFollowChange = vi.fn();
     const m = model(text);
     function Run() {
@@ -139,6 +139,7 @@ describe("Up / Down the Stack Trace in the console", () => {
             setFollow(v);
           }}
           cwd="/home/me/app"
+          module={module}
           occurrences={occurrences}
         />
       );
@@ -156,6 +157,7 @@ describe("Up / Down the Stack Trace in the console", () => {
       expect.objectContaining({ path: "/home/me/app/parse.go", line: 12 }),
       "/home/me/app",
       false,
+      undefined,
     );
     expect(onFollowChange).toHaveBeenCalledWith(false);
     expect(scrolled.at(-1)).toBe(4);
@@ -168,6 +170,7 @@ describe("Up / Down the Stack Trace in the console", () => {
       expect.objectContaining({ path: "/home/me/app/main.go", line: 7 }),
       "/home/me/app",
       true,
+      undefined,
     );
     expect(current().map((a) => a.textContent)).toEqual(["/home/me/app/main.go:7"]);
 
@@ -192,6 +195,7 @@ describe("Up / Down the Stack Trace in the console", () => {
       expect.objectContaining({ path: "/home/me/app/main.go" }),
       "/home/me/app",
       false,
+      undefined,
     );
   });
 
@@ -221,6 +225,21 @@ describe("Up / Down the Stack Trace in the console", () => {
       expect.objectContaining({ path: "/home/me/app/b.go" }),
       "/home/me/app",
       false,
+      undefined,
+    );
+  });
+
+  it("hands the run's module to the link it opens", () => {
+    const { log } = setup(undefined, undefined, "app");
+    const link = [...log.querySelectorAll("a")].find((a) => a.textContent === "/home/me/app/parse.go:12");
+    act(() => {
+      fireEvent.click(link!);
+    });
+    expect(nav.openTarget).toHaveBeenLastCalledWith(
+      expect.objectContaining({ path: "/home/me/app/parse.go", line: 12 }),
+      "/home/me/app",
+      true,
+      "app",
     );
   });
 

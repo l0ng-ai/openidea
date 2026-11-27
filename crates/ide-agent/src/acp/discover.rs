@@ -25,7 +25,7 @@ pub(crate) async fn run(shared: &Arc<Shared>, spec: &ProviderSpec, model: Option
         Err(err)
             if !prefer_stored
                 && crate::provider::is_copilot_provider(&spec.id)
-                && crate::provider::has_unconfigured_copilot_ambient_token(&spec.env)
+                && crate::provider::has_unconfigured_copilot_ambient_token(&spec.env, &shared.paths.project_root)
                 && super::auth_required(0, &err) =>
         {
             let retry = run_once(shared, spec, true, model).await;
