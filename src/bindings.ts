@@ -6737,7 +6737,10 @@ export type EditorConfigProps = {
 	indentSize: number | null,
 	tabWidth: number | null,
 	endOfLine: LineEnding | null,
-	/**  `utf-8`, `utf-8-bom`, `utf-16le`, `utf-16be` or `latin1`. */
+	/**
+	 *  `utf-8`, `utf-8-bom`, `utf-16le`, `utf-16be`, `latin1` or an encoding
+	 *  Settings › Editor › File Encodings lists (`iso-8859-15`, `windows-1252`, `gbk`, …).
+	 */
 	charset: string | null,
 	trimTrailingWhitespace: boolean | null,
 	insertFinalNewline: boolean | null,

@@ -247,19 +247,18 @@ fn disk_len(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
-fn editorconfig_label(editorconfig: Option<&EditorConfigProps>, detected: &str, ascii: bool) -> Option<&'static str> {
-    let (charset, _) = editorconfig?.encoding()?;
-    let compatible = encoding_rs::Encoding::for_label(detected.as_bytes()).is_some_and(|e| e.is_ascii_compatible());
-    (ascii && compatible && !charset.starts_with("utf-16")).then_some(charset)
-}
-
-fn apply_editorconfig_charset(loaded: &mut ide_vfs::LoadedText, editorconfig: Option<&EditorConfigProps>) {
-    if loaded.binary {
-        return;
-    }
-    if let Some(charset) = editorconfig_label(editorconfig, &loaded.encoding, !loaded.has_bom && loaded.text.is_ascii())
-    {
-        loaded.encoding = charset.to_owned();
+/// EditorConfig takes precedence over File Encodings for legacy text and ASCII labels.
+/// UTF-16 is detected, not assumed; invalid UTF-8 still uses the File Encodings fallback.
+fn configured_fallback<'a>(
+    defaults: &'a FileDefaults,
+    path: &Path,
+    editorconfig: Option<&EditorConfigProps>,
+) -> Option<ide_vfs::Fallback<'a>> {
+    let fallback = defaults.fallback_for(&absolute(path));
+    match editorconfig.filter(|_| defaults.editorconfig).and_then(EditorConfigProps::encoding) {
+        Some(("utf-8", _)) => fallback.map(|f| ide_vfs::Fallback { ascii: false, ..f }),
+        Some((encoding, _)) if !encoding.starts_with("utf-16") => Some(ide_vfs::Fallback { encoding, ascii: true }),
+        _ => fallback,
     }
 }
 
@@ -371,11 +370,8 @@ impl Documents {
     /// Encoding of `bytes`, a revision of `path`, with the same rules as opening the file.
     pub fn detect_encoding(&self, path: &Path, bytes: &[u8]) -> &'static encoding_rs::Encoding {
         let defaults = self.file_defaults();
-        let detected = ide_vfs::detect_encoding(bytes, defaults.fallback_for(&absolute(path)));
         let editorconfig = self.editorconfig_for(path, &defaults);
-        editorconfig_label(editorconfig.as_ref(), detected.name(), bytes.is_ascii())
-            .and_then(|label| encoding_rs::Encoding::for_label(label.as_bytes()))
-            .unwrap_or(detected)
+        ide_vfs::detect_encoding(bytes, configured_fallback(&defaults, path, editorconfig.as_ref()))
     }
 
     fn editorconfig_for(&self, path: &Path, defaults: &FileDefaults) -> Option<EditorConfigProps> {
@@ -385,11 +381,19 @@ impl Documents {
         self.editorconfig.resolve(&absolute(path))
     }
 
+    /// Fallback encoding for closed-file search; ASCII relabelling does not affect its text.
+    pub fn configured_encoding_for(&self, path: &Path) -> Option<String> {
+        let defaults = self.file_defaults();
+        let editorconfig = self.editorconfig_for(path, &defaults);
+        configured_fallback(&defaults, path, editorconfig.as_ref()).map(|f| f.encoding.to_owned())
+    }
+
     /// Bounded closed-file snapshots use the same project defaults as open documents.
     pub fn load_file_bounded(&self, path: &Path, max_bytes: usize) -> IdeResult<ide_vfs::LoadedText> {
         let defaults = self.file_defaults();
-        let mut loaded = ide_vfs::load_text_bounded(path, defaults.fallback_for(&absolute(path)), max_bytes)?;
-        apply_editorconfig_charset(&mut loaded, self.editorconfig_for(path, &defaults).as_ref());
+        let editorconfig = self.editorconfig_for(path, &defaults);
+        let mut loaded =
+            ide_vfs::load_text_bounded(path, configured_fallback(&defaults, path, editorconfig.as_ref()), max_bytes)?;
         if !loaded.binary && defaults.native_to_ascii_for(path) {
             loaded.text = ide_vfs::decode_properties_escapes(&loaded.text);
         }
@@ -405,8 +409,7 @@ impl Documents {
         defaults: &FileDefaults,
         editorconfig: Option<&EditorConfigProps>,
     ) -> IdeResult<ide_vfs::LoadedText> {
-        let mut loaded = ide_vfs::load_text_with_fallback(path, defaults.fallback_for(&absolute(path)))?;
-        apply_editorconfig_charset(&mut loaded, editorconfig);
+        let mut loaded = ide_vfs::load_text_with_fallback(path, configured_fallback(defaults, path, editorconfig))?;
         if !loaded.binary && defaults.native_to_ascii_for(path) {
             loaded.text = ide_vfs::decode_properties_escapes(&loaded.text);
         }
