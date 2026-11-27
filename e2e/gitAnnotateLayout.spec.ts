@@ -24,8 +24,9 @@ test("Git annotations align dates and full author names at UI text size", async 
     ];
     handlers.vcs_blame = () => lines;
     handlers.vcs_log = ({ query }) => {
-      const { branch } = query as { branch?: string };
-      const line = lines.find(({ commit }) => commit === branch);
+      const { branch, path } = query as { branch?: string | null; path?: string | null };
+      // The file's last commit, which Annotate draws bold, is the newer one.
+      const line = path && branch === "HEAD" ? lines[1] : lines.find(({ commit }) => commit === branch);
       if (!line) return [];
       return [
         {
@@ -73,6 +74,11 @@ test("Git annotations align dates and full author names at UI text size", async 
   await expect
     .poll(async () => Math.abs((await firstAuthor.boundingBox())!.x - (await secondAuthor.boundingBox())!.x))
     .toBeLessThan(1);
+  // The bold labels of the file's last commit still fit their columns.
+  await expect(secondAuthor).toHaveCSS("font-weight", "700");
+  await expect(firstAuthor).toHaveCSS("font-weight", "400");
+  for (const cell of [second.locator(".cm-vcs-blame-date"), secondAuthor])
+    await expect.poll(() => cell.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(0);
 
   await first.hover();
   const details = page.getByRole("dialog").filter({ has: page.getByTitle("Show Commit in Git Log") });
