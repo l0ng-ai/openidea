@@ -27,6 +27,8 @@ beforeEach(() => {
   dispose = registerDatabaseTreeActions();
   useDatabase.setState({
     loaded: true,
+    foldersLoaded: true,
+    folders: [],
     sources: [{ id: "pg", name: "PostgreSQL", driver: "postgres", options: { singleDatabase: true } }],
     schemas: { pg: { status: "ok", value: ["public"] } },
     tables: { [tablesKey("pg", "public")]: { status: "ok", value: [] } },
@@ -44,6 +46,25 @@ beforeEach(() => {
     separateProceduresAndFunctions: false,
     showTableComments: true,
     treeExpanded: new Set(["pg", "pg/public", "pg/public/routines"]),
+  });
+});
+
+describe("data source folders", () => {
+  it("lists grouped sources under their folder and leaves ungrouped sources at the root", () => {
+    useDatabase.setState({
+      sources: [
+        { id: "pg", name: "PostgreSQL", driver: "postgres" },
+        { id: "lite", name: "SQLite", driver: "sqlite" },
+      ],
+      folders: [{ id: "prod", name: "Production", order: 0, sources: ["pg"] }],
+      treeExpanded: new Set(["source-folder:prod"]),
+    });
+    render(<DatabaseView />);
+    const tree = within(screen.getByRole("tree", { name: "Data sources" }));
+    const folder = tree.getByText("Production").closest('[role="treeitem"]')!;
+    expect(folder).toHaveAttribute("aria-expanded", "true");
+    expect(tree.getByText("PostgreSQL").closest('[role="treeitem"]')).toHaveAttribute("aria-level", "2");
+    expect(tree.getByText("SQLite").closest('[role="treeitem"]')).toHaveAttribute("aria-level", "1");
   });
 });
 

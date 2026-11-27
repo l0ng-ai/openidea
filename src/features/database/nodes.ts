@@ -4,6 +4,7 @@ import type {
   DbColumnInfo,
   DbForeignKey,
   DbIndexInfo,
+  DbSourceFolder,
   DbObjectKind as DbSchemaObjectKind,
   DbPackageInfo,
   DbRoutineInfo,
@@ -63,6 +64,7 @@ type InSchema = Pick<TableRef, "id" | "catalog" | "schema">;
 
 export type DbNode =
   | { kind: "source"; key: string; source: DataSource }
+  | { kind: "sourceFolder"; key: string; folder: DbSourceFolder }
   /** DuckDB's `catalog` stays on the session of `id`; other databases have their own target. */
   | { kind: "database"; key: string; id: string; name: string; current: boolean; catalog?: string }
   | ({ kind: "schema"; key: string } & InSchema)
@@ -84,6 +86,7 @@ export type DbNode =
 /** The connection target a node belongs to. */
 export function nodeTarget(n: DbNode): string | null {
   if (n.kind === "source") return n.source.id ?? null;
+  if (n.kind === "sourceFolder" || n.kind === "message") return null;
   if ("id" in n && typeof n.id === "string") return n.id;
   return n.key.split("/")[0] ?? null;
 }
