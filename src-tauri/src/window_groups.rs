@@ -35,22 +35,30 @@ pub fn current(app: &AppHandle, caller: &str) -> Vec<WindowTab> {
         .filter_map(|label| {
             let window = app.get_webview_window(label)?;
             let project = host.project(label).ok();
+            let pending = state.pending(label);
             let name = project.as_ref().map(|p| ide_host::ops::project::info(p).display_name).unwrap_or_else(|| {
                 // Taken its launch but not finished opening: name the tab after that project.
-                state
-                    .pending(label)
-                    .and_then(|launch| launch.project)
+                pending
+                    .as_ref()
+                    .and_then(|launch| launch.project.as_ref())
                     .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
                     .unwrap_or_else(|| window.title().unwrap_or_default())
             });
-            Some(WindowTab {
-                label: label.clone(),
-                name,
-                root: project.map(|p| p.root.clone().into()),
-                current: label == caller,
-            })
+            let root = windows::window_project_path(app, label).map(Into::into).or_else(|| {
+                pending.and_then(|launch| {
+                    launch
+                        .remote
+                        .map(|r| PathBuf::from(crate::remote_dev::remote_location(&r.target, &r.path)).into())
+                        .or(launch.project)
+                })
+            });
+            Some(WindowTab { label: label.clone(), name, root, current: label == caller })
         })
         .collect()
+}
+
+pub(crate) fn notify_changed(app: &AppHandle) {
+    changed(app);
 }
 
 fn changed(app: &AppHandle) {
