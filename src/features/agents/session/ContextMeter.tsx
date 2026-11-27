@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import type {
   AgentContextCategory,
@@ -51,7 +51,12 @@ export function ContextMeter({
 }) {
   const tx = useTx();
   const label = usage ? usageLabel(usage) : null;
-  const hint = label ? `${tx("Context window")} · ${label.short}` : tx("Session Info");
+  const alertLimits = limits
+    .map((limit) => ({ window: limit.window, ...limitParts(limit, now) }))
+    .filter((item) => meterTone(item.percent) !== undefined);
+  const alertDetails = alertLimits.map((item) => item.detail).join(" · ");
+  const baseHint = label ? `${tx("Context window")} · ${label.short}` : tx("Session Info");
+  const hint = alertDetails ? `${baseHint} · ${alertDetails}` : baseHint;
   const anchor = useRef<HTMLButtonElement>(null);
   const [phase, setPhase] = useState<"closed" | "open" | "closing">("closed");
   const open = phase === "open";
@@ -62,10 +67,8 @@ export function ContextMeter({
     return () => window.clearTimeout(timer);
   }, [phase]);
 
-  const worstLimitPercent = limits.reduce((max, l) => Math.max(max, Math.round(l.usedPercent ?? 0)), 0);
-  const triggerPercent = label ? label.percent : worstLimitPercent;
-  const severity = meterTone(triggerPercent);
-  const severityClass = severityClassName(triggerPercent);
+  const contextSeverity = label ? meterTone(label.percent) : undefined;
+  const contextSeverityClass = label ? severityClassName(label.percent) : undefined;
   const dashOffset = label ? RING_CIRCUMFERENCE * (1 - label.percent / 100) : RING_CIRCUMFERENCE;
 
   return (
@@ -73,8 +76,8 @@ export function ContextMeter({
       <button
         type="button"
         ref={anchor}
-        className={clsx(styles.meterButton, severityClass)}
-        data-tone={severity}
+        className={styles.meterButton}
+        data-tone={contextSeverity}
         aria-label={hint}
         aria-haspopup="dialog"
         aria-expanded={open}
@@ -82,7 +85,7 @@ export function ContextMeter({
         onClick={() => (open ? close() : setPhase("open"))}
       >
         {label ? (
-          <>
+          <span className={clsx(styles.meterContext, contextSeverityClass)} data-tone={contextSeverity}>
             <svg className={styles.usageRing} viewBox="0 0 14 14" aria-hidden>
               <circle className={styles.usageRingTrack} cx="7" cy="7" r={RING_RADIUS} />
               <circle
@@ -98,9 +101,35 @@ export function ContextMeter({
               />
             </svg>
             <span className={styles.meterValue}>{label.percent}%</span>
-          </>
-        ) : (
+          </span>
+        ) : alertLimits.length === 0 ? (
           <Icon name="info" size={13} />
+        ) : null}
+        {alertLimits.length > 0 && (
+          <>
+            {label && <span className={styles.meterInlineDivider} aria-hidden />}
+            <span className={styles.meterLimitAlerts}>
+              {alertLimits.map((item, i) => {
+                const itemSeverity = meterTone(item.percent);
+                return (
+                  <Fragment key={item.window}>
+                    {i > 0 && (
+                      <span className={styles.meterAlertDot} aria-hidden>
+                        ·
+                      </span>
+                    )}
+                    <span
+                      className={clsx(styles.meterLimitAlert, severityClassName(item.percent))}
+                      data-tone={itemSeverity}
+                      aria-label={item.detail}
+                    >
+                      {item.windowShort} {item.percent}%
+                    </span>
+                  </Fragment>
+                );
+              })}
+            </span>
+          </>
         )}
       </button>
       <Popup

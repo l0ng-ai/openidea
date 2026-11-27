@@ -2274,6 +2274,41 @@ describe("meters in the task header", () => {
     expect(screen.queryByRole("dialog", { name: "Session Info" })).toBeNull();
   });
 
+  it("omits Claude Code's plain Free space category from User Context and maps Autocompact buffer to Reserved for response", async () => {
+    const { commands } = await import("@/platform/ipc");
+    vi.mocked(commands.agentContextUsage).mockResolvedValueOnce({
+      status: "ok",
+      data: {
+        model: "claude-opus-4-6",
+        totalTokens: 84_000,
+        maxTokens: 200_000,
+        isAutoCompactEnabled: true,
+        autoCompactThreshold: 167_000,
+        categories: [
+          { name: "System prompt", tokens: 3_100, kind: null },
+          { name: "System tools", tokens: 18_400, kind: null },
+          { name: "Messages", tokens: 62_500, kind: null },
+          { name: "Autocompact buffer", tokens: 33_000, kind: null },
+          { name: "Free space", tokens: 83_000, kind: null },
+        ],
+      },
+    });
+    const reported: AgentTask = {
+      ...task("A"),
+      provider: "claude",
+      capabilities: { contextUsage: true },
+      usage: { used: 84_000, size: 200_000, cost: null },
+    };
+    useAgents.setState({ tasks: new Map([["A", reported]]) });
+    render(<SessionEditor input={input("A")} />);
+    fireEvent.click(await screen.findByRole("button", { name: /^Context window/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Session Info" });
+    expect(await within(dialog).findByText("System tools")).toBeInTheDocument();
+    expect(within(dialog).getByText("Messages")).toBeInTheDocument();
+    expect(within(dialog).getByText("Reserved for response")).toBeInTheDocument();
+    expect(within(dialog).queryByText("Free space")).toBeNull();
+  });
+
   it("shows only the context ring inline and moves limits, turn tokens, and cost into the Session Info popover", async () => {
     const reported: AgentTask = {
       ...task("A"),
@@ -2330,7 +2365,40 @@ describe("meters in the task header", () => {
     expect(within(costOnly).queryByText("Context Window")).toBeNull();
   });
 
-  it("colors the context meter and usage-limit rows at warning/danger thresholds inside Session Info", async () => {
+  it("keeps warning/danger usage limits visible inline next to a neutral context meter while hiding safe limits in Session Info", async () => {
+    const reported: AgentTask = {
+      ...task("A"),
+      usage: { used: 84_000, size: 200_000, cost: null },
+    };
+    const limits = [
+      { window: "five_hour", usedPercent: 92, resetsMs: Date.now() + 2 * 3_600_000 },
+      { window: "seven_day", usedPercent: 40, resetsMs: null },
+    ];
+    useAgents.setState({
+      tasks: new Map([["A", reported]]),
+      limits: new Map([["codex", limits]]),
+    });
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Answer A");
+
+    const trigger = screen.getByRole("button", { name: /^Context window/ });
+    expect(trigger).not.toHaveAttribute("data-tone");
+    expect(trigger).toHaveTextContent("42%");
+    const fiveHourInline = within(trigger).getByLabelText(/^5-hour limit: 92% used/);
+    expect(fiveHourInline).toHaveTextContent("5h 92%");
+    expect(fiveHourInline).toHaveAttribute("data-tone", "warning");
+    expect(within(trigger).queryByText(/7d/)).toBeNull();
+
+    fireEvent.click(trigger);
+    const dialog = await screen.findByRole("dialog", { name: "Session Info" });
+    const fiveHourRow = within(dialog).getByText("5-hour limit").closest("[data-tone]");
+    expect(fiveHourRow).toHaveAttribute("data-tone", "warning");
+    expect(within(dialog).getByText("Weekly limit")).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Session Info" })).toBeNull();
+  });
+
+  it("colors the context meter and danger usage-limit rows at their own thresholds", async () => {
     const reported: AgentTask = {
       ...task("A"),
       usage: { used: 164_000, size: 200_000, cost: null },
@@ -2348,6 +2416,8 @@ describe("meters in the task header", () => {
 
     const trigger = screen.getByRole("button", { name: /^Context window/ });
     expect(trigger).toHaveAttribute("data-tone", "warning");
+    expect(within(trigger).getByLabelText(/^5-hour limit: 82% used/)).toHaveAttribute("data-tone", "warning");
+    expect(within(trigger).getByLabelText("Weekly limit: 95% used")).toHaveAttribute("data-tone", "danger");
 
     fireEvent.click(trigger);
     const dialog = await screen.findByRole("dialog", { name: "Session Info" });

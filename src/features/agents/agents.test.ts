@@ -476,6 +476,25 @@ describe("usage meters", () => {
     expect(contextShareLabel(100, 1_000_000)).toBe("<0.1%");
   });
 
+  it("skips Claude Code's plain Free space and deferred categories without kind tags", () => {
+    const grouped = groupContextCategories([
+      { name: "System prompt", tokens: 3_100, kind: null },
+      { name: "System tools", tokens: 18_400, kind: null },
+      { name: "System tools (deferred)", tokens: 4_000, kind: null },
+      { name: "MCP tools", tokens: 6_200, kind: null },
+      { name: "MCP tools (deferred)", tokens: 1_500, kind: null },
+      { name: "Custom agents", tokens: 1_200, kind: null },
+      { name: "Memory files", tokens: 900, kind: null },
+      { name: "Skills", tokens: 1_600, kind: null },
+      { name: "Messages", tokens: 52_600, kind: null },
+      { name: "Autocompact buffer", tokens: 33_000, kind: null },
+      { name: "Free space", tokens: 83_000, kind: null },
+    ]);
+    expect(grouped.system.map((c) => c.name)).toEqual(["System prompt", "System tools", "MCP tools", "Custom agents"]);
+    expect(grouped.userContext.map((c) => c.name)).toEqual(["Memory files", "Skills", "Messages"]);
+    expect(grouped.bufferTokens).toBe(33_000);
+  });
+
   it("adds up the time spent on turns", () => {
     const user = (sentMs: number, doneMs: number | null): AgentEntry => ({
       type: "user",

@@ -626,6 +626,8 @@ const USER_CONTEXT_CATEGORY_NAMES = new Set([
   "Plugins",
 ]);
 
+const FREE_CATEGORY_NAMES = new Set(["Free space"]);
+
 /** Splits context categories into `System` and `User Context` sections plus any buffer tokens. */
 export function groupContextCategories(categories: readonly AgentContextCategory[]): {
   system: AgentContextCategory[];
@@ -636,7 +638,15 @@ export function groupContextCategories(categories: readonly AgentContextCategory
   const userContext: AgentContextCategory[] = [];
   let bufferTokens = 0;
   for (const c of categories) {
-    if (c.tokens <= 0 || c.kind === "free" || c.kind === "deferred") continue;
+    if (
+      c.tokens <= 0 ||
+      c.kind === "free" ||
+      c.kind === "deferred" ||
+      FREE_CATEGORY_NAMES.has(c.name) ||
+      c.name.endsWith(" (deferred)")
+    ) {
+      continue;
+    }
     if (c.name === "Autocompact buffer") {
       bufferTokens += c.tokens;
       continue;

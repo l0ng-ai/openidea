@@ -1177,6 +1177,35 @@
   gap: 5px;
   overflow: hidden;
 }
+.meterContext {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.meterInlineDivider {
+  flex: none;
+  width: 1px;
+  height: 11px;
+  margin: 0 2px;
+  background: var(--border-strong);
+  opacity: 0.5;
+}
+.meterLimitAlerts {
+  display: inline-flex;
+  align-items: baseline;
+}
+.meterLimitAlert {
+  display: inline-flex;
+  align-items: baseline;
+  font-weight: 500;
+  line-height: 1;
+}
+.meterAlertDot {
+  flex: none;
+  margin: 0 4px;
+  color: var(--fg-faint);
+  opacity: 0.65;
+}
 .meterValue {
   line-height: 1;
 }
