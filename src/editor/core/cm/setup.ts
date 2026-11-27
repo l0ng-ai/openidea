@@ -56,6 +56,7 @@ import { editorBaseKeymap } from "./baseKeymap";
 import { occurrenceSearch } from "./editing";
 import { gutterLineDrag } from "./gutterDrag";
 import { overwriteField } from "./overwrite";
+import { stickySelectionField } from "./stickySelection";
 import { relativeLineNumbers } from "./relativeLineNumbers";
 import { clipboardDocumentPath, clipboardFilesExtension } from "./clipboard";
 import { clipboardHistoryExtension } from "../clipboardHistory";
@@ -400,6 +401,7 @@ export function baseExtensions(o: SetupOptions): Extension {
     visibleGoalColumns,
     occurrenceSearch,
     overwriteField,
+    stickySelectionField,
     gutterLineDrag,
     clipboardHistoryExtension,
     clipboardDocumentPath.of(o.ctx.path),

@@ -193,6 +193,14 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Toggle Sticky Selection", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="S" parent="$default"><action id="EditorToggleStickySelection"><keyboard-shortcut first-keystroke="control SPACE"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.toggleStickySelection"]).toEqual([normalizeBinding("Ctrl+Space")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Select Line at Caret", () => {
     const k = parseIdeaKeymap(
       `<keymap name="S" parent="$default"><action id="EditorSelectLine"><keyboard-shortcut first-keystroke="control alt L"/></action></keymap>`,

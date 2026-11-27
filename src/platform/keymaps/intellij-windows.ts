@@ -109,6 +109,7 @@ export const intellijWindows: Record<string, string[]> = {
   "code.cutLineEnd": [],
   "code.hungryBackspace": [],
   "editor.swapSelectionBoundaries": [],
+  "editor.toggleStickySelection": [],
   "code.moveLineUp": ["Alt+Shift+Up"],
   "code.moveLineDown": ["Alt+Shift+Down"],
   "code.moveStatementUp": ["Ctrl+Shift+Up"],
