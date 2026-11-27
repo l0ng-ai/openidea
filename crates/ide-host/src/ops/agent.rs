@@ -80,6 +80,19 @@ pub fn agent_refresh_models(
     host.project(window)?.agents.refresh_models(&provider, force, model.as_deref())
 }
 
+/// Probes Copilot's model catalog for a staged GitHub account without persisting until Apply.
+#[command(trust = trusted)]
+pub async fn agent_preview_copilot_models(
+    host: &Host,
+    window: &str,
+    account: String,
+    model: Option<String>,
+) -> IdeResult<AgentModelCatalog> {
+    host.require_trust(window)?;
+    let agents = host.project(window)?.agents.clone();
+    agents.preview_copilot_models(&account, model.as_deref()).await
+}
+
 /// Overrides built-in agent `id`'s command with `command` (its agent file keeps the
 /// built-in's driver and arguments), or returns it to auto-detection with `None`.
 #[command(trust = trusted)]
@@ -120,6 +133,39 @@ pub async fn agent_copilot_auth_status(host: &Host, window: &str) -> IdeResult<C
             Ok(ide_agent::copilot_auth_status_with(Some(&custom_dir), None, &cwd).await)
         }
     }
+}
+
+const REMOTE_SESSION_ENV_VARS: [&str; 5] =
+    ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "CODESPACES", "REMOTE_CONTAINERS"];
+
+fn prepare_login_launch_env(
+    is_remote: bool,
+    target_is_gh: bool,
+    env: &mut std::collections::BTreeMap<String, String>,
+    host_has: impl Fn(&str) -> bool,
+) {
+    if !is_remote {
+        return;
+    }
+    let has_non_empty = |env: &std::collections::BTreeMap<String, String>, key: &str| {
+        env.get(key).is_some_and(|v| !v.is_empty()) || host_has(key)
+    };
+    // `openidea-server` spawns sign-in commands in a real PTY even inside WSL, dev containers,
+    // and `--web`, where `SSH_*` variables are absent; mark the session remote so CLIs such as
+    // `copilot login` choose OAuth device-code sign-in over a remote-only loopback server.
+    if !REMOTE_SESSION_ENV_VARS.iter().any(|key| has_non_empty(env, key)) {
+        env.insert("REMOTE_CONTAINERS".into(), "1".into());
+    }
+    if target_is_gh && !has_non_empty(env, "GH_BROWSER") && !has_non_empty(env, "BROWSER") {
+        env.insert("GH_BROWSER".into(), "true".into());
+    }
+}
+
+fn apply_remote_login_env(host: &Host, cwd: &std::path::Path, target_is_gh: bool, launch: &mut LoginLaunch) {
+    let cwd = if cwd.is_dir() { cwd.to_path_buf() } else { dirs::home_dir().unwrap_or_else(std::env::temp_dir) };
+    prepare_login_launch_env(host.environment.is_remote(), target_is_gh, &mut launch.env, |key| {
+        ide_core::process::host_var_os_in(&cwd, key).is_some_and(|v| !v.is_empty())
+    });
 }
 
 fn spawn_login_pty(
@@ -167,7 +213,7 @@ pub async fn agent_login_spawn(
     on_event: Channel<AgentLoginEvent>,
 ) -> IdeResult<ide_terminal::TerminalInfo> {
     host.require_trust_if_project(window)?;
-    let (cwd, launch) = match host.project(window) {
+    let (cwd, mut launch) = match host.project(window) {
         Ok(project) => {
             let root = project.root.clone();
             let agents = project.agents.clone();
@@ -186,6 +232,7 @@ pub async fn agent_login_spawn(
             (cwd, launch)
         }
     };
+    apply_remote_login_env(host, &cwd, false, &mut launch);
     spawn_login_pty(host, window, cwd, launch, cols, rows, on_event)
 }
 
@@ -204,7 +251,8 @@ pub async fn agent_gh_login_spawn(
         .project(window)
         .map(|p| p.root.clone())
         .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(std::env::temp_dir));
-    let launch = host.blocking(ide_agent::gh_login_launch).await?;
+    let mut launch = host.blocking(ide_agent::gh_login_launch).await?;
+    apply_remote_login_env(host, &cwd, true, &mut launch);
     spawn_login_pty(host, window, cwd, launch, cols, rows, on_event)
 }
 
@@ -1549,6 +1597,29 @@ mod tests {
         assert!(reloaded.approved(&root, "extra", &extra));
         assert!(!reloaded.approved(&tmp.path().join("other"), "extra", &extra));
     }
+
+    #[test]
+    fn prepare_login_launch_env_marks_remote_sessions_for_device_code_auth() {
+        let mut desktop_env = std::collections::BTreeMap::new();
+        prepare_login_launch_env(false, true, &mut desktop_env, |_| false);
+        assert!(desktop_env.is_empty());
+
+        let mut remote_agent_env = std::collections::BTreeMap::new();
+        prepare_login_launch_env(true, false, &mut remote_agent_env, |_| false);
+        assert_eq!(remote_agent_env.get("REMOTE_CONTAINERS").map(String::as_str), Some("1"));
+        assert!(!remote_agent_env.contains_key("GH_BROWSER"));
+
+        let mut remote_gh_env = std::collections::BTreeMap::new();
+        prepare_login_launch_env(true, true, &mut remote_gh_env, |_| false);
+        assert_eq!(remote_gh_env.get("REMOTE_CONTAINERS").map(String::as_str), Some("1"));
+        assert_eq!(remote_gh_env.get("GH_BROWSER").map(String::as_str), Some("true"));
+
+        // Preserves existing SSH/remote indicators and explicit browser settings.
+        let mut ssh_env = std::collections::BTreeMap::new();
+        prepare_login_launch_env(true, true, &mut ssh_env, |k| matches!(k, "SSH_CONNECTION" | "BROWSER"));
+        assert!(!ssh_env.contains_key("REMOTE_CONTAINERS"));
+        assert!(!ssh_env.contains_key("GH_BROWSER"));
+    }
 }
 
 ide_command::domain!(
@@ -1584,6 +1655,7 @@ ide_command::domain!(
     agent_mcp_save_json,
     agent_mcp_set_enabled,
     agent_mcp_test,
+    agent_preview_copilot_models,
     agent_probe,
     agent_prompt,
     agent_providers,

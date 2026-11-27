@@ -271,6 +271,9 @@ async fn serves_projects_files_documents_search_and_runs() {
             .await
             .unwrap();
     assert_eq!(env["DOCKER_HOST"], "unix:///run/user/1/docker.sock");
+    // Services › Docker commands are served by the project host too.
+    assert!(Dispatcher::standard().commands().contains(&"docker_snapshot"));
+    assert_eq!(invoke(&peer, "docker_settings", json!({})).await.unwrap()["connections"], json!([]));
 
     // Real project-host ignore writes travel through the remote command dispatcher.
     assert!(Dispatcher::standard().commands().contains(&"vcs_add_to_ignore"));

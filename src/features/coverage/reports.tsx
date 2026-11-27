@@ -1,11 +1,12 @@
 /**
  * Coverage reports collected elsewhere: "Import a report collected in CI from
- * disk" (lcov, JaCoCo XML, Go cover profile, SimpleCov) and "Manage Coverage Reports"
+ * disk" (lcov, JaCoCo or Cobertura XML, Go cover profile, SimpleCov) and "Manage Coverage Reports"
  * (choose the shown suite, delete suites and remembered imports).
  */
 import { useMemo, useState } from "react";
 import { create } from "zustand";
 import { choosePath } from "@/platform/choosePath";
+import { tx } from "@/platform/i18n";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { basename } from "@/platform/project";
 import { Dialog, Icon, List, T } from "@/ui";
@@ -64,12 +65,21 @@ export async function importReport(path?: string): Promise<Suite | null> {
       /* no workbench (tests) */
     }
     const [covered, total] = data.files.reduce((a, f) => [a[0]! + f.linesCovered, a[1]! + f.linesTotal], [0, 0]);
+    // Paths the backend could not map into the project keep the machine's they were recorded on.
+    const prefix = project.root.replace(/\/$/, "") + "/";
+    const outside = data.files.filter((f) => !f.path.startsWith(prefix)).length;
     notifications().notify({
       group: "run",
-      level: "info",
+      level: outside ? "warning" : "info",
       key: "coverage-import",
       title: `Imported coverage '${suite.name}': ${formatPercent(covered!, total!)} lines`,
-      body: data.files.length ? undefined : "The report covers no files of this project.",
+      body: !data.files.length
+        ? "The report covers no files of this project."
+        : outside === 1
+          ? "1 file of the report is not in this project."
+          : outside
+            ? tx`${outside} files of the report are not in this project.`
+            : undefined,
     });
     return suite;
   } catch (e) {

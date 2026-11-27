@@ -82,6 +82,11 @@ impl Environment {
         }
     }
 
+    /// True on `openidea-server`, where the backend runs on a remote/headless host rather than the desktop shell.
+    pub fn is_remote(&self) -> bool {
+        self.project_env
+    }
+
     /// A trusted project at `root` opened or became trusted: loads its direnv environment in
     /// the background, unless another window of it already did. Its language servers wait.
     pub(crate) fn direnv_opened(&self, root: &Path, sink: &SharedSink) {

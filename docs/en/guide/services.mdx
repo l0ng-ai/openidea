@@ -38,7 +38,7 @@ With nothing configured, Services lists no Docker connection. To add one (the fi
 | **Name:**                          | Shown in the tree.                                                                                                                                                                                                                                                                                                                                                         |
 | **Connect to Docker daemon with:** | **Docker CLI default (DOCKER_HOST / current context)**, **Unix socket** (a socket path or an Engine API URL such as `npipe://`), **TCP / SSH host** (`tcp://host:2376` or `ssh://user@host`, with an optional TLS certificates folder holding `ca.pem`, `cert.pem` and `key.pem`), or **Docker context** (a context name such as `desktop-linux`, `orbstack` or `colima`). |
 
-Right-click a connection for **Edit Connection…** and **Remove Connection**. Connections are app-wide, not per project. The tree updates live from `docker events`; when the daemon is not running, Services retries every 10 seconds.
+Right-click a connection for **Edit Connection…** and **Remove Connection**. Connections are stored per host, not per project: a remote window keeps its connections on the remote host and talks to that host's Docker daemon. The tree updates live from `docker events`; when the daemon is not running, Services retries every 10 seconds.
 
 ### Registries
 

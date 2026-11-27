@@ -627,6 +627,40 @@ impl crate::AgentManager {
         let spec = self.shared.spec(provider).ok_or_else(|| IdeError::invalid(format!("unknown agent {provider}")))?;
         Ok(self.shared.paths.catalogs.request(&self.shared, spec, force, model).0)
     }
+
+    /// Probes Copilot's model catalog for a staged `account` selection (`""` = Copilot CLI
+    /// default) without mutating `models.json` or broadcasting to active sessions before Apply.
+    pub async fn preview_copilot_models(&self, account: &str, model: Option<&str>) -> IdeResult<AgentModelCatalog> {
+        let mut spec = provider::load(self.shared.paths.custom_agents_dir.as_deref(), self.shared.env_secrets())
+            .into_iter()
+            .find(|p| p.id == "copilot")
+            .ok_or_else(|| IdeError::not_found("unknown agent 'copilot'"))?;
+        spec.env.retain(|(name, _)| name != provider::COPILOT_GITHUB_ACCOUNT_ENV);
+        let account = account.trim();
+        if !account.is_empty() {
+            spec.env.push((provider::COPILOT_GITHUB_ACCOUNT_ENV.into(), account.to_owned()));
+        }
+        match discover(&self.shared, spec, model).await {
+            Ok(found) => Ok(AgentModelCatalog {
+                provider: "copilot".into(),
+                config: self.shared.config_for_new_task(found.config, "copilot"),
+                thought_levels: self.shared.thought_levels_for_new_task(found.levels, "copilot"),
+                refreshing: false,
+                refreshed_at_ms: Some(self.shared.paths.catalogs.epoch_ms()),
+                retry_at_ms: None,
+                error: None,
+            }),
+            Err(error) => Ok(AgentModelCatalog {
+                provider: "copilot".into(),
+                config: Vec::new(),
+                thought_levels: BTreeMap::new(),
+                refreshing: false,
+                refreshed_at_ms: None,
+                retry_at_ms: None,
+                error: Some(error),
+            }),
+        }
+    }
 }
 
 async fn discover(
