@@ -11,8 +11,8 @@ import { editorController } from "@/editor/core/controller";
 import { AUX_CLOSED, type AuxCloseResult } from "@/platform/auxWindow";
 import { setContext } from "@/platform/context";
 import { isImeKey } from "@/platform/ime";
-import { call, commands, type ComparisonLaunch } from "@/platform/ipc";
-import { useProject } from "@/platform/project";
+import { call, commands, type ComparisonLaunch, type ProjectInfo } from "@/platform/ipc";
+import { projectFolder, useProject } from "@/platform/project";
 import { restoreRemote } from "@/platform/remote";
 import { usePlatform } from "@/platform/platformInfo";
 import { Button, Spinner, T, isPopupOpen } from "@/ui";
@@ -43,15 +43,19 @@ export function activateComparisonWindow(
   confirmLeave: (project: string | null) => Promise<boolean>,
 ): () => void {
   let projectName: string | null = null;
+  let projectInfo: ProjectInfo | null = null;
   const native = getCurrentWindow();
-  // Jump to Source opens the file in the project window's editor, as from a diff window (IDEA).
-  // That window only opens files inside the project, so others (repo above the project) stay here.
+  // Jump to Source opens the file in the project window's editor, as from a diff window.
+  // That window only opens files inside one of its project folders, so others (a repository
+  // above the project) stay here.
   const local = editorService();
   provideEditorService({
     ...local,
     openFile: (path, options) => {
-      const root = useVcs.getState().root;
-      return root && path.startsWith(`${root}/`) ? openSource(parent, path, options) : local.openFile(path, options);
+      const folder = projectFolder(projectInfo, path);
+      return folder && path.startsWith(`${folder.root}/`)
+        ? openSource(parent, path, options)
+        : local.openFile(path, options);
     },
   });
   let disposed = false;
@@ -120,6 +124,7 @@ export function activateComparisonWindow(
     const project = await commands.projectCurrent();
     if (!project) throw new Error("The comparison's project is no longer open");
     projectName = project.name;
+    projectInfo = project;
     // Settings only: restoring the project's editor session here would overwrite the main window's tabs.
     useProject.setState({ settings: project.settings });
     const roots = await call(commands.vcsRoots());
