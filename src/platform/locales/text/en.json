@@ -4232,5 +4232,8 @@
   "Export to Text File…": "Export to Text File…",
   "Export to Text File": "Export to Text File",
   "Save the Find Usages results as a text file": "Save the Find Usages results as a text file",
-  "Cannot export the usages": "Cannot export the usages"
+  "Cannot export the usages": "Cannot export the usages",
+  "Custom command": "Custom command",
+  "{chosen} (not found)": "{chosen} (not found)",
+  "The interpreter does not exist": "The interpreter does not exist"
 }

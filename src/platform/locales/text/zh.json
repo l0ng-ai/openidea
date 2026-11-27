@@ -10695,5 +10695,8 @@
   "Export to Text File…": "导出到文本文件…",
   "Export to Text File": "导出到文本文件",
   "Save the Find Usages results as a text file": "将查找用法的结果保存为文本文件",
-  "Cannot export the usages": "无法导出用法"
+  "Cannot export the usages": "无法导出用法",
+  "Custom command": "自定义命令",
+  "{chosen} (not found)": "{chosen}（未找到）",
+  "The interpreter does not exist": "解释器不存在"
 }
