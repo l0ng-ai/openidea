@@ -1,11 +1,35 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
+import type { RemoteTarget } from "@/platform/ipc";
+import { basename } from "@/platform/project";
+import { parseRemoteLocation, recentRemotes, sameTarget, targetName } from "@/platform/remote";
 import { refreshWindowGroup, reorderedTabs, useWindowGroup } from "@/platform/windowGroups";
-import { dropIndex, IconButton, registerDropTarget, showContextMenu, startPointerDrag } from "@/ui";
+import { dropIndex, Icon, IconButton, registerDropTarget, showContextMenu, startPointerDrag } from "@/ui";
 import { notifications } from "./contributions";
 import { subscribeTabColors, tabColorOverride, tabColorVars, tabColorsVersion } from "./tabColors";
 import styles from "./WindowGroupTabs.module.css";
+
+const REMOTE_KIND_LABEL: Record<RemoteTarget["kind"], string> = {
+  ssh: "SSH",
+  wsl: "WSL",
+  devContainer: "Dev Container",
+};
+
+function resolveTabRemote(root: string | null, remoteHost: string | null | undefined) {
+  const parsed = root ? parseRemoteLocation(root) : null;
+  if (!parsed) return null;
+  const host =
+    remoteHost ||
+    recentRemotes().find((x) => sameTarget(x.target, parsed.target) && x.path === parsed.path)?.host ||
+    targetName(parsed.target);
+  return {
+    kind: parsed.target.kind,
+    kindLabel: REMOTE_KIND_LABEL[parsed.target.kind],
+    host,
+    path: parsed.path,
+  };
+}
 
 const PROJECT_TAB_DRAG = "application/x-openidea-project-tab";
 
@@ -125,111 +149,124 @@ export function WindowGroupTabs() {
         aria-label={tx("Project windows")}
         data-dragging={dragging ? "" : undefined}
       >
-        {tabs.map((tab, index) => (
-          <div
-            ref={(el) => {
-              if (el) itemRefs.current.set(tab.label, el);
-              else itemRefs.current.delete(tab.label);
-            }}
-            className={`${styles.item} ${tab.current ? styles.selected : ""} ${dragging === tab.label ? styles.dragging : ""} ${drop === index ? styles.dropBefore : ""} ${drop === tabs.length && index === tabs.length - 1 ? styles.dropAfter : ""}`}
-            key={tab.label}
-            data-project-tab={tab.label}
-            data-tinted={tab.root && tabColorOverride(tab.root) ? "" : undefined}
-            style={tabColorVars(tab.name, tab.root ? tabColorOverride(tab.root) : null) as CSSProperties}
-            onPointerDown={(e) => {
-              if (!(e.target as Element).closest('[role="tab"]')) return;
-              cancelDrag.current = startPointerDrag(
-                e,
-                e.currentTarget,
-                { type: PROJECT_TAB_DRAG, payload: tab.label },
-                {
-                  ghostContext: styles.tabs,
-                  onStart: () => setDragging(tab.label),
-                  onEnd: (dragged) => {
-                    cancelDrag.current = undefined;
-                    setDragging(null);
-                    setDrop(null);
-                    if (!dragged) return;
-                    dragEnded.current = true;
-                    window.setTimeout(() => {
-                      dragEnded.current = false;
-                    }, 0);
-                  },
-                },
-              );
-            }}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              showContextMenu(e, [
-                {
-                  label: "Move Tab to New Window",
-                  run: () => executeAction("window.detachTab", tab.label),
-                },
-                {
-                  label: tx("Change Project Color…"),
-                  run: () => executeAction("window.setTabColor", tab.label),
-                },
-                { kind: "separator" },
-                {
-                  label: "Close Tab",
-                  run: () => executeAction("window.closeTab", tab.label),
-                },
-                {
-                  label: "Close Other Tabs",
-                  run: () => executeAction("window.closeOtherTabs", tab.label),
-                },
-                {
-                  label: "Close Tabs to the Left",
-                  disabled: index <= 0,
-                  run: () => executeAction("window.closeTabsToLeft", tab.label),
-                },
-                {
-                  label: "Close Tabs to the Right",
-                  disabled: index >= tabs.length - 1,
-                  run: () => executeAction("window.closeTabsToRight", tab.label),
-                },
-              ]);
-            }}
-          >
-            <button
-              className={styles.tab}
-              role="tab"
-              aria-selected={tab.current}
-              tabIndex={tab.current ? 0 : -1}
-              title={tab.root ?? tab.name}
-              onClick={() => {
-                if (!dragEnded.current) run(executeAction("window.selectTab", tab.label));
+        {tabs.map((tab, index) => {
+          const remote = resolveTabRemote(tab.root, tab.remoteHost);
+          const colorName = remote ? basename(remote.path) || tab.name : tab.name;
+          const tabTitle = remote ? `${remote.kindLabel}: ${remote.host} — ${remote.path}` : (tab.root ?? tab.name);
+          return (
+            <div
+              ref={(el) => {
+                if (el) itemRefs.current.set(tab.label, el);
+                else itemRefs.current.delete(tab.label);
               }}
-              onKeyDown={(e) => {
-                if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+              className={`${styles.item} ${tab.current ? styles.selected : ""} ${dragging === tab.label ? styles.dragging : ""} ${drop === index ? styles.dropBefore : ""} ${drop === tabs.length && index === tabs.length - 1 ? styles.dropAfter : ""}`}
+              key={tab.label}
+              data-project-tab={tab.label}
+              data-tinted={tab.root && tabColorOverride(tab.root) ? "" : undefined}
+              style={tabColorVars(colorName, tab.root ? tabColorOverride(tab.root) : null) as CSSProperties}
+              onPointerDown={(e) => {
+                if (!(e.target as Element).closest('[role="tab"]')) return;
+                cancelDrag.current = startPointerDrag(
+                  e,
+                  e.currentTarget,
+                  { type: PROJECT_TAB_DRAG, payload: tab.label },
+                  {
+                    ghostContext: styles.tabs,
+                    onStart: () => setDragging(tab.label),
+                    onEnd: (dragged) => {
+                      cancelDrag.current = undefined;
+                      setDragging(null);
+                      setDrop(null);
+                      if (!dragged) return;
+                      dragEnded.current = true;
+                      window.setTimeout(() => {
+                        dragEnded.current = false;
+                      }, 0);
+                    },
+                  },
+                );
+              }}
+              onContextMenu={(e) => {
                 e.preventDefault();
-                const next =
-                  e.key === "Home"
-                    ? 0
-                    : e.key === "End"
-                      ? tabs.length - 1
-                      : (index + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
-                run(executeAction("window.selectTab", tabs[next]!.label));
+                showContextMenu(e, [
+                  {
+                    label: "Move Tab to New Window",
+                    run: () => executeAction("window.detachTab", tab.label),
+                  },
+                  {
+                    label: tx("Change Project Color…"),
+                    run: () => executeAction("window.setTabColor", tab.label),
+                  },
+                  { kind: "separator" },
+                  {
+                    label: "Close Tab",
+                    run: () => executeAction("window.closeTab", tab.label),
+                  },
+                  {
+                    label: "Close Other Tabs",
+                    run: () => executeAction("window.closeOtherTabs", tab.label),
+                  },
+                  {
+                    label: "Close Tabs to the Left",
+                    disabled: index <= 0,
+                    run: () => executeAction("window.closeTabsToLeft", tab.label),
+                  },
+                  {
+                    label: "Close Tabs to the Right",
+                    disabled: index >= tabs.length - 1,
+                    run: () => executeAction("window.closeTabsToRight", tab.label),
+                  },
+                ]);
               }}
             >
-              <span>{tab.name}</span>
-            </button>
-            <IconButton
-              icon="close"
-              size="small"
-              className={styles.close}
-              title={tx`Close ${tab.name}`}
-              onClick={() => run(executeAction("window.closeTab", tab.label))}
-            />
-            <IconButton
-              icon="external-link"
-              size="small"
-              className={styles.detach}
-              title={tx`Move ${tab.name} to New Window`}
-              onClick={() => run(executeAction("window.detachTab", tab.label))}
-            />
-          </div>
-        ))}
+              <button
+                className={styles.tab}
+                role="tab"
+                aria-selected={tab.current}
+                tabIndex={tab.current ? 0 : -1}
+                title={tabTitle}
+                onClick={() => {
+                  if (!dragEnded.current) run(executeAction("window.selectTab", tab.label));
+                }}
+                onKeyDown={(e) => {
+                  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+                  e.preventDefault();
+                  const next =
+                    e.key === "Home"
+                      ? 0
+                      : e.key === "End"
+                        ? tabs.length - 1
+                        : (index + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+                  run(executeAction("window.selectTab", tabs[next]!.label));
+                }}
+              >
+                <span className={styles.name}>{tab.name}</span>
+                {remote && (
+                  <span className={styles.remoteChip} data-remote-kind={remote.kind}>
+                    <Icon name="remote" size={12} />
+                    <span className={styles.remoteHost}>
+                      {remote.kindLabel} · {remote.host}
+                    </span>
+                  </span>
+                )}
+              </button>
+              <IconButton
+                icon="close"
+                size="small"
+                className={styles.close}
+                title={tx`Close ${tab.name}`}
+                onClick={() => run(executeAction("window.closeTab", tab.label))}
+              />
+              <IconButton
+                icon="external-link"
+                size="small"
+                className={styles.detach}
+                title={tx`Move ${tab.name} to New Window`}
+                onClick={() => run(executeAction("window.detachTab", tab.label))}
+              />
+            </div>
+          );
+        })}
       </div>
     </div>
   );

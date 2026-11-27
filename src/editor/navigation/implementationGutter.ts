@@ -21,7 +21,7 @@ import { iconAreaSource, mapLineStart } from "@/editor/core/cm/iconArea";
 import { isLibrarySource, shownAgain, type EditorDocContext } from "@/editor/api";
 import { docOf, debounce, isUnavailable, lspRequest } from "@/editor/lsp/lsp";
 import { featureBackoff, onServerSettled } from "@/editor/lsp/availability";
-import { isNavigating, onNavigation } from "@/editor/lsp/foreground";
+import { inForeground, onForeground } from "@/editor/lsp/foreground";
 import { readManyFileLines, withDocument } from "@/editor/lsp/files";
 import { locationItems, navigateTo, pinToFind } from "@/editor/lsp/navigation";
 import { openPopup } from "@/editor/lsp/popupStore";
@@ -129,11 +129,11 @@ function watchChanges() {
   onIdeEvent("lspRefresh", (e) => {
     if (e.kind === "inheritance") refreshCaches();
   });
-  // Go to Declaration and the like go first: in-flight marker requests are cancelled and
-  // asked again once the navigation is done.
-  onNavigation((navigating) => {
+  // Requests the user waits for go first (Go to Declaration, ⌥↵, a refactoring): in-flight
+  // marker requests are cancelled and asked again once the user's request is done.
+  onForeground((foreground) => {
     for (const plugin of live) {
-      if (navigating) plugin.yieldToNavigation();
+      if (foreground) plugin.yieldToNavigation();
       else plugin.resumeAfterNavigation();
     }
   });
@@ -766,7 +766,7 @@ class MarkersPlugin {
     if (this.skipped) return;
     const ctx = docOf(view);
     if (!ctx) return;
-    if (isNavigating()) {
+    if (inForeground()) {
       this.yielded = true;
       return;
     }

@@ -2439,7 +2439,7 @@ export const commands = {
 	windowGroupClose: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_close", { label })),
 	/**  Closes several project tabs one by one (each asks about its own unsaved changes), then selects `keep`. */
 	windowGroupCloseTabs: (keep: string, labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_close_tabs", { keep, labels })),
-	windowGroupCurrent: () => typedError<WindowTab[], IdeError>(__TAURI_INVOKE("window_group_current")),
+	windowGroupCurrent: () => typedError<WindowTab_Serialize[], IdeError>(__TAURI_INVOKE("window_group_current")),
 	windowGroupDetach: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_detach", { label })),
 	/**
 	 *  Adds window `label` to this window's group as a new project tab and selects it. Unlike
@@ -2739,6 +2739,13 @@ export type AgentCommand = {
 	/**  What to type after the command, when it takes input. */
 	hint: string | null,
 	source?: AgentCommandSource,
+	/**  Fixed subcommand/argument choices advertised by the agent (e.g. `list`, `info` for `/skills`). */
+	choices?: AgentCommandChoice[],
+};
+
+export type AgentCommandChoice = {
+	name: string,
+	description?: string,
 };
 
 /**  Why the executable cannot be changed in built-in agent settings. */
@@ -2804,6 +2811,8 @@ export type AgentContextCategory = {
 	name: string,
 	tokens: number,
 	kind: string | null,
+	/**  Visual section group (e.g. `"System"`, `"User Context"`). */
+	group?: string | null,
 };
 
 export type AgentContextUsage = {
@@ -2813,11 +2822,13 @@ export type AgentContextUsage = {
 	model: string,
 	isAutoCompactEnabled: boolean | null,
 	autoCompactThreshold: number | null,
+	/**  Tokens reserved for model response / output buffer, when the agent reports it. */
+	reservedTokens?: number | null,
 };
 
 export type AgentCost = {
 	amount: number | null,
-	/**  ISO 4217 code, e.g. `USD`. */
+	/**  ISO 4217 code (e.g. `USD`), or `"credits"` for AI-credit billing. */
 	currency: string,
 };
 
@@ -3730,6 +3741,8 @@ export type AppearanceSettings_Deserialize = {
 	smoothScrolling?: boolean,
 	fullPathInTitle?: boolean,
 	projectColorsInToolbar?: boolean,
+	/**  Strength of the project colour tint in the window header, in percent (10–70). */
+	projectColorStrength?: number,
 	dndWithAltOnly?: boolean,
 	menuIcons?: boolean,
 	/**  `hamburger` | `merged` | `toolbar` (a separate row): main menu presentation in the frameless title bar. */
@@ -3807,6 +3820,8 @@ export type AppearanceSettings_Serialize = {
 	smoothScrolling: boolean,
 	fullPathInTitle: boolean,
 	projectColorsInToolbar: boolean,
+	/**  Strength of the project colour tint in the window header, in percent (10–70). */
+	projectColorStrength: number,
 	dndWithAltOnly: boolean,
 	menuIcons: boolean,
 	/**  `hamburger` | `merged` | `toolbar` (a separate row): main menu presentation in the frameless title bar. */
@@ -5514,6 +5529,11 @@ export type DbIndexInfo = {
 	name: string,
 	unique: boolean,
 	columns: string[],
+	/**
+	 *  The key this index enforces; such an index is dropped with its constraint, not `drop index`.
+	 *  `None` for a plain index, and on engines that don't tell.
+	 */
+	key?: DbKeyKind | null,
 };
 
 /**  Schemas tab: the databases / schemas the tree shows. Names may use `*` and `?`. */
@@ -5578,6 +5598,9 @@ export type DbJdbcDriver_Serialize = {
 	className: string,
 	urlTemplate: string,
 };
+
+/**  A table key backed by an index. */
+export type DbKeyKind = "primary" | "unique";
 
 export type DbMysqlOptions = {
 	/**  Empty: the databases the dump names. */
@@ -6908,6 +6931,10 @@ export type EditorGeneralSettings = {
 	removeTrailingBlankLines?: boolean,
 	/**  Copy as rich text (HTML with syntax colours) by default. */
 	richTextCopy?: boolean,
+	/**  Gutter › Highlight modified lines in the gutter: the VCS change bars next to the line numbers. */
+	highlightModifiedLines?: boolean,
+	/**  Gutter › Highlight modified lines in error stripe on the scrollbar (with `highlight_modified_lines`). */
+	highlightModifiedLinesInScrollbar?: boolean,
 };
 
 /**
@@ -9215,7 +9242,7 @@ export type JetBrainsSettings = {
 	entries: string[],
 	/**
 	 *  Entry name → text, for the files OpenIDEA reads: `colors/*.icls`, `keymaps/*.xml`,
-	 *  `codestyles/*.xml` and some of `options/`.
+	 *  `codestyles/*.xml`, `templates/*.xml` and some of `options/`.
 	 */
 	files: { [key in string]: string },
 };
@@ -15140,11 +15167,22 @@ export type WindowRequest_Serialize =
 /**  Open and acknowledge validation by the shared content editor. */
 ({ kind: "contentTab"; tab: ContentTab }) & { args?: never; config?: never; cwd?: never; debug?: never; env?: never; id?: never; key?: never; operation?: never; program?: never; title?: never } | ({ kind: "run"; operation: string; config: RunConfig_Serialize; debug: boolean }) & { args?: never; cwd?: never; env?: never; id?: never; key?: never; program?: never; tab?: never; title?: never } | ({ kind: "terminal"; operation: string; key: string; title: string; program: IpcPath; args: string[]; env: { [key in string]: string }; cwd: IpcPath }) & { config?: never; debug?: never; id?: never; tab?: never };
 
-export type WindowTab = {
+export type WindowTab = WindowTab_Serialize | WindowTab_Deserialize;
+
+export type WindowTab_Deserialize = {
 	label: string,
 	name: string,
 	root: IpcPath | null,
 	current: boolean,
+	remoteHost?: string | null,
+};
+
+export type WindowTab_Serialize = {
+	label: string,
+	name: string,
+	root: IpcPath | null,
+	current: boolean,
+	remoteHost?: string | null,
 };
 
 /**  A workbench event delivered to plugins. */

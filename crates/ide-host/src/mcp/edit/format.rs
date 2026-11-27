@@ -44,6 +44,25 @@ To remove unused imports without reformatting, use optimize_imports.",
     ))
 }
 
+pub(super) fn optimize_imports() -> Tool {
+    Tool::new(
+        "optimize_imports",
+        "Removes unused imports and orders the remaining ones in the specified files, without reformatting them.
+Returns a unified diff of the changes that the import optimizer applied, or \"ok\" when the imports are already \
+optimized.
+The diff shows the import changes only. It never repeats the edit that you applied yourself.
+The diff stops at 200 lines. A footer names the file(s) that it leaves out.
+To also apply the code formatter, use reformat_file with optimizeImports: true.",
+        |call| async move { run(&call, Job { organize: true, format: false }).await },
+    )
+    .write()
+    .param(Param::required(
+        "files",
+        ParamType::StringList,
+        "List of project-relative files whose imports to optimize. Duplicate paths are ignored after normalization.",
+    ))
+}
+
 #[derive(Clone, Copy)]
 struct Job {
     organize: bool,

@@ -5,12 +5,15 @@ import type { HostMetrics, RemoteSession } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { disableRemote, enableRemote, useRemote } from "@/platform/remote";
 import { RemoteResources, RemoteResourcesDashboard } from "./RemoteResources";
+import { RemoteStatus } from "./RemoteStatus";
 import {
   compactResourceText,
+  diskUsedBytes,
   diskUsedPercent,
   formatRate,
   memoryPercent,
   refreshRemoteResources,
+  resourceTooltip,
   sparklineGeometry,
   summarizePressure,
   syncRemoteResourcesSession,
@@ -93,7 +96,9 @@ describe("remote resource calculations", () => {
   it("formats compact pill text, percentages and transfer rates", () => {
     expect(compactResourceText(sampleMetrics)).toBe("34% · 6G");
     expect(memoryPercent(sampleMetrics)).toBe(37.5);
+    expect(diskUsedBytes(sampleMetrics)).toBe(116 * GB);
     expect(diskUsedPercent(sampleMetrics)).toBeCloseTo(58);
+    expect(resourceTooltip(sampleMetrics, 18)).toContain("Disk 116 GB / 200 GB (84 GB free)");
     expect(formatRate(0)).toBe("0 B/s");
     expect(formatRate(512 * 1024)).toBe("512 KB/s");
     expect(formatRate(null)).toBe("–");
@@ -166,7 +171,8 @@ describe("remote resources widget and dashboard", () => {
     expect(screen.getByText("SSH: deng@thinkpad")).toBeTruthy();
     expect(screen.getByText("16 cores · load 1.42 · 1.18 · 0.95")).toBeTruthy();
     expect(screen.getByText("6G / 16G")).toBeTruthy();
-    expect(screen.getByText("84 GB free")).toBeTruthy();
+    expect(screen.getByText("116G / 200G")).toBeTruthy();
+    expect(screen.getByText("84G free · R 4M/s · W 12M/s")).toBeTruthy();
     expect(screen.getByRole("group", { name: "Language servers" }).textContent).toContain("rust-analyzer");
     expect(screen.getByRole("group", { name: "Other host processes" }).textContent).toContain("dockerd");
 
@@ -205,11 +211,13 @@ describe("remote resources widget and dashboard", () => {
     render(
       <RemoteResourcesDashboard
         hostLabel="SSH: untrusted"
-        metrics={sampleMetrics}
+        metrics={{ ...sampleMetrics, diskReadBytesPerSec: null, diskWriteBytesPerSec: null }}
         rttMs={24}
-        history={[{ cpuPercent: 34, memoryPercent: 37.5, netBytesPerSec: 1000, diskBytesPerSec: 2000, rttMs: 24 }]}
+        history={[{ cpuPercent: 34, memoryPercent: 37.5, netBytesPerSec: 1000, diskBytesPerSec: null, rttMs: 24 }]}
       />,
     );
+    expect(screen.getByText("116G / 200G")).toBeTruthy();
+    expect(screen.getByText("58% · 84 GB free")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /End Process/ })).toBeNull();
 
     let resolveSlow!: (v: string) => void;
@@ -227,5 +235,18 @@ describe("remote resources widget and dashboard", () => {
     resolveSlow(JSON.stringify(sampleMetrics));
     await act(async () => inflight);
     expect(useRemoteResources.getState().metrics).toBeNull();
+  });
+
+  it("renders a server icon on the Remote Host status bar label and highlights disconnected text in warning tone", () => {
+    act(() => enableRemote(sshSession("deng@thinkpad")));
+    const { rerender } = render(<RemoteStatus />);
+    const connected = screen.getByRole("button", { name: "SSH: deng@thinkpad" });
+    expect(connected.querySelector("svg")).not.toBeNull();
+    expect(connected.querySelector('[class*="lost"]')).toBeNull();
+
+    act(() => useRemote.setState({ lost: "deng@thinkpad" }));
+    rerender(<RemoteStatus />);
+    const disconnected = screen.getByRole("button", { name: "SSH: deng@thinkpad (disconnected)" });
+    expect(disconnected.querySelector('[class*="lost"]')).not.toBeNull();
   });
 });

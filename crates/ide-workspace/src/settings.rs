@@ -522,7 +522,7 @@ impl SettingsStore {
 pub struct JetBrainsSettings {
     pub entries: Vec<String>,
     /// Entry name → text, for the files OpenIDEA reads: `colors/*.icls`, `keymaps/*.xml`,
-    /// `codestyles/*.xml` and some of `options/`.
+    /// `codestyles/*.xml`, `templates/*.xml` and some of `options/`.
     pub files: BTreeMap<String, String>,
 }
 
@@ -540,7 +540,8 @@ const JETBRAINS_OPTIONS: [&str; 9] = [
     "options/linux/keymap.xml",
 ];
 /// Folders whose files are all read: (folder, extension).
-const JETBRAINS_READ_DIRS: [(&str, &str); 3] = [("colors/", ".icls"), ("keymaps/", ".xml"), ("codestyles/", ".xml")];
+const JETBRAINS_READ_DIRS: [(&str, &str); 4] =
+    [("colors/", ".icls"), ("keymaps/", ".xml"), ("codestyles/", ".xml"), ("templates/", ".xml")];
 const JETBRAINS_MAX_TEXT: u64 = 4 << 20;
 
 /// The settings of a JetBrains IDE: an exported `settings.zip`, or the IDE's own settings folder
@@ -1147,12 +1148,15 @@ mod tests {
                 ("keymaps/macOS.xml", "<keymap/>"),
                 ("keymaps/nested/ignored.xml", "<keymap/>"),
                 ("codestyles/Default.xml", "<code_scheme/>"),
+                ("templates/Python.xml", "<templateSet name=\"Python\"/>"),
+                ("templates/nested/ignored.xml", "<templateSet/>"),
+                ("templates/ignored.txt", "not XML"),
                 ("options/mac/keymap.xml", "<application/>"),
                 ("options/terminal-font.xml", "<application/>"),
             ],
         );
         let read = read_jetbrains_settings(&ok).unwrap();
-        assert_eq!(read.entries.len(), 9);
+        assert_eq!(read.entries.len(), 12);
         assert_eq!(
             read.files.keys().collect::<Vec<_>>(),
             [
@@ -1161,7 +1165,8 @@ mod tests {
                 "keymaps/macOS.xml",
                 "options/editor-font.xml",
                 "options/mac/keymap.xml",
-                "options/terminal-font.xml"
+                "options/terminal-font.xml",
+                "templates/Python.xml"
             ]
         );
         assert!(read_jetbrains_settings(&write("other.zip", &[("options/editor.xml", "")])).is_err());
@@ -1185,6 +1190,8 @@ mod tests {
         put("options/mac/keymap.xml", "<application/>");
         put("keymaps/macOS.xml", "<keymap/>");
         put("codestyles/Default.xml", "<code_scheme/>");
+        put("templates/Python.xml", "<templateSet name=\"Python\"/>");
+        put("templates/nested/ignored.xml", "<templateSet/>");
         put("plugins/Tools/lib/tools.jar", "jar");
 
         let read = read_jetbrains_settings(&config).unwrap();
@@ -1195,7 +1202,8 @@ mod tests {
                 "colors/_@user_Darcula.icls",
                 "keymaps/macOS.xml",
                 "options/editor-font.xml",
-                "options/mac/keymap.xml"
+                "options/mac/keymap.xml",
+                "templates/Python.xml"
             ]
         );
         assert_eq!(
@@ -1207,6 +1215,7 @@ mod tests {
                 "colors/_@user_Darcula.icls",
                 "keymaps/macOS.xml",
                 "codestyles/Default.xml",
+                "templates/Python.xml",
                 "installed.txt"
             ]
         );
@@ -1244,13 +1253,28 @@ mod tests {
     }
 
     #[test]
-    fn jetbrains_folder_bounds_mapped_text_like_an_archive() {
+    fn jetbrains_folder_and_archive_bound_mapped_template_text() {
+        use std::io::Write;
+
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir(tmp.path().join("options")).unwrap();
+        std::fs::create_dir(tmp.path().join("templates")).unwrap();
         std::fs::write(tmp.path().join("options/editor-font.xml"), vec![b'x'; JETBRAINS_MAX_TEXT as usize + 1])
             .unwrap();
+        let large = vec![b'x'; JETBRAINS_MAX_TEXT as usize + 1];
+        std::fs::write(tmp.path().join("templates/Python.xml"), &large).unwrap();
         let read = read_jetbrains_settings(tmp.path()).unwrap();
         assert_eq!(read.files["options/editor-font.xml"].len(), JETBRAINS_MAX_TEXT as usize);
+        assert_eq!(read.files["templates/Python.xml"].len(), JETBRAINS_MAX_TEXT as usize);
+
+        let archive = tmp.path().join("settings.zip");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+        zip.start_file(JETBRAINS_MARKER, zip::write::SimpleFileOptions::default()).unwrap();
+        zip.start_file("templates/Python.xml", zip::write::SimpleFileOptions::default()).unwrap();
+        zip.write_all(&large).unwrap();
+        zip.finish().unwrap();
+        let read = read_jetbrains_settings(&archive).unwrap();
+        assert_eq!(read.files["templates/Python.xml"].len(), JETBRAINS_MAX_TEXT as usize);
     }
 
     #[test]

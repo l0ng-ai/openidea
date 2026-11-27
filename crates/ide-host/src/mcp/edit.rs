@@ -20,7 +20,14 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 pub fn tools() -> Vec<Tool> {
-    vec![create_new_file(), apply_patch(), format::reformat_file(), rename::rename_refactoring(), open_file_in_editor()]
+    vec![
+        create_new_file(),
+        apply_patch(),
+        format::reformat_file(),
+        format::optimize_imports(),
+        rename::rename_refactoring(),
+        open_file_in_editor(),
+    ]
 }
 
 /// What tools without a result value answer (JetBrains renders `Unit` so).

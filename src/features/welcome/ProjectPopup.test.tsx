@@ -73,6 +73,32 @@ describe("ProjectPopup", () => {
     expect(text.indexOf("datahub-front")).toBeLessThan(text.indexOf("Recent Projects"));
     expect(text.indexOf("Recent Projects")).toBeLessThan(text.indexOf("other"));
     expect(within(list).getAllByText("FastAPIProject")).toHaveLength(1);
+    const remoteRow = within(list).getByText("FastAPIProject").closest('[role="option"]')!;
+    expect(remoteRow.querySelector("[data-remote-badge]")).not.toBeNull();
+    expect(remoteRow.querySelector('[data-remote-kind="wsl"]')?.textContent).toContain("WSL");
+  });
+
+  it("leaves local project avatars and rows free of remote badges", async () => {
+    open = [
+      { name: "same-name", root: "/home/me/same-name", current: false, remote: { kind: "ssh", config: "devbox" } },
+      { name: "same-name", root: "/Users/me/same-name", current: true, remote: null },
+    ];
+    groups = [];
+    recent = [];
+    const anchor = createRef<HTMLButtonElement>();
+    render(
+      <>
+        <button ref={anchor} />
+        <ProjectPopup anchor={anchor} onClose={() => {}} />
+      </>,
+    );
+    await screen.findByText("Open Projects");
+    const rows = screen.getAllByRole("option").filter((r) => r.textContent?.includes("same-name"));
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.querySelector("[data-remote-badge]")).not.toBeNull();
+    expect(rows[0]!.querySelector('[data-remote-kind="ssh"]')?.textContent).toContain("SSH");
+    expect(rows[1]!.querySelector("[data-remote-badge]")).toBeNull();
+    expect(rows[1]!.querySelector("[data-remote-kind]")).toBeNull();
   });
 
   it("lists recent projects under the Welcome screen's groups, collapsed or not, then the ungrouped ones", async () => {

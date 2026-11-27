@@ -26,6 +26,49 @@ enum State {
     BlockComment,
 }
 
+// Starts just after the opening `/*`. ClickHouse supports nested block comments.
+fn after_clickhouse_block_comment(mut text: &str) -> &str {
+    let mut depth = 1usize;
+    while let Some(at) = text.find(['/', '*']) {
+        text = &text[at..];
+        if let Some(rest) = text.strip_prefix("/*") {
+            text = rest;
+            depth += 1;
+        } else if let Some(rest) = text.strip_prefix("*/") {
+            text = rest;
+            depth -= 1;
+            if depth == 0 {
+                return text;
+            }
+        } else {
+            text = &text[1..];
+        }
+    }
+    ""
+}
+
+/// Consume an unquoted leading word, leaving quoted identifiers and SQL literals alone.
+pub(super) fn clickhouse_keyword<'a>(sql: &mut &'a str) -> Option<&'a str> {
+    let mut text = *sql;
+    loop {
+        text = text.trim_start_matches(|ch: char| ch.is_whitespace() || ch == '\u{feff}');
+        if let Some(comment) = text.strip_prefix('#').or_else(|| text.strip_prefix("--")) {
+            text = comment.split_once('\n').map_or("", |(_, rest)| rest);
+        } else if let Some(comment) = text.strip_prefix("/*") {
+            text = after_clickhouse_block_comment(comment);
+        } else {
+            break;
+        }
+    }
+    let end = text.find(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_').unwrap_or(text.len());
+    if end == 0 {
+        return None;
+    }
+    let (keyword, rest) = text.split_at(end);
+    *sql = rest;
+    Some(keyword)
+}
+
 /// Every statement of `text` that contains more than whitespace and comments.
 pub fn split(text: &str, driver: DbDriver) -> Vec<SqlStatement> {
     let mysql = driver == DbDriver::Mysql;
@@ -134,6 +177,12 @@ pub fn split(text: &str, driver: DbDriver) -> Vec<SqlStatement> {
                     has_code = true;
                 }
                 '/' if next == Some('*') => {
+                    if clickhouse {
+                        let rest = after_clickhouse_block_comment(&text[byte_at(i + 2)..]);
+                        let end = text.len() - rest.len();
+                        i = chars.partition_point(|&(offset, _)| offset < end);
+                        continue;
+                    }
                     state = State::BlockComment;
                     i += 1;
                 }
@@ -154,7 +203,7 @@ pub fn split(text: &str, driver: DbDriver) -> Vec<SqlStatement> {
                     state = State::LineComment;
                     i += 1;
                 }
-                '#' if mysql => state = State::LineComment,
+                '#' if mysql || clickhouse => state = State::LineComment,
                 // The `//` of `file://…` (PUT, GET) or another URL is not a comment.
                 '/' if snowflake && next == Some('/') && chars[..i].last().is_some_and(|&(_, c)| c == ':') => {
                     has_code = true;
@@ -415,6 +464,15 @@ fn utf16_slice(text: &str, from: u32, to: u32) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clickhouse_session_settings_split_after_comments_and_quoted_values() {
+        let set = "# leading ;\n/* outer /* nested ; */ tail ; */ SET log_comment='a;b', max_threads=1";
+        let query = "SELECT getSetting('log_comment')";
+        let script = format!("{set}; {query};");
+        let statements: Vec<_> = split(&script, DbDriver::Clickhouse).into_iter().map(|item| item.text).collect();
+        assert_eq!(statements, [set, query]);
+    }
 
     fn texts(sql: &str, d: DbDriver) -> Vec<String> {
         split(sql, d).into_iter().map(|s| s.text).collect()

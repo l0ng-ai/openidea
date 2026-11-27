@@ -696,6 +696,52 @@ async fn an_archived_task_keeps_no_command_list_and_completes_the_known_one() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn archiving_a_task_keeps_the_permission_answer_that_is_settling() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask { prompt: text("hello"), provider: "claude".into(), ..Default::default() })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    let handle = mgr.task(&task.id).unwrap();
+    let permission = *handle.permissions.lock().keys().next().unwrap();
+    let answered = |e: &AgentEntry| matches!(e, AgentEntry::Permission { chosen: Some(name), .. } if name == "Allow");
+
+    let status_at_answer = tokio::task::block_in_place(|| {
+        // Pause delivery of the changed entry so archive runs before the reply handler returns.
+        let _delivery = handle.dirty.lock();
+        mgr.respond(&task.id, permission, Some("yes".into())).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            let s = handle.state.lock();
+            if s.history.conversation.main.entries.iter().any(answered) {
+                break s.task.status;
+            }
+            drop(s);
+            assert!(std::time::Instant::now() < deadline, "permission answer was never recorded");
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        mgr.archive(&task.id).unwrap();
+        status
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while handle.state.lock().busy {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the archived turn did not finish");
+    mgr.shutdown();
+
+    let restored = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    assert_eq!(restored.task(&task.id).unwrap().state.lock().task.status, AgentStatus::Archived);
+    assert!(restored.entries(&task.id, None).unwrap().iter().any(answered));
+    assert_eq!(status_at_answer, AgentStatus::Running, "the recorded answer must finish the wait for input");
+    restored.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_conversation_that_cannot_be_read_is_never_saved_over() {
     let tmp = tempfile::tempdir().unwrap();
     let agent = Arc::new(FakeAgent::default());
@@ -1281,6 +1327,7 @@ async fn builtin_commands_only_fill_verified_gaps_and_preserve_advertised_metada
         description: "Agent supplied description".into(),
         hint: Some("instructions".into()),
         source: AgentCommandSource::Command,
+        choices: Vec::new(),
     };
     mgr.task(&task.id).unwrap().state.lock().task.commands = vec![advertised.clone()];
     // The task's provider wins over the caller's provider; metadata is not replaced.
