@@ -93,11 +93,38 @@ fn has_toml_table(file: &Path, table: &str) -> bool {
 /// other than `null` or `false`: an object (`eslintConfig`), a dependency's version
 /// (`dependencies.tailwindcss`) or a switch that is on (`cmkOptions.enabled`).
 fn has_json_key(file: &Path, key: &str) -> bool {
-    let Ok(text) = std::fs::read_to_string(file) else { return false };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&ide_core::jsonc::strip(&text)) else { return false };
-    key.split('.')
-        .try_fold(&value, |v, key| v.get(key))
-        .is_some_and(|v| !v.is_null() && *v != serde_json::Value::Bool(false))
+    json_key(file, key, 0).is_some_and(|v| !v.is_null() && v != serde_json::Value::Bool(false))
+}
+
+/// The dotted `key` of the JSON `file`. A tsconfig.json / jsconfig.json without it inherits it
+/// through `extends` from a local file (`./base`, `../tsconfig.base.json`), the first one defining
+/// it winning, as CSS Modules Kit reads `cmkOptions`.
+fn json_key(file: &Path, key: &str, depth: usize) -> Option<serde_json::Value> {
+    // ponytail: package `extends` (`@tsconfig/node20`) are not resolved; only local files.
+    const MAX_DEPTH: usize = 8;
+    let text = std::fs::read_to_string(file).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&ide_core::jsonc::strip(&text)).ok()?;
+    if let Some(v) = key.split('.').try_fold(&value, |v, key| v.get(key)) {
+        return Some(v.clone());
+    }
+    let name = file.file_name()?.to_string_lossy();
+    if depth >= MAX_DEPTH || !(name.starts_with("tsconfig") || name.starts_with("jsconfig")) {
+        return None;
+    }
+    let extends = match value.get("extends")? {
+        serde_json::Value::String(s) => vec![s.as_str()],
+        serde_json::Value::Array(a) => a.iter().filter_map(serde_json::Value::as_str).collect(),
+        _ => return None,
+    };
+    extends.into_iter().filter(|e| e.starts_with("./") || e.starts_with("../")).find_map(|e| {
+        let base = file.parent()?.join(e);
+        let base = if base.is_file() {
+            base
+        } else {
+            base.with_file_name(format!("{}.json", base.file_name()?.to_string_lossy()))
+        };
+        json_key(&base, key, depth + 1)
+    })
 }
 
 /// `path` is (or, after its creation or removal, was) a root marker of the
@@ -202,6 +229,20 @@ mod tests {
         assert!(has_marker(dir, cmk));
         std::fs::write(dir.join("tsconfig.json"), tsconfig("false")).unwrap();
         assert!(!has_marker(dir, cmk));
+        // Inherited through a local `extends`, which the file itself can turn off.
+        std::fs::create_dir_all(dir.join("app")).unwrap();
+        std::fs::write(dir.join("tsconfig.json"), tsconfig("true")).unwrap();
+        std::fs::write(dir.join("app/tsconfig.json"), r#"{ "extends": ["@tsconfig/strictest", "../tsconfig"] }"#)
+            .unwrap();
+        assert!(has_marker(&dir.join("app"), cmk));
+        std::fs::write(
+            dir.join("app/tsconfig.json"),
+            r#"{ "extends": "../tsconfig.json", "cmkOptions": { "enabled": false } }"#,
+        )
+        .unwrap();
+        assert!(!has_marker(&dir.join("app"), cmk));
+        std::fs::write(dir.join("app/tsconfig.json"), r#"{ "extends": "./tsconfig.json" }"#).unwrap();
+        assert!(!has_marker(&dir.join("app"), cmk), "a cycle ends");
     }
 
     #[test]
