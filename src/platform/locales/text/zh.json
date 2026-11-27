@@ -1098,6 +1098,7 @@
   "Convert Indents to Spaces": "将缩进转换为空格",
   "Convert Indents to Tabs": "将缩进转换为制表符",
   "Reverse Lines": "反转行序",
+  "Delete Duplicate Lines": "删除重复行",
   "Fill Paragraph": "填充段落",
   "Unwrap/Remove…": "解包/移除…",
   "Basic": "基本补全",
