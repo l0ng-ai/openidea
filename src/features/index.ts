@@ -39,6 +39,7 @@ import { activate as viewers } from "./viewers";
 import { activate as notebook } from "./notebook";
 import { activate as plots } from "./plots";
 import { activate as pythonConsole } from "./python-console";
+import { activate as django } from "./django";
 import { activate as pythonPackages } from "./python-packages";
 import { activate as web } from "./web";
 import { activate as analysis } from "./analysis";
@@ -97,6 +98,7 @@ const features: Array<[string, Activate]> = [
   ["notebook", notebook],
   ["plots", plots],
   ["python-console", pythonConsole],
+  ["django", django],
   ["python-packages", pythonPackages],
   ["viewers", viewers],
   ["web", web],

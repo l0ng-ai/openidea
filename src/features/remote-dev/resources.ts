@@ -106,11 +106,18 @@ export function memoryPercent(
   return Math.min(100, Math.max(0, (m.memoryUsedBytes / m.memoryTotalBytes) * 100));
 }
 
-export function diskUsedPercent(
+export function diskUsedBytes(
   m: Pick<HostMetrics, "diskAvailableBytes" | "diskTotalBytes"> | null | undefined,
 ): number | null {
   if (!m || m.diskAvailableBytes == null || m.diskTotalBytes == null || m.diskTotalBytes <= 0) return null;
-  const used = Math.max(0, m.diskTotalBytes - m.diskAvailableBytes);
+  return Math.max(0, m.diskTotalBytes - m.diskAvailableBytes);
+}
+
+export function diskUsedPercent(
+  m: Pick<HostMetrics, "diskAvailableBytes" | "diskTotalBytes"> | null | undefined,
+): number | null {
+  const used = diskUsedBytes(m);
+  if (used == null || m?.diskTotalBytes == null || m.diskTotalBytes <= 0) return null;
   return Math.min(100, Math.max(0, (used / m.diskTotalBytes) * 100));
 }
 
@@ -191,7 +198,12 @@ export function resourceTooltip(m: HostMetrics | null, rttMs: number | null): st
   if (netTotal != null) {
     parts.push(`Net ↓ ${formatRate(m.netRxBytesPerSec)} ↑ ${formatRate(m.netTxBytesPerSec)}`);
   }
-  if (m.diskAvailableBytes != null) {
+  const diskUsed = diskUsedBytes(m);
+  if (diskUsed != null && m.diskTotalBytes != null) {
+    parts.push(
+      `Disk ${formatSize(diskUsed)} / ${formatSize(m.diskTotalBytes)} (${formatSize(m.diskAvailableBytes)} free)`,
+    );
+  } else if (m.diskAvailableBytes != null) {
     parts.push(`Disk ${formatSize(m.diskAvailableBytes)} free`);
   }
   if (rttMs != null) {

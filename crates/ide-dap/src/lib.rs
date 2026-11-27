@@ -901,6 +901,23 @@ impl DebugManager {
         custom_command: impl FnOnce(&str) -> Option<String>,
         exception_classes: Option<Arc<dyn ide_jvm_inspect::ExceptionClassBreakpoints>>,
     ) -> IdeResult<DebugSessionId> {
+        self.start_with_cancel(config, owner, custom_command, exception_classes, ide_core::CancellationToken::new())
+            .await
+    }
+
+    /// [`start_with_exception_classes`](Self::start_with_exception_classes), cancelling a pending
+    /// pre-launch build, adapter launch or configuration when `cancel` is triggered.
+    pub async fn start_with_cancel(
+        &self,
+        config: LaunchConfig,
+        owner: SessionOwner,
+        custom_command: impl FnOnce(&str) -> Option<String>,
+        exception_classes: Option<Arc<dyn ide_jvm_inspect::ExceptionClassBreakpoints>>,
+        cancel: ide_core::CancellationToken,
+    ) -> IdeResult<DebugSessionId> {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
         let mut arguments = launch_arguments(&config)?;
         if debugpy::listens(&config.adapter, &config.request, &arguments) {
             debugpy::require_free_port(&arguments).await?;
@@ -992,7 +1009,7 @@ impl DebugManager {
                 .unwrap_or_else(|| vec!["build".into()]);
             let filter = cargo::CargoFilter::from_json(cargo.get("filter"));
             let sink = owner.sink.clone();
-            let program = cargo::build(&cwd, &cargo_args, &filter, move |line| {
+            let program = cargo::build(&cwd, &cargo_args, &filter, &cancel, move |line| {
                 sink.emit(ide_core::IdeEvent::Debug {
                     session: id,
                     event: ide_core::event::DebugEvent::Output { category: "console".into(), output: line },
@@ -1008,7 +1025,11 @@ impl DebugManager {
                 other => other.as_u64().and_then(|p| u32::try_from(p).ok()),
             });
             if let Some(pid) = pid {
-                let port = attach::enable_node_inspector(pid).await?;
+                let port = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return Err(IdeError::cancelled()),
+                    port = attach::enable_node_inspector(pid) => port?,
+                };
                 if let Some(obj) = arguments.as_object_mut() {
                     obj.remove("processId");
                     obj.insert("port".into(), port.into());
@@ -1056,6 +1077,7 @@ impl DebugManager {
             spec,
             port,
             exception_classes,
+            cancel,
         )
         .await
     }
@@ -1090,6 +1112,7 @@ impl DebugManager {
             spec,
             port,
             None,
+            ide_core::CancellationToken::new(),
         )
         .await
         .map(|_| ())
@@ -1108,11 +1131,19 @@ impl DebugManager {
         spec: AdapterSpec,
         reuse_port: Option<u16>,
         exception_classes: Option<Arc<dyn ide_jvm_inspect::ExceptionClassBreakpoints>>,
+        cancel: ide_core::CancellationToken,
     ) -> IdeResult<DebugSessionId> {
         if request != "launch" && request != "attach" {
             return Err(IdeError::invalid(format!("request must be `launch` or `attach`, got `{request}`")));
         }
-        let io = self.launcher.launch(spec.clone(), reuse_port).await?;
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        let io = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(IdeError::cancelled()),
+            io = self.launcher.launch(spec.clone(), reuse_port) => io?,
+        };
         let launch_after_configuration = io.launch_after_configuration && request == "launch";
         let stderr = io.stderr.clone();
         let (conn, incoming) = {
@@ -1133,6 +1164,21 @@ impl DebugManager {
         if let Some(pid) = rdbg_pid {
             session.debuggee_pid.store(i64::from(pid), Ordering::Release);
         }
+        let cancelled = {
+            let mut sessions = self.sessions.lock();
+            if cancel.is_cancelled() {
+                true
+            } else {
+                sessions.insert(id, session.clone());
+                self.order.lock().push(id);
+                false
+            }
+        };
+        if cancelled {
+            session.conn.close();
+            session.kill_processes();
+            return Err(IdeError::cancelled());
+        }
         if let Some(mut output) = io.program_output {
             session.output_drained.send_replace(false);
             let session = session.clone();
@@ -1143,8 +1189,6 @@ impl DebugManager {
                 session.output_drained.send_replace(true);
             });
         }
-        self.sessions.lock().insert(id, session.clone());
-        self.order.lock().push(id);
         // Announced before the event loop runs, so it precedes every adapter event.
         session.emit(ide_core::event::DebugEvent::Started {
             name: session.name.clone(),
@@ -1156,14 +1200,25 @@ impl DebugManager {
         if debugpy::listens(&session.adapter, &session.request, &arguments) {
             session.debugpy_version_unchecked.store(true, Ordering::Release);
         }
+        enum ConfigOutcome {
+            Done(IdeResult<()>),
+            Stopped,
+            Cancelled,
+        }
         let configured = tokio::select! {
             biased;
-            _ = session.startup_cancel.cancelled() => return Err(IdeError::cancelled()),
-            result = self.configure(&session, arguments, launch_after_configuration) => result,
+            _ = session.startup_cancel.cancelled() => ConfigOutcome::Stopped,
+            _ = cancel.cancelled() => ConfigOutcome::Cancelled,
+            result = self.configure(&session, arguments, launch_after_configuration) => ConfigOutcome::Done(result),
         };
         match configured {
-            Ok(()) => Ok(id),
-            Err(e) => {
+            ConfigOutcome::Done(Ok(())) => Ok(id),
+            ConfigOutcome::Stopped => Err(IdeError::cancelled()),
+            ConfigOutcome::Cancelled => {
+                let _ = self.stop(id).await;
+                Err(IdeError::cancelled())
+            }
+            ConfigOutcome::Done(Err(e)) => {
                 let e = if session.conn.is_closed() {
                     let mut msg = format!("debug adapter `{}` exited during startup", session.adapter);
                     let tail = stderr.lock().join("\n");

@@ -227,6 +227,15 @@ impl DbManager {
         }
     }
 
+    /// Retires a closed editor's named sessions without opening any data sources.
+    pub fn release_console(&self, console: crate::ConsoleId<'_>) {
+        for connection in self.pools.lock().values().filter_map(|slot| slot.value.get()) {
+            if let Pool::Clickhouse(pool) = &*connection.pool {
+                pool.release_console(console);
+            }
+        }
+    }
+
     pub async fn disconnect(&self, id: &str) {
         let slot = self.pools.lock().remove(id);
         if let Some(slot) = slot {

@@ -259,6 +259,12 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
     fontStyle: true,
   },
   {
+    id: "gitAnnotationsLastCommit",
+    name: "Annotations › Last commit",
+    path: ["Git"],
+    fg: "--git-annotations-last-commit",
+  },
+  {
     id: "gitBranchChanged",
     name: "Project View › Changed decoration",
     path: ["Git"],

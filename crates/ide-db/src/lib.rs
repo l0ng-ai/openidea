@@ -174,6 +174,30 @@ pub struct IndexInfo {
     pub name: String,
     pub unique: bool,
     pub columns: Vec<String>,
+    /// The key this index enforces; such an index is dropped with its constraint, not `drop index`.
+    /// `None` for a plain index, and on engines that don't tell.
+    #[serde(default)]
+    #[specta(optional)]
+    pub key: Option<DbKeyKind>,
+}
+
+/// A table key backed by an index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DbKeyKind {
+    Primary,
+    Unique,
+}
+
+impl DbKeyKind {
+    /// The [`sql::indexes`] key column: `p` (primary key), `u` (unique constraint).
+    fn from_catalog(v: Option<&str>) -> Option<Self> {
+        match v {
+            Some("p") => Some(Self::Primary),
+            Some("u") => Some(Self::Unique),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -311,6 +335,13 @@ pub struct DbManager {
 }
 
 type Session = Arc<tokio::sync::Mutex<Option<Held>>>;
+
+/// A SQL editor's connection identity within the owning project's lifetime.
+#[derive(Clone, Copy)]
+pub struct ConsoleId<'a> {
+    pub window: &'a str,
+    pub path: &'a str,
+}
 
 const MAX_META_ROWS: usize = 100_000;
 /// Completion columns of the default schema, which are read without the shared cap.
@@ -1173,7 +1204,12 @@ impl DbManager {
             };
             match indexes.last_mut() {
                 Some(last) if last.name == name => last.columns.push(col),
-                _ => indexes.push(IndexInfo { name, unique: flag(&unique), columns: vec![col] }),
+                _ => indexes.push(IndexInfo {
+                    name,
+                    unique: flag(&unique),
+                    columns: vec![col],
+                    key: DbKeyKind::from_catalog(it.next().flatten().as_deref()),
+                }),
             }
         }
         let fk_rows = if matches!(driver, DbDriver::Clickhouse | DbDriver::Snowflake) {
@@ -1603,7 +1639,22 @@ impl DbManager {
         cancel: &CancellationToken,
         schema: Option<&str>,
     ) -> IdeResult<QueryResult> {
-        let r = self.run(id, statement, skip, max_rows, cancel, schema).await;
+        self.execute_in_console(id, statement, skip, max_rows, cancel, schema, None).await
+    }
+
+    /// Executes with the originating editor's named HTTP session when supported by the driver.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn execute_in_console(
+        &self,
+        id: &str,
+        statement: &str,
+        skip: usize,
+        max_rows: usize,
+        cancel: &CancellationToken,
+        schema: Option<&str>,
+        console: Option<ConsoleId<'_>>,
+    ) -> IdeResult<QueryResult> {
+        let r = self.run(id, statement, skip, max_rows, cancel, schema, console).await;
         let ran = match &r {
             Ok(_) => true,
             Err(e) => !matches!(e.kind, ErrorKind::Cancelled | ErrorKind::PermissionDenied),
@@ -1625,7 +1676,19 @@ impl DbManager {
         cancel: &CancellationToken,
         schema: Option<&str>,
     ) -> IdeResult<QueryResult> {
-        self.run_paged(id, statement, row, 1, cancel, schema, false).await
+        self.read_console_row(id, statement, row, cancel, schema, None).await
+    }
+
+    pub async fn read_console_row(
+        &self,
+        id: &str,
+        statement: &str,
+        row: usize,
+        cancel: &CancellationToken,
+        schema: Option<&str>,
+        console: Option<ConsoleId<'_>>,
+    ) -> IdeResult<QueryResult> {
+        self.run_paged(id, statement, row, 1, cancel, schema, console, false).await
     }
 
     /// Closes the cursor that reads the pages of `statement` on `id` (its result tab was closed).
@@ -1663,6 +1726,17 @@ impl DbManager {
         cancel: &CancellationToken,
         schema: Option<&str>,
     ) -> IdeResult<Vec<PlanNode>> {
+        self.explain_in_console(id, statement, cancel, schema, None).await
+    }
+
+    pub async fn explain_in_console(
+        &self,
+        id: &str,
+        statement: &str,
+        cancel: &CancellationToken,
+        schema: Option<&str>,
+        console: Option<ConsoleId<'_>>,
+    ) -> IdeResult<Vec<PlanNode>> {
         let pool = self.pool(id).await?;
         let driver = pool.driver();
         if let Pool::Jdbc(jdbc) = &*pool {
@@ -1674,12 +1748,12 @@ impl DbManager {
                 // The driver can execute a whole script. Have DuckDB count its statements before prefixing EXPLAIN.
                 let literal = sql::quote_literal(driver, sql);
                 let check = format!("SELECT json_array_length(json_serialize_plan({literal}), '$.plans')");
-                let result = jdbc.query_in_schema(&check, 0, 1, cancel, schema).await?;
+                let result = self.run(id, &check, 0, 1, cancel, schema, console).await?;
                 if result.rows.first().and_then(|r| r.first()).and_then(Option::as_deref) != Some("1") {
                     return Err(IdeError::invalid("Choose one statement to explain"));
                 }
             }
-            let result = jdbc.query_in_schema(&format!("EXPLAIN (FORMAT JSON) {sql}"), 0, 3, cancel, schema).await?;
+            let result = self.run(id, &format!("EXPLAIN (FORMAT JSON) {sql}"), 0, 3, cancel, schema, console).await?;
             return plan::duckdb(&result);
         }
         if driver == DbDriver::Oracle {
@@ -1699,18 +1773,21 @@ impl DbManager {
                 MAX_META_ROWS,
                 cancel,
                 schema,
+                None,
             )
             .await?;
-            let result = self.run(id, &plan::oracle_plan_query(&plan_id), 0, MAX_META_ROWS, cancel, None).await?;
+            let result = self.run(id, &plan::oracle_plan_query(&plan_id), 0, MAX_META_ROWS, cancel, None, None).await?;
             let nodes = plan::parse(driver, &result);
-            let _ = self.run(id, &plan::oracle_plan_cleanup(&plan_id), 0, 0, cancel, None).await;
+            let _ = self.run(id, &plan::oracle_plan_cleanup(&plan_id), 0, 0, cancel, None, None).await;
             return nodes;
         }
-        let result =
-            self.run(id, &plan::explain_statement(driver, statement), 0, MAX_META_ROWS, cancel, schema).await?;
+        let result = self
+            .run(id, &plan::explain_statement(driver, statement), 0, MAX_META_ROWS, cancel, schema, console)
+            .await?;
         plan::parse(driver, &result)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run(
         &self,
         id: &str,
@@ -1719,8 +1796,9 @@ impl DbManager {
         max_rows: usize,
         cancel: &CancellationToken,
         schema: Option<&str>,
+        console: Option<ConsoleId<'_>>,
     ) -> IdeResult<QueryResult> {
-        self.run_paged(id, statement, skip, max_rows, cancel, schema, true).await
+        self.run_paged(id, statement, skip, max_rows, cancel, schema, console, true).await
     }
 
     /// `paging`: whether the page may continue a cursor of `statement` (see `conn::cursor`).
@@ -1733,11 +1811,17 @@ impl DbManager {
         max_rows: usize,
         cancel: &CancellationToken,
         schema: Option<&str>,
+        console: Option<ConsoleId<'_>>,
         paging: bool,
     ) -> IdeResult<QueryResult> {
         let pool = self.pool(id).await?;
         if let Pool::Jdbc(p) = &*pool {
             return p.query_in_schema(statement, skip, max_rows, cancel, schema).await;
+        }
+        if let Pool::Clickhouse(p) = &*pool
+            && console.is_some()
+        {
+            return p.execute_in_console(statement, skip, max_rows, cancel, console).await;
         }
         let session = self.sessions.lock().get(id).cloned();
         let protected = pool.transaction_read_only();
