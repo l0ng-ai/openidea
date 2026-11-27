@@ -92,6 +92,15 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Scroll Left / Scroll Right", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="Mac OS X 10.5+"><action id="EditorScrollLeft"><keyboard-shortcut first-keystroke="meta alt LEFT"/></action><action id="EditorScrollRight"><keyboard-shortcut first-keystroke="meta alt RIGHT"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.scrollLeft"]).toEqual([normalizeBinding("Meta+Alt+Left")]);
+    expect(k.overrides["editor.scrollRight"]).toEqual([normalizeBinding("Meta+Alt+Right")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Scroll Up / Scroll Down and Move if Necessary", () => {
     const k = parseIdeaKeymap(
       `<keymap name="E" parent="$default"><action id="EditorScrollUpAndMove"><keyboard-shortcut first-keystroke="alt UP"/></action><action id="EditorScrollDownAndMove"><keyboard-shortcut first-keystroke="alt DOWN"/></action></keymap>`,

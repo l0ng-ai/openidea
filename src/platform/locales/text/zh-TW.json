@@ -692,6 +692,8 @@
   "Scroll to Center": "捲動到中央",
   "Scroll Up": "向上捲動",
   "Scroll Down": "向下捲動",
+  "Scroll Left": "向左捲動",
+  "Scroll Right": "向右捲動",
   "Scroll Up and Move if Necessary": "向上捲動並在必要時移動游標",
   "Scroll Down and Move if Necessary": "向下捲動並在必要時移動游標",
   "Move Up and Scroll": "向上移動並捲動",
