@@ -7,17 +7,20 @@ import { registerActions } from "@/platform/actions";
 import { disconnectRemote, provideBackendBusyPrompt, stopRemoteBackend, useRemote } from "@/platform/remote";
 import { lazyComponent } from "@/ui";
 import { maybeEditorService, registerOverlay, registerStatusItem, registerToolWindow } from "@/workbench/contributions";
+import { isStatusItemVisible, setStatusWidgetAvailable, setStatusWidgetVisible } from "@/workbench/statusBarWidgets";
 import { confirm } from "@/workbench/messages";
 import { tx } from "@/platform/i18n";
-import { confirmLeaveProject } from "@/platform/project";
+import { confirmLeaveProject, useProject } from "@/platform/project";
 import { ConnectHost } from "./ConnectDialog";
 import { installConnectHandoff, showConnect } from "./connectWindow";
 import { reopenInContainer } from "./container";
 import { installDirenvNotifications, reloadEnvironment } from "./environment";
+import { REMOTE_RESOURCES_WIDGET, RemoteResources } from "./RemoteResources";
 import { RemoteStatus } from "./RemoteStatus";
 import { closeConnectDialog } from "./model";
 import { restorePorts, usePorts } from "./ports";
 import { installReconnect, reconnectNow } from "./reconnect";
+import { canMonitorRemoteHost, refreshRemoteResources, useRemoteResources } from "./resources";
 
 /** Forwarded ports are available while this window is connected to an SSH host, a WSL distribution or a dev container. */
 function trackPortsWindow(): () => void {
@@ -57,7 +60,21 @@ function trackPortsWindow(): () => void {
 }
 
 export function activate(): () => void {
+  const syncResourcesWidget = () => {
+    const { session, lost } = useRemote.getState();
+    setStatusWidgetAvailable(
+      REMOTE_RESOURCES_WIDGET.id,
+      Boolean(session && lost === null && canMonitorRemoteHost(session)),
+    );
+  };
+  syncResourcesWidget();
+  const offResourcesAvailability = useRemote.subscribe(syncResourcesWidget);
+
   const disposers = [
+    () => {
+      offResourcesAvailability();
+      setStatusWidgetAvailable(REMOTE_RESOURCES_WIDGET.id, false);
+    },
     provideBackendBusyPrompt(() =>
       confirm({
         title: tx("Stop Remote Backend"),
@@ -80,7 +97,30 @@ export function activate(): () => void {
       priority: 100,
       component: RemoteStatus,
     }),
+    registerStatusItem({
+      ...REMOTE_RESOURCES_WIDGET,
+      align: "left",
+      priority: 99,
+      component: RemoteResources,
+    }),
     registerActions([
+      {
+        id: "remote.showResources",
+        title: "Show Remote Host Resources",
+        description: "Shows CPU, memory, network, disk and running processes of the remote host.",
+        category: "View",
+        icon: "info",
+        keywords: ["ssh", "remote", "cpu", "memory", "ram", "network", "disk", "processes", "metrics", "resources"],
+        when: "projectRemote && !remoteConnectionLost",
+        run: async () => {
+          const overrides = useProject.getState().settings?.appearance?.statusBarWidgets;
+          if (!isStatusItemVisible(REMOTE_RESOURCES_WIDGET, overrides)) {
+            await setStatusWidgetVisible(REMOTE_RESOURCES_WIDGET.id, true);
+          }
+          await refreshRemoteResources(true);
+          useRemoteResources.setState({ popupOpen: true });
+        },
+      },
       {
         id: "remote.connect",
         title: "Remote Development…",

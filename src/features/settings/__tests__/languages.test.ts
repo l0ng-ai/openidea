@@ -412,6 +412,7 @@ describe("language pages", () => {
       "Dependencies",
       "Docstrings",
       "Testing",
+      "Profiler",
       "Ruff",
       "Black formatter",
     ]);
@@ -420,6 +421,7 @@ describe("language pages", () => {
       "python.interpreter",
       "python.docstrings",
       "python.testing",
+      "python.profiler",
       "python.ruff",
       "python.black",
     ]);

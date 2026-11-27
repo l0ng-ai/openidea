@@ -48,6 +48,10 @@ pub enum McpUiRequest {
 pub enum IdeEvent {
     /// Project data source settings changed; reload the Database tree.
     DbSourcesChanged,
+    /// A Python run saved a matplotlib figure for the Plots tool window (a PNG file).
+    PlotAdded {
+        path: String,
+    },
     McpRequest {
         id: u32,
         request: McpUiRequest,
