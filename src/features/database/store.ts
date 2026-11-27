@@ -786,18 +786,32 @@ export function watchIdleConnections(everyMs = 5000): () => void {
 /** Managed consoles show their source in the tab. Ordinary SQL files can also inherit a source tint. */
 export function consoleDecorations(s: Pick<DatabaseState, "consoles" | "sources">): Map<string, FileDecoration> {
   const out = new Map<string, FileDecoration>();
+  const roots = new Set<string>();
   for (const [path, target] of Object.entries(s.consoles)) {
     const { id, database } = splitTarget(target);
     const source = s.sources.find((x) => x.id === id);
     if (!source) continue;
     const tint = colorVar(source.color);
     // db_console_path and db_consoles own this directory, including already saved consoles.
-    const consoleName = /(?:^|\/)consoles\/db\/[^/]+\/(console(?:_\d+)?)\.sql$/.exec(path.replaceAll("\\", "/"))?.[1];
-    if (consoleName) {
+    const match = /[\\/]consoles[\\/]db[\\/][^\\/]+[\\/](console(?:_\d+)?)\.sql$/i.exec(path);
+    if (match) {
+      const folder = path.replace(/[\\/]console(?:_\d+)?\.sql$/i, "");
+      const root = folder.replace(/[\\/][^\\/]+$/, "");
       const name = source.name || id;
       const label = database ? `${name}: ${database}` : name;
-      out.set(path, { tint, tabTitle: `${consoleName} [${label}]`, tabIcon: sourceIcon(source) });
+      const icon = sourceIcon(source);
+      out.set(path, { tint, tabTitle: `${match[1]} [${label}]`, tabIcon: icon });
+      out.set(folder, { label, icon });
+      roots.add(root);
     } else if (tint) out.set(path, { tint });
+  }
+  for (const root of roots) {
+    out.set(root, { label: tx("Database Consoles"), icon: "db-folder" });
+    const separator = root.includes("\\") ? "\\" : "/";
+    for (const source of s.sources) {
+      if (!source.id) continue;
+      out.set(`${root}${separator}${source.id}`, { label: source.name || source.id, icon: sourceIcon(source) });
+    }
   }
   return out;
 }
