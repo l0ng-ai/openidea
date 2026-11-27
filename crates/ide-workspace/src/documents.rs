@@ -1,5 +1,5 @@
 use crate::editorconfig::{EditorConfig, EditorConfigProps};
-use crate::file_defaults::FileDefaults;
+use crate::file_defaults::{EncodingSource, FileDefaults};
 use ide_core::error::ErrorKind;
 use ide_core::{ChangeSet, DocId, IdeError, IdeEvent, IdeResult, LanguageId, SharedSink, TextEdit};
 use ide_text::{AppliedChange, ByteEdit, Document, LineEnding};
@@ -168,6 +168,8 @@ struct DocState {
     can_reload_encoding: bool,
     /// The user picked `encoding`; reloads keep it instead of detecting again.
     encoding_chosen: bool,
+    /// The user converted the text to `encoding`; it is theirs to keep once a save writes it.
+    encoding_unsaved: bool,
     /// Disk state we last loaded or wrote; changes matching it are our own.
     disk_mtime: f64,
     disk_len: u64,
@@ -254,8 +256,15 @@ fn configured_fallback<'a>(
     path: &Path,
     editorconfig: Option<&EditorConfigProps>,
 ) -> Option<ide_vfs::Fallback<'a>> {
-    let fallback = defaults.fallback_for(&absolute(path));
-    match editorconfig.filter(|_| defaults.editorconfig).and_then(EditorConfigProps::encoding) {
+    let path = absolute(path);
+    let charset = editorconfig.filter(|_| defaults.editorconfig).and_then(EditorConfigProps::encoding);
+    let inherited = defaults.inherited_encoding_for(&path);
+    let fallback = if inherited.source == EncodingSource::Folder && charset.is_some() {
+        defaults.project_encoding_for(&path).fallback()
+    } else {
+        inherited.fallback()
+    };
+    match charset {
         Some(("utf-8", _)) => fallback.map(|f| ide_vfs::Fallback { ascii: false, ..f }),
         Some((encoding, _)) if !encoding.starts_with("utf-16") => Some(ide_vfs::Fallback { encoding, ascii: true }),
         _ => fallback,
@@ -364,13 +373,20 @@ impl Documents {
     /// Closed-file readers use the same decoding as document opening.
     pub fn load_file(&self, path: &Path) -> IdeResult<ide_vfs::LoadedText> {
         let defaults = self.file_defaults();
-        Self::load_with_defaults(path, &defaults, self.editorconfig_for(path, &defaults).as_ref())
+        Ok(Self::load_with_defaults(path, &defaults, self.editorconfig_for(path, &defaults).as_ref())?.0)
     }
 
     /// Encoding of `bytes`, a revision of `path`, with the same rules as opening the file.
     pub fn detect_encoding(&self, path: &Path, bytes: &[u8]) -> &'static encoding_rs::Encoding {
         let defaults = self.file_defaults();
         let editorconfig = self.editorconfig_for(path, &defaults);
+        let configured = defaults.configured_encoding_for(&absolute(path));
+        if configured.source == EncodingSource::File
+            && let Some(enc) = encoding_rs::Encoding::for_label(configured.label.as_bytes())
+            && !enc.decode_with_bom_removal(bytes).0.contains(char::REPLACEMENT_CHARACTER)
+        {
+            return enc;
+        }
         ide_vfs::detect_encoding(bytes, configured_fallback(&defaults, path, editorconfig.as_ref()))
     }
 
@@ -385,6 +401,10 @@ impl Documents {
     pub fn configured_encoding_for(&self, path: &Path) -> Option<String> {
         let defaults = self.file_defaults();
         let editorconfig = self.editorconfig_for(path, &defaults);
+        let configured = defaults.configured_encoding_for(&absolute(path));
+        if configured.source == EncodingSource::File {
+            return Some(configured.label.to_owned());
+        }
         configured_fallback(&defaults, path, editorconfig.as_ref()).map(|f| f.encoding.to_owned())
     }
 
@@ -404,16 +424,30 @@ impl Documents {
         Self::load_as(path, encoding, self.native_to_ascii_for(path))
     }
 
+    /// Loads `path` as the settings say. `true`: decoded in the encoding chosen for this
+    /// very file, as "Reload with Encoding" does, instead of detecting it.
     fn load_with_defaults(
         path: &Path,
         defaults: &FileDefaults,
         editorconfig: Option<&EditorConfigProps>,
-    ) -> IdeResult<ide_vfs::LoadedText> {
-        let mut loaded = ide_vfs::load_text_with_fallback(path, configured_fallback(defaults, path, editorconfig))?;
+    ) -> IdeResult<(ide_vfs::LoadedText, bool)> {
+        let path_abs = absolute(path);
+        let configured = defaults.configured_encoding_for(&path_abs);
+        if configured.source == EncodingSource::File {
+            let loaded = Self::load_as(path, configured.label, defaults.native_to_ascii_for(path))?;
+            // The bytes are not text in that encoding (the file changed outside the IDE):
+            // open it as if nothing was chosen, rather than show and save broken characters.
+            // A single-byte encoding decodes any bytes, so this only catches the others.
+            if !loaded.text.contains(char::REPLACEMENT_CHARACTER) {
+                return Ok((loaded, true));
+            }
+        }
+        let fallback = configured_fallback(defaults, path, editorconfig);
+        let mut loaded = ide_vfs::load_text_with_fallback(path, fallback)?;
         if !loaded.binary && defaults.native_to_ascii_for(path) {
             loaded.text = ide_vfs::decode_properties_escapes(&loaded.text);
         }
-        Ok(loaded)
+        Ok((loaded, false))
     }
 
     pub fn file_defaults(&self) -> FileDefaults {
@@ -495,7 +529,7 @@ impl Documents {
         }
         let defaults = self.file_defaults();
         let editorconfig = self.editorconfig_for(path, &defaults);
-        let loaded = Self::load_with_defaults(path, &defaults, editorconfig.as_ref())?;
+        let (loaded, encoding_chosen) = Self::load_with_defaults(path, &defaults, editorconfig.as_ref())?;
         let editorconfig = editorconfig.filter(|_| !loaded.binary);
         let language = (self.detect_language)(path, loaded.text.lines().next());
         let ui_mode = (self.detect_ui_mode)(path, &language);
@@ -511,8 +545,14 @@ impl Documents {
         // An empty file has nothing to detect: Code Style / File Encodings defaults apply.
         if empty_file && !loaded.binary {
             doc.set_line_ending(defaults.line_ending);
-            encoding = defaults.encoding.clone();
-            has_bom = defaults.encoding == "utf-8" && defaults.utf8_bom;
+            if !encoding_chosen {
+                let configured = defaults.configured_encoding_for(&absolute(path));
+                encoding = match configured.source {
+                    EncodingSource::Folder => configured.label.to_owned(),
+                    _ => defaults.encoding.clone(),
+                };
+                has_bom = encoding == "utf-8" && defaults.utf8_bom;
+            }
         }
         if let Some(ec) = &editorconfig {
             if let Some(le) = ec.end_of_line {
@@ -520,6 +560,7 @@ impl Documents {
             }
             if let Some((enc, bom)) = ec.encoding()
                 && empty_file
+                && !encoding_chosen
             {
                 (encoding, has_bom) = (enc.to_owned(), bom);
             }
@@ -542,7 +583,8 @@ impl Documents {
             binary: loaded.binary,
             dirty: false,
             can_reload_encoding: true,
-            encoding_chosen: false,
+            encoding_chosen,
+            encoding_unsaved: false,
             disk_mtime: loaded.mtime_ms,
             disk_len: disk_len(path),
             disk_conflict: false,
@@ -620,6 +662,7 @@ impl Documents {
             dirty: false,
             can_reload_encoding,
             encoding_chosen: false,
+            encoding_unsaved: false,
             disk_mtime: 0.0,
             disk_len: 0,
             disk_conflict: false,
@@ -681,6 +724,7 @@ impl Documents {
             dirty: false,
             can_reload_encoding: false,
             encoding_chosen: false,
+            encoding_unsaved: false,
             disk_mtime: 0.0,
             disk_len: 0,
             disk_conflict: false,
@@ -1294,6 +1338,30 @@ impl Documents {
         })
     }
 
+    /// Whether the encoding the user chose for `doc` is still to reach its file: the text was
+    /// converted and not saved. It is then reported by [`Documents::take_saved_encodings`]
+    /// once a save has written it.
+    pub fn keep_encoding_when_saved(&self, doc: DocId) -> IdeResult<bool> {
+        self.with_doc(doc, |st| {
+            st.encoding_unsaved = st.dirty;
+            Ok(st.dirty)
+        })
+    }
+
+    /// The files saved in the encoding their text was converted to since
+    /// [`Documents::keep_encoding_when_saved`], with that encoding. Each is reported once.
+    pub fn take_saved_encodings(&self) -> Vec<(PathBuf, String)> {
+        let ids: Vec<DocId> = self.registry.lock().docs.keys().copied().collect();
+        let saved = |id| {
+            self.with_doc(id, |st| {
+                let saved = st.encoding_unsaved && !st.dirty;
+                st.encoding_unsaved &= st.dirty;
+                Ok(saved.then(|| (st.path.clone(), st.encoding.clone())))
+            })
+        };
+        ids.into_iter().filter_map(|id| saved(id).ok().flatten()).collect()
+    }
+
     /// Load Changes from Disk: drops the buffer's unsaved changes and reads its file again in
     /// the buffer's encoding, after the file changed on disk (`IdeEvent::DocDiskConflict`).
     pub fn discard_and_reload(&self, doc: DocId) -> IdeResult<()> {
@@ -1303,6 +1371,7 @@ impl Documents {
             }
             let loaded = Self::load_as(&st.path, &st.encoding, st.native_to_ascii)?;
             st.has_bom = loaded.has_bom;
+            st.encoding_unsaved = false;
             self.replace_locked(doc, st, &loaded.text)?;
             st.synced(loaded.mtime_ms);
             self.set_dirty(doc, st, false);
@@ -1473,7 +1542,7 @@ impl Documents {
                     let loaded = if st.encoding_chosen {
                         Self::load_as(&st.path, &st.encoding, native_to_ascii)?
                     } else {
-                        Self::load_with_defaults(&st.path, &defaults, st.editorconfig.as_ref())?
+                        Self::load_with_defaults(&st.path, &defaults, st.editorconfig.as_ref())?.0
                     };
                     st.native_to_ascii = native_to_ascii;
                     loaded

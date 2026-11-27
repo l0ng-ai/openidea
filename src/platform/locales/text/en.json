@@ -896,6 +896,7 @@
   "Add UTF-8 BOM": "Add UTF-8 BOM",
   "Remove UTF-8 BOM": "Remove UTF-8 BOM",
   "Cannot change the UTF-8 BOM": "Cannot change the UTF-8 BOM",
+  "The encoding was not saved to the project settings": "The encoding was not saved to the project settings",
   "Convert to cURL and Copy": "Convert to cURL and Copy",
   "Add Environment to Public File": "Add Environment to Public File",
   "Add Environment to Private File": "Add Environment to Private File",
