@@ -29,6 +29,9 @@ something to show.
 | `stylelint-app/` | Node 22+, `stylelint` (`npm install`)                           | —                                   | —                    | —                                     | long hex colour, unknown property, empty block, duplicate selector (Stylelint) |
 | `polyglot/`      | Go, TS, Python, C, shell, SQL, TOML/YAML/JSON, proto, Terraform | `make`                              | `make test`          | —                                     | unused variable in `native/hash.c`                       |
 
+`python-app/notebooks/summary.ipynb` is a Jupyter notebook for the notebook editor (running it needs
+`ipykernel` in the selected interpreter).
+
 The fixtures are standalone: `rust-app` declares its own `[workspace]` and
 `fixtures/eslint.config.js` keeps them out of the IDE's own lint run.
 
