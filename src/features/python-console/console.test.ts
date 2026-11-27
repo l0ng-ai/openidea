@@ -1,5 +1,8 @@
 // @vitest-environment node
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import { request, stdoutParser, type ConsoleMessage } from "./protocol";
@@ -9,6 +12,8 @@ const PYTHON = ["python3", "python"].find((p) => spawnSync(p, ["--version"]).sta
 
 // An interpreter with IPython, for the IPython path (OPENIDEA_TEST_IPYTHON, else none: skipped).
 const IPYTHON = process.env.OPENIDEA_TEST_IPYTHON;
+// An interpreter with Django 5.2+, for the Django console (OPENIDEA_TEST_DJANGO, else none: skipped).
+const DJANGO = process.env.OPENIDEA_TEST_DJANGO;
 
 function run(codes: string[], input = "", python = PYTHON!) {
   const stdin = codes.map(request).join("") + input;
@@ -64,4 +69,25 @@ it.skipIf(!IPYTHON)("ends at exit() under IPython", () => {
   const { text, messages, status } = run(["x = 1", "exit()", "1 + 1"], "", IPYTHON);
   expect(messages[0]).toEqual({ ready: { version: expect.any(String), ipython: expect.stringMatching(/^IPython /) } });
   expect([text, messages.length, status]).toEqual(["", 2, 0]);
+});
+
+it.skipIf(!DJANGO)("sets Django up and imports the models like manage.py shell", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "console-django-"));
+  writeFileSync(
+    join(cwd, "site_settings.py"),
+    'SECRET_KEY = "x"\nINSTALLED_APPS = ["django.contrib.contenttypes", "django.contrib.auth"]\n' +
+      'DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}}\n',
+  );
+  // As the IDE runs it: `-c`, so the working directory (manage.py's) is on sys.path.
+  const result = spawnSync(DJANGO!, ["-u", "-c", readFileSync(DRIVER, "utf8")], {
+    cwd,
+    input: request("User._meta.label, settings.SECRET_KEY"),
+    encoding: "utf8",
+    env: { ...process.env, OPENIDEA_DJANGO_SETTINGS: "site_settings", DJANGO_SETTINGS_MODULE: "" },
+  });
+  const { text, messages } = stdoutParser()(result.stdout);
+  expect(messages[0]).toMatchObject({ ready: { django: expect.stringMatching(/^\d/) } });
+  expect(text).toContain("('auth.User', 'x')");
+  // The imports are the console's own, not the user's variables.
+  expect(variables(messages)[0]).toEqual([]);
 });

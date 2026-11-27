@@ -16,9 +16,11 @@ import { useRowHeight } from "@/ui/density";
 import { buildRows, clearHistory, pushHistory, readHistory, shellRunConfig, type Row } from "./model";
 import styles from "./RunAnything.module.css";
 
-export const useRunAnything = create<{ open: boolean }>(() => ({ open: false }));
+export const useRunAnything = create<{ open: boolean; initial: string }>(() => ({ open: false, initial: "" }));
 
-export const showRunAnything = () => useRunAnything.setState({ open: true });
+/** `initial`: the command line to start with (`manage.py `). */
+export const showRunAnything = (initial?: unknown) =>
+  useRunAnything.setState({ open: true, initial: typeof initial === "string" ? initial : "" });
 const close = () => useRunAnything.setState({ open: false });
 
 /** Runs a command line: a provider that claims it, else the platform shell. */
@@ -53,7 +55,7 @@ function RunAnythingPopup({ root }: { root: string }) {
   const field = useRef<HTMLInputElement>(null);
   const rowHeight = useRowHeight(ROW_HEIGHT);
   const listId = useId();
-  const [line, setLine] = useState("");
+  const [line, setLine] = useState(() => useRunAnything.getState().initial);
   const [active, setActive] = useState(-1);
   const [history, setHistory] = useState(() => readHistory(root));
   // Providers answering later (plugins) ask for the rows to be built again.

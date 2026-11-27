@@ -56,6 +56,27 @@ export function saveTemplate(t: LiveTemplate) {
   commit({ ...c, templates: { ...c.templates, [t.id]: t }, deleted: c.deleted.filter((d) => d !== t.id) });
 }
 
+/** Adds or updates imported ids in one copy, keeping unrelated templates and built-in edits. */
+export function mergeImportedTemplates(
+  custom: LiveTemplateCustomizations,
+  imported: readonly LiveTemplate[],
+): LiveTemplateCustomizations {
+  const templates = { ...custom.templates };
+  const ids = new Set<string>();
+  for (const template of imported) {
+    if (template.pluginOrigin || BUILTIN_IDS.has(template.id)) continue;
+    templates[template.id] = template;
+    ids.add(template.id);
+  }
+  return { templates, deleted: custom.deleted.filter((id) => !ids.has(id)) };
+}
+
+/** Commits an import once, after confirmation; re-importing updates the same ids. */
+export function saveImportedTemplates(imported: readonly LiveTemplate[]) {
+  if (!imported.length) return;
+  commit(mergeImportedTemplates(useLiveTemplates.getState().custom, imported));
+}
+
 export function removeTemplate(id: string) {
   if (id.startsWith("plugin-snippet:")) return;
   const c = useLiveTemplates.getState().custom;

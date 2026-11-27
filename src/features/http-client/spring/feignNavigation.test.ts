@@ -3,7 +3,8 @@ import { _emitEditorEvent } from "@/editor/api";
 import { commands, emitLocalIdeEvent, type ProjectInfo } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { controllerMethods, feignMethods } from "./feign";
-import { feignClients, feignTargets, registerFeignNavigation } from "./feignNavigation";
+import { feignClients, feignTargets, registerFeignNavigation, restTargets } from "./feignNavigation";
+import { restCalls } from "./restCalls";
 
 const root = "/p";
 const clientPath = "/p/client/src/main/java/Client.java";
@@ -168,6 +169,23 @@ describe("core service-aware Feign navigation", () => {
     expect((await resolve()).map((t) => t.path)).toEqual([admin, users]);
     expect(commands.fsReadDir).not.toHaveBeenCalled();
     expect(vi.mocked(commands.fsReadText).mock.calls.every(([path]) => path.endsWith(".java"))).toBe(true);
+  });
+});
+
+describe("RestTemplate and WebClient call sites", () => {
+  const call = (url: string) =>
+    restTargets(
+      clientPath,
+      restCalls(`class Calls { RestTemplate rest; void run() { rest.getForObject("${url}", String.class); } }`)[0]!,
+    );
+
+  it("uses a load-balanced host as the service, falling back to every candidate for other hosts", async () => {
+    expect((await call("http://users/users/{id}")).map((t) => t.path)).toEqual([users]);
+    expect((await call("http://admin/users/7")).map((t) => t.path)).toEqual([admin]);
+    expect((await call("/users/{id}")).map((t) => t.path)).toEqual([admin, users]);
+    expect((await call("https://api.example.com/users/{id}")).map((t) => t.path)).toEqual([admin, users]);
+    expect(await call("http://users/orders/{id}")).toEqual([]);
+    expect((await call("http://user-svc/users/{id}")).map((t) => t.path)).toEqual([admin, users]);
   });
 });
 

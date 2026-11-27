@@ -817,6 +817,7 @@ pub async fn remote_connect(
     }
     state.host.close_project(&label);
     state.host.mcp_reports.set_remote(&label, std::path::PathBuf::from(&connection.root));
+    crate::window_groups::notify_changed(window.app_handle());
     let weak = Arc::downgrade(&connection);
     let peer = connection.peer.clone();
     let auth_plugins = state.plugins.clone();
@@ -1187,6 +1188,7 @@ pub async fn remote_stop_forwarding(
 pub fn remote_disconnect(window: Window, state: State<'_, AppState>) {
     state.host.mcp_reports.remove_remote(AppState::owner_window(window.label()));
     state.remote_dev.disconnect(AppState::owner_window(window.label()));
+    crate::window_groups::notify_changed(window.app_handle());
 }
 
 /// Stops the persistent `openidea-server` daemon for this window's remote project,
@@ -1215,11 +1217,14 @@ pub async fn remote_stop_backend(window: Window, state: State<'_, AppState>) -> 
         c.stopping.store(false, Ordering::Release);
     }
     result?;
-    let mut connections = state.remote_dev.windows.lock();
-    if connections.get(&label).is_some_and(|current| Arc::ptr_eq(current, &c)) {
-        connections.remove(&label);
-        state.host.mcp_reports.remove_remote(&label);
+    {
+        let mut connections = state.remote_dev.windows.lock();
+        if connections.get(&label).is_some_and(|current| Arc::ptr_eq(current, &c)) {
+            connections.remove(&label);
+            state.host.mcp_reports.remove_remote(&label);
+        }
     }
+    crate::window_groups::notify_changed(window.app_handle());
     Ok(())
 }
 

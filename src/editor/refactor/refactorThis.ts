@@ -17,7 +17,8 @@ import { whenSynced } from "@/editor/api";
 import { structure } from "@/editor/structure";
 import { docOf, isUnavailable, lspRequest } from "@/editor/lsp/lsp";
 import { offsetToPos, offsetsToRange } from "@/editor/lsp/positions";
-import { showHint } from "@/editor/lsp/hint";
+import { showHint, showPendingHint } from "@/editor/lsp/hint";
+import { foreground } from "@/editor/lsp/foreground";
 import { caretAnchor, openPopup, type ListPopupItem } from "@/editor/lsp/popupStore";
 import { applyCodeAction } from "@/editor/lsp/intentions";
 import { planLocalRename } from "@/editor/lsp/syntaxFallback";
@@ -70,7 +71,8 @@ export type ServerAnswer =
 
 async function askServer(view: EditorView, signal?: AbortSignal, only?: string[]): Promise<ServerAnswer> {
   try {
-    return { status: "ok", query: await queryRefactorActions(view, signal, only) };
+    // The user waits for this answer: background requests to the same server give way.
+    return { status: "ok", query: await foreground(() => queryRefactorActions(view, signal, only)) };
   } catch (e) {
     if (isCancelled(e)) throw e;
     if (isUnavailable(e)) return { status: "notReady" };
@@ -181,6 +183,8 @@ export async function unavailableReason(
 }
 
 let menuRun: AbortController | null = null;
+/** Hides the waiting hint of the run in `menuRun`. */
+let menuHint: (() => void) | null = null;
 
 /** A Refactor menu action (Move…, Inline…, Extract Method…): runs it or says why it can't. */
 export async function runRefactoring(view: EditorView, id: RefactoringId): Promise<void> {
@@ -218,6 +222,10 @@ export async function runRefactoring(view: EditorView, id: RefactoringId): Promi
   menuRun?.abort();
   const run = (menuRun = new AbortController());
   const state = view.state;
+  // Nothing else shows until the server answers, which a busy server can take seconds to do.
+  // The superseded run's hint goes first: the new one is not shown over another hint.
+  menuHint?.();
+  const pending = (menuHint = showPendingHint(view, tx("Looking for refactorings…")));
   let answer: ServerAnswer;
   try {
     answer = await askServer(view, run.signal, r.kind ? [requestKind(r.kind, ctx.language)] : undefined);
@@ -225,6 +233,8 @@ export async function runRefactoring(view: EditorView, id: RefactoringId): Promi
     if (isCancelled(e)) return;
     throw e;
   } finally {
+    pending();
+    if (menuHint === pending) menuHint = null;
     if (menuRun === run) menuRun = null;
   }
   if (run.signal.aborted || view.state.doc !== state.doc || !view.state.selection.eq(state.selection)) return;
