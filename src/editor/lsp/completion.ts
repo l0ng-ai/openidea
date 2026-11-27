@@ -646,16 +646,44 @@ function serverTokenStart(items: readonly CompletionItem[], doc: Text, pos: numb
  * `validFor` for a list that may continue across a hyphen. CodeMirror re-queries
  * when this returns false, so only keep the list while an option still starts
  * with the typed text: `items-` continues (Tailwind), `foo-bar` in JS re-queries.
+ * A list pruned for a longer token is only valid while the text still starts
+ * with that token, so backspacing asks the server again.
  */
-function keepFiltering(items: readonly CompletionItem[]) {
+export function completionValidFor(items: readonly CompletionItem[], prunedBy: string | null) {
   let labels: string[] | null = null; // built lazily: an explicit list can hold 26k items
   return (text: string): boolean => {
+    const typed = text.toLowerCase();
+    if (prunedBy && !typed.startsWith(prunedBy)) return false;
     if (VALID_FOR.test(text)) return true;
     if (!text.includes("-") || !TOKEN.test(text)) return false;
     labels ??= items.map((it) => (it.filterText ?? it.label).toLowerCase());
-    const typed = text.toLowerCase();
     return labels.some((label) => label.startsWith(typed));
   };
+}
+
+// Above this, mapping every item to a CodeMirror option and re-filtering it on each
+// keystroke shows up as input lag (Tailwind sends ~26k); below it pruning isn't worth it.
+const PRUNE_ABOVE = 2000;
+
+function isSubsequence(needle: string, haystack: string): boolean {
+  let at = 0;
+  for (const ch of haystack) if (ch === needle[at] && ++at === needle.length) return true;
+  return at === needle.length;
+}
+
+/**
+ * Items that can still match `typed`. Subsequence accepts a superset of what the
+ * fuzzy matcher shows for longer text, so typing on loses nothing. `prunedBy` is
+ * set only when something was dropped.
+ */
+export function pruneItems(
+  items: readonly CompletionItem[],
+  typed: string,
+): { items: readonly CompletionItem[]; prunedBy: string | null } {
+  if (!typed || items.length <= PRUNE_ABOVE) return { items, prunedBy: null };
+  const needle = typed.toLowerCase();
+  const kept = items.filter((it) => isSubsequence(needle, (it.filterText ?? it.label).toLowerCase()));
+  return kept.length && kept.length < items.length ? { items: kept, prunedBy: needle } : { items, prunedBy: null };
 }
 
 let inflight: RequestId | null = null;
@@ -817,6 +845,8 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
       : list.items,
   );
   if (inVarCall(ctx)) items = items.filter((it) => !it.label.startsWith("--"));
+  const pruned = pruneItems(items, typed);
+  items = [...pruned.items];
   // A server snippet named like a live template (jdtls `sout`, `fori`) would be listed twice; the template wins.
   if (items.some((it) => it.kind === "snippet")) {
     const own = await contributedSource(ctx);
@@ -836,7 +866,7 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
     validFor:
       list.isIncomplete || (prefs.matchCase && prefs.caseSensitivity === "all") || (smart && typed)
         ? undefined
-        : keepFiltering(items),
+        : completionValidFor(items, pruned.prunedBy),
     filter: true,
   };
 }
