@@ -200,6 +200,7 @@ export const intellijWindows: Record<string, string[]> = {
   "code.pasteFromHistory": ["Ctrl+Shift+V"],
   "code.sortLines": [],
   "code.reverseLines": [],
+  "code.uniqueLines": [],
   "code.fillParagraph": [],
   "code.convertIndentsToSpaces": [],
   "code.convertIndentsToTabs": [],

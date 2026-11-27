@@ -71,7 +71,7 @@ import {
   unfoldAtCaret,
 } from "./cm/folding";
 import { fillParagraph } from "./cm/fillParagraph";
-import { convertIndentsToSpaces, convertIndentsToTabs, reverseLines, sortLines } from "./cm/lines";
+import { convertIndentsToSpaces, convertIndentsToTabs, reverseLines, sortLines, uniqueLines } from "./cm/lines";
 import { hardWrapAt } from "./cm/setup";
 import { customRegions } from "./cm/regions";
 import { toggleRenderedViewAtCaret } from "./cm/renderedDocs";
@@ -1276,6 +1276,10 @@ export function registerEditorActions(): () => void {
     }),
     edit("code.sortLines", "Sort Lines", (v) => sortLines(v), { category: "Edit" }),
     edit("code.reverseLines", "Reverse Lines", (v) => reverseLines(v), { category: "Edit" }),
+    edit("code.uniqueLines", "Delete Duplicate Lines", (v) => uniqueLines(v), {
+      category: "Edit",
+      keywords: ["unique", "dedupe", "remove duplicates"],
+    }),
     text(
       "code.fillParagraph",
       "Fill Paragraph",

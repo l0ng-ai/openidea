@@ -198,6 +198,7 @@ export const intellijMacos: Record<string, string[]> = {
   "code.pasteFromHistory": ["Meta+Shift+V"],
   "code.sortLines": [],
   "code.reverseLines": [],
+  "code.uniqueLines": [],
   "code.fillParagraph": [],
   "code.convertIndentsToSpaces": [],
   "code.convertIndentsToTabs": [],

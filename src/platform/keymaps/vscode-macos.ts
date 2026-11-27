@@ -192,6 +192,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "code.pasteFromHistory": [],
   "code.sortLines": [],
   "code.reverseLines": [],
+  "code.uniqueLines": [],
   "code.fillParagraph": [],
   "code.convertIndentsToSpaces": [],
   "code.convertIndentsToTabs": [],

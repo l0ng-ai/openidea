@@ -279,6 +279,14 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Delete Duplicate Lines", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="Mac OS X 10.5+"><action id="EditorUniqueLines"><keyboard-shortcut first-keystroke="shift meta 7"/></action></keymap>`,
+    );
+    expect(k.overrides["code.uniqueLines"]).toEqual([normalizeBinding("Shift+Meta+7")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("rejects other XML", () => {
     expect(() => parseIdeaKeymap("<scheme name='x'/>")).toThrow(/keymap/);
   });
