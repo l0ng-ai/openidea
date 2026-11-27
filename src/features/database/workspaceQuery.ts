@@ -4,110 +4,161 @@ import { statementTokenRange } from "./sql/analyze";
 import { quoteIdent } from "./sql/complete";
 import { identName, inLiteral, lex, type Lexed, type Token } from "./sql/lexer";
 
-export interface WorkspaceRelation {
-  source: "left" | "right";
+export interface WorkspaceSourceReference {
+  id: string;
+  name: string;
+  alias?: string;
+  legacy?: "left" | "right";
+}
+
+interface WorkspaceTableReference {
+  sourceId: string;
+  database: string;
   schema: string;
   table: string;
-  alias: string;
-  key: string;
 }
 
-const sides = ["left", "right"] as const;
-type Side = (typeof sides)[number];
-type SourceNames = Record<Side, string>;
-const defaultNames: SourceNames = { left: "left", right: "right" };
 export const WORKSPACE_SQL_LIMIT = 65_536;
 
-export function workspaceSourceNames(left: string, right: string): SourceNames {
-  const unique = left.toLowerCase() !== right.toLowerCase();
-  const preferred = (name: string, side: Side) =>
-    unique && name.trim() && !/^(left|right)$/i.test(name) ? name : side;
-  return { left: preferred(left, "left"), right: preferred(right, "right") };
+/** Resolve a whole project list once, retaining ambiguity instead of choosing the first duplicate. */
+export function workspaceSourceResolver(sources: readonly WorkspaceSourceReference[]) {
+  type Matches = Map<string, WorkspaceSourceReference | null>;
+  const exact: Matches = new Map();
+  const folded: Matches = new Map();
+  const legacy = new Map<string, WorkspaceSourceReference>();
+  const put = (index: Matches, key: string, source: WorkspaceSourceReference) => {
+    const previous = index.get(key);
+    index.set(key, previous === undefined || previous?.id === source.id ? source : null);
+  };
+  for (const source of sources) {
+    for (const name of [source.name, source.alias?.trim()]) {
+      if (!name) continue;
+      put(exact, name, source);
+      put(folded, name.toLowerCase(), source);
+    }
+    if (source.legacy) legacy.set(source.legacy, source);
+  }
+  return (name: string, quoted = false) => {
+    if (quoted) return exact.get(name) ?? undefined;
+    const key = name.toLowerCase();
+    return legacy.get(key) ?? folded.get(key) ?? undefined;
+  };
 }
 
-export function workspaceSourceAliasError(names: SourceNames, aliases: Partial<SourceNames>): string | null {
-  for (const side of sides) {
-    const alias = aliases[side]?.trim();
+export function workspaceSourceAliasError(sources: readonly WorkspaceSourceReference[]): string | null {
+  const resolve = workspaceSourceResolver(sources);
+  for (const source of sources) {
+    const alias = source.alias?.trim();
     if (!alias) continue;
     if (!/^[\p{L}_][\p{L}\p{N}_]*$/u.test(alias))
       return tx("Start each SQL alias with a letter or underscore, then use letters, digits or underscores.");
-    const peer = side === "left" ? "right" : "left";
-    const folded = alias.toLowerCase();
-    if (
-      /^(left|right)$/i.test(alias) ||
-      folded === names[peer].toLowerCase() ||
-      folded === aliases[peer]?.trim().toLowerCase()
-    )
-      return tx("Choose a unique SQL alias. The names left and right are reserved.");
+    if (resolve(alias)?.id !== source.id) return tx("Choose a SQL alias unique to this source.");
   }
   return null;
 }
 
-export function workspaceSourceSide(
-  name: string,
-  names: SourceNames,
-  aliases: Partial<SourceNames> = {},
-): Side | undefined {
-  if (!name) return undefined;
-  const folded = name.toLowerCase();
-  return sides.find(
-    (side) => folded === side || name === names[side] || folded === aliases[side]?.trim().toLowerCase(),
-  );
-}
+type Column = { relation: number; column: string };
+type Projection = { relation: number; column: string | null };
+type Join = { left: Column; rightColumn: string };
 
-function parseWorkspaceJoin(tokens: readonly Token[], names: SourceNames, aliases: Partial<SourceNames>) {
-  const aliasError = workspaceSourceAliasError(names, aliases);
-  if (aliasError) throw new Error(aliasError);
-  let i = 0;
+function parseJoin(
+  tokens: readonly Token[],
+  sources: readonly WorkspaceSourceReference[],
+  complete?: (table: WorkspaceTableReference) => void,
+) {
+  const resolveSource = workspaceSourceResolver(sources);
+  let cursor = 0;
   const take = (expected: string) => {
-    if (tokens[i]?.upper !== expected) return false;
-    ++i;
+    if (tokens[cursor]?.upper !== expected) return false;
+    cursor++;
     return true;
   };
   const need = (expected: string) => {
     if (!take(expected)) throw new Error(tx`Expected ${expected} in the workspace query.`);
   };
   const identifier = () => {
-    const token = tokens[i++];
+    const token = tokens[cursor++];
     if (token?.kind === "word") return token.text.toLowerCase();
     if (token?.kind === "quoted" && /^"(?:[^"]|"")+"$/.test(token.text)) return identName(token);
     throw new Error(tx("Expected an identifier in the workspace query."));
   };
-  const relation = (): WorkspaceRelation => {
-    need("#");
-    const name = identifier();
-    const source = workspaceSourceSide(name, names, aliases);
-    if (!source) throw new Error(tx("Choose a source from completion after #, or use #left or #right."));
-    need(".");
-    const schema = identifier();
-    need(".");
-    const table = identifier();
-    const alias = take("AS") || !["INNER", "JOIN", "ON"].includes(tokens[i]?.upper ?? "") ? identifier() : name;
-    return { source, schema, table, alias, key: "" };
-  };
+
   need("SELECT");
-  need("*");
+  const fields: { owner: string; column: string | null }[] = [];
+  if (!take("*")) {
+    do {
+      const owner = identifier();
+      need(".");
+      fields.push({ owner, column: take("*") ? null : identifier() });
+    } while (take(","));
+  }
   need("FROM");
-  const first = relation();
-  take("INNER");
-  need("JOIN");
-  const second = relation();
-  if (first.source === second.source || first.alias === second.alias)
-    throw new Error(tx("Use two different sources and table aliases."));
-  need("ON");
-  const relations: [WorkspaceRelation, WorkspaceRelation] = [first, second];
-  const columnOwner = () => {
-    const alias = identifier();
+  const tables: WorkspaceTableReference[] = [];
+  const aliases: string[] = [];
+  const legacyQualifiers: (string | undefined)[] = [];
+  const relation = () => {
+    need("#");
+    const quoted = tokens[cursor]?.kind === "quoted";
+    const name = identifier();
+    const source = resolveSource(name, quoted);
+    if (!source) throw new Error(tx`Unknown or ambiguous workspace source: ${name}.`);
     need(".");
-    const target = relations.find((r) => r.alias === alias);
-    if (!target || target.key) throw new Error(tx("The join must compare one column from each table."));
-    return target;
+    const parts = [identifier()];
+    while (take(".")) {
+      if (parts.length === 3) throw new Error(tx("A table reference can include a database and a schema."));
+      parts.push(identifier());
+    }
+    const table = parts.pop()!;
+    const schema = parts.pop() ?? "";
+    const database = parts.pop() ?? "";
+    const explicit = take("AS") || (!!tokens[cursor] && !["INNER", "JOIN", "ON", ";"].includes(tokens[cursor]!.upper));
+    const alias = explicit ? identifier() : table;
+    if (aliases.some((existing, index) => existing === alias && (explicit || legacyQualifiers[index] === undefined)))
+      throw new Error(tx("Give each workspace table a distinct alias."));
+    aliases.push(alias);
+    // Earlier drafts could qualify an unaliased table by its source name.
+    legacyQualifiers.push(explicit ? undefined : name);
+    tables.push({ sourceId: source.id, database, schema, table });
   };
-  const column = () => {
-    columnOwner().key = identifier();
+  const indexOfOwner = (name: string) => {
+    const index = aliases.indexOf(name);
+    if (index >= 0 && aliases.lastIndexOf(name) === index) return index;
+    const old = legacyQualifiers.indexOf(name);
+    if (old >= 0 && legacyQualifiers.lastIndexOf(name) === old) return old;
+    throw new Error(tx`Unknown or ambiguous table qualifier: ${name}.`);
   };
-  const at = (index: number) => i === index;
-  return { relations, identifier, columnOwner, column, take, need, at };
+  const key = (candidate?: number): Column => {
+    const relation = indexOfOwner(identifier());
+    need(".");
+    if (
+      candidate !== undefined &&
+      (relation === candidate || (relation < tables.length - 1 && candidate < tables.length - 1))
+    )
+      throw new Error(tx("Each JOIN must compare the new table with an earlier table."));
+    if (cursor === tokens.length) complete?.(tables[relation]!);
+    return { relation, column: identifier() };
+  };
+  relation();
+  const joins: Join[] = [];
+  do {
+    take("INNER");
+    need("JOIN");
+    if (tables.length === 8) throw new Error(tx("A workspace query can join up to eight tables."));
+    relation();
+    need("ON");
+    const a = key();
+    need("=");
+    const b = key(a.relation);
+    joins.push(
+      a.relation === tables.length - 1 ? { left: b, rightColumn: a.column } : { left: a, rightColumn: b.column },
+    );
+  } while (tokens[cursor]?.upper === "INNER" || tokens[cursor]?.upper === "JOIN");
+  take(";");
+  if (cursor !== tokens.length) throw new Error(tx("Expected one SELECT with direct equality JOINs."));
+  const projection: Projection[] | null = fields.length
+    ? fields.map(({ owner, column }) => ({ relation: indexOfOwner(owner), column }))
+    : null;
+  return { tables, joins, projection };
 }
 
 /** Split on SQL delimiters, matching the console's trimmed UTF-16 ranges and caret rules. */
@@ -142,82 +193,57 @@ export function workspaceStatementRanges(sql: string, caret?: number): { from: n
   return [current];
 }
 
-/** Compile the workspace's direct table JOIN to structured host arguments. */
-export function workspaceJoinQuery(
-  sql: string,
-  names: SourceNames = defaultNames,
-  aliases: Partial<SourceNames> = {},
-  caret?: number,
-): [WorkspaceRelation, WorkspaceRelation] {
+/** The host receives resolved identifiers and equality edges, never editor SQL. */
+export function workspaceJoinQuery(sql: string, sources: readonly WorkspaceSourceReference[], caret?: number) {
   if (sql.length > WORKSPACE_SQL_LIMIT) throw new Error(tx("Workspace SQL exceeds 65,536 characters."));
   if (caret !== undefined) {
     const range = workspaceStatementRanges(sql, caret)[0];
     sql = range ? sql.slice(range.from, range.to) : "";
   }
-  const { tokens } = lex(sql, "postgres");
-  const query = parseWorkspaceJoin(tokens, names, aliases);
-  query.column();
-  query.need("=");
-  query.column();
-  query.take(";");
-  if (!query.at(tokens.length)) throw new Error(tx("The workspace supports one direct equality JOIN per statement."));
-  return query.relations;
+  return parseJoin(lex(sql, "postgres").tokens, sources);
 }
 
-export interface WorkspaceJoinColumnTarget {
-  source: Side;
-  schema: string;
-  table: string;
+export interface WorkspaceJoinColumnTarget extends WorkspaceTableReference {
   from: number;
   prefix: string;
   quoted: boolean;
 }
 
-/** Find the table named by the qualifier at the end of the SQL prefix. */
 export function workspaceJoinColumnTarget(
   sql: string,
-  names: SourceNames = defaultNames,
-  aliases: Partial<SourceNames> = {},
+  sources: readonly WorkspaceSourceReference[],
   lexed?: Lexed,
 ): WorkspaceJoinColumnTarget | null {
   if (sql.length > WORKSPACE_SQL_LIMIT) return null;
   const parsed = lexed ?? lex(sql, "postgres");
+  const literal = inLiteral(parsed, sql.length);
+  if (literal === "string" || literal === "comment") return null;
   const { start } = statementTokenRange(parsed.tokens, sql.length);
   const tokens = parsed.tokens.slice(start);
   const last = tokens.at(-1);
   const partial = last?.to === sql.length && (last.kind === "word" || last.kind === "quoted") ? last : undefined;
   if (tokens.at(partial ? -2 : -1)?.text !== ".") return null;
-  const literal = inLiteral(parsed, sql.length);
-  if (literal === "string" || literal === "comment") return null;
-
-  const atCaret = tokens.length - Number(!!partial);
+  let target: WorkspaceJoinColumnTarget | null = null;
   try {
-    const query = parseWorkspaceJoin(tokens, names, aliases);
-    let relation = query.columnOwner();
-    if (!query.at(atCaret)) {
-      relation.key = query.identifier();
-      query.need("=");
-      relation = query.columnOwner();
-    }
-    if (!query.at(atCaret)) return null;
-    const { source, schema, table } = relation;
-    return {
-      source,
-      schema,
-      table,
-      from: partial?.from ?? sql.length,
-      prefix: partial ? identName(partial) : "",
-      quoted: partial?.kind === "quoted",
-    };
+    parseJoin(partial ? tokens.slice(0, -1) : tokens, sources, (table) => {
+      target = {
+        ...table,
+        from: partial?.from ?? sql.length,
+        prefix: partial ? identName(partial) : "",
+        quoted: partial?.kind === "quoted",
+      };
+    });
   } catch {
-    return null;
+    // Completion parses an unfinished predicate and records its qualifier before the missing key.
   }
+  return target;
 }
 
 /** Use workspace quoting for columns regardless of the selected table's database dialect. */
 export function workspaceJoinColumnOptions(target: WorkspaceJoinColumnTarget, catalog: DbCompletion) {
+  const schema = target.schema || catalog.defaultSchema;
   const table = catalog.tables.find(
-    (table) => table.kind === "table" && table.schema === target.schema && table.name === target.table,
+    (table) => table.kind === "table" && table.schema === schema && table.name === target.table,
   );
   const prefix = target.quoted ? target.prefix : target.prefix.toLowerCase();
   const options = [];
