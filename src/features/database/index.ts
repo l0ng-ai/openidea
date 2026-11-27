@@ -25,6 +25,7 @@ import {
   registerOverlay,
   registerProjectViewRoot,
   registerServiceView,
+  registerTextEditorWrapper,
   registerToolWindow,
   SERVICES_WINDOW,
   useActiveServiceView,
@@ -37,6 +38,8 @@ import { registerResultTabActions } from "./resultTabActions";
 import { SQL_LANGUAGE } from "./sqlLanguage";
 import { TABLE_KIND, tableTitle } from "./tableInput";
 import { DIAGRAM_KIND, diagramTitle } from "./erDiagram";
+import { isCsvPath } from "./csv";
+import { registerCsvLiveSource, useCsvSourceHidden } from "./csvModes";
 import { databaseRequest, projectRequest } from "./requests";
 import { nodeSchema, nodeTarget, type DbNode } from "./nodes";
 import { registerDatabaseTreeActions } from "./treeActions";
@@ -249,6 +252,13 @@ export function activate(): () => void {
       // Switching tabs keeps the rows, filters, page and unsubmitted edits without querying again.
       keepAlive: true,
     }),
+    registerTextEditorWrapper({
+      id: "database.csv",
+      matches: isCsvPath,
+      component: lazyComponent(() => import("./CsvEditor").then((m) => m.CsvEditor)),
+      useSourceHidden: useCsvSourceHidden,
+    }),
+    registerCsvLiveSource(),
     registerEditorKind({
       kind: DIAGRAM_KIND,
       component: lazyComponent(() => import("./DiagramView").then((m) => m.DiagramEditor)),

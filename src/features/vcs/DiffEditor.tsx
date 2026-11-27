@@ -398,6 +398,11 @@ export interface DiffEditorProps {
   fit?: boolean;
   /** Kept by a host that unmounts the diff (an all-in-one diff block scrolled away) to restore it. */
   viewState?: DiffViewState;
+  /**
+   * The all-in-one diff's block it opened at: shows its first difference once loaded, then calls
+   * this, so the block comes back where it was left when scrolled away and back.
+   */
+  onFirstChangeShown?: () => void;
 }
 
 export function DiffEditor(props: DiffEditorProps) {
@@ -478,6 +483,7 @@ function TwoPaneDiff({
   onClose,
   fit = false,
   viewState,
+  onFirstChangeShown,
   gitModes,
   metadataLoading,
 }: DiffEditorProps & { gitModes?: [string | null, string | null]; metadataLoading: boolean }) {
@@ -1214,10 +1220,14 @@ function TwoPaneDiff({
     [],
   );
 
-  // Reveal the requested line (or the first / last difference) once per request.
+  // Reveal the requested line (or the first / last difference) once per request. Without either,
+  // a diff opens at its first difference, as IDEA's does; of the all-in-one diff's blocks, only the
+  // one it opened at.
   const revealed = useRef<string | null>(null);
+  const reveal =
+    data.reveal ?? (data.line == null && (onFirstChangeShown || (!fit && !viewState)) ? "first" : undefined);
   const revealKey =
-    data.line == null && !data.reveal ? null : `${input.key}:${data.line}:${data.col}:${data.lineSide}:${data.reveal}`;
+    data.line == null && !reveal ? null : `${input.key}:${data.line}:${data.col}:${data.lineSide}:${reveal}`;
   useEffect(() => {
     let v = viewsRef.current?.b;
     if (!v || revealKey === null || revealed.current === revealKey || !ready) return;
@@ -1231,15 +1241,32 @@ function TwoPaneDiff({
       at = target.from + Math.min(data.col ?? 0, target.length);
     } else {
       const chunks = getChunks(v.state)?.chunks ?? [];
-      at = (data.reveal === "last" ? chunks[chunks.length - 1] : chunks[0])?.fromB;
+      at = (reveal === "last" ? chunks[chunks.length - 1] : chunks[0])?.fromB;
     }
     if (at === undefined) return;
     if (data.line != null) revealPos(v, at);
     else v.dispatch({ selection: { anchor: at }, effects: EditorView.scrollIntoView(at, { y: "center" }) });
+    if (!data.reveal && data.line == null) onFirstChangeShown?.();
+    // A block of the all-in-one diff is scrolled by its host: the lines below the ones drawn have
+    // estimated heights, so the first scroll falls short. Scroll again until the change is drawn in view.
+    if (fit && data.line == null) {
+      const view = v;
+      const settle = (tries: number) =>
+        requestAnimationFrame(() => {
+          if (!view.dom.isConnected || tries === 0) return;
+          const at_ = Math.min(at!, view.state.doc.length);
+          const c = view.coordsAtPos(at_);
+          if (c && c.top >= 0 && c.bottom <= window.innerHeight) return;
+          view.dispatch({ effects: EditorView.scrollIntoView(at_, { y: "center" }) });
+          settle(tries - 1);
+        });
+      settle(5);
+    }
     // Keep keyboard navigation in the revealed pane after moving to another file.
     if (data.reveal || v === viewsRef.current?.a) v.focus();
     updateChunkInfo();
-  }, [ready, statics, revealKey, data.line, data.col, data.lineSide, data.reveal, updateChunkInfo]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- shown once per request, whoever asks
+  }, [ready, statics, revealKey, data.line, data.col, data.lineSide, data.reveal, reveal, updateChunkInfo]);
 
   // IDEA: past the last (first) difference F7 (Shift+F7) first hints, then moves along the chain.
   const [navHint, setNavHint] = useState<string | null>(null);

@@ -168,6 +168,30 @@
 }
 
 /* method list */
+.methodPane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.callSites {
+  flex: 0 0 40%;
+  min-height: 0;
+  display: flex;
+  border-top: 1px solid var(--border);
+}
+.callSites > .tableScroll + .tableScroll {
+  border-left: 1px solid var(--border);
+}
+.selectedRow,
+.table tbody tr.selectedRow:hover {
+  background: var(--bg-active);
+}
+.count {
+  width: 90px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-secondary);
+}
 .tableScroll {
   flex: 1;
   min-height: 0;

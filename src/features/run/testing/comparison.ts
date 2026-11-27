@@ -49,6 +49,18 @@ export function parseComparison(output: readonly string[]): Comparison | null {
       expected: lines[gexp]!.replace(/^.*?expected:\s*/, ""),
       actual: lines[gact]!.replace(/^\s*actual\s*:\s*/, ""),
     };
+  // doctest: `Expected:` and `Got:` blocks, each line indented four spaces.
+  const want = lines.indexOf("Expected:");
+  const got = want >= 0 ? lines.indexOf("Got:", want + 1) : -1;
+  if (want >= 0 && got > want) {
+    const block = (from: number, to: number) =>
+      lines
+        .slice(from, to)
+        .map((l) => l.replace(/^ {4}/, ""))
+        .join("\n");
+    const end = lines.findIndex((l, i) => i > got && !l.startsWith("    "));
+    return { expected: block(want + 1, got), actual: block(got + 1, end < 0 ? lines.length : end) };
+  }
   // pytest: `assert actual == expected`.
   if ((m = /^(?:E\s+)?(?:AssertionError:\s*)?assert\s+(.+?)\s+==\s+(.+)$/m.exec(text)))
     return { expected: m[2]!.trim(), actual: m[1]!.trim() };

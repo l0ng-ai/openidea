@@ -66,7 +66,7 @@ export function visibleRows(
   sort: LocalSort | null,
   fixed = rowCount,
 ): number[] {
-  const rows: number[] = [];
+  let rows: number[] = [];
   for (let r = 0; r < Math.min(rowCount, fixed); r++) {
     let shown = true;
     for (const [col, allowed] of filter) {
@@ -79,7 +79,21 @@ export function visibleRows(
   }
   if (sort) {
     const dir = sort.descending ? -1 : 1;
-    rows.sort((a, b) => dir * compareCells(value(a, sort.column), value(b, sort.column)) || a - b);
+    // compareCells with each row's value, number test and parse done once, not per comparison.
+    const v = rows.map((r) => value(r, sort.column));
+    const numeric = v.map((x) => x !== null && NUMBER.test(x));
+    const n = v.map((x, i) => (numeric[i] ? Number(x) : 0));
+    const compare = (i: number, j: number) => {
+      const a = v[i]!;
+      const b = v[j]!;
+      if (a === b) return 0;
+      if (a === null) return -1;
+      if (b === null) return 1;
+      if (numeric[i] && numeric[j]) return n[i]! - n[j]! || compareNumbers(a, b);
+      return a < b ? -1 : 1;
+    };
+    const order = rows.map((_, i) => i).sort((i, j) => dir * compare(i, j) || rows[i]! - rows[j]!);
+    rows = order.map((i) => rows[i]!);
   }
   for (let r = fixed; r < rowCount; r++) rows.push(r);
   return rows;

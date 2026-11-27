@@ -859,6 +859,21 @@ async fn connect_with_retries(
 mod tests {
     use super::*;
 
+    /// A user's `languages/python.toml` `[debugger]` is the one debugpy runs with: no other
+    /// language (a template one) declares debugpy before Python.
+    #[test]
+    fn debugpy_comes_from_the_python_language() {
+        let dir = tempfile::tempdir().unwrap();
+        let python = include_str!("../../../languages/python.toml").replace(
+            "args = [\"-m\", \"debugpy.adapter\"]",
+            "args = [\"-X\", \"frozen_modules=off\", \"-m\", \"debugpy.adapter\"]",
+        );
+        assert!(python.contains("frozen_modules"));
+        std::fs::write(dir.path().join("python.toml"), python).unwrap();
+        let languages = LanguageRegistry::load(Some(dir.path())).unwrap();
+        assert_eq!(find_config(&languages, "debugpy").unwrap().args[0], "-X");
+    }
+
     #[test]
     fn adapters_run_on_the_tool_search_path() {
         let search = ide_core::tool_path::search_path();

@@ -29,7 +29,7 @@ import { goBuildType, goTestType } from "./goTypes";
 import { dotnetProjectType, dotnetTestType } from "./dotnetTypes";
 import { rakeType, rspecType, rubyScriptType } from "./rubyTypes";
 import { djangoTestType } from "./djangoTypes";
-import { pythonType, unittestType } from "./pythonTypes";
+import { doctestType, pythonType, unittestType } from "./pythonTypes";
 import { phpunitType } from "./phpunitTypes";
 import { cypressType } from "./cypressType";
 import { UNITY_CONFIG_KIND } from "./unity";
@@ -621,6 +621,7 @@ export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   pythonType,
   pytest,
   unittestType,
+  doctestType,
   rubyScriptType,
   rakeType,
   rspecType,
@@ -686,6 +687,7 @@ export function withParams(config: RunConfig, params: Record<string, string>, ty
     config.kind === "dotnet-test" ||
     config.kind === "django-test" ||
     config.kind === "unittest" ||
+    config.kind === "doctest" ||
     config.kind === "phpunit" ||
     config.kind === "junit" ||
     config.kind === "rspec"
