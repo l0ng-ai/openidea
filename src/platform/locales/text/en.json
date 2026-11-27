@@ -4287,5 +4287,7 @@
   "tests.test_models": "tests.test_models",
   "unittest": "unittest",
   "1 file of the report is not in this project.": "1 file of the report is not in this project.",
-  "{count} files of the report are not in this project.": "{count} files of the report are not in this project."
+  "{count} files of the report are not in this project.": "{count} files of the report are not in this project.",
+  "1 file of the data has no source in this project. Map it with [paths] in the coverage.py configuration.": "1 file of the data has no source in this project. Map it with [paths] in the coverage.py configuration.",
+  "{count} files of the data have no source in this project. Map them with [paths] in the coverage.py configuration.": "{count} files of the data have no source in this project. Map them with [paths] in the coverage.py configuration."
 }

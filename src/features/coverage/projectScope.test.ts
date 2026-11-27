@@ -114,6 +114,13 @@ it("says how many imported files are not in the project", async () => {
   expect(backend.notify).toHaveBeenLastCalledWith(
     expect.objectContaining({ level: "warning", body: "2 files of the report are not in this project." }),
   );
+  backend.coverageImport.mockResolvedValue(ok({ ...data, runner: "coverage.py", files: [file, foreign("/ci/a.py")] }));
+  await importReport(report);
+  expect(backend.notify).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      body: "1 file of the data has no source in this project. Map it with [paths] in the coverage.py configuration.",
+    }),
+  );
   backend.coverageImport.mockResolvedValue(ok(data));
   await importReport(report);
   expect(backend.notify).toHaveBeenLastCalledWith(expect.objectContaining({ level: "info", body: undefined }));
