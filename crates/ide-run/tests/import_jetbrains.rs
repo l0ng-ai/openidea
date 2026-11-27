@@ -299,7 +299,16 @@ fn workspace_run_manager_skips_templates_and_temporary_configurations() {
     </configuration>
     <configuration name="Unittests in tests" type="tests" factoryName="Unittests">
       {PY_COMMON}
-      <option name="_new_target" value="&quot;tests&quot;" />
+      <option name="_new_pattern" value="&quot;check_*.py&quot;" />
+      <option name="_new_target" value="&quot;$PROJECT_DIR$/tests&quot;" />
+      <option name="_new_targetType" value="&quot;PATH&quot;" />
+      <method v="2" />
+    </configuration>
+    <configuration name="Unittest case" type="tests" factoryName="Unittests">
+      {PY_COMMON}
+      <option name="_new_additionalArguments" value="&quot;-f&quot;" />
+      <option name="_new_target" value="&quot;tests.test_money.RoundTests&quot;" />
+      <option name="_new_targetType" value="&quot;PYTHON&quot;" />
       <method v="2" />
     </configuration>
     <configuration name="dev" type="js.build_tools.npm">
@@ -319,7 +328,7 @@ fn workspace_run_manager_skips_templates_and_temporary_configurations() {
     );
     let r = import_from(dir.path(), &[]);
     let names: Vec<&str> = r.imported.iter().map(|c| c.config.name.as_str()).collect();
-    assert_eq!(names, ["App", "Unit", "Case", "Path params", "Custom", "dev"]);
+    assert_eq!(names, ["App", "Unit", "Case", "Path params", "Custom", "Unittests in tests", "Unittest case", "dev"]);
 
     let app = get(&r, "App");
     // `$USER_HOME$` is this machine's: the configuration goes to run.local.toml.
@@ -343,7 +352,11 @@ fn workspace_run_manager_skips_templates_and_temporary_configurations() {
     assert_eq!(get(&r, "Path params").args, s(&["-m", "pytest", "tests/test_money.py", "-k", "slow or fast"]));
     assert_eq!(get(&r, "Custom").args, s(&["-m", "pytest", "tests/a.py", "--maxfail=2"]));
 
-    assert_eq!(reason(&r, "Unittests in tests"), &SkipReason::UnsupportedType { type_: "tests (Unittests)".into() });
+    let unittests = get(&r, "Unittests in tests");
+    assert_eq!(unittests.kind, "unittest");
+    assert!(unittests.is_test);
+    assert_eq!(unittests.args, s(&["-m", "unittest", "discover", "-s", "tests", "-p", "check_*.py"]));
+    assert_eq!(get(&r, "Unittest case").args, s(&["-m", "unittest", "tests.test_money.RoundTests", "-f"]));
     assert_eq!(reason(&r, "Main"), &SkipReason::UnsupportedType { type_: "JUnit".into() });
 
     let dev = get(&r, "dev");
@@ -366,7 +379,7 @@ fn workspace_run_manager_skips_templates_and_temporary_configurations() {
     );
     assert_eq!(ignored(&r, "dev"), ["scripts"]);
     // Neither the template nor the temporary `build` is listed as skipped.
-    assert_eq!(r.skipped.len(), 2);
+    assert_eq!(r.skipped.len(), 1);
 }
 
 #[test]

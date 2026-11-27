@@ -16,6 +16,14 @@ describe("agent chat settings", () => {
       sendWith: "enter",
       whileRunning: "queue",
       newTaskApprovals: "bypass",
+      chatUseUiFont: true,
+      chatFontFamily: "Inter",
+      chatFontFallback: "",
+      chatFontSize: 13,
+      codeUseDefaultFont: true,
+      codeFontFamily: "JetBrains Mono",
+      codeFontFallback: "",
+      codeFontSize: 13,
       defaults: {},
       mcpServers: {},
       skills: {},
@@ -31,6 +39,11 @@ describe("agent chat settings", () => {
       fitWindowWidth: true,
     });
     expect(validateSettings({ agents: { fitWindowWidth: "yes" } }).agents.fitWindowWidth).toBe(false);
+    const fonts = validateSettings({
+      agents: { chatUseUiFont: false, chatFontFamily: "Maple Mono NF CN", chatFontSize: 16, codeFontSize: 999 },
+    }).agents;
+    expect(fonts).toMatchObject({ chatUseUiFont: false, chatFontFamily: "Maple Mono NF CN", chatFontSize: 16 });
+    expect(fonts.codeFontSize).toBe(72);
   });
 
   it("keeps valid chat choices and per-agent defaults", () => {

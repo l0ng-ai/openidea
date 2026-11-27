@@ -91,6 +91,15 @@ test("unifies Copilot sign-in, gates per-account models on auth, and supports in
         retryAtMs: null,
         error: null,
       }),
+      agent_preview_copilot_models: ({ account }: { account: string }) => ({
+        provider: "copilot",
+        config: [account === "alice-work" ? workModel : personalModel],
+        thoughtLevels: {},
+        refreshing: false,
+        refreshedAtMs: Date.now(),
+        retryAtMs: null,
+        error: null,
+      }),
       agent_set_env: ({ env }: { env: Record<string, string> }) => {
         savedAccount = env.OPENIDEA_COPILOT_GITHUB_ACCOUNT ?? "";
         return null;
@@ -142,14 +151,14 @@ test("unifies Copilot sign-in, gates per-account models on auth, and supports in
   await expect(accountSelect).toContainText("Copilot CLI default (alice)");
   await expect(newTasks.getByRole("button", { name: "Model" })).toContainText("Agent's default (Claude Sonnet 4.5)");
 
-  // Add account runs gh auth login in-IDE, auto-selects alice-work, and gates models on Apply.
+  // Add account runs gh auth login in-IDE, auto-selects alice-work, and immediately previews its models before Apply.
   await signIn.getByRole("button", { name: "Add account…" }).click();
   await expect(page.getByRole("dialog", { name: "Sign In to GitHub CLI" })).toHaveCount(0);
   await expect(accountSelect).toContainText("alice-work");
-  await expect(newTasks.getByText("Click Apply to load the models available for the selected account.")).toBeVisible();
-  await expect(newTasks.getByRole("button", { name: "Model" })).toHaveCount(0);
+  await expect(newTasks.getByRole("button", { name: "Model" })).toContainText("Agent's default (Gemini 4 Neon)");
+  expect(await ipcCalls(page, "agent_set_env")).toEqual([]);
 
-  // Applying loads the new account's subscription models.
+  // Applying saves the staged account selection.
   await dialog.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(newTasks.getByRole("button", { name: "Model" })).toContainText("Agent's default (Gemini 4 Neon)");
   expect(await ipcCalls(page, "agent_set_env")).toEqual([

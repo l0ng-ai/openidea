@@ -52,7 +52,8 @@ fn the_plugins_configuration_completes_only_the_argument_under_the_caret() {
     let config = "plugin:test.run-anything:tasks";
     // Not provided until its program is approved.
     assert!(p.run_configuration_complete("main", &root, config, "arguments", "b", 1).is_err());
-    p.choose_program(ID, "process:task", Some(&root), Some(Path::new("/bin/echo"))).unwrap();
+    // Any approved executable will do; the test binary exists on every host.
+    p.choose_program(ID, "process:task", Some(&root), Some(&std::env::current_exe().unwrap())).unwrap();
     assert!(p.run_detection().detect(&root).iter().any(|c| c.id == config));
     let complete = |text: &str, caret: u32| -> Vec<(String, String, u32, u32)> {
         p.run_configuration_complete("main", &root, config, "arguments", text, caret)

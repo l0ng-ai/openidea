@@ -8,7 +8,7 @@ import { choosePath } from "@/platform/choosePath";
 import styles from "./Sdk.module.css";
 
 const names: Record<string, string> = {
-  markdown: "Markdown",
+  markdown: "Markdown, MDX",
   yaml: "YAML",
   css: "CSS",
   scss: "SCSS",
