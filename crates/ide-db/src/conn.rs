@@ -1332,6 +1332,7 @@ impl Pool {
     pub(crate) async fn read_workspace_postgres(
         &self,
         request: &crate::workspace_input::WorkspaceInputRequest,
+        selection: Option<&[&str]>,
         cancel: &CancellationToken,
     ) -> IdeResult<crate::workspace_input::WorkspaceInput> {
         let Pool::Postgres(pool) = self else {
@@ -1362,7 +1363,7 @@ impl Pool {
                     "Workspace PostgreSQL transaction is not read-only",
                 ));
             }
-            crate::workspace_input::read_postgres(&mut conn, request).await
+            crate::workspace_input::read_postgres(&mut conn, request, selection).await
         };
         let result = tokio::select! {
             biased;

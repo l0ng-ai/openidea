@@ -28,6 +28,14 @@ cat > "$fixtures/users.xml" <<'XML'
       <max_rows_to_read>100000</max_rows_to_read>
       <max_execution_time>20</max_execution_time>
     </workspace_strict>
+    <workspace_break>
+      <readonly>1</readonly>
+      <result_overflow_mode>break</result_overflow_mode>
+    </workspace_break>
+    <workspace_cap>
+      <readonly>1</readonly>
+      <max_result_rows>2</max_result_rows>
+    </workspace_cap>
   </profiles>
   <users>
     <fixture_writer>
@@ -42,6 +50,18 @@ cat > "$fixtures/users.xml" <<'XML'
       <profile>workspace_strict</profile>
       <quota>default</quota>
     </fixture_strict>
+    <fixture_break>
+      <no_password/>
+      <networks><ip>::/0</ip></networks>
+      <profile>workspace_break</profile>
+      <quota>default</quota>
+    </fixture_break>
+    <fixture_cap>
+      <no_password/>
+      <networks><ip>::/0</ip></networks>
+      <profile>workspace_cap</profile>
+      <quota>default</quota>
+    </fixture_cap>
   </users>
 </clickhouse>
 XML
@@ -97,6 +117,9 @@ ch_sql 'CREATE VIEW default."fixture view" AS SELECT * FROM default."exact data"
 ch_sql 'CREATE TABLE default."unsigned data" (id UInt64) ENGINE=Memory'
 ch_sql 'INSERT INTO default."unsigned data" VALUES (9007199254740992), (9007199254740993), (18446744073709551615)'
 
+ch_sql 'CREATE TABLE default."overflow data" (id Int64) ENGINE=Memory'
+ch_sql 'INSERT INTO default."overflow data" VALUES (1), (2), (3), (4), (5)'
+
 export WORKSPACE_CH_USER=fixture_writer
 if (( $# > 0 )); then
     "$@"
@@ -104,4 +127,8 @@ else
     test_name=workspace_input::tests::native_workspace_sources_are_exact_and_fail_on_limits
     cargo test --locked -p ide-db --lib "$test_name" -- --ignored
     WORKSPACE_CH_USER=fixture_strict cargo test --locked -p ide-db --lib "$test_name" -- --ignored
+    cargo test --locked -p ide-db --lib clickhouse_workspace_refuses_truncated_reads -- --ignored
+    if [[ -n "${DUCKDB_JDBC_JAR:-}" ]]; then
+        WORKSPACE_CH_USER=fixture_strict cargo test --locked -p ide-db --lib workspace_join_chains_four_live_engines -- --ignored
+    fi
 fi

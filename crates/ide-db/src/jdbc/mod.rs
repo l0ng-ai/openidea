@@ -183,11 +183,10 @@ impl DbManager {
         JdbcPool::connect(&source, None, driver, self.jdbc_registry()?.with_file_name("jdbc")).await
     }
 
-    pub(crate) async fn workspace_duckdb_source(
+    pub(crate) async fn prepare_workspace_duckdb_source(
         &self,
         source: &DataSource,
-        password: Option<&str>,
-    ) -> IdeResult<JdbcPool> {
+    ) -> IdeResult<WorkspaceDuckDbSource> {
         let driver = self.approved_jdbc_driver(source, false)?;
         if driver.vendor.as_deref() != Some("duckdb") || driver.class_name != "org.duckdb.DuckDBDriver" {
             return Err(IdeError::invalid("Choose a saved DuckDB source with an installed DuckDB driver"));
@@ -226,7 +225,7 @@ impl DbManager {
         target
             .properties
             .extend(limits.map(|(name, value)| crate::DbProperty { name: name.into(), value: value.into() }));
-        JdbcPool::connect(&target, password, driver, cache).await
+        Ok(WorkspaceDuckDbSource { target, driver, cache })
     }
 
     pub(crate) async fn open_pool(
@@ -266,6 +265,18 @@ impl DbManager {
             return Err(IdeError::invalid("The JDBC driver profile is not associated with this data source type"));
         }
         Ok(driver)
+    }
+}
+
+pub(crate) struct WorkspaceDuckDbSource {
+    target: DataSource,
+    driver: DbJdbcDriver,
+    cache: PathBuf,
+}
+
+impl WorkspaceDuckDbSource {
+    pub(crate) async fn connect(self, password: Option<&str>) -> IdeResult<JdbcPool> {
+        JdbcPool::connect(&self.target, password, self.driver, self.cache).await
     }
 }
 

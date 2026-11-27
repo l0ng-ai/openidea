@@ -7,7 +7,7 @@ use crate::Host;
 use ide_command::command;
 use ide_core::{IdeError, IdeResult, IpcPath, RequestId};
 use ide_db::split::SqlStatement;
-use ide_db::workspace::{WORKSPACE_INPUT_LIMITS, WorkspaceJoinPlan};
+use ide_db::workspace::WorkspaceJoinPlan;
 use ide_db::{
     CompletionModel, DataSource, Databases, DbObjectKind, DbRowEdit, DbVisibilityChange, HistoryEntry, PlanNode,
     QueryResult, SchemaObjects, SortKey, TableDetails, TableGrant, TableInfo, TablePage,
@@ -16,57 +16,8 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::PathBuf;
 
-/// A table explicitly selected as one side of a project workspace join.
-#[derive(Deserialize, Serialize, Type)]
-#[serde(rename_all = "camelCase", rename = "DbWorkspaceJoinTable")]
-pub struct WorkspaceJoinTable {
-    pub source_id: String,
-    pub database: String,
-    pub schema: String,
-    pub table: String,
-    pub key: String,
-}
-
-impl WorkspaceJoinTable {
-    fn input(self) -> (ide_db::workspace_input::WorkspaceInputRequest, String) {
-        use ide_db::workspace_input::WorkspaceInputRequest;
-        let input = WorkspaceInputRequest {
-            source_id: self.source_id,
-            database: self.database,
-            schema: self.schema,
-            table: self.table,
-            limits: WORKSPACE_INPUT_LIMITS,
-        };
-        (input, self.key)
-    }
-}
-
 #[command(trust = trusted)]
 pub async fn db_workspace_join(
-    host: &Host,
-    window: &str,
-    request: RequestId,
-    driver: String,
-    left: WorkspaceJoinTable,
-    right: WorkspaceJoinTable,
-) -> IdeResult<QueryResult> {
-    let cancel = host.begin_project_request(window, request);
-    let result = async {
-        if cancel.is_cancelled() {
-            return Err(IdeError::cancelled());
-        }
-        let db = host.project(window)?.db.clone();
-        let (left, left_key) = left.input();
-        let (right, right_key) = right.input();
-        db.workspace_join(&driver, [&left, &right], [&left_key, &right_key], &cancel).await
-    }
-    .await;
-    host.end_request(request);
-    result
-}
-
-#[command(trust = trusted)]
-pub async fn db_workspace_join_chain(
     host: &Host,
     window: &str,
     request: RequestId,
@@ -79,7 +30,7 @@ pub async fn db_workspace_join_chain(
             return Err(IdeError::cancelled());
         }
         let db = host.project(window)?.db.clone();
-        db.workspace_join_chain(&driver, plan, &cancel).await
+        db.workspace_join(&driver, plan, &cancel).await
     }
     .await;
     host.end_request(request);
@@ -738,7 +689,6 @@ ide_command::domain!(
     db:
     db_apply_edits,
     db_workspace_join,
-    db_workspace_join_chain,
     db_completion,
     db_connect,
     db_connected,
@@ -813,13 +763,21 @@ mod tests {
         host
     }
 
-    fn workspace_test_table(source: &str) -> WorkspaceJoinTable {
-        WorkspaceJoinTable {
-            source_id: source.into(),
+    fn workspace_test_plan() -> WorkspaceJoinPlan {
+        use ide_db::workspace::{WorkspaceJoinColumn, WorkspaceJoinCondition, WorkspaceJoinRelation};
+        let relation = |id: &str| WorkspaceJoinRelation {
+            source_id: id.into(),
             database: "default".into(),
             schema: "default".into(),
             table: "items".into(),
-            key: "id".into(),
+        };
+        WorkspaceJoinPlan {
+            tables: vec![relation("left"), relation("right")],
+            joins: vec![WorkspaceJoinCondition {
+                left: WorkspaceJoinColumn { relation: 0, column: "id".into() },
+                right_column: "id".into(),
+            }],
+            projection: None,
         }
     }
 
@@ -829,16 +787,9 @@ mod tests {
         let host = host_with_sqlite(&temp).await;
         let request = RequestId(1);
         host.cancel_request(request);
-        let error = db_workspace_join(
-            &host,
-            "main",
-            request,
-            "no driver installed".into(),
-            workspace_test_table("left"),
-            workspace_test_table("right"),
-        )
-        .await
-        .unwrap_err();
+        let error = db_workspace_join(&host, "main", request, "no driver installed".into(), workspace_test_plan())
+            .await
+            .unwrap_err();
         assert_eq!(error.kind, ide_core::error::ErrorKind::Cancelled);
     }
 
@@ -871,27 +822,21 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "requires DUCKDB_JDBC_JAR and Java 17+"]
     async fn workspace_join_stops_when_its_project_closes() {
-        use ide_db::workspace::{WorkspaceJoinColumn, WorkspaceJoinCondition, WorkspaceJoinRelation};
         use std::time::Duration;
 
         let temp = tempfile::tempdir().unwrap();
         let host = host_with_sqlite(&temp).await;
         let window = "main";
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        db_save_sources(
-            &host,
-            window,
-            vec![DataSource {
-                id: "left".into(),
-                name: "ClickHouse fixture".into(),
-                driver: DbDriver::Clickhouse,
-                host: "127.0.0.1".into(),
-                port: Some(listener.local_addr().unwrap().port()),
-                ..Default::default()
-            }],
-        )
-        .await
-        .unwrap();
+        let sources = ["left", "right"].map(|id| DataSource {
+            id: id.into(),
+            name: format!("ClickHouse fixture {id}"),
+            driver: DbDriver::Clickhouse,
+            host: "127.0.0.1".into(),
+            port: Some(listener.local_addr().unwrap().port()),
+            ..Default::default()
+        });
+        db_save_sources(&host, window, sources.into()).await.unwrap();
         host.project(window)
             .unwrap()
             .db
@@ -905,20 +850,8 @@ mod tests {
             })
             .unwrap();
 
-        let relation = |id: &str| {
-            let WorkspaceJoinTable { source_id, database, schema, table, .. } = workspace_test_table(id);
-            WorkspaceJoinRelation { source_id, database, schema, table }
-        };
         for (request, close_project) in [(RequestId(2), false), (RequestId(3), true)] {
-            let plan = WorkspaceJoinPlan {
-                tables: vec![relation("left"), relation("right")],
-                joins: vec![WorkspaceJoinCondition {
-                    left: WorkspaceJoinColumn { relation: 0, column: "id".into() },
-                    right_column: "id".into(),
-                }],
-                projection: None,
-            };
-            let join = db_workspace_join_chain(&host, window, request, "duck".into(), plan);
+            let join = db_workspace_join(&host, window, request, "duck".into(), workspace_test_plan());
             tokio::pin!(join);
             // Accept the source connection and leave it open without replying.
             let (socket, _) = tokio::select! {

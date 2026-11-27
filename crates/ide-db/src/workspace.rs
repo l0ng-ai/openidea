@@ -14,7 +14,7 @@ use tempfile::{NamedTempFile, TempPath};
 const MAX_TABLES: usize = 8;
 const MAX_RESULT_ROWS: usize = 100_000;
 const MAX_RESULT_COLUMNS: usize = 256;
-pub const WORKSPACE_INPUT_LIMITS: WorkspaceInputLimits =
+const WORKSPACE_INPUT_LIMITS: WorkspaceInputLimits =
     WorkspaceInputLimits { max_rows: 100_000, max_cell_bytes: 1_048_576, max_bytes: 16_777_216 };
 
 #[derive(Debug, Deserialize, Serialize, Type)]
@@ -197,6 +197,38 @@ impl StagedTable {
     }
 }
 
+fn staging_columns<'a>(
+    table_count: usize,
+    joins: &'a [WorkspaceJoinCondition],
+    projection: Option<&'a [WorkspaceJoinProjection]>,
+) -> Vec<Option<Vec<&'a str>>> {
+    let Some(projection) = projection else {
+        return vec![None; table_count];
+    };
+    let mut columns: Vec<Option<Vec<&str>>> = vec![Some(Vec::new()); table_count];
+    for item in projection {
+        let selected = &mut columns[item.relation as usize];
+        match (&item.column, selected) {
+            (Some(name), Some(selected)) => selected.push(name),
+            (None, selected) => *selected = None,
+            _ => {}
+        }
+    }
+    for (index, link) in joins.iter().enumerate() {
+        if let Some(selected) = &mut columns[link.left.relation as usize] {
+            selected.push(&link.left.column);
+        }
+        if let Some(selected) = &mut columns[index + 1] {
+            selected.push(&link.right_column);
+        }
+    }
+    for selected in columns.iter_mut().flatten() {
+        selected.sort_unstable();
+        selected.dedup();
+    }
+    columns
+}
+
 fn result_projection(
     tables: &[StagedTable],
     selection: Option<&[WorkspaceJoinProjection]>,
@@ -282,6 +314,7 @@ async fn join(
     Ok(result)
 }
 
+#[cfg(test)]
 fn two_table_join(keys: [&str; 2]) -> WorkspaceJoinCondition {
     WorkspaceJoinCondition {
         left: WorkspaceJoinColumn { relation: 0, column: keys[0].into() },
@@ -290,27 +323,27 @@ fn two_table_join(keys: [&str; 2]) -> WorkspaceJoinCondition {
 }
 
 impl DbManager {
-    /// Compatibility path for older clients with a two-source JOIN.
-    pub async fn workspace_join(
+    #[cfg(test)]
+    pub(crate) async fn workspace_join_pair_for_test(
         &self,
         driver: &str,
         tables: [&WorkspaceInputRequest; 2],
         keys: [&str; 2],
         cancel: &CancellationToken,
     ) -> IdeResult<QueryResult> {
-        if tables[0].source_id == tables[1].source_id {
-            return Err(IdeError::invalid("Select two distinct workspace sources"));
-        }
-        self.execute_workspace_join(driver, &tables, &[two_table_join(keys)], None, cancel).await
+        let joins = [two_table_join(keys)];
+        validate_plan(tables.len(), &joins, None)?;
+        self.execute_workspace_join(driver, &tables, &joins, None, cancel).await
     }
 
     /// The caller retains the bounded result for paging. Reading another page never reruns the sources.
-    pub async fn workspace_join_chain(
+    pub async fn workspace_join(
         &self,
         driver: &str,
         plan: WorkspaceJoinPlan,
         cancel: &CancellationToken,
     ) -> IdeResult<QueryResult> {
+        validate_plan(plan.tables.len(), &plan.joins, plan.projection.as_deref())?;
         let tables: Vec<_> = plan
             .tables
             .into_iter()
@@ -334,13 +367,22 @@ impl DbManager {
         projection: Option<&[WorkspaceJoinProjection]>,
         cancel: &CancellationToken,
     ) -> IdeResult<QueryResult> {
-        validate_plan(tables.len(), joins, projection)?;
         let _run =
             self.workspace_run.try_lock().map_err(|_| IdeError::invalid("A workspace query is already running"))?;
         let start = Instant::now();
         let child = cancel.child_token();
         let run = async {
             let cancel = &child;
+            let mut prepared = Vec::with_capacity(tables.len());
+            for table in tables {
+                let input = tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => return Err(IdeError::cancelled()),
+                    input = workspace_input::prepare_table(self, table) => input?,
+                };
+                prepared.push(input);
+            }
+            let selection = staging_columns(tables.len(), joins, projection);
             let mut staged = Vec::with_capacity(tables.len());
             let engine = tokio::select! {
                 biased;
@@ -350,11 +392,11 @@ impl DbManager {
             let result = async {
                 let mut remaining_rows = 200_000;
                 let mut remaining_bytes = 32 * 1024 * 1024;
-                for table in tables {
-                    let mut request = (*table).clone();
-                    request.limits.max_rows = request.limits.max_rows.min(remaining_rows);
-                    request.limits.max_bytes = request.limits.max_bytes.min(remaining_bytes);
-                    let input = workspace_input::read_table(self, &request, cancel).await?;
+                for (mut table, columns) in prepared.into_iter().zip(&selection) {
+                    let limits = &mut table.request.limits;
+                    limits.max_rows = limits.max_rows.min(remaining_rows);
+                    limits.max_bytes = limits.max_bytes.min(remaining_bytes);
+                    let input = workspace_input::read_prepared_table(self, table, columns.as_deref(), cancel).await?;
                     remaining_rows -= input.rows.len();
                     remaining_bytes -= input.bytes;
                     let cancellation = cancel.clone();

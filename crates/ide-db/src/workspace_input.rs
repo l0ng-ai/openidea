@@ -1,5 +1,5 @@
 //! Bounded, typed reads for staging explicitly selected database tables.
-use crate::{DbDriver, DbManager, Pool, conn::db_err, route::RouteUse, sql};
+use crate::{DataSource, DbDriver, DbManager, Pool, conn::db_err, jdbc::WorkspaceDuckDbSource, route::RouteUse, sql};
 use futures::TryStreamExt;
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use sqlx::{Connection, Row, postgres::PgConnection, sqlite::SqlitePool};
@@ -59,12 +59,17 @@ pub enum WorkspaceInputType {
     Uuid,
 }
 
-/// Opens an independent read-only connection through the saved source's approved route.
-pub async fn read_table(
+pub(crate) struct PreparedWorkspaceInput {
+    pub(crate) request: WorkspaceInputRequest,
+    source: DataSource,
+    duckdb: Option<WorkspaceDuckDbSource>,
+}
+
+/// Verify the saved source and relation before a workspace opens any source connection.
+pub(crate) async fn prepare_table(
     db: &DbManager,
     request: &WorkspaceInputRequest,
-    cancel: &CancellationToken,
-) -> IdeResult<WorkspaceInput> {
+) -> IdeResult<PreparedWorkspaceInput> {
     let limits = request.limits;
     if limits.max_rows > 100_000 || !(1..=1_048_576).contains(&limits.max_cell_bytes) || limits.max_bytes > 16_777_216 {
         return Err(IdeError::invalid("Workspace source limits are out of range"));
@@ -73,22 +78,57 @@ pub async fn read_table(
         return Err(IdeError::invalid("Select a saved data source for the workspace"));
     }
     let source = db.source(&request.source_id)?;
-    let driver = source.driver;
     if !source.options.startup_script.trim().is_empty() {
         return Err(IdeError::invalid("Workspace inputs do not run saved source startup scripts"));
     }
     let mut request = request.clone();
     normalize_relation(&source, &mut request)?;
+    let duckdb = match source.driver {
+        DbDriver::Jdbc => Some(db.prepare_workspace_duckdb_source(&source).await?),
+        DbDriver::Sqlite => {
+            let file =
+                source.file.as_deref().ok_or_else(|| IdeError::invalid("Choose a saved SQLite database file"))?;
+            if !tokio::fs::metadata(db.root.join(file)).await.is_ok_and(|meta| meta.is_file()) {
+                return Err(IdeError::invalid("Choose an existing SQLite database file as the workspace source"));
+            }
+            None
+        }
+        _ => None,
+    };
+    Ok(PreparedWorkspaceInput { request, source, duckdb })
+}
+
+#[cfg(test)]
+async fn read_table(
+    db: &DbManager,
+    request: &WorkspaceInputRequest,
+    cancel: &CancellationToken,
+) -> IdeResult<WorkspaceInput> {
+    let prepared = prepare_table(db, request).await?;
+    read_prepared_table(db, prepared, None, cancel).await
+}
+
+/// Opens an independent read-only connection through the saved source's approved route.
+pub(crate) async fn read_prepared_table(
+    db: &DbManager,
+    prepared: PreparedWorkspaceInput,
+    selection: Option<&[&str]>,
+    cancel: &CancellationToken,
+) -> IdeResult<WorkspaceInput> {
+    let PreparedWorkspaceInput { request, source, duckdb } = prepared;
     let request = &request;
-    if driver == DbDriver::Jdbc {
-        let password = db.password(&source).await;
-        let open = db.workspace_duckdb_source(&source, password.as_deref());
+    let driver = source.driver;
+    if let Some(duckdb) = duckdb {
+        let open = async {
+            let password = db.password(&source).await;
+            duckdb.connect(password.as_deref()).await
+        };
         let pool = tokio::select! {
             biased;
             () = cancel.cancelled() => return Err(IdeError::cancelled()),
             result = open => result?,
         };
-        let result = read_duckdb(&pool, request, cancel).await;
+        let result = read_duckdb(&pool, request, selection, cancel).await;
         pool.close().await;
         return result;
     }
@@ -120,17 +160,17 @@ pub async fn read_table(
         result = open => result?,
     };
     match &pool {
-        Pool::Postgres(_) => pool.read_workspace_postgres(request, cancel).await,
+        Pool::Postgres(_) => pool.read_workspace_postgres(request, selection, cancel).await,
         Pool::Sqlite(pool) => {
             let result = tokio::select! {
                 biased;
                 () = cancel.cancelled() => Err(IdeError::cancelled()),
-                result = read_sqlite(pool, request, cancel) => result,
+                result = read_sqlite(pool, request, selection, cancel) => result,
             };
             pool.close().await;
             result
         }
-        Pool::Clickhouse(pool) => read_clickhouse(pool, request, cancel).await,
+        Pool::Clickhouse(pool) => read_clickhouse(pool, request, selection, cancel).await,
         _ => unreachable!(),
     }
 }
@@ -379,12 +419,17 @@ fn native_table_required() -> IdeError {
     IdeError::invalid("Workspace input must be a readable native table with columns")
 }
 
-fn require_columns(columns: &[SourceColumn]) -> IdeResult<()> {
+fn require_columns(columns: &[SourceColumn], selection: Option<&[&str]>) -> IdeResult<()> {
     if columns.is_empty() {
         return Err(native_table_required());
     }
     if columns.len() > MAX_COLUMNS {
         return Err(IdeError::invalid("Workspace input exceeds the source column limit"));
+    }
+    if let Some(selection) = selection
+        && let Some(missing) = selection.iter().find(|name| !columns.iter().any(|c| c.name == **name))
+    {
+        return Err(IdeError::invalid(format!("Unknown workspace column: {missing}")));
     }
     Ok(())
 }
@@ -400,11 +445,13 @@ JOIN pg_catalog.pg_attribute AS a ON a.attrelid = c.oid
 JOIN pg_catalog.pg_type AS t ON t.oid = a.atttypid
 WHERE n.nspname::pg_catalog.text = $1 AND c.relname::pg_catalog.text = $2
   AND c.relkind IN ('r', 'p') AND a.attnum > 0 AND NOT a.attisdropped
+  AND ($4::pg_catalog.text[] IS NULL OR a.attname::pg_catalog.text = ANY($4))
 ORDER BY a.attnum LIMIT $3";
 
 pub(crate) async fn read_postgres(
     conn: &mut PgConnection,
     request: &WorkspaceInputRequest,
+    selection: Option<&[&str]>,
 ) -> IdeResult<WorkspaceInput> {
     sqlx::raw_sql(
         "SET LOCAL DateStyle TO 'ISO, YMD'; SET LOCAL TimeZone TO 'UTC'; SET LOCAL extra_float_digits TO 3; \
@@ -440,6 +487,7 @@ pub(crate) async fn read_postgres(
         .bind(&request.schema)
         .bind(&request.table)
         .bind((MAX_COLUMNS + 1) as i64)
+        .bind(selection)
         .persistent(false)
         .fetch(&mut *conn);
     while let Some(row) = stream.try_next().await.map_err(db_err)? {
@@ -450,7 +498,7 @@ pub(crate) async fn read_postgres(
         )?);
     }
     drop(stream);
-    require_columns(&columns)?;
+    require_columns(&columns, selection)?;
     let projection: Vec<_> = columns
         .iter()
         .map(|c| format!("t.{}::pg_catalog.text", sql::quote_ident(DbDriver::Postgres, &c.name)))
@@ -566,9 +614,17 @@ fn bounded_select(
     )
 }
 
+fn column_filter(driver: DbDriver, column: &str, selection: Option<&[&str]>) -> String {
+    selection.map_or_else(String::new, |names| {
+        let names = names.iter().map(|name| sql::quote_literal(driver, name)).collect::<Vec<_>>().join(", ");
+        format!("AND {column} IN ({names})")
+    })
+}
+
 async fn read_sqlite(
     pool: &SqlitePool,
     request: &WorkspaceInputRequest,
+    selection: Option<&[&str]>,
     cancel: &CancellationToken,
 ) -> IdeResult<WorkspaceInput> {
     let mut connection = pool.acquire().await.map_err(db_err)?;
@@ -585,18 +641,18 @@ async fn read_sqlite(
     if native_table == 0 {
         return Err(native_table_required());
     }
+    let filter = column_filter(DbDriver::Sqlite, "name", selection);
+    let metadata =
+        format!("SELECT name, type FROM pragma_table_xinfo(?, 'main') WHERE hidden != 1 {filter} ORDER BY cid LIMIT ?");
     let mut stream =
-        sqlx::query("SELECT name, type FROM pragma_table_xinfo(?, 'main') WHERE hidden = 0 ORDER BY cid LIMIT ?")
-            .bind(&request.table)
-            .bind((MAX_COLUMNS + 1) as i64)
-            .fetch(&mut *tx);
+        sqlx::query(sqlx::AssertSqlSafe(metadata)).bind(&request.table).bind((MAX_COLUMNS + 1) as i64).fetch(&mut *tx);
     let mut columns = Vec::new();
     let driver = DbDriver::Sqlite;
     while let Some(row) = stream.try_next().await.map_err(db_err)? {
         columns.push(source_column(driver, row.try_get(0).map_err(db_err)?, row.try_get(1).map_err(db_err)?)?);
     }
     drop(stream);
-    require_columns(&columns)?;
+    require_columns(&columns, selection)?;
     let table = sql::qualified(driver, &request.schema, &request.table);
     let mut projection = Vec::with_capacity(columns.len());
     let mut storage = Vec::with_capacity(columns.len());
@@ -638,6 +694,7 @@ async fn read_sqlite(
 async fn read_duckdb(
     pool: &crate::jdbc::JdbcPool,
     request: &WorkspaceInputRequest,
+    selection: Option<&[&str]>,
     cancel: &CancellationToken,
 ) -> IdeResult<WorkspaceInput> {
     let driver = DbDriver::Jdbc;
@@ -648,12 +705,13 @@ async fn read_duckdb(
     } else {
         sql::quote_literal(driver, &request.database)
     };
+    let filter = column_filter(driver, "c.column_name", selection);
     let query = format!(
         "SELECT c.column_name, c.data_type FROM information_schema.columns AS c
          JOIN information_schema.tables AS t USING (table_catalog, table_schema, table_name)
          WHERE c.table_catalog = current_database() AND c.table_catalog = {database}
          AND c.table_schema = {schema} AND c.table_name = {name}
-         AND t.table_type = 'BASE TABLE' ORDER BY c.ordinal_position LIMIT {}",
+         AND t.table_type = 'BASE TABLE' {filter} ORDER BY c.ordinal_position LIMIT {}",
         MAX_COLUMNS + 1
     );
     let metadata = pool.query(&query, 0, MAX_COLUMNS + 1, cancel).await?;
@@ -666,7 +724,7 @@ async fn read_duckdb(
         };
         columns.push(source_column(driver, name, data_type)?);
     }
-    require_columns(&columns)?;
+    require_columns(&columns, selection)?;
     let table = sql::qualified(driver, &request.schema, &request.table);
     let projection: Vec<_> =
         columns.iter().map(|column| format!("CAST(t.{} AS VARCHAR)", sql::quote_ident(driver, &column.name))).collect();
@@ -766,11 +824,13 @@ const CLICKHOUSE_READ_CHECK: &str = "throwIf(
 async fn read_clickhouse(
     pool: &crate::clickhouse::ClickhousePool,
     request: &WorkspaceInputRequest,
+    selection: Option<&[&str]>,
     cancel: &CancellationToken,
 ) -> IdeResult<WorkspaceInput> {
     let driver = DbDriver::Clickhouse;
     let database = sql::quote_literal(driver, &request.database);
     let table = sql::quote_literal(driver, &request.table);
+    let filter = column_filter(driver, "name", selection);
     let catalog = format!(
         "SELECT name, type FROM system.columns
          WHERE database = {database} AND table = {table}
@@ -779,7 +839,7 @@ async fn read_clickhouse(
                WHERE database = {database} AND name = {table}
                  AND (endsWith(engine, 'MergeTree') OR engine IN ('Memory', 'Log', 'TinyLog', 'StripeLog', 'Null'))
            ) > 0
-           AND {CLICKHOUSE_READ_CHECK}
+           AND {CLICKHOUSE_READ_CHECK} {filter}
          ORDER BY position LIMIT {}",
         MAX_COLUMNS + 1,
     );
@@ -796,7 +856,7 @@ async fn read_clickhouse(
     })
     .await?;
     parser.finish()?;
-    require_columns(&columns)?;
+    require_columns(&columns, selection)?;
     let table = sql::qualified(driver, &request.database, &request.table);
     let limits = request.limits;
     let projection: Vec<_> = columns
@@ -870,6 +930,11 @@ mod tests {
              CREATE TABLE mixed(id BIGINT);
              INSERT INTO mixed VALUES ('not an integer');
              CREATE TABLE empty_items(id BIGINT);
+             CREATE TABLE computed(
+                 value BIGINT,
+                 doubled BIGINT GENERATED ALWAYS AS (value * 2) STORED
+             );
+             INSERT INTO computed(value) VALUES (9007199254740993);
              CREATE VIEW view_items AS SELECT * FROM items",
         )
         .execute(&mut conn)
@@ -902,6 +967,10 @@ mod tests {
                 .unwrap_err();
             assert!(error.message.contains(message), "{error}");
         }
+        let generated = WorkspaceInputRequest { table: "computed".into(), ..request.clone() };
+        let generated = read_table(&db, &generated, &cancel).await?;
+        assert_eq!(generated.columns[1].name, "doubled");
+        assert_eq!(generated.rows, [vec![Some("9007199254740993".into()), Some("18014398509481986".into())]]);
         for (limits, message) in [
             (WorkspaceInputLimits { max_rows: 0, ..LIMITS }, "row limit"),
             (WorkspaceInputLimits { max_bytes: 0, ..LIMITS }, "byte limit"),
@@ -961,6 +1030,40 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires the disposable ClickHouse fixture"]
+    async fn clickhouse_workspace_refuses_truncated_reads() -> IdeResult<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path();
+        let ssh = Arc::new(ide_ssh::SshManager::new(root.join("ssh.json")));
+        let db = DbManager::new(root.to_path_buf(), root.join("passwords.json"), root.join("history.json"), ssh);
+        let port = std::env::var("WORKSPACE_CH_PORT").unwrap().parse().unwrap();
+        for (user, message) in
+            [("fixture_break", "overflow modes that throw"), ("fixture_cap", "Limit for result exceeded")]
+        {
+            db.save_sources(vec![DataSource {
+                id: user.into(),
+                name: user.into(),
+                driver: DbDriver::Clickhouse,
+                host: "127.0.0.1".into(),
+                port: Some(port),
+                user: user.into(),
+                ..Default::default()
+            }])
+            .await?;
+            let request = WorkspaceInputRequest {
+                source_id: user.into(),
+                database: String::new(),
+                schema: "default".into(),
+                table: "overflow data".into(),
+                limits: LIMITS,
+            };
+            let error = read_table(&db, &request, &CancellationToken::new()).await.unwrap_err();
+            assert!(error.message.contains(message), "{user}: {error}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     #[ignore = "requires the workspace PG/CH fixtures, DUCKDB_JDBC_JAR, and Java 17+"]
     async fn workspace_join_chains_four_live_engines() -> IdeResult<()> {
         use crate::workspace::{
@@ -995,10 +1098,12 @@ mod tests {
         let Pool::Jdbc(duck_writer) = db.open_pool(&duck_source, None, true).await? else {
             unreachable!();
         };
-        duck_writer.query("CREATE TABLE products (cost DECIMAL(32,6), product VARCHAR)", 0, 0, &cancel).await?;
+        duck_writer
+            .query("CREATE TABLE products (cost DECIMAL(32,6), product VARCHAR, attachment BLOB)", 0, 0, &cancel)
+            .await?;
         duck_writer
             .query(
-                "INSERT INTO products VALUES
+                "INSERT INTO products (cost, product) VALUES
                  (100000000000000000001.000001, 'exact product'),
                  (100000000000000000002.000002, 'adjacent decimal')",
                 0,
@@ -1012,8 +1117,8 @@ mod tests {
         let options = sqlx::sqlite::SqliteConnectOptions::new().filename(&sqlite_file).create_if_missing(true);
         let mut writer = sqlx::SqliteConnection::connect_with(&options).await.map_err(db_err)?;
         sqlx::raw_sql(
-            "CREATE TABLE local_rows (id BIGINT, tag TEXT);
-             INSERT INTO local_rows VALUES (9007199254740993, 'local'), (9007199254740994, NULL)",
+            "CREATE TABLE local_rows (id BIGINT, tag TEXT, attachment BLOB);
+             INSERT INTO local_rows (id, tag) VALUES (9007199254740993, 'local'), (9007199254740994, NULL)",
         )
         .execute(&mut writer)
         .await
@@ -1069,27 +1174,60 @@ mod tests {
             ],
             joins: vec![on(0, "exact key", "exact key"), on(0, "id", "id"), on(1, "exact key", "cost")],
             projection: Some(vec![
-                select(3, None),
+                select(3, Some("cost")),
+                select(3, Some("product")),
                 select(2, Some("id")),
                 select(1, Some("label")),
                 select(2, Some("tag")),
+                select(3, Some("cost")),
+                select(0, None),
+                select(0, Some("id")),
             ]),
         };
-        let result = db.workspace_join_chain("duck", plan, &cancel).await?;
+        let result = db.workspace_join("duck", plan, &cancel).await?;
+        eprintln!("Four-engine workspace JOIN: {:.1} ms including metadata, inputs, and engine", result.elapsed_ms);
         assert_eq!(
             result.columns.iter().map(|column| column.name.as_str()).collect::<Vec<_>>(),
-            ["cost", "product", "id", "label", "tag"],
+            ["cost", "product", "id", "label", "tag", "cost", "exact key", "id", "ts", "label", "id"],
         );
+        assert_eq!(result.rows.len(), 1);
+        let row = &result.rows[0];
         assert_eq!(
-            result.rows,
-            [vec![
+            row[..6],
+            [
                 Some("100000000000000000001.000001".into()),
                 Some("exact product".into()),
                 Some("9007199254740993".into()),
                 Some("a,b\"c\nd".into()),
                 Some("local".into()),
-            ]],
+                Some("100000000000000000001.000001".into()),
+            ],
         );
+        assert_eq!(row[6], row[0]);
+        assert_eq!(row[7], row[2]);
+        assert!(row[8].as_deref().is_some_and(|ts| ts.contains(".123456")));
+        assert_eq!(row[9], row[3]);
+        assert_eq!(row[10], row[2]);
+        let wildcard = WorkspaceJoinPlan {
+            tables: vec![relation("sqlite", "", "", "local_rows"), relation("duckdb", "warehouse", "main", "products")],
+            joins: vec![on(0, "id", "cost")],
+            projection: None,
+        };
+        let error = db.workspace_join("duck", wildcard, &cancel).await.unwrap_err();
+        assert!(error.message.contains("unsupported source type BLOB"), "{error}");
+        let missing_source = WorkspaceJoinPlan {
+            tables: vec![
+                relation("pg", "", "", "exact data"),
+                relation("ch", "", "default", "exact data"),
+                relation("sqlite", "", "", "local_rows"),
+                relation("removed", "", "", "products"),
+            ],
+            joins: vec![on(0, "exact key", "exact key"), on(0, "id", "id"), on(1, "exact key", "cost")],
+            projection: None,
+        };
+        let error = db.workspace_join("no engine installed", missing_source, &cancel).await.unwrap_err();
+        assert_eq!(error.kind, ide_core::error::ErrorKind::NotFound);
+        assert!(error.message.contains("no data source removed"), "{error}");
         assert!(!result.has_more);
         for id in ["pg", "ch", "sqlite", "duckdb"] {
             assert!(!db.is_connected(id), "{id} used a console pool");
@@ -1234,7 +1372,9 @@ mod tests {
         };
         let blocked_run = async {
             if has_duckdb {
-                db.workspace_join("duck", [&blocked, &ch], ["exact key", "exact key"], &blocked_cancel).await.map(drop)
+                db.workspace_join_pair_for_test("duck", [&blocked, &ch], ["exact key", "exact key"], &blocked_cancel)
+                    .await
+                    .map(drop)
             } else {
                 read_table(&db, &blocked, &blocked_cancel).await.map(drop)
             }
@@ -1268,14 +1408,16 @@ mod tests {
         assert_eq!(input.columns[0].data_type, WorkspaceInputType::UInt64);
         assert!(input.rows.iter().any(|row| row[0].as_deref() == Some("18446744073709551615")));
         if has_duckdb {
-            let mismatch = db.workspace_join("duck", [&blocked, &ch], ["id", "label"], &cancel).await.unwrap_err();
+            let mismatch =
+                db.workspace_join_pair_for_test("duck", [&blocked, &ch], ["id", "label"], &cancel).await.unwrap_err();
             assert!(mismatch.message.contains("type"), "{mismatch}");
-            let mixed = db.workspace_join("duck", [&blocked, &unsigned], ["id", "id"], &cancel).await?;
+            let mixed = db.workspace_join_pair_for_test("duck", [&blocked, &unsigned], ["id", "id"], &cancel).await?;
             assert_eq!(mixed.rows.len(), 1);
             assert_eq!(mixed.rows[0][1].as_deref(), Some("9007199254740993"));
             assert_eq!(mixed.rows[0][4].as_deref(), Some("9007199254740993"));
             let pg = blocked;
-            let result = db.workspace_join("duck", [&pg, &ch], ["exact key", "exact key"], &cancel).await?;
+            let result =
+                db.workspace_join_pair_for_test("duck", [&pg, &ch], ["exact key", "exact key"], &cancel).await?;
             assert_eq!(result.rows.len(), 2);
             for row in result.rows {
                 assert_eq!(row[0], row[4]);
