@@ -568,7 +568,7 @@ pub async fn db_apply_edits(
 
 #[command(trust = always)]
 pub fn db_console_path(host: &Host, id: String) -> IdeResult<IpcPath> {
-    // The query console file of data source `id` (`<dataDir>/consoles/db/<id>/console.sql`),
+    // The query console file of data source `id` (`<dataDir>/scratches/consoles/db/<id>/console.sql`),
     // created on first use. Consoles are files of the project, so a remote
     // window resolves it on the host the project runs on.
     let file = console_dir(host, &id)?.join("console.sql");
@@ -612,7 +612,9 @@ pub fn db_consoles(host: &Host, id: String, create: bool) -> IdeResult<Vec<IpcPa
     Ok(out)
 }
 
-/// `<dataDir>/consoles/db/<id>`: `<id>` for the default database, `<id>.<database>` for the others.
+/// `<dataDir>/scratches/consoles/db/<id>`: `<id>` for the default database,
+/// `<id>.<database>` for the others. Consoles written by older versions under
+/// `<dataDir>/consoles/db` move here on first access.
 fn console_dir(host: &Host, id: &str) -> IdeResult<PathBuf> {
     let (source, database) = ide_db::split_target(id);
     if source.is_empty() || !source.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
@@ -626,9 +628,61 @@ fn console_dir(host: &Host, id: &str) -> IdeResult<PathBuf> {
         }
         None => source.to_owned(),
     };
-    let dir = host.data_dir.join("consoles").join("db").join(&name);
+    migrate_legacy_consoles(host);
+    let dir = host.data_dir.join("scratches").join("consoles").join("db").join(&name);
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
+}
+
+/// Moves `<dataDir>/consoles/db/*` into Scratches without overwriting files that
+/// already exist in the new location. A conflict stays in the old directory.
+fn migrate_legacy_consoles(host: &Host) {
+    let old = host.data_dir.join("consoles").join("db");
+    let new = host.data_dir.join("scratches").join("consoles").join("db");
+    let Ok(sources) = std::fs::read_dir(&old) else {
+        return;
+    };
+    for source in sources.flatten() {
+        if !source.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let target = new.join(source.file_name());
+        if let Err(e) = std::fs::create_dir_all(&target) {
+            tracing::warn!("query consoles: cannot create {}: {e}", target.display());
+            continue;
+        }
+        let Ok(files) = std::fs::read_dir(source.path()) else {
+            continue;
+        };
+        let mut left = 0;
+        for file in files.flatten() {
+            if !file.file_type().is_ok_and(|kind| kind.is_file()) {
+                continue;
+            }
+            let destination = target.join(file.file_name());
+            if destination.exists() {
+                left += 1;
+                tracing::warn!(
+                    "query console {} already exists at {}; keeping the old copy",
+                    file.path().display(),
+                    destination.display()
+                );
+                continue;
+            }
+            if let Err(e) = std::fs::rename(file.path(), &destination) {
+                left += 1;
+                tracing::warn!(
+                    "query console {}: cannot move to {}: {e}",
+                    file.path().display(),
+                    destination.display()
+                );
+            }
+        }
+        if left == 0 {
+            let _ = std::fs::remove_dir(source.path());
+        }
+    }
+    let _ = std::fs::remove_dir(&old);
 }
 
 /// Runs a client tool against target `id` until it exits or the request is cancelled.

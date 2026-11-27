@@ -10,6 +10,7 @@ import {
   IpcError,
   call,
   commands,
+  emitLocalIdeEvent,
   isCancelled,
   nextRequestId,
   type DataSource,
@@ -274,6 +275,18 @@ function readConsoleSchemas(): Record<string, string> {
   } catch {
     return {};
   }
+}
+
+function consoleTargetFromPath(path: string, sources: readonly DataSource[]): string | null {
+  const folder = /(?:^|[\\/])consoles[\\/]db[\\/]([^\\/]+)[\\/]console(?:_\d+)?\.sql$/i.exec(path)?.[1];
+  if (!folder) return null;
+  const source = sources.find((candidate) => {
+    const id = candidate.id ?? "";
+    return !!id && (folder === id || folder.startsWith(`${id}.`));
+  });
+  if (!source?.id) return null;
+  const database = folder === source.id ? null : folder.slice(source.id.length + 1);
+  return database ? `${source.id}:${database}` : source.id;
 }
 
 function readViewOptions(): Pick<DatabaseState, "separateProceduresAndFunctions" | "showTableComments"> {
@@ -1163,6 +1176,8 @@ export function consoleSource(path: string): string | null {
   const s = useDatabase.getState();
   const bound = s.consoles[path];
   if (bound && s.sources.some((x) => x.id === splitTarget(bound).id)) return bound;
+  const inferred = consoleTargetFromPath(path, s.sources);
+  if (inferred) return inferred;
   const scope = scopeOf(path);
   if (scope) return scope.dataSource;
   return s.sources.length === 1 ? (s.sources[0]!.id ?? null) : null;
@@ -1173,6 +1188,7 @@ export async function openConsole(id: string, schema?: string): Promise<void> {
   try {
     const path = await call(commands.dbConsolePath(id));
     bindConsole(path, id);
+    announceConsoleFile(path);
     if (schema) setConsoleSchema(path, schema);
     await editorService().openFile(path, { focus: true });
   } catch (e) {
@@ -1198,10 +1214,17 @@ export async function newConsole(id: string, schema?: string): Promise<void> {
     const before = new Set(await consoleFiles(id));
     const after = await call(commands.dbConsoles(id, true));
     const path = after.find((p) => !before.has(p)) ?? after[after.length - 1];
-    if (path) await openConsoleFile(id, path, schema);
+    if (path) {
+      announceConsoleFile(path);
+      await openConsoleFile(id, path, schema);
+    }
   } catch (e) {
     notifications().notify({ level: "error", title: "Cannot open the query console", body: message(e) });
   }
+}
+
+function announceConsoleFile(path: string) {
+  emitLocalIdeEvent({ type: "fsChanged", created: [path], modified: [], removed: [] });
 }
 
 let nextTab = 1;
