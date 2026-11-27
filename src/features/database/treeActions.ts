@@ -38,6 +38,7 @@ import {
   openSourceDialog,
   readableDdl,
   refresh,
+  removeSourceFolder,
   revealInTree,
   revealOpened,
   runSql,
@@ -113,6 +114,13 @@ function nodesFrom(arg: unknown): DbNode[] {
   const { selectedNodes } = useDatabase.getState();
   if (!isNode(arg)) return selectedNodes;
   return selectedNodes.some((n) => n.key === arg.key) ? selectedNodes : [arg];
+}
+
+function sourceIdsFrom(arg: unknown): string[] {
+  return nodesFrom(arg).flatMap((node) => {
+    const id = node.kind === "source" ? node.source.id : null;
+    return id ? [id] : [];
+  });
 }
 
 /** Selected data source roots; nested schema/table rows in a range selection are ignored. */
@@ -345,6 +353,10 @@ function refreshNode(n: DbNode | null) {
     for (const c of useDatabase.getState().connected) void refresh(c);
     return;
   }
+  if (n.kind === "sourceFolder") {
+    for (const id of n.folder.sources) void refresh(id);
+    return;
+  }
   const id = nodeTarget(n);
   if (!id) return;
   if (n.kind === "schema" || n.kind === "folder") void loadTables(id, n.schema);
@@ -368,7 +380,9 @@ export function registerDatabaseTreeActions(): () => void {
       icon: "db-properties",
       keywords: ["data sources", "connection settings"],
       run: ({ arg }) => {
-        const src = sourceOf(nodeFrom(arg));
+        const node = nodeFrom(arg);
+        if (node?.kind === "sourceFolder") return;
+        const src = sourceOf(node);
         const { sources } = useDatabase.getState();
         openSourceDialog(src ?? (sources.length === 1 ? sources[0]! : null));
       },
@@ -456,7 +470,8 @@ export function registerDatabaseTreeActions(): () => void {
       icon: "info",
       run: ({ arg }) => {
         const n = nodeFrom(arg);
-        if (n && n.kind !== "message") openDialog({ kind: "quickDoc", node: n, anchor: rowAnchor() });
+        if (n && n.kind !== "message" && n.kind !== "sourceFolder")
+          openDialog({ kind: "quickDoc", node: n, anchor: rowAnchor() });
       },
     }),
     tree({
@@ -466,6 +481,7 @@ export function registerDatabaseTreeActions(): () => void {
       run: ({ arg }) => {
         const n = nodeFrom(arg);
         if (!n) return;
+        if (n.kind === "sourceFolder") return openDialog({ kind: "sourceFolder", folder: n.folder });
         const id = nodeTarget(n);
         if (n.kind === "source" && id) return openDialog({ kind: "rename", id, object: null });
         const source = sourceById(id);
@@ -485,6 +501,7 @@ export function registerDatabaseTreeActions(): () => void {
         if (sources.length > 1) return void removeSources(sources.map((source) => source.source));
         const n = nodeFrom(arg);
         if (!n) return;
+        if (n.kind === "sourceFolder") return void removeSourceFolder(n.folder);
         const id = nodeTarget(n);
         if (n.kind === "source") return void removeSources([n.source]);
         const source = sourceById(id);
@@ -753,6 +770,35 @@ export function registerDatabaseTreeActions(): () => void {
       run: () => {
         toolWindowService().show(DB_TOOL_WINDOW, false);
         useDatabase.setState({ newMenuOpen: true });
+      },
+    }),
+    tree({
+      id: "db.newSourceFolder",
+      title: "New Data Source Folder…",
+      icon: "folder",
+      run: ({ arg }) =>
+        openDialog({
+          kind: "sourceFolder",
+          folder: null,
+          sources: sourceIdsFrom(arg),
+        }),
+    }),
+    tree({
+      id: "db.renameSourceFolder",
+      title: "Rename Data Source Folder…",
+      icon: "edit",
+      run: ({ arg }) => {
+        const node = nodeFrom(arg);
+        if (node?.kind === "sourceFolder") openDialog({ kind: "sourceFolder", folder: node.folder });
+      },
+    }),
+    tree({
+      id: "db.deleteSourceFolder",
+      title: "Delete Data Source Folder…",
+      icon: "trash",
+      run: ({ arg }) => {
+        const node = nodeFrom(arg);
+        if (node?.kind === "sourceFolder") void removeSourceFolder(node.folder);
       },
     }),
     tree({
