@@ -11,6 +11,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 import { useDebug, type DebugSession } from "../state";
 import { DebuggerOverlays } from "../ui/Overlays";
 import { applyCompletion, completionPrefix, matchingCompletions } from "../ui/ExpressionCompletion";
+import { expressionItem, spliceExpression } from "../conditionCompletion";
 import { openEvaluateDialog, useOverlays } from "../ui/popoverStore";
 
 const session: DebugSession = {
@@ -93,5 +94,39 @@ describe("expression completion", () => {
     expect(screen.queryByRole("option")).toBeNull();
     // The dialog stays open: Enter went to the completion, not to Evaluate.
     expect(useOverlays.getState().evaluate).not.toBeNull();
+  });
+
+  it("splices a breakpoint's expression before its line, indented like it, for the language server", () => {
+    const text = "class A {\n  void run(int count) {\n    go(count);\n  }\n}";
+    expect(spliceExpression(text, 2, "order.")).toEqual({
+      text: "class A {\n  void run(int count) {\n    order.\n    go(count);\n  }\n}",
+      pos: { line: 2, col: 10 },
+    });
+    expect(spliceExpression("a\r\n\tb\r\n", 1, "x").text).toBe("a\r\n\tx\n\tb\r\n");
+  });
+
+  it("inserts a language server item as plain text with the caret at its first argument", () => {
+    const item = (insertText: string, isSnippet: boolean) =>
+      expressionItem({
+        label: "equals",
+        labelDetail: "(Object obj)",
+        labelDescription: "boolean",
+        detail: null,
+        kind: "method",
+        sortText: "1",
+        insertText,
+        isSnippet,
+      } as never);
+    expect(item("equals(${1:obj})", true)).toEqual({
+      label: "equals(Object obj)",
+      text: "equals()",
+      caret: 7,
+      kind: "method",
+      detail: "boolean",
+      sortText: "1",
+    });
+    expect(item("equals($0)", true)).toMatchObject({ text: "equals()", caret: 7 });
+    expect(item("total", false)).toMatchObject({ text: "total", caret: 5 });
+    expect(applyCompletion("o.eq", 4, item("equals(${1:obj})", true))).toEqual({ text: "o.equals()", caret: 9 });
   });
 });

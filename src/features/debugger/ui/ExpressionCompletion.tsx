@@ -1,7 +1,8 @@
 /**
  * Completion in the debugger's expression fields (Evaluate, Variables, Debug console): the
  * adapter's DAP `completions` for the selected frame, as you type an identifier or after `.`,
- * or on ⌃Space. ↑/↓ move, Enter or Tab inserts, Escape closes.
+ * or on ⌃Space. ↑/↓ move, Enter or Tab inserts, Escape closes. Breakpoint conditions pass their
+ * own `source` (the language server at the breakpoint's line), which needs no debug session.
  */
 import { useEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import clsx from "clsx";
@@ -17,6 +18,12 @@ import styles from "./ExpressionCompletion.module.css";
 
 type Field = HTMLInputElement | HTMLTextAreaElement;
 
+/** A completion; `caret` is where the caret goes within the inserted text (default: its end). */
+export type ExpressionCompletionItem = DebugCompletion & { caret?: number };
+
+/** Completions for the field's text before the caret. */
+export type CompletionSource = (before: string) => Promise<ExpressionCompletionItem[]>;
+
 const WORD = /[\p{L}\p{N}_$]+$/u;
 const DELAY = 120;
 const MAX_ITEMS = 200;
@@ -30,7 +37,7 @@ export function completionPrefix(text: string, caret: number): string {
  * The adapter's items that still match `prefix` (they narrow as more is typed), by the adapter's
  * sort text, without repeats; exact-case matches first, private `_names` last unless the prefix asks for them.
  */
-export function matchingCompletions(items: readonly DebugCompletion[], prefix: string): DebugCompletion[] {
+export function matchingCompletions<T extends DebugCompletion>(items: readonly T[], prefix: string): T[] {
   const p = prefix.toLowerCase();
   const hidden = (i: DebugCompletion) =>
     (!p.startsWith("_") && i.label.startsWith("_") ? 2 : 0) + ((i.text ?? i.label).startsWith(prefix) ? 0 : 1);
@@ -51,10 +58,14 @@ export function matchingCompletions(items: readonly DebugCompletion[], prefix: s
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
 /** `text` with `item` replacing the identifier before `caret`, and the caret after it. */
-export function applyCompletion(text: string, caret: number, item: DebugCompletion): { text: string; caret: number } {
+export function applyCompletion(
+  text: string,
+  caret: number,
+  item: ExpressionCompletionItem,
+): { text: string; caret: number } {
   const start = caret - completionPrefix(text, caret).length;
   const insert = item.text ?? item.label;
-  return { text: text.slice(0, start) + insert + text.slice(caret), caret: start + insert.length };
+  return { text: text.slice(0, start) + insert + text.slice(caret), caret: start + (item.caret ?? insert.length) };
 }
 
 /** 0-based line and UTF-16 column of `caret`. */
@@ -69,9 +80,10 @@ export function useExpressionCompletion(
   value: string,
   setValue: (text: string) => void,
   session: DebugSession | null | undefined,
+  source?: CompletionSource,
 ) {
   const tx = useTx();
-  const [items, setItems] = useState<DebugCompletion[] | null>(null);
+  const [items, setItems] = useState<ExpressionCompletionItem[] | null>(null);
   const [index, setIndex] = useState(0);
   const seq = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -89,7 +101,7 @@ export function useExpressionCompletion(
 
   const request = (explicit: boolean) => {
     const el = field.current;
-    if (!el || !session || !isLive(session) || session.status !== "paused") return;
+    if (!el || (!source && (!session || !isLive(session) || session.status !== "paused"))) return;
     const text = el.value;
     const at = el.selectionStart ?? text.length;
     const prefix = completionPrefix(text, at);
@@ -98,25 +110,31 @@ export function useExpressionCompletion(
       return;
     }
     const mine = ++seq.current;
+    const done = (result: ExpressionCompletionItem[]) => {
+      if (mine !== seq.current) return;
+      setItems(result.length ? result : null);
+      setIndex(0);
+    };
+    const failed = () => mine === seq.current && setItems(null);
+    if (source || !session) {
+      source?.(text.slice(0, at)).then(done, failed);
+      return;
+    }
     // The adapter resolves names against the frame's file: imported classes before the word
     // being typed go qualified (the word itself is what it completes).
     const head = text.slice(0, at - prefix.length);
     const before = (session.adapter === JAVA_ADAPTER ? qualifyIn(session.id, head) : head) + prefix;
     const { line, column } = position(before, before.length);
     call(commands.debugCompletions(session.id, session.selectedFrame, before + text.slice(at), line, column)).then(
-      (result) => {
-        if (mine !== seq.current) return;
-        setItems(result.length ? result : null);
-        setIndex(0);
-      },
-      () => mine === seq.current && setItems(null),
+      done,
+      failed,
     );
   };
 
-  const accept = (item: DebugCompletion) => {
+  const accept = (item: ExpressionCompletionItem) => {
     const el = field.current;
     if (!el) return;
-    const chosen = session?.adapter === JAVA_ADAPTER ? importingCompletion(session.id, item) : item;
+    const chosen = !source && session?.adapter === JAVA_ADAPTER ? importingCompletion(session.id, item) : item;
     const next = applyCompletion(el.value, el.selectionStart ?? el.value.length, chosen);
     close();
     setValue(next.text);
