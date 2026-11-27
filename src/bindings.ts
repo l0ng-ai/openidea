@@ -582,12 +582,7 @@ export const commands = {
 	 */
 	docAutosave: (doc: DocId) => typedError<boolean, IdeError>(__TAURI_INVOKE("doc_autosave", { doc })),
 	docClose: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_close", { doc })),
-	/**
-	 *  Save As for a real file: copies its current buffer, including unsaved edits,
-	 *  to `path`. The source document and its file are left untouched; the copy is
-	 *  opened through the normal document service by the frontend. Returns `false`
-	 *  when `path` already names the source itself.
-	 */
+	/**  Copies the current buffer, including unsaved edits, without changing the source; false for the source itself. */
 	docCopyAs: (doc: DocId, path: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("doc_copy_as", { doc, path })),
 	/**
 	 *  Applies a CodeMirror change set; returns the new version. Rejects with
