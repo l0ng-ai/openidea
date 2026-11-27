@@ -114,14 +114,20 @@ async function capture(config: RunConfig, timeoutMs = 30_000): Promise<string> {
   }
 }
 
+/** The project's manage.py and the interpreter it runs with. */
+export async function locateManage(): Promise<{ manage: string | null; python: string | null }> {
+  const manage = pickManage((await call(commands.findFilesNamed("manage.py"))).map(String));
+  const python = manage && (await call(commands.sdkPythonEffective(dirname(manage))));
+  return { manage, python: python || null };
+}
+
 /** Finds manage.py and the interpreter, then lists the commands (each once per project). */
 export async function loadManage(): Promise<void> {
   if (useManage.getState().loaded !== "no") return;
   useManage.setState({ loaded: "loading" });
   try {
-    const manage = pickManage((await call(commands.findFilesNamed("manage.py"))).map(String));
-    const python = manage && (await call(commands.sdkPythonEffective(dirname(manage))));
-    useManage.setState({ manage, python: python || null });
+    const { manage, python } = await locateManage();
+    useManage.setState({ manage, python });
     if (manage && python) {
       const config = { ...manageConfig(python, manage, ["help"]), id: `django.manage.help:${crypto.randomUUID()}` };
       useManage.setState({ commands: parseHelp(await capture({ ...config, emulateTerminal: false })) });

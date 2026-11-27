@@ -6905,6 +6905,10 @@ export type EditorGeneralSettings = {
 	removeTrailingBlankLines?: boolean,
 	/**  Copy as rich text (HTML with syntax colours) by default. */
 	richTextCopy?: boolean,
+	/**  Gutter › Highlight modified lines in the gutter: the VCS change bars next to the line numbers. */
+	highlightModifiedLines?: boolean,
+	/**  Gutter › Highlight modified lines in error stripe on the scrollbar (with `highlight_modified_lines`). */
+	highlightModifiedLinesInScrollbar?: boolean,
 };
 
 /**

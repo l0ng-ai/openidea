@@ -2130,6 +2130,9 @@
   "Group by Severity": "按严重性分组",
   "Groups": "组",
   "Gutter Icons": "装订区域图标",
+  "Gutter": "装订区域",
+  "Highlight modified lines in the gutter": "在装订区域中突出显示已修改的行",
+  "Highlight modified lines in error stripe on the scrollbar": "在滚动条的错误条纹中突出显示已修改的行",
   "HACK comment": "HACK 注释",
   "HEAD (Current Branch)": "HEAD（当前分支）",
   "HTML 5 file": "HTML 5 文件",
@@ -6098,7 +6101,7 @@
   "{memPct} · {memAvail} free": "{memPct} · 可用 {memAvail}",
   "SSH / RPC RTT {rttMs}": "SSH / RPC 往返延迟 {rttMs}",
   "{diskAvailableBytes} free": "可用 {diskAvailableBytes}",
-  "{diskPct} of {diskTotalBytes} used": "已用 {diskTotalBytes} 的 {diskPct}",
+  "{diskFree} free · {diskIoText}": "可用 {diskFree} · {diskIoText}",
   "up {uptimeMs}": "已运行 {uptimeMs}",
   "Round-trip latency to remote backend": "到远程后端的往返延迟",
   "RTT {rttMs}": "延迟 {rttMs}",
@@ -10896,5 +10899,8 @@
   "No safe lint fixes to apply": "没有可应用的安全 lint 修复",
   "Run manage.py Task…": "运行 manage.py 任务…",
   "No manage.py in this project": "此项目中没有 manage.py",
-  "manage.py Tasks": "manage.py 任务"
+  "manage.py Tasks": "manage.py 任务",
+  "Install django-types to complete Django model fields and managers": "安装 django-types 以补全 Django 模型字段和管理器",
+  "Installing django-types": "正在安装 django-types",
+  "Cannot install django-types": "无法安装 django-types"
 }
