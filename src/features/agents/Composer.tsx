@@ -12,7 +12,15 @@ import type { VirtualElement } from "@floating-ui/react-dom";
 import { history, historyKeymap, insertNewline, standardKeymap } from "@codemirror/commands";
 import { Annotation, Compartment, EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap, placeholder as placeholderText, type ViewUpdate } from "@codemirror/view";
-import type { AgentCommand, AgentConfigOption, AgentImage, SendKey, SymbolMatch, WhileRunning } from "@/bindings";
+import type {
+  AgentCommand,
+  AgentCommandChoice,
+  AgentConfigOption,
+  AgentImage,
+  SendKey,
+  SymbolMatch,
+  WhileRunning,
+} from "@/bindings";
 import { useEditorRegistry, openEditorPaths } from "@/editor/api";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { isDraggingOut } from "@/platform/dragOut";
@@ -51,6 +59,8 @@ import {
   MAX_IMAGE_BYTES,
   applyCompletion,
   atEdgeLine,
+  commandArgSuggestions,
+  commandChoices,
   isMentioned,
   isPathQuery,
   shellHistoryMatches,
@@ -73,7 +83,7 @@ import {
   type Completion,
   type FileRef,
 } from "./composerModel";
-import { referenceExtensions, setReferences } from "./composerEditor";
+import { referenceExtensions, setCommands, setReferences } from "./composerEditor";
 import { referenceHover } from "./ReferenceChip";
 import { composerDraft, provideIdeContext, setIdeContext, updateComposer, useAgents } from "./store";
 import { ImagePreview } from "./ImagePreview";
@@ -96,6 +106,7 @@ type Item =
       indices?: readonly number[];
     }
   | { kind: "command"; command: AgentCommand }
+  | { kind: "commandArg"; command: string; subcommand?: string; choice: AgentCommandChoice }
   | { kind: "context"; source: AgentContextSource }
   | { kind: "symbol"; symbol: SymbolMatch; path: string; rel: string }
   /** A `!` command line's completion: an earlier command, or a path for the word at the caret. */
@@ -343,6 +354,10 @@ export function Composer(props: ComposerProps) {
     viewRef.current?.dispatch({ effects: setReferences.of(draftFiles ?? []) });
   }, [draftFiles, id]);
 
+  useLayoutEffect(() => {
+    viewRef.current?.dispatch({ effects: setCommands.of(props.commands) });
+  }, [props.commands, id]);
+
   const onUpdate = (u: ViewUpdate) => {
     if (u.docChanged && !u.transactions.some((t) => t.annotation(fromStore))) {
       updateComposer(id, { text: u.state.doc.toString() });
@@ -533,6 +548,16 @@ export function Composer(props: ComposerProps) {
         ...rest,
       ];
     }
+    if (completion.kind === "commandArg") {
+      return commandArgSuggestions(props.commands, completion.command, completion.subcommand, completion.query).map(
+        (choice) => ({
+          kind: "commandArg" as const,
+          command: completion.command,
+          subcommand: completion.subcommand,
+          choice,
+        }),
+      );
+    }
     const openPickerCommands: AgentCommand[] = [];
     if (props.onOpenMcp && !props.commands.some((c) => c.name === "mcp")) {
       openPickerCommands.push({
@@ -578,6 +603,13 @@ export function Composer(props: ComposerProps) {
     tx,
   ]);
   const activeIndex = items[active] && !isSection(items[active]!) ? active : firstSelectable(items, isSection);
+  const activeItem = items[activeIndex];
+  const showSubcommandHint =
+    completion?.kind === "command" &&
+    activeItem?.kind === "command" &&
+    ((activeItem.command.name === "mcp" && !!props.onOpenMcp) ||
+      (activeItem.command.name === "skills" && !!props.onOpenSkills)) &&
+    commandChoices(activeItem.command).length > 0;
   const open = !!completion && items.some((item) => !isSection(item));
   const anchorAt = open ? completion.to : null;
   const completionAnchor = useMemo<VirtualElement | null>(() => {
@@ -651,6 +683,21 @@ export function Composer(props: ComposerProps) {
       setCompletion(null);
       return;
     }
+    const keepsArgCompletion = (next: { text: string; caret: number }) => {
+      if (next.text.slice(next.caret).trim()) return false;
+      const follow = completionAt(next.text, next.caret);
+      return (
+        follow?.kind === "commandArg" &&
+        commandArgSuggestions(props.commands, follow.command, follow.subcommand, follow.query).length > 0
+      );
+    };
+    if (item.kind === "commandArg") {
+      const next = applyCompletion(current, completion, item.choice.name);
+      setText(next.text, next.caret);
+      if (keepsArgCompletion(next)) return;
+      setCompletion(null);
+      return;
+    }
     if (item.kind === "file") {
       const rel = item.dir ? `${item.rel}/` : item.rel;
       // A folder stays referenced while its `@folder/` is left as typed (`toPrompt`).
@@ -663,12 +710,20 @@ export function Composer(props: ComposerProps) {
       }
       const next = applyCompletion(current, completion, mentionOf(rel));
       setText(next.text, next.caret);
-    } else if (item.command.name === "mcp" && props.onOpenMcp) {
+    } else if (
+      item.command.name === "mcp" &&
+      props.onOpenMcp &&
+      !(descend && commandChoices(item.command).length > 0)
+    ) {
       replace(completion.from, completion.to, "");
       setCompletion(null);
       props.onOpenMcp();
       return;
-    } else if (item.command.name === "skills" && props.onOpenSkills) {
+    } else if (
+      item.command.name === "skills" &&
+      props.onOpenSkills &&
+      !(descend && commandChoices(item.command).length > 0)
+    ) {
       replace(completion.from, completion.to, "");
       setCompletion(null);
       props.onOpenSkills();
@@ -676,6 +731,7 @@ export function Composer(props: ComposerProps) {
     } else {
       const next = applyCompletion(current, completion, `/${item.command.name}`);
       setText(next.text, next.caret);
+      if (keepsArgCompletion(next)) return;
     }
     setCompletion(null);
   };
@@ -1210,7 +1266,9 @@ export function Composer(props: ComposerProps) {
                       ? `context:${item.source.id}`
                       : item.kind === "symbol"
                         ? `symbol:${item.path}:${item.symbol.range.start.line}:${item.symbol.name}`
-                        : `${item.command.source ?? "command"}:${item.command.name}`
+                        : item.kind === "commandArg"
+                          ? `commandArg:${item.command}:${item.subcommand ?? ""}:${item.choice.name}`
+                          : `${item.command.source ?? "command"}:${item.command.name}`
             }
             isSection={isSection}
             renderSection={(item) => item.kind === "section" && tx(SECTION_TITLES[item.source])}
@@ -1266,6 +1324,19 @@ export function Composer(props: ComposerProps) {
                   </>
                 );
               }
+              if (item.kind === "commandArg")
+                return (
+                  <>
+                    <span className={styles.itemName}>
+                      <span className={styles.itemCommandPrefix}>
+                        /{item.command}
+                        {item.subcommand ? ` ${item.subcommand}` : ""}
+                      </span>{" "}
+                      {item.choice.name}
+                    </span>
+                    {item.choice.description && <span className={styles.itemDetail}>{item.choice.description}</span>}
+                  </>
+                );
               if (item.kind === "command")
                 return (
                   <>
@@ -1305,6 +1376,11 @@ export function Composer(props: ComposerProps) {
             {completion.kind === "file" && items.some((i) => i.kind === "file" && i.dir) && (
               <span>
                 <kbd>⇥</kbd> {tx("Enter Folder")}
+              </span>
+            )}
+            {showSubcommandHint && (
+              <span>
+                <kbd>⇥</kbd> {tx("Subcommands")}
               </span>
             )}
             <span>

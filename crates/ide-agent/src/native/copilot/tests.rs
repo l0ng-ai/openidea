@@ -1054,3 +1054,53 @@ async fn context_usage_rpc_and_compact_command_work_end_to_end() {
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(updates.0.lock().iter().any(|u| u["sessionUpdate"] == "usage_update" && u["used"] == 155_200));
 }
+
+#[test]
+fn available_commands_preserves_input_choices() {
+    let cmds = json!({
+        "commands": [
+            {
+                "name": "skills",
+                "description": "Manage skills for enhanced capabilities",
+                "input": {
+                    "hint": "[list|info|reload]",
+                    "choices": [
+                        { "name": "list", "description": "List all available skills" },
+                        { "name": "info", "description": "Show details for a skill" },
+                        { "name": "INFO", "description": "Duplicate ignored" },
+                        { "name": "", "description": "Empty ignored" },
+                        { "name": "reload", "description": "Reload skills from disk" }
+                    ]
+                }
+            },
+            {
+                "name": "subconscious",
+                "description": "Manage memory",
+                "input": {
+                    "choices": [{ "name": "run", "description": "Consolidate now" }]
+                }
+            }
+        ]
+    });
+    let list = super::translate::available_commands(Some(&cmds), None);
+    let parsed = crate::config::commands_of(&json!({ "availableCommands": list }), "copilot");
+    // Then the built-in /compact.
+    assert_eq!(parsed.len(), 3);
+    assert_eq!(parsed[2].name, "compact");
+    assert_eq!(parsed[0].name, "skills");
+    assert_eq!(parsed[0].hint.as_deref(), Some("[list|info|reload]"));
+    assert_eq!(
+        parsed[0].choices,
+        vec![
+            crate::AgentCommandChoice { name: "list".into(), description: "List all available skills".into() },
+            crate::AgentCommandChoice { name: "info".into(), description: "Show details for a skill".into() },
+            crate::AgentCommandChoice { name: "reload".into(), description: "Reload skills from disk".into() },
+        ]
+    );
+    assert_eq!(parsed[1].name, "subconscious");
+    assert_eq!(parsed[1].hint, None);
+    assert_eq!(
+        parsed[1].choices,
+        vec![crate::AgentCommandChoice { name: "run".into(), description: "Consolidate now".into() }]
+    );
+}

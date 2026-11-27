@@ -257,6 +257,14 @@ pub enum AgentCommandSource {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
+pub struct AgentCommandChoice {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentCommand {
     /// Without the leading `/`.
     pub name: String,
@@ -265,6 +273,9 @@ pub struct AgentCommand {
     pub hint: Option<String>,
     #[serde(default)]
     pub source: AgentCommandSource,
+    /// Fixed subcommand/argument choices advertised by the agent (e.g. `list`, `info` for `/skills`).
+    #[serde(default)]
+    pub choices: Vec<AgentCommandChoice>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]

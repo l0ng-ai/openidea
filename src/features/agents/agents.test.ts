@@ -10,11 +10,15 @@ import {
   isPerModelOption,
   modelConfigOptions,
   canSend,
+  commandArgHintAt,
+  commandArgSuggestions,
+  commandChoices,
   completionAt,
   isPathQuery,
   resolveTyped,
   imageFromDataUrl,
   mainOptions,
+  matchCommandChoices,
   matchCommands,
   hasMention,
   mentionOf,
@@ -261,6 +265,126 @@ describe("agent composer", () => {
     ];
     expect(matchCommands(mixed, "rev")).toEqual([mixed[3], mixed[1], mixed[2], mixed[0]]);
     expect(matchCommands(mixed, "missing")).toEqual([]);
+  });
+
+  it("completes arguments of a leading /command without breaking @file or multiline input", () => {
+    expect(completionAt("/skills ", 8)).toEqual({
+      kind: "commandArg",
+      command: "skills",
+      query: "",
+      from: 8,
+      to: 8,
+    });
+    expect(completionAt("/skills in", 10)).toEqual({
+      kind: "commandArg",
+      command: "skills",
+      query: "in",
+      from: 8,
+      to: 10,
+    });
+    expect(completionAt("/skills info az", 15)).toEqual({
+      kind: "commandArg",
+      command: "skills",
+      subcommand: "info",
+      query: "az",
+      from: 13,
+      to: 15,
+    });
+    expect(completionAt("/skills info a b", 16)).toBeNull();
+    // `@` mentions still take precedence after a slash command.
+    expect(completionAt("/review @src/a", 14)).toEqual({
+      kind: "file",
+      query: "src/a",
+      from: 8,
+      to: 14,
+    });
+    // Non-leading slash tokens and multiline prompts do not trigger commandArg.
+    expect(completionAt("please /skills ", 15)).toBeNull();
+    expect(completionAt("/skills \ninfo", 13)).toBeNull();
+  });
+
+  it("derives choices from structured choices or bracketed pipe hints while ignoring placeholders", () => {
+    expect(
+      commandChoices({
+        name: "skills",
+        description: "Manage skills",
+        hint: "[list|info]",
+        choices: [
+          { name: "list", description: "List all available skills" },
+          { name: "info", description: "Show details" },
+        ],
+      }),
+    ).toEqual([
+      { name: "list", description: "List all available skills" },
+      { name: "info", description: "Show details" },
+    ]);
+    expect(commandChoices({ name: "remote", description: "", hint: "[on|off|show]" }).map((c) => c.name)).toEqual([
+      "on",
+      "off",
+      "show",
+    ]);
+    expect(
+      commandChoices({ name: "goal", description: "", hint: "[<objective>|clear|pause|resume]" }).map((c) => c.name),
+    ).toEqual(["clear", "pause", "resume"]);
+    expect(
+      commandChoices({
+        name: "index",
+        description: "",
+        hint: "[status|collect --run|advance <commit>|release]",
+      }).map((c) => c.name),
+    ).toEqual(["status", "collect", "advance", "release"]);
+    // Single placeholders and prose hints do not become literal choices.
+    expect(commandChoices({ name: "review", description: "", hint: "[pr]" })).toEqual([]);
+    expect(commandChoices({ name: "compact", description: "", hint: "[instructions]" })).toEqual([]);
+    expect(commandChoices({ name: "deploy", description: "", hint: "[skip-to-step N]" })).toEqual([]);
+    expect(commandChoices({ name: "blame", description: "", hint: "text | pull request | commit" })).toEqual([]);
+    expect(commandChoices({ name: "rename", description: "", hint: "name" })).toEqual([]);
+  });
+
+  it("ranks argument choices and completes active skills for /skills info and remove", () => {
+    const choices = [
+      { name: "cost-tips", description: "Cost tips" },
+      { name: "off", description: "Disable" },
+      { name: "reload", description: "Reload" },
+      { name: "tips", description: "General tips" },
+    ];
+    expect(matchCommandChoices(choices, "tips").map((c) => c.name)).toEqual(["tips", "cost-tips"]);
+    expect(matchCommandChoices(choices, "load").map((c) => c.name)).toEqual(["reload"]);
+    // 1-char queries match prefixes/segments only, avoiding noisy hits like "f" -> "off".
+    expect(matchCommandChoices(choices, "f")).toEqual([]);
+
+    const cmds = [
+      {
+        name: "skills",
+        description: "Manage skills",
+        hint: "[list|info|remove]",
+        source: "command" as const,
+        choices: [
+          { name: "list", description: "List all" },
+          { name: "info", description: "Show details" },
+          { name: "remove", description: "Remove skill" },
+        ],
+      },
+      { name: "azure:deploy", description: "Deploy to Azure", hint: null, source: "skill" as const },
+      { name: "$triage", description: "Triage PRs", hint: null, source: "skill" as const },
+    ];
+    expect(commandArgSuggestions(cmds, "skills", undefined, "").map((c) => c.name)).toEqual(["list", "info", "remove"]);
+    expect(commandArgSuggestions(cmds, "skills", "info", "").map((c) => c.name)).toEqual(["azure:deploy", "triage"]);
+    expect(commandArgSuggestions(cmds, "skills", "remove", "dep").map((c) => c.name)).toEqual(["azure:deploy"]);
+    expect(commandArgSuggestions(cmds, "skills", "list", "")).toEqual([]);
+    expect(commandArgSuggestions(cmds, "skills", "unknown", "")).toEqual([]);
+  });
+
+  it("computes inline argument hint only after a leading /command and space at the end", () => {
+    const cmds = [
+      { name: "review", description: "Review changes", hint: "additional instructions", source: "command" as const },
+      { name: "compact", description: "Compact", hint: null, source: "command" as const },
+    ];
+    expect(commandArgHintAt("/review ", 8, cmds)).toBe("additional instructions");
+    expect(commandArgHintAt("/review ", 4, cmds)).toBeNull();
+    expect(commandArgHintAt("/review focus", 13, cmds)).toBeNull();
+    expect(commandArgHintAt("/compact ", 9, cmds)).toBeNull();
+    expect(commandArgHintAt("run /review ", 12, cmds)).toBeNull();
   });
 
   it("sends only the files still mentioned", () => {
