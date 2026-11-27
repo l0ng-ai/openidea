@@ -95,6 +95,29 @@ describe("SQL in MyBatis mappers", () => {
     expect(hover(v.state, DOC.indexOf("namespace") + 2)).toBeNull();
   });
 
+  it("shows column comments in the table and column hover", () => {
+    const pg = useDatabase.getState().completion.pg!;
+    const [id, name] = pg.tables[0]!.columns;
+    useDatabase.setState({
+      completion: {
+        pg: {
+          ...pg,
+          tables: [{ ...pg.tables[0]!, columns: [{ ...id!, comment: "primary | key\nof users" }, name!] }],
+        },
+      },
+    });
+    const doc = DOC.replace("select id, nam from users", "select id, name from users");
+    const v = open(doc);
+    const hover = v.state.languageDataAt<ContributedHover>(CONTRIBUTED_HOVER, 0)[0]!;
+    const table = hover(v.state, doc.indexOf("users") + 2)!.markdown;
+    expect(table).toContain("| column | type | | comment |");
+    expect(table).toContain("| primary \\| key of users |");
+    const column = hover(v.state, doc.indexOf("select id,") + "select i".length)!.markdown;
+    expect(column).toContain("primary | key\nof users");
+    const plain = hover(v.state, doc.indexOf("name from") + 2)!.markdown;
+    expect(plain).not.toContain("primary");
+  });
+
   it("completes columns inside a statement only", async () => {
     const doc = DOC.replace("select id, nam from users", "select n from users");
     const v = open(doc);

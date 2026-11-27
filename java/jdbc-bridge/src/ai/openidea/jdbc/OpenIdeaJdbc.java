@@ -178,13 +178,13 @@ public final class OpenIdeaJdbc {
             }
         } else if (op.equals("schemaColumns")) {
             // Every column of the namespace in one call (SQL completion), without primary keys.
-            header(out, "table", "name", "type", "nullable", "default");
+            header(out, "table", "name", "type", "nullable", "default", "comment");
             try (ResultSet rs = m.getColumns(catalog, schema, "%", "%")) {
                 int n = 0;
                 while (rs.next() && n < 100000) {
                     if (!inNamespace(rs, scope, name)) continue;
                     row(out, rs.getString("TABLE_NAME"), rs.getString("COLUMN_NAME"), rs.getString("TYPE_NAME"),
-                        rs.getInt("NULLABLE") == 0 ? "0" : "1", rs.getString("COLUMN_DEF"));
+                        rs.getInt("NULLABLE") == 0 ? "0" : "1", rs.getString("COLUMN_DEF"), rs.getString("REMARKS"));
                     n++;
                 }
             }

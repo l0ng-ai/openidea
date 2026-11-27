@@ -1225,10 +1225,12 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
               </span>
             );
             // Pointer-driven (HTML5 drag and drop never reaches the Tauri webview):
-            // file, folder and change-list rows drag (unversioned ones onto a
-            // changelist, which adds them to Git); any changelist takes dropped
-            // files into it. Dragging a change-list header moves all its files,
-            // as in PyCharm's Commit view.
+            // file, folder, change-list and Unversioned Files rows drag
+            // (unversioned ones onto a changelist, which adds them to Git); any
+            // changelist takes dropped files into it. Dragging a change-list
+            // header moves all its files, and dragging the Unversioned Files
+            // header adds all of them to Git and into the list, as in PyCharm's
+            // Commit view.
             const list = n.changelist;
             const dnd = {
               ...(list !== undefined && {
@@ -1245,7 +1247,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
                       })
                     : undefined,
               }),
-              ...((n.type !== "group" || list !== undefined) &&
+              ...((n.type !== "group" || list !== undefined || n.group === "unversioned") &&
                 n.group !== "ignored" &&
                 n.files.length > 0 && {
                   onPointerDown: (e: PointerEvent<HTMLSpanElement>) => {

@@ -12,6 +12,7 @@
   padding: 24px 24px 12vh;
   background: var(--bg-editor);
   color: var(--fg);
+  font-family: var(--agent-font-ui, var(--font-ui));
 }
 .inner {
   /* A compact block in the middle of the page: narrower than a session's conversation. */

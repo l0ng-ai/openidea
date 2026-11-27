@@ -863,6 +863,18 @@ function ProviderSettings({
     if (value) next[COPILOT_GITHUB_ACCOUNT_ENV] = value;
     else delete next[COPILOT_GITHUB_ACCOUNT_ENV];
     await backend.setEnv(agent.id, next);
+    if (backend.refreshModels) {
+      void backend
+        .refreshModels(agent.id, null, true)
+        .then((cat) => {
+          useAgents.setState((s) => {
+            const modelCatalogs = new Map(s.modelCatalogs);
+            modelCatalogs.set(agent.id, cat);
+            return { modelCatalogs };
+          });
+        })
+        .catch(() => {});
+    }
     await refresh();
     onChanged?.();
     return value;
@@ -966,12 +978,11 @@ function ProviderSettings({
         ? "checking"
         : !copilotSelectedSignedIn
           ? "unauthenticated"
-          : account.value !== account.current
-            ? "pendingApply"
-            : "ready";
+          : "ready";
+  const previewGithubAccount = agent.id === "copilot" && account.value !== account.current ? account.value : undefined;
   const accountScope =
     agent.id === "copilot"
-      ? `${account.current || `default:${activeCopilotStatus?.login ?? ""}`}:${authRevision}`
+      ? `${account.value || `default:${activeCopilotStatus?.login ?? ""}`}:${authRevision}`
       : "default";
   return (
     <>
@@ -1073,7 +1084,13 @@ function ProviderSettings({
         )
       )}
       <Section title="New Tasks">
-        <AgentDefaults agent={agent} backend={backend} authGate={authGate} accountScope={accountScope} />
+        <AgentDefaults
+          agent={agent}
+          backend={backend}
+          authGate={authGate}
+          accountScope={accountScope}
+          previewGithubAccount={previewGithubAccount}
+        />
       </Section>
       <Section title="Launch">
         <div className={styles.form}>
@@ -1185,9 +1202,11 @@ function ProviderSettings({
               const prev = pendingAddAccountPrevLogins.current;
               pendingAddAccountPrevLogins.current = null;
               void reloadCopilotStatus().then((fresh) => {
-                if (!prev || !fresh) return;
-                const added = fresh.ghAccounts.find((entry) => !prev.has(entry.login));
-                if (added) account.set(added.login);
+                if (prev && fresh) {
+                  const added = fresh.ghAccounts.find((entry) => !prev.has(entry.login));
+                  if (added) account.set(added.login);
+                }
+                setAuthRevision((n) => n + 1);
               });
               return;
             }
@@ -1296,7 +1315,7 @@ export function defaultOptions(
 }
 
 const MODEL_SETTINGS_POLL_MS = 600;
-type DefaultsAuthGate = "checking" | "unauthenticated" | "pendingApply" | "ready";
+type DefaultsAuthGate = "checking" | "unauthenticated" | "ready";
 
 const isCatalogAuthError = (message: string | null | undefined): boolean =>
   !!message && /sign in required|authentication|not authenticated|unauthorized|not logged in/i.test(message);
@@ -1306,41 +1325,56 @@ function AgentDefaults({
   backend,
   authGate,
   accountScope,
+  previewGithubAccount,
 }: {
   agent: AgentProvider;
   backend: CommandsBackend;
   authGate: DefaultsAuthGate;
   accountScope: string;
+  previewGithubAccount?: string;
 }) {
   const form = useSettingsForm();
   const all = (form.useValue("agents.defaults") ?? {}) as Record<string, Record<string, string>>;
   const newTaskApprovals = (form.useValue("agents.newTaskApprovals") as "bypass" | "ask" | undefined) ?? "bypass";
   const chosen = all[agent.id] ?? {};
   const refreshModels = backend.refreshModels;
-  const needsAccountCatalog = agent.id === "copilot" && agent.installed && !!refreshModels;
+  const previewCopilotModels = backend.previewCopilotModels;
+  const needsAccountCatalog = agent.id === "copilot" && agent.installed && !!(refreshModels || previewCopilotModels);
   const scopeKey = `${agent.id}:${accountScope}`;
 
   const storeCatalog = useAgents((s) => s.modelCatalogs.get(agent.id));
-  const [accountCatalog, setAccountCatalog] = useState<{ scopeKey: string; catalog: AgentModelCatalog } | null>(null);
-  const [fetchedCatalog, setFetchedCatalog] = useState<{ scopeKey: string; catalog: AgentModelCatalog } | null>(null);
+  const [catalogByScope, setCatalogByScope] = useState<Record<string, AgentModelCatalog>>({});
+  const [fetchedByScope, setFetchedByScope] = useState<Record<string, AgentModelCatalog>>({});
+  const scopedAccountCatalog = catalogByScope[scopeKey] ?? null;
+  const scopedAccountSettled =
+    scopedAccountCatalog !== null &&
+    !scopedAccountCatalog.refreshing &&
+    (scopedAccountCatalog.refreshedAtMs !== null || scopedAccountCatalog.error !== null);
 
   useEffect(() => {
-    if (!needsAccountCatalog || authGate !== "ready" || !refreshModels) return;
+    if (!needsAccountCatalog || authGate !== "ready" || scopedAccountSettled) return;
+    const load =
+      previewGithubAccount !== undefined && previewCopilotModels
+        ? () => previewCopilotModels(previewGithubAccount, null)
+        : refreshModels
+          ? () => refreshModels(agent.id, null)
+          : null;
+    if (!load) return;
     let live = true;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const poll = async () => {
       try {
-        const next = await refreshModels(agent.id, null);
+        const next = await load();
         if (!live) return;
-        setAccountCatalog({ scopeKey, catalog: next });
+        setCatalogByScope((prev) => ({ ...prev, [scopeKey]: next }));
         if (next.refreshing) {
           timer = setTimeout(() => void poll(), MODEL_SETTINGS_POLL_MS);
         }
       } catch (e) {
         if (!live) return;
-        setAccountCatalog({
-          scopeKey,
-          catalog: {
+        setCatalogByScope((prev) => ({
+          ...prev,
+          [scopeKey]: {
             provider: agent.id,
             config: [],
             thoughtLevels: {},
@@ -1349,7 +1383,7 @@ function AgentDefaults({
             retryAtMs: null,
             error: errorText(e),
           },
-        });
+        }));
       }
     };
     void poll();
@@ -1357,10 +1391,18 @@ function AgentDefaults({
       live = false;
       if (timer) clearTimeout(timer);
     };
-  }, [agent.id, authGate, needsAccountCatalog, refreshModels, scopeKey]);
+  }, [
+    agent.id,
+    authGate,
+    needsAccountCatalog,
+    previewCopilotModels,
+    previewGithubAccount,
+    refreshModels,
+    scopeKey,
+    scopedAccountSettled,
+  ]);
 
-  const scopedAccountCatalog = accountCatalog?.scopeKey === scopeKey ? accountCatalog.catalog : null;
-  const scopedFetchedCatalog = fetchedCatalog?.scopeKey === scopeKey ? fetchedCatalog.catalog : null;
+  const scopedFetchedCatalog = fetchedByScope[scopeKey] ?? null;
   const catalog = scopedFetchedCatalog ?? scopedAccountCatalog ?? (needsAccountCatalog ? undefined : storeCatalog);
   const effectiveAgent = useMemo<AgentProvider>(() => {
     if (needsAccountCatalog) {
@@ -1383,26 +1425,35 @@ function AgentDefaults({
   const options = defaultOptions(effectiveAgent, chosen, newTaskApprovals);
   const modelOption = options.find((o) => o.category === "model");
   const selectedModel = (modelOption && chosen[modelOption.id]) || modelOption?.current || null;
+  const canLoadModelSettings =
+    previewGithubAccount !== undefined ? !!(previewCopilotModels || refreshModels) : !!refreshModels;
   const unknownModelSettings =
     !!selectedModel &&
     !!modelOption?.values.some((v) => v.value === selectedModel) &&
     !Object.hasOwn(effectiveAgent.thoughtLevels ?? {}, selectedModel);
   const fetchKey =
-    authGate === "ready" && agent.installed && refreshModels && selectedModel && unknownModelSettings
+    authGate === "ready" && agent.installed && canLoadModelSettings && selectedModel && unknownModelSettings
       ? `${scopeKey}:${selectedModel}`
       : null;
   const [settledKey, setSettledKey] = useState<string | null>(null);
   const loadingModel = fetchKey !== null && settledKey !== fetchKey;
 
   useEffect(() => {
-    if (!fetchKey || !refreshModels || !selectedModel) return;
+    if (!fetchKey || !selectedModel) return;
+    const loadModel =
+      previewGithubAccount !== undefined && previewCopilotModels
+        ? () => previewCopilotModels(previewGithubAccount, selectedModel)
+        : refreshModels
+          ? () => refreshModels(agent.id, selectedModel)
+          : null;
+    if (!loadModel) return;
     let live = true;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const poll = async () => {
       try {
-        const next = await refreshModels(agent.id, selectedModel);
+        const next = await loadModel();
         if (!live) return;
-        setFetchedCatalog({ scopeKey, catalog: next });
+        setFetchedByScope((prev) => ({ ...prev, [scopeKey]: next }));
         if (next.refreshing && !Object.hasOwn(next.thoughtLevels ?? {}, selectedModel)) {
           timer = setTimeout(() => void poll(), MODEL_SETTINGS_POLL_MS);
         } else {
@@ -1417,7 +1468,7 @@ function AgentDefaults({
       live = false;
       if (timer) clearTimeout(timer);
     };
-  }, [agent.id, fetchKey, refreshModels, scopeKey, selectedModel]);
+  }, [agent.id, fetchKey, previewCopilotModels, previewGithubAccount, refreshModels, scopeKey, selectedModel]);
 
   if (authGate === "checking") {
     return (
@@ -1430,13 +1481,6 @@ function AgentDefaults({
     return (
       <p className={styles.text}>
         <T>Sign in above to view and choose models available for this account.</T>
-      </p>
-    );
-  }
-  if (authGate === "pendingApply") {
-    return (
-      <p className={styles.text}>
-        <T>Click Apply to load the models available for the selected account.</T>
       </p>
     );
   }
