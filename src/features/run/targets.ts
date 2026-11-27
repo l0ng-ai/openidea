@@ -535,6 +535,9 @@ export function targetConfig(
           : pestFilter(target.path.slice(0, -1), target.path[target.path.length - 1]);
       return named(phpunitArgs(file.args, { target: relToCwd(relPath, file), filter }));
     }
+    case "unittest":
+      // The file's run ends with the module's dotted name: the class or test follows it.
+      return target.unittest ? named(withLast(file.args, (m) => `${m}.${target.path.join(".")}`)) : null;
     case "django-test": {
       // unittest's loader would call a module-level `test_*` function (or a plain class) to build the suite.
       if (!target.unittest) return null;

@@ -26,6 +26,8 @@ import {
   formatOrderBy,
   hasEdits,
   parseOrderBy,
+  revertRows,
+  rowsHaveEdits,
   type Cell,
   type PendingEdits,
 } from "./model";
@@ -299,6 +301,10 @@ export function TableEditor({ input }: { input: EditorInput }) {
     },
     deleteRows: { enabled: (rows) => editable && rows.length > 0, run: deleteRows },
     restoreRows: { enabled: (rows) => editable && rows.some((r) => edits.deletes.has(r)), run: restoreRows },
+    revertRows: {
+      enabled: (rows) => editable && rowsHaveEdits(edits, rows, loaded),
+      run: (rows) => setEdits((e) => revertRows(e, rows, loaded)),
+    },
   };
   useEffect(() => registerTableEditor(viewRef.current!, handle), [handle]);
   useEffect(() => tableEditorChanged(handle), [handle, dirty, editable]);
@@ -506,6 +512,7 @@ export function TableEditor({ input }: { input: EditorInput }) {
                 ? [
                     { kind: "action", action: "db.deleteRows", icon: "trash", arg: { rows, editor: handle } },
                     { kind: "action", action: "db.restoreRows", arg: { rows, editor: handle } },
+                    { kind: "action", action: "db.revertSelected", icon: "revert", arg: { rows, editor: handle } },
                   ]
                 : []
             }

@@ -505,6 +505,19 @@ pub struct LanguageCodeStyle {
     /// JavaScript / TypeScript › Spaces, by tsserver format option (`insertSpaceAfterCommaDelimiter`).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub spaces: BTreeMap<String, bool>,
+    /// JavaScript / TypeScript › Imports › Import paths:
+    /// `shortest` | `relative` | `non-relative` | `project-relative`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub import_module_specifier: Option<String>,
+    /// JavaScript / TypeScript › Imports › Import path ending: `auto` | `minimal` | `index` | `js`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub import_module_specifier_ending: Option<String>,
+    /// JavaScript / TypeScript › Imports › Do not auto-import from (globs).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub auto_import_file_exclude_patterns: Vec<String>,
+    /// JavaScript / TypeScript › Imports › Do not auto-import specifiers matching (regexes).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub auto_import_specifier_exclude_regexes: Vec<String>,
 }
 
 /// Editor › Code Style (General tab + per-language overrides).

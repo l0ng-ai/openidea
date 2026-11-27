@@ -429,9 +429,10 @@ fn gutter_actions_see_the_editors_window_project() {
         assert_eq!(actions.len(), 1);
         actions[0].1.argument.clone().unwrap()
     };
-    // The outer project's window: the file is its, though the inner project holds it too.
-    assert_eq!(argument(Some(&outer)), outer.to_string_lossy());
-    assert_eq!(argument(Some(&inner)), inner.to_string_lossy());
+    // The outer project's window: the file is its, though the inner project holds it too. Compared
+    // as paths: the plugin sees Windows paths `/`-separated.
+    assert_eq!(Path::new(&argument(Some(&outer))), outer);
+    assert_eq!(Path::new(&argument(Some(&inner))), inner);
     // No window, or a root that is no open project: no invoking project.
     assert_eq!(argument(None), "gutter");
     assert_eq!(argument(Some(&tmp.path().join("elsewhere"))), "gutter");

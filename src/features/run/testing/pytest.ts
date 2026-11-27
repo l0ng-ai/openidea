@@ -5,10 +5,10 @@ type Outcome = "PASSED" | "FAILED" | "ERROR" | "SKIPPED" | "XFAIL" | "XPASS";
 
 const OUTCOME = String.raw`(PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)`;
 // `tests/test_x.py::TestC::test_y[1] PASSED   [ 50%]`
-const VERBOSE_RE = new RegExp(String.raw`^(\S+\.py::\S+)\s+${OUTCOME}(?:\s|$)`);
+const VERBOSE_RE = new RegExp(String.raw`^(\S+\.py::.+?)\s+${OUTCOME}(?:\s|$)`);
 // `[gw0] PASSED tests/test_x.py::test_add` (xdist) and short summary `FAILED tests/test_x.py::test_sub - msg`
 const PREFIX_RE = new RegExp(
-  String.raw`^(?:\[gw\d+\]\s+(?:\[\s*\d+%\]\s+)?)?${OUTCOME}\s+(\S+\.py::\S+?)(?:\s+-\s+.*)?$`,
+  String.raw`^(?:\[gw\d+\]\s+(?:\[\s*\d+%\]\s+)?)?${OUTCOME}\s+(\S+\.py::.+?)(?:\s+-\s+.*)?$`,
 );
 // `tests/test_x.py .F.s                                   [100%]`
 const PROGRESS_RE = /^(\S+\.py) ([.FEsxX]+)\s*(?:\[\s*\d+%\])?$/;
@@ -29,7 +29,45 @@ function status(outcome: Outcome): Exclude<TestStatus, "running"> {
   }
 }
 
-const split = (nodeid: string) => nodeid.split("::").filter(Boolean);
+/**
+ * `file.py::Class::test[id]` → `[file.py, Class, test, [id]]`: a parametrized case is a child of its
+ * test. The id is kept whole (it may hold `::`, `.` or `[`); test names never contain `[`.
+ */
+const split = (nodeid: string) => {
+  const file = nodeid.indexOf("::");
+  const open = nodeid.indexOf("[", file + 2);
+  const parts = (open < 0 ? nodeid : nodeid.slice(0, open)).split("::").filter(Boolean);
+  if (open >= 0 && parts.length > 1) parts.push(nodeid.slice(open));
+  return parts;
+};
+
+const isCase = (part: string | undefined) => !!part?.startsWith("[");
+
+/** pytest node id of a test path: a case's `[id]` follows its test without `::`. */
+export function pytestNodeId(path: readonly string[]): string {
+  return isCase(path[path.length - 1]) && path.length > 2
+    ? `${path.slice(0, -1).join("::")}${path[path.length - 1]}`
+    : path.join("::");
+}
+
+/**
+ * Where a test is declared, for a test that has no failure line to go to (and for the node
+ * grouping a test's cases): its `def` in the file.
+ */
+function declarations(path: string[], status: TestStatus): TestEvent[] {
+  if (path.length < 2) return [];
+  const test = path.slice(1).filter((p) => !isCase(p));
+  const at = (p: string[]): TestEvent => ({
+    type: "location",
+    path: p,
+    location: { path: path[0]!, resolve: "path", test },
+  });
+  const out: TestEvent[] = [];
+  if (isCase(path[path.length - 1])) out.push(at(path.slice(0, -1)));
+  // A failure's own line comes with its section.
+  if (status !== "failed") out.push(at(path));
+  return out;
+}
 
 export function pytestParser(): TestOutputParser {
   /** Node ids reported so far, used to resolve failure section titles. */
@@ -61,8 +99,14 @@ export function pytestParser(): TestOutputParser {
     return out;
   };
 
-  /** Section titles are `test_name` or `TestClass.test_name`. */
-  const titleParts = (title: string) => title.replace(/^(ERROR at \w+ of |ERROR collecting )/, "").split(".");
+  /** Section titles are `test_name`, `TestClass.test_name` or either with a case id (`test_name[1.5]`). */
+  const titleParts = (title: string) => {
+    const name = title.replace(/^(ERROR at \w+ of |ERROR collecting )/, "");
+    const open = name.indexOf("[");
+    const parts = (open < 0 ? name : name.slice(0, open)).split(".");
+    if (open > 0) parts.push(name.slice(open));
+    return parts;
+  };
 
   return {
     feed(line) {
@@ -70,12 +114,14 @@ export function pytestParser(): TestOutputParser {
       let m: RegExpExecArray | null;
       if ((m = VERBOSE_RE.exec(line))) {
         const path = split(m[1]!);
-        events.push({ type: "result", path, status: status(m[2] as Outcome) }, ...remember(path));
+        const outcome = status(m[2] as Outcome);
+        events.push({ type: "result", path, status: outcome }, ...declarations(path, outcome), ...remember(path));
         return events;
       }
       if ((m = PREFIX_RE.exec(line))) {
         const path = split(m[2]!);
-        events.push({ type: "result", path, status: status(m[1] as Outcome) }, ...remember(path));
+        const outcome = status(m[1] as Outcome);
+        events.push({ type: "result", path, status: outcome }, ...declarations(path, outcome), ...remember(path));
         failure = null;
         pending = null;
         return events;
@@ -83,7 +129,11 @@ export function pytestParser(): TestOutputParser {
       if ((m = PROGRESS_RE.exec(line))) {
         const failed = /[FE]/.test(m[2]!);
         const allSkipped = /^[sx]+$/.test(m[2]!);
-        events.push({ type: "result", path: [m[1]!], status: failed ? "failed" : allSkipped ? "skipped" : "passed" });
+        events.push({
+          type: "result",
+          path: [m[1]!],
+          status: failed ? "failed" : allSkipped ? "skipped" : "passed",
+        });
         return events;
       }
       if ((m = SUMMARY_RE.exec(line))) {
@@ -96,7 +146,11 @@ export function pytestParser(): TestOutputParser {
           else counts.failed = (counts.failed ?? 0) + n;
         }
         const d = / in ([\d.]+s)/.exec(m[1]!);
-        events.push({ type: "summary", ...counts, durationMs: parseDuration(d?.[1]) });
+        events.push({
+          type: "summary",
+          ...counts,
+          durationMs: parseDuration(d?.[1]),
+        });
         return events;
       }
       if ((m = SECTION_RE.exec(line))) {

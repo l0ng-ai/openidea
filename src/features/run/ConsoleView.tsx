@@ -44,6 +44,7 @@ const Line = memo(
     marks,
     rules,
     cwd,
+    module,
     currentLink,
   }: {
     line: ConsoleLine;
@@ -51,6 +52,8 @@ const Line = memo(
     rules?: ConsoleRuleMatch;
     length: number;
     cwd: string;
+    /** The run's owning module, which picks between same-named files of a multi-module build. */
+    module?: string | null;
     /** Start of the link Previous / Next Occurrence stepped to on this line. */
     currentLink?: number;
   }) {
@@ -60,7 +63,7 @@ const Line = memo(
     const activate = (e: MouseEvent, link: OutputLink) => {
       e.preventDefault();
       if (window.getSelection()?.toString()) return;
-      if (link.kind !== "url") void openTarget(link.target, cwd);
+      if (link.kind !== "url") void openTarget(link.target, cwd, true, module);
       else if (!debugConsoleUrl(e, link.url)) void openUrl(link.url);
     };
     // A blank line is an empty row: its height comes from CSS, never from a character in the text.
@@ -110,6 +113,7 @@ const Line = memo(
     a.line === b.line &&
     a.length === b.length &&
     a.cwd === b.cwd &&
+    a.module === b.module &&
     a.marks === b.marks &&
     a.rules === b.rules &&
     a.currentLink === b.currentLink,
@@ -235,6 +239,8 @@ export interface ConsoleViewProps {
   onFollowChange: (follow: boolean) => void;
   /** Directory relative paths in the output resolve against. */
   cwd: string;
+  /** The run's owning module (`RunConfig` module), when it has one. */
+  module?: string | null;
   onClear?: () => void;
   /** Set while the process accepts input. */
   input?: ConsoleInput;
@@ -253,6 +259,7 @@ export function ConsoleView({
   follow,
   onFollowChange,
   cwd,
+  module,
   onClear,
   input,
   findOpen: controlledFindOpen,
@@ -489,7 +496,7 @@ export function ConsoleView({
     programmatic.current = true;
     virtualizer.scrollToIndex(rowOfLine.get(hit.line)!, { align: "center" });
     requestAnimationFrame(() => (programmatic.current = false));
-    void openTarget(hit.link.target, cwd, focus);
+    void openTarget(hit.link.target, cwd, focus, module);
     return { index: index + 1, total: links.length };
   });
 
@@ -541,6 +548,11 @@ export function ConsoleView({
         icon: "search",
         shortcut: formatBinding(hostBinding("Meta+F")),
         run: openFind,
+      },
+      {
+        label: "Search with Google",
+        disabled: !selection.trim(),
+        run: () => void openUrl(`https://www.google.com/search?q=${encodeURIComponent(selection.trim())}`),
       },
       { kind: "separator" },
       {
@@ -755,6 +767,7 @@ export function ConsoleView({
                   rules={ruled}
                   length={line.text.length}
                   cwd={cwd}
+                  module={module}
                   currentLink={currentLink?.lineId === line.id ? currentLink.start : undefined}
                 />
                 {row.fold && !row.fold.expanded && foldButton(row.fold, true)}

@@ -56,6 +56,12 @@ export interface LanguageCodeStyle {
   quotes?: "auto" | "single" | "double";
   /** JavaScript / TypeScript › Spaces, by tsserver format option (`insertSpaceAfterCommaDelimiter`). */
   spaces?: Record<string, boolean>;
+  /** JavaScript / TypeScript › Imports (unset: tsserver's default, `shortest` / `auto`). */
+  importModuleSpecifier?: "shortest" | "relative" | "non-relative" | "project-relative";
+  importModuleSpecifierEnding?: "auto" | "minimal" | "index" | "js";
+  /** Do not auto-import from these globs / specifiers matching these regular expressions. */
+  autoImportFileExcludePatterns?: string[];
+  autoImportSpecifierExcludeRegexes?: string[];
 }
 
 /** IDEA's SQL word case: To upper / To lower / Do not change. */

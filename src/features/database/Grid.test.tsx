@@ -862,6 +862,70 @@ describe("Set NULL / Set DEFAULT (issue #2331, phase 1)", () => {
   });
 });
 
+describe("Copy Aggregation Result", () => {
+  const amounts = [["10"], ["2.5"], [null]];
+  const renderAmounts = () =>
+    render(
+      <>
+        <Grid columns={[{ name: "amount", type: "numeric" }]} rowCount={3} value={(r, c) => amounts[r]![c]!} />
+        <ContextMenuHost />
+      </>,
+    );
+  const selectAll = () => {
+    const cells = screen.getAllByRole("gridcell");
+    fireEvent.mouseDown(cells[0]!, { button: 0 });
+    fireEvent.mouseEnter(cells[2]!);
+    fireEvent.mouseUp(window);
+  };
+
+  it.each([
+    ["intellij-macos", { metaKey: true }],
+    ["intellij-windows", { ctrlKey: true }],
+  ] as const)("copies the selection's Sum with %s's Copy Paths shortcut", (preset, modifiers) => {
+    useKeymap.setState({ preset, overrides: {} });
+    const writeText = vi.fn();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    renderAmounts();
+    selectAll();
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "C", code: "KeyC", shiftKey: true, ...modifiers });
+    expect(writeText).toHaveBeenCalledWith("12.5");
+  });
+
+  it("copies the Count of text, and offers only the aggregates the selection has", async () => {
+    const writeText = vi.fn();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    render(
+      <>
+        <Grid columns={[{ name: "city", type: "text" }]} rowCount={2} value={(r) => ["Oslo", "Lima"][r]!} />
+        <ContextMenuHost />
+      </>,
+    );
+    const cells = screen.getAllByRole("gridcell");
+    fireEvent.mouseDown(cells[0]!, { button: 0 });
+    fireEvent.mouseEnter(cells[1]!);
+    fireEvent.mouseUp(window);
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "C", code: "KeyC", shiftKey: true, metaKey: true });
+    expect(writeText).toHaveBeenLastCalledWith("2");
+
+    fireEvent.contextMenu(screen.getByRole("grid"), { clientX: 5, clientY: 5 });
+    await act(async () => void fireEvent.click(screen.getByRole("menuitem", { name: /Copy Aggregation Result/ })));
+    const names = screen.getAllByRole("menuitem").map((m) => m.textContent ?? "");
+    expect(names.some((n) => n.startsWith("Min: Lima"))).toBe(true);
+    expect(names.some((n) => n.startsWith("Sum"))).toBe(false);
+  });
+
+  it("copies the aggregate picked in the context menu as the Aggregates panel shows it", async () => {
+    const writeText = vi.fn();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    renderAmounts();
+    selectAll();
+    fireEvent.contextMenu(screen.getByRole("grid"), { clientX: 5, clientY: 5 });
+    await act(async () => void fireEvent.click(screen.getByRole("menuitem", { name: /Copy Aggregation Result/ })));
+    await act(async () => void fireEvent.click(screen.getByRole("menuitem", { name: /^Avg: / })));
+    expect(writeText).toHaveBeenCalledWith("6.25");
+  });
+});
+
 describe("cell action routing", () => {
   it.each(["intellij-macos", "vscode-macos", "intellij-windows"] as const)(
     "uses %s bindings and leaves text editing alone",

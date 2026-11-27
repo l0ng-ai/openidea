@@ -2,6 +2,7 @@
  * Test runner output parsing. Each framework parser turns plain output lines
  * (ANSI already stripped) into events; `TestResults` folds them into a tree.
  */
+import type { OutputChunk } from "@/bindings";
 
 export type TestStatus = "running" | "passed" | "failed" | "skipped";
 
@@ -60,28 +61,39 @@ export function formatDuration(ms: number | undefined): string {
 
 /**
  * Stdout of a runner that prints machine-readable records (`go test -json`, PHPUnit `--teamcity`):
- * feeds complete, unsplit lines to the test parser and returns each line's console text.
+ * feeds complete, unsplit lines to the test parser and returns their console text. A line shows as
+ * stdout, or as a chunk of its own kind (a test's stderr reported on stdout, `testStdErr`).
  */
 export class TestStdout {
   private pending = "";
   constructor(
     private readonly feedLine: (line: string) => void,
-    private readonly display: (line: string) => string,
+    private readonly display: (line: string) => string | OutputChunk,
   ) {}
-  feed(text: string): string {
+  feed(text: string): OutputChunk[] {
     this.pending += text;
     const lines = this.pending.split("\n");
     this.pending = lines.pop()!;
-    return lines.map((line) => this.line(line)).join("");
+    return this.chunks(lines);
   }
-  end(): string {
+  end(): OutputChunk[] {
     const pending = this.pending;
     this.pending = "";
-    return pending ? this.line(pending) : "";
+    return pending ? this.chunks([pending]) : [];
   }
-  private line(raw: string): string {
-    const line = raw.replace(/\r$/, "");
-    this.feedLine(line);
-    return this.display(line);
+  /** Consecutive lines of one kind in one chunk. */
+  private chunks(lines: string[]): OutputChunk[] {
+    const out: OutputChunk[] = [];
+    for (const raw of lines) {
+      const line = raw.replace(/\r$/, "");
+      this.feedLine(line);
+      const shown = this.display(line);
+      const chunk = typeof shown === "string" ? { kind: "stdout" as const, text: shown } : shown;
+      if (!chunk.text) continue;
+      const last = out[out.length - 1];
+      if (last?.kind === chunk.kind) last.text += chunk.text;
+      else out.push({ ...chunk });
+    }
+    return out;
   }
 }

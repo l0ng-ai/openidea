@@ -181,6 +181,9 @@ fn everything_missing_on_an_empty_system() {
     assert!(find(&list, "solargraph").unavailable_reason.as_deref().unwrap().contains("Ruby"));
     // Shared npm package: each server is its own row.
     assert_eq!(find(&list, "vscode-css-language-server").install_method.as_deref(), Some("npm"));
+    let sass = find(&list, "some-sass-language-server");
+    assert_eq!(sass.install_method.as_deref(), Some("npm"));
+    assert_eq!(sass.languages, ["Sass"]);
     assert!(find(&list, "delve").kind == ToolKind::Debugger);
 }
 
@@ -652,6 +655,7 @@ for a in "$@"; do case "$a" in
   typescript-language-server@latest) n=typescript-language-server;;
   @vue/language-server@latest) n=vue-language-server; d=@vue/language-server;;
   @astrojs/language-server@latest) n=astro-ls; d=@astrojs/language-server;;
+  @mdx-js/language-server@latest) n=mdx-language-server; d=@mdx-js/language-server;;
   *) continue;;
 esac
 d="${{d:-$n}}"; /bin/mkdir -p "$prefix/node_modules/$d"
@@ -662,7 +666,7 @@ done"#,
         ),
     );
     let tools = env.tools();
-    for name in ["vue-language-server", "typescript-language-server", "astro-ls"] {
+    for name in ["vue-language-server", "typescript-language-server", "astro-ls", "mdx-language-server"] {
         assert_eq!(
             tools.install(name, &langs(), &CancellationToken::new(), &|_| {}).unwrap().status,
             ToolStatus::Installed
@@ -674,6 +678,7 @@ done"#,
     }
     assert!(installs.contains("@vue/language-server@latest"), "{installs}");
     assert!(installs.contains("@astrojs/language-server@latest"), "{installs}");
+    assert!(installs.contains("@mdx-js/language-server@latest"), "{installs}");
 
     fs::write(&log, "").unwrap();
     tools.uninstall("vue-language-server", &langs()).unwrap();

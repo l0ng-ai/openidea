@@ -22,9 +22,16 @@ import { executeAction, getAction } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { offsetToPos, posToOffset, whenSynced, type EditorDocContext } from "@/editor/api";
 import { structure, type StructuralRanges } from "@/editor/structure";
-import { calledFunctions, expandTemplate, applicableTemplates, usesSelection, type LiveTemplate } from "./live/model";
+import {
+  bodyFromText,
+  calledFunctions,
+  expandTemplate,
+  applicableTemplates,
+  usesSelection,
+  type LiveTemplate,
+} from "./live/model";
 import { surroundEntries, surroundersFor, type Surrounder } from "./live/surrounders";
-import { liveTemplates, useLiveTemplateOptions } from "./live/store";
+import { liveTemplates, newTemplateId, saveTemplate, useLiveTemplateOptions } from "./live/store";
 import { inCommentOrString, templateFunctions } from "./editorContext";
 import {
   candidatesFor,
@@ -492,6 +499,30 @@ export function surroundWith(
     },
     onCancel: () => view.focus(),
   });
+}
+
+/**
+ * Save as Live Template…: adds a User template whose text is the selection, in
+ * the file's language, and opens it in Settings › Live Templates (IDEA's
+ * SaveAsTemplate).
+ */
+export function saveAsLiveTemplate(view: EditorView) {
+  const { state } = view;
+  // The primary selection, or the first non-empty one when the primary caret has none.
+  const range = state.selection.main.empty ? state.selection.ranges.find((r) => !r.empty) : state.selection.main;
+  if (!range || !state.sliceDoc(range.from, range.to).trim()) return;
+  const { from, to } = range;
+  const indent = /^[ \t]*/.exec(state.doc.lineAt(from).text)![0];
+  const t: LiveTemplate = {
+    id: newTemplateId(),
+    group: "User",
+    abbrev: "abbr",
+    description: "",
+    body: bodyFromText(state.sliceDoc(from, to), indent),
+    contexts: [state.facet(templateDoc).language],
+  };
+  saveTemplate(t);
+  void executeAction("file.settings", `editor.liveTemplates#${t.id}`);
 }
 
 // ---------------------------------------------------------------------------

@@ -676,6 +676,34 @@ fn python_projects() {
     assert_eq!(ids(&c), ["python:module:app"]);
 }
 
+#[test]
+fn python_unittest_projects() {
+    const UNITTEST: &str = "import unittest\n\nclass T(unittest.TestCase):\n    pass\n";
+    // The standard library's unittest and no pytest: `python -m unittest`.
+    let dir = project(&[("pyproject.toml", "[project]\nname = 'x'\n"), ("tests/test_x.py", UNITTEST)]);
+    let c = detect(dir.path());
+    assert_eq!(ids(&c), ["unittest"]);
+    let unittest = find(&c, "unittest");
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    assert_eq!(cmdline(unittest), format!("{python} -m unittest"));
+    assert!(unittest.is_test);
+    assert_eq!(unittest.debug_adapter.as_deref(), Some("debugpy"));
+    let dir = project(&[("requirements.txt", ""), ("test_app.py", UNITTEST)]);
+    assert_eq!(ids(&detect(dir.path())), ["unittest"]);
+    // A module that imports pytest, a `tests` folder of pytest-style tests, or Django: as before.
+    let dir = project(&[
+        ("pyproject.toml", "[project]\nname = 'x'\n"),
+        ("tests/test_x.py", UNITTEST),
+        ("tests/test_y.py", "import pytest\n"),
+    ]);
+    assert_eq!(ids(&detect(dir.path())), ["pytest"]);
+    let dir =
+        project(&[("pyproject.toml", "[project]\nname = 'x'\n"), ("tests/test_x.py", "def test_x():\n    assert 1\n")]);
+    assert_eq!(ids(&detect(dir.path())), ["pytest"]);
+    let dir = project(&[("manage.py", ""), ("shop/tests.py", UNITTEST), ("test_x.py", UNITTEST)]);
+    assert_eq!(ids(&detect(dir.path())), ["django:runserver", "django:test"]);
+}
+
 #[cfg(unix)]
 #[test]
 fn python_virtualenv() {

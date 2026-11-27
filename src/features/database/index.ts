@@ -33,7 +33,7 @@ import { SQL_LANGUAGE } from "./sqlLanguage";
 import { TABLE_KIND, tableTitle } from "./tableInput";
 import { DIAGRAM_KIND, diagramTitle } from "./erDiagram";
 import { databaseRequest, projectRequest } from "./requests";
-import { nodeTarget, type DbNode } from "./nodes";
+import { nodeSchema, nodeTarget, type DbNode } from "./nodes";
 import { registerDatabaseTreeActions } from "./treeActions";
 import {
   DB_TOOL_WINDOW,
@@ -56,6 +56,19 @@ import {
   watchIdleConnections,
 } from "./store";
 
+/**
+ * The schema a console opened for `id` starts in: the invoking node's, else the selected tree
+ * node's while it is on the same connection target (#6329).
+ */
+function consoleStartSchema(arg: unknown, id: string): string | undefined {
+  const of = (n: unknown) => {
+    if (!n || typeof n !== "object" || !("kind" in n)) return null;
+    const node = n as DbNode;
+    return nodeTarget(node) === id ? nodeSchema(node) : null;
+  };
+  return of(arg) ?? of(useDatabase.getState().selectedNode) ?? undefined;
+}
+
 function useDatabaseHeaderMenu(): MenuItem[] {
   const separate = useDatabase((s) => s.separateProceduresAndFunctions);
   return [{ kind: "action", action: "db.separateProceduresAndFunctions", checked: separate }];
@@ -74,6 +87,7 @@ const TABLE_COMMANDS: Array<[TableCommand, string, string, string[]]> = [
   ["exportData", "db.exportData", "Export Data", ["export", "save as"]],
   ["deleteRows", "db.deleteRows", "Delete Rows", ["remove rows"]],
   ["restoreRows", "db.restoreRows", "Restore Rows", ["undelete rows"]],
+  ["revertRows", "db.revertSelected", "Revert Selected", ["revert rows", "discard row changes", "undo"]],
 ];
 
 /** The editor and rows a menu passed (focus has moved to the menu), else the focused grid's. */
@@ -280,7 +294,7 @@ export function activate(): () => void {
           // A tree node (New ▸ Query Console) opens its data source's console.
           const node = arg && typeof arg === "object" && "kind" in arg ? nodeTarget(arg as DbNode) : null;
           const id = node ?? selectedSource ?? (sources.length === 1 ? sources[0]!.id : null);
-          if (id) await openConsole(id);
+          if (id) await openConsole(id, consoleStartSchema(arg, id));
           else toolWindowService().show(DB_TOOL_WINDOW, true);
         },
       },
@@ -298,7 +312,7 @@ export function activate(): () => void {
           const { sources, selectedSource } = useDatabase.getState();
           const node = arg && typeof arg === "object" && "kind" in arg ? nodeTarget(arg as DbNode) : null;
           const id = node ?? selectedSource ?? (sources.length === 1 ? sources[0]!.id : null);
-          if (id) await newConsole(id);
+          if (id) await newConsole(id, consoleStartSchema(arg, id));
           else toolWindowService().show(DB_TOOL_WINDOW, true);
         },
       },

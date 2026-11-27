@@ -564,6 +564,7 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
         run("django-test", "uv", &["run", "python", "manage.py", "test"]),
         run("django-test", ".venv/bin/python", &["manage.py", "test", "polls"]),
         run("python", "uv", &["run", "--with", "rich", "--no-sync", "main.py"]),
+        run("unittest", "uv", &["run", "python", "-m", "unittest", "tests"]),
     ];
     apply_to_run_configs(&mut configs, tmp.path(), &s);
     assert_eq!(configs[0].command, python);
@@ -581,6 +582,8 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
     // uv's own options stay with uv (#5874).
     assert_eq!(configs[7].command, "uv");
     assert_eq!(configs[7].args, ["run", "--with", "rich", "--no-sync", "main.py"]);
+    assert_eq!(configs[8].command, python);
+    assert_eq!(configs[8].args, ["-m", "unittest", "tests"]);
 }
 
 #[test]
@@ -594,7 +597,7 @@ fn saved_python_configs_keep_their_explicit_interpreter() {
     settings.languages.python.interpreter = default.to_string_lossy().into_owned();
 
     for command in [&override_python, relative_python] {
-        for kind in ["python", "pytest", "django-test"] {
+        for kind in ["python", "pytest", "unittest", "django-test"] {
             let command = command.to_string_lossy();
             let mut config = run(kind, &command, &["main.py"]);
             config.detected = false;
