@@ -43,13 +43,13 @@ public class SelfTest {
                 case "getTables" -> Arrays.equals(a, new Object[]{"archive.db:1", "qa\\_\\%", "%", null})
                     ? rows(List.of(
                         Map.of("TABLE_CAT", "archive.db:1", "TABLE_SCHEM", "qa_%", "TABLE_NAME", "items",
-                            "TABLE_TYPE", "BASE TABLE"),
+                            "TABLE_TYPE", "BASE TABLE", "REMARKS", "Archived items"),
                         Map.of("TABLE_CAT", "root", "TABLE_SCHEM", "qa_%", "TABLE_NAME", "outside_catalog",
-                            "TABLE_TYPE", "BASE TABLE"),
+                            "TABLE_TYPE", "BASE TABLE", "REMARKS", "Wrong catalog comment"),
                         Map.of("TABLE_CAT", "archive.db:1", "TABLE_SCHEM", "qaABC", "TABLE_NAME", "outside_schema",
-                            "TABLE_TYPE", "BASE TABLE")))
+                            "TABLE_TYPE", "BASE TABLE", "REMARKS", "Wrong schema comment")))
                     : Arrays.equals(a, new Object[]{"root", "app", "%", null})
-                        ? rows(List.of(Map.of("TABLE_NAME", "orders", "TABLE_TYPE", "TABLE")))
+                        ? rows(List.of(Map.of("TABLE_NAME", "orders", "TABLE_TYPE", "TABLE", "REMARKS", "Orders table")))
                         : rows(List.of());
                 case "getColumns" -> Arrays.equals(a, new Object[]{"archive.db:1", "qa\\_\\%", "%", "%"})
                     ? rows(List.of(
@@ -190,14 +190,16 @@ public class SelfTest {
             assert scoped.contains("qa_%") && !scoped.contains("outside_catalog") : scoped;
             send(out, 12, "tables", "qa_%", "archive.db:1");
             var tables = new String(reply(in), StandardCharsets.UTF_8);
-            assert tables.contains("items") && !tables.contains("outside_catalog") && !tables.contains("outside_schema")
-                : tables;
+            assert tables.contains("items") && tables.contains("Archived items")
+                && !tables.contains("outside_catalog") && !tables.contains("outside_schema")
+                && !tables.contains("Wrong catalog comment") && !tables.contains("Wrong schema comment") : tables;
             send(out, 13, "schemas");
             var unscoped = new String(reply(in), StandardCharsets.UTF_8);
             assert unscoped.contains("app") && !unscoped.contains("qa_%") : unscoped;
             send(out, 14, "tables", "app");
             var genericTables = new String(reply(in), StandardCharsets.UTF_8);
-            assert genericTables.contains("orders") && !genericTables.contains("items") : genericTables;
+            assert genericTables.contains("orders") && genericTables.contains("Orders table")
+                && !genericTables.contains("items") : genericTables;
             send(out, 15, "schemaColumns", "qa_%", "archive.db:1");
             var scopedComments = new String(reply(in), StandardCharsets.UTF_8);
             assert scopedComments.contains("comment") && scopedComments.contains("archive label")

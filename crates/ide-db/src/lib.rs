@@ -146,6 +146,10 @@ pub struct SchemaObject {
 pub struct TableInfo {
     pub name: String,
     pub kind: DbTableKind,
+    /// The table's or view's comment; `None` when it has none, or the engine keeps no comments.
+    #[serde(default)]
+    #[specta(optional)]
+    pub comment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -392,10 +396,10 @@ async fn duckdb_catalog(pool: &Pool, database: &str) -> IdeResult<Vec<CatalogSch
     const MAX_CATALOG_ROWS: usize = 20_000;
     let name = sql::quote_literal(DbDriver::Jdbc, database);
     let query = format!(
-        "SELECT schema_name AS schema, NULL::VARCHAR AS name, NULL::VARCHAR AS kind \
+        "SELECT schema_name AS schema, NULL::VARCHAR AS name, NULL::VARCHAR AS kind, NULL::VARCHAR AS comment \
          FROM system.main.duckdb_schemas() WHERE database_name = {name} \
          UNION ALL \
-         SELECT table_schema, table_name, lower(table_type) \
+         SELECT table_schema, table_name, lower(table_type), table_comment \
          FROM system.information_schema.tables WHERE table_catalog = {name} \
          ORDER BY name NULLS FIRST, schema LIMIT {MAX_CATALOG_ROWS}"
     );
@@ -405,8 +409,11 @@ async fn duckdb_catalog(pool: &Pool, database: &str) -> IdeResult<Vec<CatalogSch
         let Some(Some(schema)) = values.next() else { continue };
         let tables = schemas.entry(schema).or_default();
         if let Some(Some(name)) = values.next() {
-            let kind = values.next().flatten();
-            tables.push(TableInfo { name, kind: DbTableKind::from_catalog(kind.as_deref()) });
+            tables.push(TableInfo {
+                name,
+                kind: DbTableKind::from_catalog(values.next().flatten().as_deref()),
+                comment: values.next().flatten().filter(|comment| !comment.is_empty()),
+            });
         }
     }
     Ok(schemas.into_iter().map(|(name, tables)| CatalogSchema { name, tables }).collect())
@@ -1158,7 +1165,11 @@ impl DbManager {
             .filter_map(|r| {
                 let mut it = r.into_iter();
                 let name = it.next().flatten()?;
-                Some(TableInfo { name, kind: DbTableKind::from_catalog(it.next().flatten().as_deref()) })
+                Some(TableInfo {
+                    name,
+                    kind: DbTableKind::from_catalog(it.next().flatten().as_deref()),
+                    comment: it.next().flatten().filter(|comment| !comment.is_empty()),
+                })
             })
             .collect())
     }

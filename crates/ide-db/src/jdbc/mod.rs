@@ -732,8 +732,10 @@ mod tests {
             r#"CREATE SCHEMA "archive.db:1"."qa_%""#.into(),
             r#"CREATE SCHEMA "archive.db:1".qaSimilar"#.into(),
             r#"CREATE TABLE "archive.db:1"."qa_%"."t_%""q" (quoted_only INT PRIMARY KEY)"#.into(),
+            r#"COMMENT ON TABLE "archive.db:1"."qa_%"."t_%""q" IS 'Archive table'"#.into(),
             r#"COMMENT ON COLUMN "archive.db:1"."qa_%"."t_%""q".quoted_only IS 'In the archive'"#.into(),
             r#"CREATE TABLE "archive.db:1".qaSimilar."t_%""q" (wrong_schema INT)"#.into(),
+            r#"COMMENT ON TABLE "archive.db:1".qaSimilar."t_%""q" IS 'Wrong schema table'"#.into(),
             r#"COMMENT ON COLUMN "archive.db:1".qaSimilar."t_%""q".wrong_schema IS 'Outside the schema'"#.into(),
         ] {
             pool.query(&sql, 0, 1, &stop).await?;
@@ -748,6 +750,7 @@ mod tests {
         let tables = pool.metadata(&["tables", "qa_%", archive]).await?;
         assert_eq!(tables.len(), 1);
         assert_eq!(tables[0][0].as_deref(), Some(r#"t_%"q"#));
+        assert_eq!(tables[0][2].as_deref(), Some("Archive table"));
 
         for (catalog, column, primary) in
             [("memory", "root_only", "0"), ("first", "first_only", "1"), (archive, "archive_only", "0")]

@@ -153,6 +153,50 @@ it("ignores color-like HTML text while previewing inline styles", () => {
   expect(swatches.map((swatch) => swatch.getAttribute("title"))).toEqual(["#abc"]);
 });
 
+it("previews named colors in HTML styles and quoted colors in embedded scripts by code rules", () => {
+  const swatchTitles = (doc: string, language: "html" | "vue") => {
+    view?.destroy();
+    view = new EditorView({
+      state: EditorState.create({
+        doc,
+        extensions: [
+          language === "html" ? html() : vue(),
+          colorPreviewGutter({ doc: 1, path: `/p/a.${language}`, language, uiMode: null, readOnly: false }),
+        ],
+      }),
+      parent: document.body,
+    });
+    return [...view.dom.querySelectorAll(".cm-openidea-gutter-colors .cm-gutterElement span[title]")].map((swatch) =>
+      swatch.getAttribute("title"),
+    );
+  };
+  expect(
+    swatchTitles(
+      [
+        "<style>",
+        "h1 { color: white; }",
+        "</style>",
+        "<script>",
+        '  const data = [{ "name": "aliceblue", "code": "#f0f8ff" }];',
+        "  // see #123 and #add",
+        "  class A { #fab = 1; f() { return this.#fab; } }",
+        "  const c = cond ? a : red;",
+        "  const d = { color: red };",
+        "</script>",
+        '<div style="background: red;color:blue;"></div>',
+        "<p onclick=\"paint('#abc')\">red: blue</p>",
+      ].join("\n"),
+      "html",
+    ),
+  ).toEqual(["white", "#f0f8ff", "red", "#abc"]);
+  expect(
+    swatchTitles(
+      '<script setup>\nconst accent = "#1b766c";\n</script>\n<template><b style="color: red">x</b></template>',
+      "vue",
+    ),
+  ).toEqual(["#1b766c", "red"]);
+});
+
 it("updates a CSS literal from alpha and hex fields and ignores invalid input", async () => {
   view = new EditorView({
     state: EditorState.create({
@@ -177,4 +221,21 @@ it("updates a CSS literal from alpha and hex fields and ignores invalid input", 
   expect(view.contentDOM.textContent).toContain("#00ff0080");
   expect(view.state.doc.toString()).toBe("color: #abcdef;");
   expect(field("Red").getAttribute("aria-invalid")).toBe("true");
+});
+
+it("edits a Java int color through the picker in its 0x form", async () => {
+  view = new EditorView({
+    state: EditorState.create({
+      doc: "Color c = new Color(0xFF00FF);",
+      extensions: colorPreviewGutter({ doc: 1, path: "/p/A.java", language: "java", uiMode: null, readOnly: false }),
+    }),
+    parent: document.body,
+  });
+  const swatch = view.dom.querySelector(".cm-openidea-gutter-colors .cm-gutterElement span[title]")!;
+  expect(swatch.getAttribute("title")).toBe("0xFF00FF");
+  await act(async () => fireEvent.mouseDown(swatch, { button: 0 }));
+  expect(screen.getByRole("textbox", { name: "Hexadecimal" })).toHaveValue("FF00FFFF");
+  await changeHex("123456");
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Apply" })));
+  expect(view.state.doc.toString()).toBe("Color c = new Color(0x123456);");
 });

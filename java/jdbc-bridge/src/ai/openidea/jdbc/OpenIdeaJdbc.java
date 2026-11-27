@@ -165,14 +165,14 @@ public final class OpenIdeaJdbc {
         String schemaName = scope == null && (catalogs || name.isEmpty()) ? null : name;
         String schema = schemaName == null ? null : pattern(m, schemaName);
         if (op.equals("tables")) {
-            header(out, "name", "kind");
+            header(out, "name", "kind", "comment");
             try (ResultSet rs = m.getTables(catalog, schema, "%", null)) {
                 int n = 0;
                 while (rs.next() && n < 20000) {
                     if (!inNamespace(rs, scope, name)) continue;
                     String type = rs.getString("TABLE_TYPE").toLowerCase(Locale.ROOT);
                     if (!Set.of("table","base table","view","materialized view","system table","local temporary","foreign table").contains(type)) continue;
-                    row(out, rs.getString("TABLE_NAME"), type);
+                    row(out, rs.getString("TABLE_NAME"), type, rs.getString("REMARKS"));
                     n++;
                 }
             }

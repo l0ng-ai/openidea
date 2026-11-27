@@ -42,6 +42,7 @@ beforeEach(() => {
       },
     },
     separateProceduresAndFunctions: false,
+    showTableComments: true,
     treeExpanded: new Set(["pg", "pg/public", "pg/public/routines"]),
   });
 });
@@ -68,6 +69,7 @@ describe("routine grouping", () => {
     await act(() => executeAction("db.separateProceduresAndFunctions"));
     expect(JSON.parse(localStorage.getItem("openidea.database.viewOptions")!)).toEqual({
       separateProceduresAndFunctions: true,
+      showTableComments: true,
     });
     expect(tree.queryByText("routines")).toBeNull();
     const procedures = tree.getByText("procedures").closest('[role="treeitem"]')!;
@@ -84,6 +86,7 @@ describe("routine grouping", () => {
     expect(tree.getByText("refresh_data")).toBeInTheDocument();
     expect(JSON.parse(localStorage.getItem("openidea.database.viewOptions")!)).toEqual({
       separateProceduresAndFunctions: false,
+      showTableComments: true,
     });
   });
 
@@ -101,6 +104,32 @@ describe("routine grouping", () => {
     expect(tree.getAllByText("calculate")).toHaveLength(2);
     const folder = tree.getByText(separate ? "functions" : "routines").closest('[role="treeitem"]')!;
     expect(within(folder as HTMLElement).getByText("2")).toBeInTheDocument();
+  });
+});
+
+describe("table comments", () => {
+  it("shows a table's comment after its name and hides it through the view option", async () => {
+    useDatabase.setState({
+      tables: {
+        [tablesKey("pg", "public")]: {
+          status: "ok",
+          value: [{ name: "orders", kind: "table", comment: "Customer orders" }],
+        },
+      },
+      treeExpanded: new Set(["pg", "pg/public", "pg/public/tables"]),
+    });
+    render(<DatabaseView />);
+    const tree = within(screen.getByRole("tree", { name: "Data sources" }));
+    expect(tree.getByText("Customer orders")).toBeInTheDocument();
+    expect(tree.getByText("orders").closest('[role="treeitem"]')).toHaveAttribute("title", "Customer orders");
+
+    await act(() => executeAction("db.showTableComments"));
+    expect(tree.queryByText("Customer orders")).toBeNull();
+    expect(tree.getByText("orders").closest('[role="treeitem"]')).not.toHaveAttribute("title");
+    expect(JSON.parse(localStorage.getItem("openidea.database.viewOptions")!)).toEqual({
+      separateProceduresAndFunctions: false,
+      showTableComments: false,
+    });
   });
 });
 

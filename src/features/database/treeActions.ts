@@ -43,6 +43,7 @@ import {
   sourceById,
   tablesKey,
   toggleSeparateProceduresAndFunctions,
+  toggleShowTableComments,
   useDatabase,
   withConnection,
   removeSource,
@@ -698,6 +699,11 @@ export function registerDatabaseTreeActions(): () => void {
       id: "db.separateProceduresAndFunctions",
       title: "Separate Procedures and Functions",
       run: toggleSeparateProceduresAndFunctions,
+    }),
+    tree({
+      id: "db.showTableComments",
+      title: "Show Table Comments",
+      run: toggleShowTableComments,
     }),
     tree({
       id: "db.selectOpened",

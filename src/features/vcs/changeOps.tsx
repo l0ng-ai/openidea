@@ -677,6 +677,7 @@ function RollbackDialog({
           onChange={setSelected}
           label="Files to roll back"
           className={rollbackStyles.tree}
+          diffSide={scope === "unstaged" ? "unstaged" : undefined}
         />
         <div className={rollbackStyles.summary} role="status">
           {!chosen.length && <T>No files selected</T>}

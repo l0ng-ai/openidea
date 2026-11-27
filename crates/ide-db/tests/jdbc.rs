@@ -122,9 +122,12 @@ async fn duckdb_custom_driver_through_database_manager() -> IdeResult<()> {
     let db = manager(tmp.path());
     let c = CancellationToken::new();
     db.execute("test", "create table items(id int primary key, label varchar)", 1, &c).await?;
+    db.execute("test", "comment on table items is 'Local items'", 1, &c).await?;
     db.execute("test", "insert into items values (1, NULL), (2, 'row')", 1, &c).await?;
     assert!(db.schemas("test").await?.iter().any(|v| v == "main"));
-    assert!(db.tables("test", "main").await?.iter().any(|v| v.name == "items"));
+    let tables = db.tables("test", "main").await?;
+    let items = tables.iter().find(|table| table.name == "items").expect("items");
+    assert_eq!(items.comment.as_deref(), Some("Local items"));
     let details = db.table_details("test", "main", "items").await?;
     assert_eq!(details.columns.len(), 2);
     let result = db.execute("test", "select id, label from items order by id", 1, &c).await?;
@@ -162,7 +165,9 @@ async fn duckdb_custom_driver_through_database_manager() -> IdeResult<()> {
         format!("ATTACH {path} AS {quoted}"),
         format!("CREATE SCHEMA {quoted}.empty"),
         format!("CREATE TABLE {quoted}.main.items(remote_only INTEGER)"),
+        format!("COMMENT ON TABLE {quoted}.main.items IS 'Archived items'"),
         format!("CREATE VIEW {quoted}.main.remote_view AS SELECT * FROM {quoted}.main.items"),
+        format!("COMMENT ON VIEW {quoted}.main.remote_view IS 'Archived view'"),
     ] {
         db.execute("test", &statement, 1, &c).await?;
     }
@@ -173,8 +178,11 @@ async fn duckdb_custom_driver_through_database_manager() -> IdeResult<()> {
     assert!(schemas.iter().any(|schema| schema.name == "empty" && schema.tables.is_empty()));
     let main = schemas.iter().find(|schema| schema.name == "main").expect("main");
     assert_eq!(
-        main.tables.iter().map(|table| (table.name.as_str(), table.kind)).collect::<Vec<_>>(),
-        [("items", ide_db::DbTableKind::Table), ("remote_view", ide_db::DbTableKind::View)]
+        main.tables.iter().map(|table| (table.name.as_str(), table.kind, table.comment.as_deref())).collect::<Vec<_>>(),
+        [
+            ("items", ide_db::DbTableKind::Table, Some("Archived items")),
+            ("remote_view", ide_db::DbTableKind::View, Some("Archived view")),
+        ]
     );
     assert!(db.saved_catalog("test").await?.is_none());
     db.execute("test", &format!("USE {quoted}"), 1, &c).await?;

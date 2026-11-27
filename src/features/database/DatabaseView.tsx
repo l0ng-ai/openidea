@@ -567,6 +567,11 @@ export function DatabaseView() {
         return `(${n.fk.columns.join(", ")}) → ${n.fk.refTable} (${n.fk.refColumns.join(", ")})`;
       case "index":
         return `${n.index.unique ? "unique " : ""}(${n.index.columns.join(", ")})`;
+      case "table": {
+        if (!st.showTableComments) return undefined;
+        const comment = n.table.comment?.replace(/\s+/g, " ").trim();
+        return comment || undefined;
+      }
       default:
         return undefined;
     }
@@ -638,6 +643,13 @@ export function DatabaseView() {
           loadChildren={load}
           getIcon={(n) => icon(n)}
           getDetail={detail}
+          getTooltip={(n) =>
+            n.kind === "source"
+              ? n.source.comment || undefined
+              : n.kind === "table" && st.showTableComments
+                ? n.table.comment?.trim() || undefined
+                : undefined
+          }
           getColor={(n) => (n.kind === "message" && n.error ? "var(--danger)" : undefined)}
           rowTint={(n) => {
             // IDEA tints every row of a coloured data source across its full width and height.
@@ -658,11 +670,14 @@ export function DatabaseView() {
                   ? styles.keyLabel
                   : styles.nodeLabel;
             const live = n.kind === "source" && [...st.connected].some((t) => splitTarget(t).id === n.source.id);
+            const title =
+              n.kind === "source"
+                ? n.source.comment || undefined
+                : n.kind === "table" && st.showTableComments
+                  ? n.table.comment?.trim() || undefined
+                  : undefined;
             return (
-              <span
-                className={styles.nodeRow}
-                title={n.kind === "source" && n.source.comment ? n.source.comment : undefined}
-              >
+              <span className={styles.nodeRow} title={title}>
                 {i && (
                   <span className={styles.nodeIcon}>
                     <Icon name={i} size={16} />
