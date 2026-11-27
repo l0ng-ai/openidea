@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectInfo } from "@/platform/ipc";
 
@@ -11,8 +11,16 @@ const mocks = vi.hoisted(() => ({
   container: vi.fn(),
   index: vi.fn(),
   cancel: vi.fn(),
+  menu: vi.fn(),
   active: null as string | null,
 }));
+// The context menu host is not mounted here: pick menu items by label instead.
+vi.mock("@/ui", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/ui")>()),
+  showContextMenu: mocks.menu,
+}));
+const pick = (label: string) =>
+  (mocks.menu.mock.lastCall![1] as { label: string; run: () => void }[]).find((i) => i.label === label)!.run();
 vi.mock("@tauri-apps/api/core", () => ({ Channel: class {} }));
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -105,11 +113,52 @@ describe("Python Packages", () => {
       "six",
       false,
       false,
+      false,
       expect.anything(),
       expect.anything(),
     );
     // The list is read again once pip is done.
     await waitFor(() => expect(mocks.packages.mock.calls.filter((c) => c[1] === false)).toHaveLength(2));
+  });
+
+  it("installs a repository URL or a local directory, in editable mode when asked", async () => {
+    open();
+    await screen.findByText("urllib3");
+    fireEvent.click(screen.getByRole("button", { name: "Install from Version Control or Disk" }));
+    act(() => pick("Install from Version Control…"));
+    const url = await screen.findByRole("textbox", { name: "Repository URL" });
+    fireEvent.change(url, { target: { value: "https://github.com/benjaminp/six.git" } });
+    fireEvent.click(screen.getByRole("button", { name: "Install" }));
+    expect(mocks.pip).toHaveBeenLastCalledWith(
+      "/p/.venv/bin/python",
+      "git+https://github.com/benjaminp/six.git",
+      false,
+      false,
+      false,
+      expect.anything(),
+      expect.anything(),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Install from Version Control or Disk" })).toBeEnabled(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Install from Version Control or Disk" }));
+    act(() => pick("Install from Disk…"));
+    const path = await screen.findByRole("textbox", { name: "Path" });
+    fireEvent.change(path, { target: { value: "--index-url=https://evil.example" } });
+    expect(screen.getByRole("button", { name: "Install" })).toBeDisabled();
+    fireEvent.change(path, { target: { value: "./mylib" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Install as editable (-e)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Install" }));
+    expect(mocks.pip).toHaveBeenLastCalledWith(
+      "/p/.venv/bin/python",
+      "./mylib",
+      false,
+      false,
+      true,
+      expect.anything(),
+      expect.anything(),
+    );
   });
 
   it("sends an installed package's name to PyPI only when asked, once per session", async () => {
@@ -216,6 +265,7 @@ describe("Python Packages", () => {
       "requests",
       false,
       true,
+      false,
       expect.anything(),
       expect.anything(),
     );
@@ -225,6 +275,7 @@ describe("Python Packages", () => {
       "/p/.venv/bin/python",
       "requests",
       true,
+      false,
       false,
       expect.anything(),
       expect.anything(),

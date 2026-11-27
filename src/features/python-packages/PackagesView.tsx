@@ -7,10 +7,13 @@ import { useEffect, useMemo, useState } from "react";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
 import { call, commands, isCancelled, nextRequestId, type PypiPackage, type PythonPackage } from "@/platform/ipc";
+import { choosePath } from "@/platform/choosePath";
 import { dirname, useProject } from "@/platform/project";
 import { usePythonPackages } from "@/platform/pythonPackages";
 import {
   Button,
+  Checkbox,
+  Dialog,
   EmptyState,
   Icon,
   IconButton,
@@ -21,10 +24,11 @@ import {
   SplitGroup,
   SplitHandle,
   SplitPanel,
+  showContextMenu,
   T,
 } from "@/ui";
 import { editorService } from "@/workbench/contributions";
-import { isPackageName, listRows, normalize, requirementOf, rowKey, type Row } from "./model";
+import { isPackageName, listRows, normalize, requirementOf, rowKey, vcsRequirement, type Row } from "./model";
 import styles from "./PythonPackages.module.css";
 
 type Op = "install" | "upgrade" | "uninstall";
@@ -225,6 +229,7 @@ export function PackagesView() {
   const [job, setJob] = useState<Job | null>(null);
   const [log, setLog] = useState<string[]>([]);
   const [jobError, setJobError] = useState<string | null>(null);
+  const [installFrom, setInstallFrom] = useState<Source | null>(null);
 
   const name = query.trim();
   const searchable = !container && isPackageName(name);
@@ -247,7 +252,7 @@ export function PackagesView() {
   const details = usePypi(picked && !container && !fromSearch && wanted ? picked.name : null, 200);
   const info = fromSearch ? search : details;
 
-  const run = (op: Op, requirement: string) => {
+  const run = (op: Op, requirement: string, editable = false) => {
     if (!python || job) return;
     const request = nextRequestId();
     const channel = new Channel<string>();
@@ -255,7 +260,7 @@ export function PackagesView() {
     setLog([]);
     setJobError(null);
     setJob({ op, target: requirement, cancel: () => void commands.cancelRequest(request) });
-    call(commands.sdkPythonPip(python, requirement, op === "uninstall", op === "upgrade", request, channel))
+    call(commands.sdkPythonPip(python, requirement, op === "uninstall", op === "upgrade", editable, request, channel))
       .catch((e: unknown) => setJobError(isCancelled(e) ? null : message(e)))
       .finally(() => {
         setJob(null);
@@ -304,6 +309,21 @@ export function PackagesView() {
             disabled={loading || !!job}
             onClick={container ? retry : local.reload}
           />
+          {!container && (
+            <IconButton
+              icon="plus"
+              size="small"
+              title="Install from Version Control or Disk"
+              disabled={!python || !!job}
+              onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect();
+                showContextMenu({ x: r.left, y: r.bottom + 2 }, [
+                  { label: "Install from Version Control…", run: () => setInstallFrom("vcs") },
+                  { label: "Install from Disk…", run: () => setInstallFrom("disk") },
+                ]);
+              }}
+            />
+          )}
           {python && (
             <span className={styles.interpreter} title={python}>
               {relativeTo(root, python)}
@@ -454,7 +474,82 @@ export function PackagesView() {
           </pre>
         )}
       </SplitPanel>
+      {installFrom && (
+        <InstallFromDialog
+          source={installFrom}
+          onClose={() => setInstallFrom(null)}
+          onInstall={(requirement, editable) => {
+            setInstallFrom(null);
+            run("install", requirement, editable);
+          }}
+        />
+      )}
     </SplitGroup>
+  );
+}
+
+type Source = "vcs" | "disk";
+
+/** A repository URL or a local directory or archive to install, as PyCharm's Advanced Package Install. */
+function InstallFromDialog({
+  source,
+  onClose,
+  onInstall,
+}: {
+  source: Source;
+  onClose: () => void;
+  onInstall: (requirement: string, editable: boolean) => void;
+}) {
+  const tx = useTx();
+  const [value, setValue] = useState("");
+  const [editable, setEditable] = useState(false);
+  const text = value.trim();
+  // pip would read a leading `-` as one of its options.
+  const valid = !!text && !text.startsWith("-");
+  const install = () => valid && onInstall(source === "vcs" ? vcsRequirement(text) : text, editable);
+  return (
+    <Dialog
+      open
+      title={source === "vcs" ? "Install from Version Control" : "Install from Disk"}
+      onClose={onClose}
+      width={520}
+      buttons={[
+        { label: tx("Cancel"), role: "cancel" },
+        { label: tx("Install"), role: "default", onClick: install, disabled: !valid },
+      ]}
+    >
+      <div className={styles.installFrom}>
+        <div className={styles.field}>
+          <Input
+            autoFocus
+            value={value}
+            placeholder={
+              source === "vcs" ? "git+https://github.com/owner/project.git" : tx("Project directory or archive")
+            }
+            aria-label={source === "vcs" ? "Repository URL" : "Path"}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && install()}
+          />
+          {source === "disk" && (
+            <Button
+              onClick={() =>
+                void choosePath({ directory: true, title: tx("Project Directory") }).then(
+                  (path) => path && setValue(path),
+                )
+              }
+            >
+              <T>Browse</T>
+            </Button>
+          )}
+        </div>
+        <Checkbox checked={editable} onChange={setEditable} label="Install as editable (-e)" />
+        {source === "vcs" && editable && (
+          <div className={styles.note}>
+            <T>An editable install from version control needs the package name at the end of the URL: #egg=name.</T>
+          </div>
+        )}
+      </div>
+    </Dialog>
   );
 }
 
