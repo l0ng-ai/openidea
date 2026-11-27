@@ -44,6 +44,16 @@ export async function handleMcpRequest(
     );
     return;
   }
+  if (request.type === "runConfiguration") {
+    // A run configuration an agent started: a Run tool window tab, as if the user pressed Run.
+    try {
+      await executeActionOrThrow("run.mcpStart", request.config);
+      await send(id, true);
+    } catch (error) {
+      await send(id, false, error instanceof Error ? error.message : String(error)).catch(() => {});
+    }
+    return;
+  }
   if (request.type === "agentRun") {
     // The Run tool window starts it in the agent tab; the answer says whether it started.
     try {

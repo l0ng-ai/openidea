@@ -8,6 +8,8 @@
   "Image dimensions exceed the pixel comparison limit": "图像尺寸超出像素比较限制",
   "Compare revisions": "比较修订版本",
   "Fit to Window": "适应窗口",
+  "Run Configuration for an Agent": "为智能体运行配置",
+  "Starts the configuration the MCP server's `execute_run_configuration` prepared (before launch tasks done) in a Run tool window tab; throws when it did not start.": "在运行工具窗口的标签页中启动 MCP 服务器 `execute_run_configuration` 准备好的配置（启动前任务已完成）；未能启动时抛出错误。",
   "View source diff": "查看源代码差异",
   "Image preview": "图像预览",
   "No image on this side": "此侧无图像",
