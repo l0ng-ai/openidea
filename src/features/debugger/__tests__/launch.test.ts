@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
 import { useFlutterDevices } from "@/workbench/flutterDevices";
+import { isJinjaTemplate } from "../breakpoints/languages";
+import { makeBreakpoint } from "../breakpoints/model";
+import { useBreakpoints } from "../breakpoints/store";
 import { debugUnsupportedReason, launchConfigFor, withEnvFiles } from "../launch";
 
 const ipc = vi.hoisted(() => {
@@ -228,6 +231,38 @@ describe("run config → launch config", () => {
 
     const globalPytest = launchConfigFor(rc({ kind: "pytest", command: "pytest", debugAdapter: "debugpy" }), "/p")!;
     expect(extra(globalPytest).python).toBe("python3");
+  });
+
+  it("debugpy: Jinja2 templates for Flask, or when a template has a breakpoint (#6371)", () => {
+    const debug = (command: string, args: string[]) =>
+      extra(launchConfigFor(rc({ kind: "python", command, args, debugAdapter: "debugpy" }), "/p"));
+    expect(debug("uv", ["run", "flask", "--app", "app", "run"])).toMatchObject({ module: "flask", jinja: true });
+    expect(debug("python3", ["-m", "flask", "run"]).jinja).toBe(true);
+    expect(debug("python3", ["app.py"]).jinja).toBeUndefined();
+    try {
+      useBreakpoints.setState({ byFile: { "/p/static/app.js": [makeBreakpoint(3)] } });
+      expect(debug("python3", ["app.py"]).jinja).toBeUndefined();
+      useBreakpoints.setState({ byFile: { "/p/templates/index.html": [makeBreakpoint(3)] } });
+      expect(debug("python3", ["app.py"]).jinja).toBe(true);
+      // Django renders its own templates: `jinja` would make debugpy read them as Jinja2.
+      expect(debug("python3", ["manage.py", "runserver"])).toMatchObject({ django: true });
+      expect(debug("python3", ["manage.py", "runserver"]).jinja).toBeUndefined();
+    } finally {
+      useBreakpoints.setState({ byFile: {} });
+    }
+  });
+
+  it("Jinja2 templates: their extensions anywhere, markup or text in a templates folder", () => {
+    for (const p of [
+      "/p/mail/welcome.j2",
+      "/p/x/page.JINJA",
+      "/p/a.jinja2",
+      "/p/templates/base.html",
+      "/p/app/templates/x/y.txt",
+    ])
+      expect(isJinjaTemplate(p), p).toBe(true);
+    for (const p of ["/p/static/index.html", "/p/templates.py", "/p/templates/style.css", "/p/app.py"])
+      expect(isJinjaTemplate(p), p).toBe(false);
   });
 
   it("debugpy: uv / poetry run the debuggee in the project's environment", () => {

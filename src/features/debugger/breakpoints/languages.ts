@@ -22,10 +22,17 @@ function load() {
     .finally(() => (loading = false));
 }
 
+/** Jinja2's own extensions: no language of theirs yet, but debugpy stops in them (`jinja: true`). */
+const JINJA_EXTENSION = /\.(jinja2?|j2)$/i;
+
+/** A Jinja2 template for debugpy: a `.jinja` / `.j2` file, or markup or text in a `templates` folder. */
+export const isJinjaTemplate = (path: string) =>
+  JINJA_EXTENSION.test(path) || /[\\/]templates[\\/].*\.(html?|xml|txt)$/i.test(path);
+
 /** Whether a new breakpoint may be placed in a file of `language`. */
 export function canPlaceBreakpoint(language: string, path = ""): boolean {
   if (classFileBreakpointReason(path)) return false;
-  if (workflowSettings().debugger.breakpointsAnyFile) return true;
+  if (workflowSettings().debugger.breakpointsAnyFile || JINJA_EXTENSION.test(path)) return true;
   load();
   // Until the language list is known, don't block anything.
   return !debuggable || debuggable.has(language);
