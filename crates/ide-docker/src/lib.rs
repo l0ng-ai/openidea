@@ -27,18 +27,24 @@ const QUICK: Duration = Duration::from_secs(20);
 /// Stop / restart wait for the container's grace period (10 s by default).
 const LIFECYCLE: Duration = Duration::from_secs(90);
 
-/// Locates the docker executable once per process. GUI apps on macOS start with a
-/// minimal `PATH`, so the usual install locations are probed after the lookup.
+/// Locates the docker executable. GUI apps on macOS start with a minimal `PATH`, so
+/// the login/reloaded `PATH` and usual install locations are probed after the lookup.
+/// Only a found path is cached, so installing Docker while the backend runs is picked up.
 pub fn docker_executable() -> Option<PathBuf> {
-    static DOCKER: OnceLock<Option<PathBuf>> = OnceLock::new();
-    DOCKER
-        .get_or_init(|| {
-            if let Some(explicit) = std::env::var_os("OPENIDEA_DOCKER").map(PathBuf::from).filter(|p| p.is_file()) {
-                return Some(explicit);
-            }
-            if let Ok(found) = which::which("docker") {
-                return Some(found);
-            }
+    if let Some(explicit) = std::env::var_os("OPENIDEA_DOCKER").map(PathBuf::from).filter(|p| p.is_file()) {
+        return Some(explicit);
+    }
+    static DOCKER: OnceLock<PathBuf> = OnceLock::new();
+    if let Some(cached) = DOCKER.get().filter(|p| p.is_file()) {
+        return Some(cached.clone());
+    }
+    let found = which::which("docker")
+        .ok()
+        .or_else(|| {
+            let path = ide_core::process::host_var_os("PATH")?;
+            which::which_in("docker", Some(path), ".").ok()
+        })
+        .or_else(|| {
             let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
             let mut candidates: Vec<PathBuf> = if cfg!(windows) {
                 vec![PathBuf::from(r"C:\Program Files\Docker\Docker\resources\bin\docker.exe")]
@@ -60,8 +66,11 @@ pub fn docker_executable() -> Option<PathBuf> {
                 candidates.push(home.join(".docker/bin/docker"));
             }
             candidates.into_iter().find(|p| p.is_file())
-        })
-        .clone()
+        });
+    if let Some(ref path) = found {
+        let _ = DOCKER.set(path.clone());
+    }
+    found
 }
 
 /// Environment for docker command lines a run configuration launches: the endpoint's
