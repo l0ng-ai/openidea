@@ -122,10 +122,18 @@ describe("rerunFailedConfig", () => {
 
   it("pytest: node ids replace explicit paths", async () => {
     const c = (await rerunFailedConfig(cfg("pytest", ".venv/bin/pytest", ["-q", "tests/", "-k", "slow"]), [
-      ["tests/test_x.py", "TestC", "test_y[1]"],
+      ["tests/test_x.py", "TestC", "test_y", "[1]"],
       ["tests/test_z.py", "test_a"],
     ]))!;
     expect(c.args).toEqual(["-q", "tests/test_x.py::TestC::test_y[1]", "tests/test_z.py::test_a"]);
+  });
+
+  it("pytest: a parametrized test reruns all of its cases, a case only itself", async () => {
+    const c = (await rerunFailedConfig(cfg("pytest", "pytest", []), [
+      ["tests/test_x.py", "test_div"],
+      ["tests/test_x.py", "test_div", "[a::b.c]"],
+    ]))!;
+    expect(c.args).toEqual(["tests/test_x.py::test_div", "tests/test_x.py::test_div[a::b.c]"]);
   });
 
   it("django: dotted labels in place of the run's target, options kept", async () => {

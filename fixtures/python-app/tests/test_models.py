@@ -21,6 +21,14 @@ def test_complete_and_overdue():
     assert tasks.overdue(date(2024, 1, 1)) == []
 
 
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [("write docs", "write docs"), ("  padded  ", "padded"), ("v1.2 notes", "v1.2 notes")],
+)
+def test_add_strips_titles(title, expected):
+    assert TaskList().add(title).title == expected
+
+
 def test_rejects_empty_titles():
     with pytest.raises(ValueError):
         TaskList().add("   ")
