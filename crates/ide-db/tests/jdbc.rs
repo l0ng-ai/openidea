@@ -497,13 +497,14 @@ async fn unresponsive_console_cancellation_keeps_other_jdbc_connections() -> Ide
     assert_eq!(sibling.expect("B and service can finish while A is executing")?, (Some(1.0), Some(1.0)));
     assert!(ran_a.unwrap_err().message.contains("Cancellation timed out"));
     assert_eq!(db.connected(), ["test"]);
-    assert_eq!(db.execute_in_console("test", "still B", 0, 1, &normal, None, Some(b)).await?.affected, Some(1.0));
+    // The fixture's update count is cumulative within a physical connection.
+    assert_eq!(db.execute_in_console("test", "still B", 0, 1, &normal, None, Some(b)).await?.affected, Some(2.0));
     assert_eq!(db.execute_in_console("test", "new session A", 0, 1, &normal, None, Some(a)).await?.affected, Some(1.0));
     assert!(db.execute("test", "drop", 1, &normal).await.unwrap_err().message.contains("connection reset"));
     assert!(db.is_connected("test"), "a lost service connection must not retire the console sessions");
     assert_eq!(
         db.execute_in_console("test", "B after service failure", 0, 1, &normal, None, Some(b)).await?.affected,
-        Some(1.0)
+        Some(3.0)
     );
     db.release_target_console(a, Some("test")).await?;
     db.release_target_console(b, Some("test")).await?;
