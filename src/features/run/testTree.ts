@@ -11,6 +11,8 @@ export const testTree: {
   toggleDurations: (() => void) | null;
   selectFirstFailed: boolean | null;
   toggleSelectFirstFailed: (() => void) | null;
+  trackRunning: boolean | null;
+  toggleTrackRunning: (() => void) | null;
 } = {
   expandAll: null,
   collapseAll: null,
@@ -19,4 +21,6 @@ export const testTree: {
   toggleDurations: null,
   selectFirstFailed: null,
   toggleSelectFirstFailed: null,
+  trackRunning: null,
+  toggleTrackRunning: null,
 };
