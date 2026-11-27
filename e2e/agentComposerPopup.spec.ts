@@ -166,8 +166,10 @@ test("slash command arguments autocomplete subcommands, skills, and inline hints
   await expect(editor).toHaveText("/skills info triage ");
 
   // Free-text hints show inline after `/command ` and vanish once typing begins.
-  await editor.press("ControlOrMeta+a");
-  await editor.press("Backspace");
+  // Cleared key by key: the select-all shortcut depends on the host and the mocked platform.
+  await editor.press("End");
+  for (let i = 0; i < "/skills info triage ".length; i++) await editor.press("Backspace");
+  await expect(editor).not.toContainText("/skills");
   await editor.pressSequentially("/review ");
   await expect(commandsList).toBeHidden();
   await expect(editor.locator('span[aria-hidden="true"]')).toHaveText("additional instructions");
