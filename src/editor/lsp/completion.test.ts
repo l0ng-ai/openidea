@@ -22,6 +22,8 @@ import {
   explicitCompletion,
   makeCompletion,
   matchRanges,
+  completionValidFor,
+  pruneItems,
   positionCompletionInfo,
   sortAlphabetically,
 } from "./completion";
@@ -1214,6 +1216,54 @@ describe("hyphenated completion tokens", () => {
     const at = view!.state.selection.main.head;
     view!.dispatch({ changes: { from: at, insert: "-b" }, selection: { anchor: at + 2 }, userEvent: "input.type" });
     await vi.waitFor(() => expect(completionStatus(view!.state)).not.toBe("active"));
+  });
+
+  it("prunes a huge list to the options the typed token can still reach", () => {
+    const many = Array.from({ length: 3000 }, (_, i) => item({ label: `items-${i}`, insertText: `items-${i}` }));
+    many.push(item({ label: "items-center", insertText: "items-center" }));
+    const pruned = pruneItems(many, "items-c");
+    expect(pruned.items.map((i) => i.label)).toEqual(["items-center"]);
+    expect(pruned.prunedBy).toBe("items-c");
+  });
+
+  it("leaves small, empty, or unmatched lists alone", () => {
+    expect(pruneItems([item({ label: "a" })], "a").prunedBy).toBeNull();
+    const many = Array.from({ length: 3000 }, (_, i) => item({ label: `items-${i}` }));
+    expect(pruneItems(many, "").prunedBy).toBeNull();
+    expect(pruneItems(many, "zzz").prunedBy).toBeNull();
+  });
+
+  it("asks again when backspacing below the pruned token", () => {
+    const validFor = completionValidFor([item({ label: "items-center" })], "items-c");
+    expect(validFor("items-c")).toBe(true);
+    expect(validFor("items-cent")).toBe(true);
+    expect(validFor("items-")).toBe(false);
+    expect(validFor("foo-bar")).toBe(false);
+    expect(completionValidFor([item({ label: "alpha" })], null)("alpha")).toBe(true);
+  });
+
+  it("asks the server again after backspacing below the pruned token", async () => {
+    const reply = [
+      ...Array.from({ length: 1100 }, (_, i) =>
+        item({
+          label: `ite-${i}`,
+          insertText: `ite-${i}`,
+          replaceRange: { start: { line: 0, col: 0 }, end: { line: 0, col: 3 } },
+        }),
+      ),
+      ...Array.from({ length: 1100 }, (_, i) =>
+        item({
+          label: `zzz-${i}`,
+          insertText: `zzz-${i}`,
+          replaceRange: { start: { line: 0, col: 0 }, end: { line: 0, col: 3 } },
+        }),
+      ),
+    ];
+    mount("ite", 3, reply);
+    startCompletion(view!);
+    await vi.waitFor(() => expect(calls).toBe(1));
+    view!.dispatch({ changes: { from: 2, to: 3 }, selection: { anchor: 2 }, userEvent: "delete.backward" });
+    await vi.waitFor(() => expect(calls).toBe(2));
   });
 
   it("completes CSS properties across the hyphen too", async () => {

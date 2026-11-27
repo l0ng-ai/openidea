@@ -22,11 +22,12 @@ import {
 import clsx from "clsx";
 import { Text } from "@codemirror/state";
 import { editorController } from "@/editor/core/controller";
-import type { EditorView } from "@codemirror/view";
+import { Direction, EditorView } from "@codemirror/view";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { editorPrefs, useEditorPrefs } from "@/platform/editorSettings";
 import { useMarkdownPreviewFontSize, useMarkdownPreviewLayout } from "@/platform/languageSettings";
 import { maybeEditorService, notifications, registerFontZoomSurface, useEditorShown } from "@/workbench/contributions";
+import { useToolWindowLayout, viewModeOf } from "@/workbench/toolwindows/store";
 import { editorsFor, setShownLine } from "@/editor/api";
 import { highlightInto } from "@/editor/lsp/markdown";
 import {
@@ -132,6 +133,14 @@ function attachImagePanZoom(img: HTMLImageElement): void {
 const SPLIT_STORAGE_KEY = "openidea.markdown.split";
 const DEFAULT_SPLIT_LAYOUT = { editor: 50, preview: 50 };
 
+function sideDockChanged(next: ReturnType<typeof useToolWindowLayout.getState>, prev: typeof next) {
+  const docked = (state: typeof next, side: "left" | "right") =>
+    [state.visible[side], state.visible[`${side}-split`]].some(
+      (id) => id && viewModeOf(id, state.viewModes) !== "undock",
+    );
+  return (["left", "right"] as const).some((side) => docked(next, side) !== docked(prev, side));
+}
+
 export function MarkdownEditor({
   path,
   tabId,
@@ -153,23 +162,52 @@ export function MarkdownEditor({
     if (mode === "split" && editorRef.current) return installMarkdownSourceScroll(editorRef.current);
   }, [mode]);
 
-  // CodeMirror's internal ResizeObserver skips resizes within 75ms of a view update
-  // and debounces by 50ms; re-measure immediately on drag and mode transitions.
   useEffect(() => {
     const el = editorRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
+    const viewOf = () => editorsFor(path).find((ed) => ed.tabId === tabId || el.contains(ed.view.dom))?.view;
     let width = el.clientWidth;
+    let anchor: ReturnType<typeof sourceResizeAnchor>;
+    let pending = false;
+    const unsubscribe = useToolWindowLayout.subscribe((next, prev) => {
+      if (!sideDockChanged(next, prev)) return;
+      const view = viewOf();
+      if (!width || !view?.lineWrapping || !view.inView) return;
+      if (anchor?.view !== view || anchor.doc !== view.state.doc || anchor.top !== view.scrollDOM.scrollTop) {
+        anchor = sourceResizeAnchor(view);
+      }
+      pending = true;
+    });
     const ro = new ResizeObserver(() => {
       const next = el.clientWidth;
       if (next === width) return;
       width = next;
+      const restore = pending ? anchor : undefined;
+      pending = false;
+      anchor = undefined;
       if (next <= 0) return;
-      for (const ed of editorsFor(path)) {
-        if (!ed.tabId || ed.tabId === tabId) ed.view.requestMeasure();
+      const view = viewOf();
+      if (!view) return;
+      if (restore?.view === view && restore.doc === view.state.doc) {
+        const topMargin = Math.max(
+          0,
+          ...view.state.facet(EditorView.scrollMargins).map((margin) => margin(view)?.top ?? 0),
+        );
+        view.dispatch({
+          effects: EditorView.scrollIntoView(restore.pos, { y: "start", yMargin: restore.inset - topMargin }),
+        });
+        // Read the position after CodeMirror has applied the anchor in this resize frame.
+        view.lineBlockAtHeight(0);
+        anchor = { ...restore, top: view.scrollDOM.scrollTop };
+      } else {
+        view.requestMeasure();
       }
     });
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => {
+      unsubscribe();
+      ro.disconnect();
+    };
   }, [path, tabId]);
 
   const splitBounds = mode === "split" ? { minSize: "10%", maxSize: "90%" } : {};
@@ -212,6 +250,20 @@ export function MarkdownEditor({
       )}
     </div>
   );
+}
+
+function sourceResizeAnchor(view: EditorView) {
+  const scroller = view.scrollDOM;
+  const top = scroller.scrollTop;
+  if (top <= 0 || scroller.scrollHeight - scroller.clientHeight - top <= 1) return;
+  const viewport = scroller.getBoundingClientRect();
+  const content = view.contentDOM.getBoundingClientRect();
+  const pos = view.posAtCoords({
+    x: view.textDirection === Direction.LTR ? content.left + 1 : content.right - 1,
+    y: viewport.top + 2,
+  });
+  const coords = pos !== null ? view.coordsAtPos(pos) : null;
+  if (pos !== null && coords) return { view, doc: view.state.doc, pos, inset: coords.top - viewport.top, top };
 }
 
 function blocksOf(root: HTMLElement) {
@@ -517,8 +569,17 @@ function MarkdownPreview({ path, tabId, sync }: { path: string; tabId: string; s
   useEffect(() => {
     const root = ref.current;
     if (!root || !window.IntersectionObserver || !window.ResizeObserver) return;
+    let width = 0;
+    let settled = 0;
+    let viewportWidth = root.clientWidth;
+    let visibilityPaused = false;
     const visibility = new IntersectionObserver(
       (entries) => {
+        // Changing which blocks use the live width can move the anchor between resize passes.
+        if (width !== settled || root.clientWidth !== viewportWidth) {
+          visibilityPaused = true;
+          return;
+        }
         for (const entry of entries) entry.target.toggleAttribute("data-in-viewport", entry.isIntersecting);
       },
       { root, rootMargin: "100% 0px" },
@@ -534,23 +595,49 @@ function MarkdownPreview({ path, tabId, sync }: { path: string; tabId: string; s
     const replaced = new MutationObserver(observeBlocks);
     replaced.observe(root, { childList: true });
 
-    let width = 0;
-    let settled = 0;
     let timer: number | undefined;
+    let restoredTop: number | undefined;
+    let anchor: { line: number; within: number; atBottom: boolean } | undefined;
+    const rememberPosition = () => {
+      const top = root.scrollTop;
+      if (root.clientWidth !== viewportWidth || top === restoredTop) return;
+      restoredTop = undefined;
+      const end = root.scrollHeight;
+      const line = previewLineAtOffset(blocks.current, top);
+      anchor =
+        top > 0
+          ? {
+              line,
+              within: top - previewOffsetForLine(blocks.current, line, end),
+              atBottom: top + root.clientHeight >= end - 1,
+            }
+          : undefined;
+    };
+    const restorePosition = () => {
+      if (anchor) {
+        root.scrollTop = anchor.atBottom
+          ? root.scrollHeight
+          : previewOffsetForLine(blocks.current, anchor.line, root.scrollHeight) + anchor.within;
+        restoredTop = root.scrollTop;
+      }
+      viewportWidth = root.clientWidth;
+      if (width === settled) {
+        follower.current?.resume();
+        if (visibilityPaused) {
+          visibilityPaused = false;
+          observeBlocks();
+        }
+      }
+    };
     const apply = () => {
       if (!width || width === settled) return;
-      const follow = follower.current;
-      const top = root.scrollTop;
-      const atBottom = top > 0 && top + root.clientHeight >= root.scrollHeight - 1;
-      const line = !follow && top > 0 ? previewLineAtOffset(blocks.current, top) : -1;
-      const block = line >= 0 ? blocks.current.find((b) => b.line === line) : undefined;
-      const within = block ? top - block.top : 0;
+      const initial = !settled;
       settled = width;
       root.removeAttribute("data-constrain-blocks");
       root.style.setProperty("--markdown-block-width", `${width}px`);
-      if (follow) follow.align();
-      else if (atBottom) root.scrollTop = root.scrollHeight;
-      else if (block) root.scrollTop = block.top + within;
+      const follow = follower.current;
+      if (initial && follow) follow.align();
+      else restorePosition();
     };
     const schedule = () => {
       if (width === settled) return;
@@ -575,8 +662,15 @@ function MarkdownPreview({ path, tabId, sync }: { path: string; tabId: string; s
       if (settled && width !== settled) markVisible();
       root.toggleAttribute("data-constrain-blocks", width < settled);
       if (!settled) apply();
-      else schedule();
+      else {
+        // Visible blocks reflow at the new width before ResizeObserver runs.
+        follower.current?.pause();
+        restorePosition();
+        schedule();
+      }
     });
+    rememberPosition();
+    root.addEventListener("scroll", rememberPosition, { passive: true });
     sizes.observe(root);
     document.addEventListener("pointerup", schedule, true);
     document.addEventListener("pointercancel", schedule, true);
@@ -586,13 +680,15 @@ function MarkdownPreview({ path, tabId, sync }: { path: string; tabId: string; s
       replaced.disconnect();
       sizes.disconnect();
       window.clearTimeout(timer);
+      root.removeEventListener("scroll", rememberPosition);
       document.removeEventListener("pointerup", schedule, true);
       document.removeEventListener("pointercancel", schedule, true);
       window.removeEventListener("blur", schedule);
       root.style.removeProperty("--markdown-block-width");
       root.removeAttribute("data-constrain-blocks");
+      follower.current?.resume();
     };
-  }, [html]);
+  }, [html, sync]);
 
   useLayoutEffect(() => {
     const root = ref.current;
