@@ -5,7 +5,7 @@ mod common;
 
 use ide_core::{Pos, RequestId};
 use ide_host::{Host, ops};
-use ide_search::{ReplaceEvent, ReplaceSummary, ReplaceTarget, SearchQuery};
+use ide_search::{ReplaceEvent, ReplaceSummary, ReplaceTarget, SearchQuery, SearchScope};
 use std::sync::{Arc, Mutex};
 
 fn query(pattern: &str, is_regex: bool) -> SearchQuery {
@@ -145,9 +145,10 @@ async fn replace_all_covers_matches_past_the_limit() {
 async fn replace_all_saves_open_buffers_without_unsaved_changes() {
     let temp = tempfile::tempdir().unwrap();
     let base = dunce::canonicalize(temp.path()).unwrap();
-    let root = base.join("project");
+    let scope = base.join("scope");
+    let root = scope.join("project");
     std::fs::create_dir_all(&root).unwrap();
-    for name in ["previewed.txt", "edited.txt", "closed.txt", "stale.txt"] {
+    for name in ["previewed.txt", "edited.txt", "closed.txt"] {
         std::fs::write(root.join(name), "TOKEN\n").unwrap();
     }
     let host = Host::new(common::host_config(&base));
@@ -157,14 +158,18 @@ async fn replace_all_saves_open_buffers_without_unsaved_changes() {
     project.documents.open(&root.join("previewed.txt")).unwrap();
     let edited = project.documents.open(&root.join("edited.txt")).unwrap().id;
     project.documents.replace_all(edited, "TOKEN\nmore\n").unwrap();
-    // Open and clean, but changed on disk before the watcher reported it.
-    let stale = project.documents.open(&root.join("stale.txt")).unwrap().id;
-    std::fs::write(root.join("stale.txt"), "TOKEN\nexternal\n").unwrap();
+    // Search the parent folder so Replace All also covers a clean buffer outside the project watch.
+    let stale_path = scope.join("stale.txt");
+    std::fs::write(&stale_path, "TOKEN\n").unwrap();
+    let stale = project.documents.open(&stale_path).unwrap().id;
+    std::fs::write(&stale_path, "TOKEN\nexternal\n").unwrap();
+    let mut search = query("TOKEN", false);
+    search.scope = SearchScope::Directory { path: scope.into() };
     ops::search::replace_in_files(
         &host,
         "main",
         RequestId::next(),
-        query("TOKEN", false),
+        search,
         "DONE".into(),
         false,
         vec![],
@@ -178,7 +183,8 @@ async fn replace_all_saves_open_buffers_without_unsaved_changes() {
     assert_eq!(disk("closed.txt"), "DONE\n");
     assert_eq!(disk("edited.txt"), "TOKEN\n", "unsaved edits stay unsaved");
     assert_eq!(project.documents.text_snapshot(edited).unwrap().text, "DONE\nmore\n");
-    assert_eq!(disk("stale.txt"), "TOKEN\nexternal\n", "the external change is kept");
+    assert_eq!(std::fs::read_to_string(&stale_path).unwrap(), "TOKEN\nexternal\n", "the external change is kept");
+    assert_eq!(project.documents.text_snapshot(stale).unwrap().text, "DONE\n");
     assert!(project.documents.is_dirty(stale).unwrap(), "the replacement stays unsaved");
     host.close_project("main");
 }
