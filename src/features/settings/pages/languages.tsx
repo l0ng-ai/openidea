@@ -29,6 +29,9 @@ const DprintPage = lazyPage("languages.dprint", () => import("../languages/Forma
 const PythonTestingPage = lazyPage("python.testing", () =>
   import("../languages/PythonTestingPage").then((m) => m.PythonTestingPage),
 );
+const PythonProfilerPage = lazyPage("python.profiler", () =>
+  import("../languages/PythonProfilerPage").then((m) => m.PythonProfilerPage),
+);
 const DocstringsPage = lazyPage("python.docstrings", () =>
   import("../languages/DocstringsPage").then((m) => m.DocstringsPage),
 );
@@ -72,6 +75,9 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "venv",
       "conda",
       "pyenv",
+      "plots",
+      "matplotlib",
+      "sciview",
       "dependencies",
       "packages",
       "pip",
@@ -268,6 +274,15 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     component: PythonTestingPage,
   },
   {
+    id: "python.profiler",
+    projectScope: true,
+    title: "Profiler",
+    group: LANGUAGES_GROUP,
+    order: 403.27,
+    keywords: ["profiler", "profile", "cprofile", "py-spy", "performance"],
+    component: PythonProfilerPage,
+  },
+  {
     id: "python.ruff",
     projectScope: true,
     defaultScope: "project",
@@ -282,6 +297,8 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "pyproject.toml",
       "ruff.toml",
       "format on save",
+      "fix on save",
+      "safe lint fixes",
     ],
     component: RuffPage,
   },

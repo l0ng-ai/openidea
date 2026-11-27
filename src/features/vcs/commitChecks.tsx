@@ -1,7 +1,7 @@
 /**
  * Commit checks (Settings › Version Control › Commit / Git): before-commit
- * modifications (Reformat code, Optimize imports, Cleanup) applied through
- * the language servers, then the checks registered through
+ * modifications (Reformat code, Optimize imports, Cleanup, Ruff safe fixes)
+ * applied through the language servers or Ruff, then the checks registered through
  * `commitCheckRegistry` (Analyze code, Check TODO) and the Git warnings
  * (detached HEAD / rebase, file names, large files, CRLF line separators).
  */
@@ -9,8 +9,8 @@ import type { ReactNode } from "react";
 import { ChangeSet, Text } from "@codemirror/state";
 import type {
   FileStatus,
-  FormatOptions,
   HunkRange,
+  LineHunk,
   PartialCommitFile,
   Pos,
   PreparedPartialCommit,
@@ -60,6 +60,7 @@ interface Modifications {
   reformat: boolean;
   optimizeImports: boolean;
   cleanup: boolean;
+  ruffFix: boolean;
 }
 
 const SOURCE_MODIFICATIONS = [
@@ -71,29 +72,32 @@ function sameHunk(a: HunkRange, b: HunkRange): boolean {
   return a.start === b.start && a.lines === b.lines && a.oldStart === b.oldStart && a.oldLines === b.oldLines;
 }
 
-async function formatChangedText(
+async function changedTextEdits(
   file: FileStatus,
   text: string,
   partial: PartialCommitFile | undefined,
-  format: (options: FormatOptions) => Promise<TextEdit[]>,
+  run: () => Promise<TextEdit[]>,
+  formatting = true,
+  whole = false,
 ): Promise<{ edits: TextEdit[]; formatted: string } | null> {
   const path = stripSlash(file.path);
   const { project, settings } = useProject.getState();
   const guard = formatGuardOptions(settings);
-  if (formatExcluded(path, project?.root ?? null, guard.doNotFormat)) return null;
-  const base = (await call(commands.vcsFileAt(renamedFromPath(file) ?? path, "HEAD"))) ?? "";
-  const hunks = await commands.vcsDiffHunks(base, text);
-  const selected = partial ? hunks.filter((h) => partial.hunks.some((want) => sameHunk(want, h))) : hunks;
-  if (partial && selected.length !== partial.hunks.length) return null;
-  const changedLines = selected.filter((h) => h.lines > 0);
-  if (!changedLines.length) return null;
-
-  const editor = settings?.editor;
-  const edits = guardTextEdits(
-    text,
-    await format({ tabSize: editor?.tabSize ?? 4, insertSpaces: editor?.insertSpaces ?? true }),
-    guard,
-  ).filter(({ range }) => changedLines.some((h) => range.start.line >= h.start && range.end.line < h.start + h.lines));
+  if (formatting && formatExcluded(path, project?.root ?? null, guard.doNotFormat)) return null;
+  let base = "";
+  let hunks: LineHunk[] = [];
+  let selected: LineHunk[] = [];
+  let edits = formatting ? guardTextEdits(text, await run(), guard) : await run();
+  if (!whole) {
+    base = (await call(commands.vcsFileAt(renamedFromPath(file) ?? path, "HEAD"))) ?? "";
+    hunks = await commands.vcsDiffHunks(base, text);
+    selected = partial ? hunks.filter((h) => partial.hunks.some((want) => sameHunk(want, h))) : hunks;
+    if (partial && selected.length !== partial.hunks.length) return null;
+    const changedLines = selected.filter((h) => h.lines > 0);
+    edits = edits.filter(({ range }) =>
+      changedLines.some((h) => range.start.line >= h.start && range.end.line < h.start + h.lines),
+    );
+  }
   if (!edits.length) return null;
   const document = Text.of(text.split("\n"));
   const offset = ({ line, col }: Pos) => document.line(line + 1).from + col;
@@ -122,10 +126,28 @@ async function formatChangedText(
   return { edits, formatted };
 }
 
-async function previewStagedFormatting(file: FileStatus, before: string) {
+async function previewStagedFormatting(file: FileStatus, before: string, mods: Modifications) {
   if (before.includes("\0")) return;
   const path = stripSlash(file.path);
-  return formatChangedText(file, before, undefined, (options) => call(commands.lspFormatText(path, before, options)));
+  let text = before;
+  if (mods.ruffFix) {
+    const fixed = await changedTextEdits(
+      file,
+      text,
+      undefined,
+      () => call(commands.ruffFixText(path, text)),
+      false,
+      true,
+    );
+    if (fixed) text = fixed.formatted;
+  }
+  const editor = useProject.getState().settings?.editor;
+  const options = { tabSize: editor?.tabSize ?? 4, insertSpaces: editor?.insertSpaces ?? true };
+  const formatted = await changedTextEdits(file, text, undefined, () =>
+    call(commands.lspFormatText(path, text, options)),
+  );
+  if (formatted) return formatted;
+  return text === before ? null : { edits: [], formatted: text };
 }
 
 export async function prepareSnapshotModifications(
@@ -134,6 +156,7 @@ export async function prepareSnapshotModifications(
   mods: Modifications,
   isCurrent: () => boolean,
   accept?: (changes: ChangeSet) => boolean,
+  partial?: PartialCommitFile,
 ) {
   const path = stripSlash(file.path);
   const original = Text.of(before.split("\n"));
@@ -167,9 +190,25 @@ export async function prepareSnapshotModifications(
     }
   }
   if (!isCurrent()) return;
+  if (mods.ruffFix) {
+    try {
+      const text = doc.toString();
+      // Whole-hunk selections keep fixes inside the selected changed lines. Line-level
+      // selections use the exclusion projection in `apply` and fail closed on overlap.
+      const result =
+        partial && partial.hunks.length
+          ? await changedTextEdits(file, text, partial, () => call(commands.ruffFixText(path, text)), false)
+          : { edits: await call(commands.ruffFixText(path, text)) };
+      // oxlint-disable-next-line no-await-in-loop -- safe fixes run on the text left by the source actions, before formatting
+      if (result) await apply(result.edits);
+    } catch (error) {
+      logConsole("info", `Ruff safe fixes skipped for ${baseName(path)}: ${failureText(error)}`);
+    }
+  }
+  if (!isCurrent()) return;
   if (mods.reformat) {
     try {
-      const result = await previewStagedFormatting(file, doc.toString());
+      const result = await previewStagedFormatting(file, doc.toString(), { ...mods, ruffFix: false });
       if (result) await apply(result.edits);
     } catch (error) {
       logConsole("info", `Reformat code skipped for ${baseName(path)}: ${failureText(error)}`);
@@ -211,7 +250,7 @@ async function preparePartialModifications(file: FileStatus, partial: PartialCom
   const excluded = partialCommitProjection(working, Text.of(before.split("\n")), hunks, partial);
   if (!excluded) return;
   const accept = (changes: ChangeSet) => keepsExcludedChanges(changes, excluded);
-  const result = await prepareSnapshotModifications(file, before, mods, isCurrent, accept);
+  const result = await prepareSnapshotModifications(file, before, mods, isCurrent, accept, partial);
   if (!result) return;
   const workingEdits = editsFromChanges(working, result.changes.map(excluded));
   return { path, prepared: { before, text: result.text }, workingBefore: current, workingEdits };
@@ -230,12 +269,12 @@ export async function syncCommitEdits(path: string, before: string, edits: TextE
   }
 }
 
-async function formatStagedText(file: FileStatus, before: string) {
+async function formatStagedText(file: FileStatus, before: string, mods: Modifications) {
   if (before.includes("\0")) return;
   const path = stripSlash(file.path);
   const mode = await call(commands.vcsFileMode(path, ":0"));
   if (mode !== "100644" && mode !== "100755") return;
-  const result = await previewStagedFormatting(file, before);
+  const result = await previewStagedFormatting(file, before, mods);
   if (result) await call(commands.vcsStageFormattedText(path, before, result.formatted));
 }
 
@@ -247,7 +286,7 @@ async function modifyFile(
   index: boolean,
 ) {
   const path = stripSlash(file.path);
-  if (index && (mods.optimizeImports || mods.cleanup)) {
+  if (index && (mods.optimizeImports || mods.cleanup || mods.ruffFix)) {
     const project = useProject.getState().project;
     const isCurrent = () => useProject.getState().project === project;
     const staged = await call(commands.vcsStagedText(path));
@@ -261,10 +300,10 @@ async function modifyFile(
     }
     if (!mods.reformat) return;
   }
-  const staged = index ? (await call(commands.vcsFileAt(path, ":0")))?.replace(/\r\n?/g, "\n") : undefined;
+  let staged = index ? (await call(commands.vcsFileAt(path, ":0")))?.replace(/\r\n?/g, "\n") : undefined;
   if (index && staged === undefined) return;
   if (staged !== undefined && file.unstaged !== null) {
-    await formatStagedText(file, staged);
+    await formatStagedText(file, staged, mods);
     return;
   }
   let info;
@@ -282,31 +321,65 @@ async function modifyFile(
         logConsole("info", `${label} skipped for ${baseName(path)}: ${e instanceof Error ? e.message : String(e)}`);
       }
     };
+    const applyChangedText = async (
+      run: (text: string, snapshot: boolean) => Promise<TextEdit[]>,
+      formatting = true,
+      whole = false,
+    ) => {
+      const snapshot = await call(commands.docSnapshot(info.id));
+      if (staged !== undefined && snapshot.text !== staged) {
+        const indexText = staged;
+        const result = await changedTextEdits(
+          file,
+          indexText,
+          undefined,
+          () => run(indexText, true),
+          formatting,
+          whole,
+        );
+        if (!result) return;
+        await call(commands.vcsStageFormattedText(path, indexText, result.formatted));
+        staged = result.formatted;
+        return;
+      }
+      const result = await changedTextEdits(
+        file,
+        snapshot.text,
+        partial,
+        () => run(snapshot.text, false),
+        formatting,
+        whole,
+      );
+      if (!result) return;
+      await call(
+        commands.applyWorkspaceEdit({
+          files: [{ kind: "edit", path, edits: result.edits, version: snapshot.version }],
+        }),
+      );
+      if (staged === undefined) return;
+      await call(commands.docSave(info.id));
+      await call(commands.vcsStageFormattedText(path, staged, result.formatted));
+      staged = result.formatted;
+    };
     if (!partial && !index)
       for (const { setting, kind, title } of SOURCE_MODIFICATIONS) {
         if (mods[setting])
           // oxlint-disable-next-line no-await-in-loop -- code actions are applied to one document in order, each on the state left by the previous action
           await step(title, async () => applyKind(info.id, (await call(commands.docSnapshot(info.id))).text, kind));
       }
+    if (mods.ruffFix)
+      await step("Ruff safe fixes", () =>
+        applyChangedText((text) => call(commands.ruffFixText(path, text)), false, true),
+      );
     if (mods.reformat)
       await step("Reformat code", async () => {
-        const snapshot = await call(commands.docSnapshot(info.id));
-        if (staged !== undefined && snapshot.text !== staged) {
-          await formatStagedText(file, staged);
-          return;
-        }
-        const result = await formatChangedText(file, snapshot.text, partial, (options) =>
-          call(commands.lspFormat(info.id, null, options)),
+        const editor = useProject.getState().settings?.editor;
+        const options = { tabSize: editor?.tabSize ?? 4, insertSpaces: editor?.insertSpaces ?? true };
+        await applyChangedText((text, snapshot) =>
+          snapshot
+            ? call(commands.lspFormatText(path, text, options))
+            : call(commands.lspFormat(info.id, null, options)),
         );
-        if (!result) return;
-        await call(
-          commands.applyWorkspaceEdit({
-            files: [{ kind: "edit", path, edits: result.edits, version: snapshot.version }],
-          }),
-        );
-        if (staged === undefined) return;
-        await call(commands.docSave(info.id));
-        await call(commands.vcsStageFormattedText(path, staged, result.formatted));
       });
     if (!index) await call(commands.docSave(info.id));
   } finally {
@@ -328,8 +401,9 @@ export async function runCommitModifications(
     reformat: commit.reformat,
     optimizeImports: commit.optimizeImports,
     cleanup: commit.cleanup,
+    ruffFix: commit.fixOnCommit,
   };
-  if (!mods.reformat && !mods.optimizeImports && !mods.cleanup) return [];
+  if (!mods.reformat && !mods.optimizeImports && !mods.cleanup && !mods.ruffFix) return [];
   if (!isTauri() || !included.length) return [];
   const { repositories } = await selection();
   const working = new Set(repositories.flatMap(({ options }) => options.stage ?? []));
@@ -339,7 +413,14 @@ export async function runCommitModifications(
   const prepared: PartialCommitModification[] = [];
   logConsole(
     "info",
-    `Before commit: ${[mods.optimizeImports && "optimize imports", mods.cleanup && "cleanup", mods.reformat && "reformat code"].filter(Boolean).join(", ")}`,
+    `Before commit: ${[
+      mods.optimizeImports && "optimize imports",
+      mods.cleanup && "cleanup",
+      mods.ruffFix && "Ruff safe fixes",
+      mods.reformat && "reformat code",
+    ]
+      .filter(Boolean)
+      .join(", ")}`,
   );
   for (const file of included) {
     const path = stripSlash(file.path);
@@ -347,7 +428,7 @@ export async function runCommitModifications(
     const index = !working.has(path) && !blocks;
     if (index ? file.staged === "deleted" : file.unstaged === "deleted") continue;
     try {
-      if (blocks && (mods.optimizeImports || mods.cleanup || blocks.lineHunks?.length)) {
+      if (blocks && (mods.optimizeImports || mods.cleanup || mods.ruffFix || blocks.lineHunks?.length)) {
         // oxlint-disable-next-line no-await-in-loop -- partial modifications are prepared in order and pushed to the shared result list
         const modification = await preparePartialModifications(file, blocks, mods);
         if (modification) prepared.push(modification);

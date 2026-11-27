@@ -229,6 +229,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "file.projectStructure": [],
   "file.openProject": ["Meta+O"],
   "file.newScratchFile": [],
+  "file.newScratchBuffer": [],
   "editor.closeTab": ["Meta+W"],
   "toolwindow.closeContent": ["Meta+W"],
   "editor.reopenClosedTab": ["Meta+Shift+T"],
