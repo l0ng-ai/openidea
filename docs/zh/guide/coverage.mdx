@@ -57,6 +57,7 @@ description: "使用覆盖率运行配置，在编辑器、项目视图和覆盖
 - JaCoCo XML 报告
 - Cobertura XML 报告（coverage.py 的 `coverage xml` 及其他工具生成）；相对文件名按报告的 `<sources>` 解析
 - SimpleCov `.resultset.json`
+- coverage.py 数据文件（`.coverage`）；选择并行运行中的任意一个 `.coverage.*` 文件，会把它们一起导入。数据文件由项目解释器里的 coverage.py 在项目目录中读取，因此项目需要受信任，并且会应用项目的 coverage 配置（`[paths]`、排除的行）。不会修改你的数据文件。在 macOS 的文件选择窗口中按 `⌘⇧.` 可以显示这类隐藏文件。
 
 报告中记录的其他机器上的路径，会按最长匹配后缀映射到当前项目中。导入通知会说明报告中有多少个文件不在此项目中。
 

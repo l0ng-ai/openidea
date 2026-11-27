@@ -12,7 +12,7 @@ import { formatArgs } from "./configs";
 import type { RunConfig } from "@/platform/ipc";
 import { applicationConfig, junitRunnerConfig, jvmTestConfig, runsJunitInIde } from "./application";
 import { goTestParts, withoutGoSelection } from "./goArguments";
-import { contextConfig, relToCwd, testConfigFor } from "./context";
+import { contextConfig, doctestConfig, relToCwd, testConfigFor } from "./context";
 import { djangoLabel, djangoTestsOf } from "./djangoTypes";
 import { scanJvmTargets, simpleClassName } from "./jvmTargets";
 import { escapeRegExp } from "./testing/rerun";
@@ -39,6 +39,8 @@ export interface RunTarget {
   spring?: boolean;
   /** Python: a unittest `TestCase` subclass or one of its methods (what Django's runner can run). */
   unittest?: boolean;
+  /** Python: the docstring examples of a module, class or function (run with doctest). */
+  doctest?: boolean;
   /** Ruby: a `module` suite, which runs the tests of every class declared inside it. */
   rubyModule?: boolean;
   pest?: boolean;
@@ -249,6 +251,53 @@ function pythonTargets(lines: string[]): RunTarget[] {
   return out;
 }
 
+/** Whether the docstring starting at or after line `from` holds `>>>` examples. */
+function docstringHasExamples(lines: readonly string[], from: number): boolean {
+  let i = from;
+  while (i < lines.length && (!lines[i]!.trim() || /^\s*#/.test(lines[i]!))) i++;
+  const open = /^\s*[rRuU]?("""|''')/.exec(lines[i] ?? "");
+  if (!open) return false;
+  const quote = open[1]!;
+  for (let j = i; j < lines.length; j++) {
+    const body = j === i ? lines[j]!.slice(open[0].length) : lines[j]!;
+    if (/^\s*>>>(\s|$)/.test(body)) return true;
+    if (body.includes(quote)) return false;
+  }
+  return false;
+}
+
+/**
+ * Docstrings with `>>>` examples, as doctest finds them: the module's, and those of classes and
+ * functions at module level or in classes (not in functions). The path is the qualified name.
+ */
+function pythonDoctestTargets(lines: string[]): RunTarget[] {
+  const out: RunTarget[] = [];
+  const first = lines.findIndex((l) => l.trim() && !/^\s*#/.test(l));
+  if (first >= 0 && docstringHasExamples(lines, first))
+    out.push({ line: first, kind: "suite", name: "module", path: [], doctest: true });
+  const scopes: Array<{ indent: number; name: string; cls: boolean }> = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (!line.trim() || /^\s*#/.test(line)) continue;
+    const indent = indentOf(line);
+    while (scopes.length && scopes[scopes.length - 1]!.indent >= indent) scopes.pop();
+    const m = /^\s*(?:async\s+)?(def|class)\s+(\w+)/.exec(line);
+    if (!m) continue;
+    const cls = m[1] === "class";
+    const reachable = scopes.every((s) => s.cls);
+    scopes.push({ indent, name: m[2]!, cls });
+    // The docstring follows the header, which may span lines (`def f(\n  a,\n):`).
+    let end = i;
+    while (end < lines.length - 1 && !/:\s*(#.*)?$/.test(lines[end]!)) end++;
+    if (reachable && docstringHasExamples(lines, end + 1)) {
+      // One segment, as the results name the object (`[file, "Stock.take", example]`), so the icon shows its state.
+      const name = scopes.map((s) => s.name).join(".");
+      out.push({ line: i, kind: cls ? "suite" : "test", name, path: [name], doctest: true });
+    }
+  }
+  return out;
+}
+
 /** A class that holds Minitest / Test::Unit tests: by its superclass or its name. */
 const isRubyTestClass = (name: string, superclass: string | undefined) =>
   /(Test|TestCase|Spec)$/.test(superclass ?? "") || /Tests?(Case)?$/.test(name.split("::").pop()!);
@@ -408,13 +457,20 @@ export function detectRunTargets(
         (testDirectory && /(^|\/)test\//.test(relPath))
         ? jsTargets(lines)
         : [];
-    case "python":
-      return pythonTargets(lines).filter(
+    case "python": {
+      const targets = pythonTargets(lines).filter(
         (t) =>
           t.kind === "main" ||
           /(^|\/)(test_[^/]*|[^/]*_test)\.py$|(^|\/)tests?\//.test(relPath) ||
           (django && /(^|\/)tests\.py$/.test(relPath)),
       );
+      // Docstring examples in any module; a line that is a test already keeps its test.
+      const module = (relPath.split("/").pop() ?? relPath).replace(/\.py$/, "");
+      const doctests = pythonDoctestTargets(lines)
+        .filter((d) => !targets.some((t) => t.line === d.line))
+        .map((d) => (d.path.length ? d : { ...d, name: module }));
+      return [...targets, ...doctests].sort((a, b) => a.line - b.line);
+    }
     case "php":
       return /Test\.php$|(^|\/)tests?\//.test(relPath)
         ? [...phpTargets(lines), ...pestTargets(lines)].sort((a, b) => a.line - b.line)
@@ -481,6 +537,7 @@ export function targetConfig(
       return applicationConfig({ className: target.className, spring: target.spring }, relPath, configs);
     return contextConfig(relPath, configs, content);
   }
+  if (target.doctest) return doctestConfig(relPath, configs, target.path.join("."));
   const file = testConfigFor(relPath, configs, base, content);
   if (!file) return null;
   if (target.className && (file.kind === "maven" || file.kind === "gradle")) {

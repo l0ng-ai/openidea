@@ -4369,6 +4369,7 @@ fn a_running_tools_output_is_sent_as_appends() {
         diffs: Vec::new(),
         started_ms: Some(1.0),
         ended_ms: None,
+        command: None,
     };
     let running = |output| call(AgentToolStatus::Running, output);
     let event = |streamed: &mut Streamed, session: Session, i, entry: &AgentEntry| {

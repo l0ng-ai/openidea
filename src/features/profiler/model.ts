@@ -175,3 +175,67 @@ export function colorSlot(name: string): number {
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
   return (Math.abs(h) % 4) + 1;
 }
+
+/** A caller or callee of a function, with what the calls between the two took. */
+export interface CallSite {
+  frame: number;
+  total: number;
+  /** Known for call-graph profiles (cProfile) only. */
+  calls: number | null;
+  primitiveCalls: number | null;
+}
+
+/**
+ * Callers and callees of `frame`, heaviest first: the exact edges of a call-graph profile,
+ * else summed from the call tree, counting a recursive function at its outermost call only.
+ */
+export function callSites(profile: Profile, frame: number): { callers: CallSite[]; callees: CallSite[] } {
+  const byTotal = (a: CallSite, b: CallSite) => b.total - a.total;
+  if (profile.calls.length) {
+    const site = (other: number, e: (typeof profile.calls)[number]): CallSite => ({
+      frame: other,
+      total: e.total ?? 0,
+      calls: e.calls ?? 0,
+      primitiveCalls: e.primitiveCalls ?? 0,
+    });
+    return {
+      callers: profile.calls
+        .filter((e) => e.callee === frame)
+        .map((e) => site(e.caller, e))
+        .sort(byTotal),
+      callees: profile.calls
+        .filter((e) => e.caller === frame)
+        .map((e) => site(e.callee, e))
+        .sort(byTotal),
+    };
+  }
+  const nodes = profile.nodes;
+  const callers = new Map<number, number>();
+  const callees = new Map<number, number>();
+  const add = (m: Map<number, number>, f: number, w: number) => m.set(f, (m.get(f) ?? 0) + w);
+  // How many calls of `frame` are above the node being visited.
+  let above = 0;
+  const stack: Array<{ node: number; parent: number; exit: boolean }> = [{ node: 0, parent: -1, exit: false }];
+  while (stack.length) {
+    const { node, parent, exit } = stack.pop()!;
+    const n = nodes[node]!;
+    if (exit) {
+      if (n.frame === frame) above--;
+      continue;
+    }
+    if (n.frame === frame && above === 0 && parent > 0) add(callers, nodes[parent]!.frame, n.total ?? 0);
+    if (parent >= 0 && nodes[parent]!.frame === frame && above === 1) add(callees, n.frame, n.total ?? 0);
+    if (n.frame === frame) above++;
+    stack.push({ node, parent, exit: true });
+    for (const c of n.children) stack.push({ node: c, parent: node, exit: false });
+  }
+  const sites = (m: Map<number, number>) =>
+    [...m].map(([f, total]): CallSite => ({ frame: f, total, calls: null, primitiveCalls: null })).sort(byTotal);
+  return { callers: sites(callers), callees: sites(callees) };
+}
+
+/** `12` or, when some calls were recursive, `12/1` (total/primitive), as `pstats` prints it. */
+export function formatCalls(calls: number, primitive: number | null): string {
+  const n = (v: number) => Math.round(v).toLocaleString("en-US");
+  return primitive !== null && primitive !== calls ? `${n(calls)}/${n(primitive)}` : n(calls);
+}

@@ -21,7 +21,9 @@ import { goTestParts } from "./goArguments";
 import {
   allClosest,
   contextConfig,
+  doctestConfig,
   fileRole,
+  hasDoctests,
   implicitPythonTests,
   projectPython,
   PYTHON_KINDS,
@@ -816,6 +818,9 @@ function godotScene(rel: string, configs: readonly RunConfig[]): Produced | null
 }
 
 /** The file as a whole: tests of a test file, the project's run target, or the runtime for its language. */
+/** `if __name__ == "__main__":` at module level. */
+const PYTHON_MAIN = /^if\s+__name__\s*==\s*['"]__main__['"]\s*:/m;
+
 export function produceFile(input: ContextInput, env: ToolEnv): Produced | null {
   input = scopedInput(input);
   const s = site(input);
@@ -849,6 +854,17 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
       const found = testConfigFor(rel, configs, undefined, input.content);
       const test = found && goTestNamed(found, input);
       if (test) return { name: test.name, scope: "file", config: test };
+    }
+    // A module with docstring examples and no `if __name__ == "__main__":` runs its doctests (PyCharm's "Doctests in …").
+    if (
+      role === "script" &&
+      lang === "python" &&
+      input.content &&
+      hasDoctests(input.content) &&
+      !PYTHON_MAIN.test(input.content)
+    ) {
+      const config = doctestConfig(rel, configs);
+      return { name: config.name, scope: "file", config };
     }
     if (lang === "rust" && cargoOwner(rel, configs).length) {
       const example = /(?:^|\/)examples\/([^/]+)\.rs$/.exec(rel)?.[1];

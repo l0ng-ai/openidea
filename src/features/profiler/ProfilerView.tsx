@@ -9,7 +9,18 @@ import type { Profile } from "@/platform/ipc";
 import { Button, EmptyState, Icon, IconButton, Input, Tabs, Tree, T } from "@/ui";
 import { editorService } from "@/workbench/contributions";
 import { executeAction } from "@/platform/actions";
-import { colorSlot, flameLayout, flameStep, formatWeight, frameLocation, matchingFrames, share } from "./model";
+import {
+  callSites,
+  colorSlot,
+  flameLayout,
+  flameStep,
+  formatCalls,
+  formatWeight,
+  frameLocation,
+  matchingFrames,
+  share,
+  type CallSite,
+} from "./model";
 import { activeSnapshot, closeSnapshot, useProfiler, type ProfilerTab } from "./store";
 import styles from "./Profiler.module.css";
 import { useTx } from "@/platform/i18n";
@@ -233,21 +244,33 @@ function CallTree({ profile }: { profile: Profile }) {
   );
 }
 
-type MethodSort = "self" | "total" | "name";
+type MethodSort = "self" | "total" | "name" | "calls";
 const MAX_METHODS = 2000;
 
 function MethodList({ profile, query }: { profile: Profile; query: string }) {
   const tx = useTx();
   const [sort, setSort] = useState<MethodSort>("self");
+  const [selected, setSelected] = useState<number | null>(null);
   const total = profile.total ?? 0;
+  const counted = profile.methods.some((m) => m.calls !== null);
   const rows = useMemo(() => {
     const matches = matchingFrames(profile, query);
     const list = profile.methods.filter((m) => !matches || matches.has(m.frame));
     const name = (f: number) => profile.frames[f]!.name;
     if (sort === "name") list.sort((a, b) => name(a.frame).localeCompare(name(b.frame)));
     else if (sort === "total") list.sort((a, b) => (b.total ?? 0) - (a.total ?? 0));
+    else if (sort === "calls") list.sort((a, b) => (b.calls ?? 0) - (a.calls ?? 0));
     return list.slice(0, MAX_METHODS);
   }, [profile, query, sort]);
+  const sites = useMemo(() => (selected === null ? null : callSites(profile, selected)), [profile, selected]);
+  // Picking a caller or callee selects it in the list, even when the search hides it.
+  const select = (frame: number) => {
+    setSelected(frame);
+    if (!rows.some((m) => m.frame === frame)) useProfiler.setState({ query: "" });
+  };
+  useEffect(() => {
+    if (selected !== null) document.getElementById(`method-${selected}`)?.scrollIntoView?.({ block: "nearest" });
+  }, [selected]);
   const header = (key: MethodSort, label: string) => (
     <th aria-sort={sort === key ? (key === "name" ? "ascending" : "descending") : "none"}>
       <button type="button" className={styles.headerCell} onClick={() => setSort(key)}>
@@ -256,36 +279,116 @@ function MethodList({ profile, query }: { profile: Profile; query: string }) {
     </th>
   );
   return (
+    <div className={styles.methodPane}>
+      <div className={styles.tableScroll}>
+        <table className={styles.table} aria-label={tx("Method list")}>
+          <thead>
+            <tr>
+              {header("name", "Method")}
+              {header("self", "Self")}
+              {header("total", "Total")}
+              {counted && header("calls", "Calls")}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((m) => {
+              const location = frameLocation(profile, m.frame);
+              return (
+                <tr
+                  key={m.frame}
+                  id={`method-${m.frame}`}
+                  aria-selected={m.frame === selected}
+                  className={clsx(m.frame === selected && styles.selectedRow)}
+                  onClick={() => setSelected(m.frame)}
+                  onDoubleClick={() => openFrame(profile, m.frame)}
+                >
+                  <td className={styles.methodCell}>
+                    <span className={styles.name}>{profile.frames[m.frame]!.name}</span>
+                    <TypeMark profile={profile} frame={m.frame} />
+                    {location && <span className={styles.muted}>{location}</span>}
+                  </td>
+                  <td className={styles.num}>
+                    {formatWeight(m.selfWeight ?? 0, profile.unit)}{" "}
+                    <span className={styles.muted}>{share(m.selfWeight ?? 0, total)}</span>
+                  </td>
+                  <td className={styles.num}>
+                    {formatWeight(m.total ?? 0, profile.unit)}{" "}
+                    <span className={styles.muted}>{share(m.total ?? 0, total)}</span>
+                  </td>
+                  {counted && (
+                    <td className={styles.count}>{m.calls !== null ? formatCalls(m.calls, m.primitiveCalls) : ""}</td>
+                  )}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {sites && selected !== null && (
+        <div className={styles.callSites}>
+          <CallSiteList title="Callers" profile={profile} sites={sites.callers} onSelect={select} />
+          <CallSiteList title="Callees" profile={profile} sites={sites.callees} onSelect={select} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The callers or callees of the selected method: click selects one, double-click opens its source. */
+function CallSiteList({
+  title,
+  profile,
+  sites,
+  onSelect,
+}: {
+  title: string;
+  profile: Profile;
+  sites: CallSite[];
+  onSelect: (frame: number) => void;
+}) {
+  const tx = useTx();
+  const total = profile.total ?? 0;
+  return (
     <div className={styles.tableScroll}>
-      <table className={styles.table}>
+      <table className={styles.table} aria-label={tx(title)}>
         <thead>
           <tr>
-            {header("name", "Method")}
-            {header("self", "Self")}
-            {header("total", "Total")}
+            <th>
+              <span className={styles.headerCell}>{tx(title)}</span>
+            </th>
+            <th>
+              <span className={styles.headerCell}>{tx("Total")}</span>
+            </th>
+            {sites.some((x) => x.calls !== null) && (
+              <th>
+                <span className={styles.headerCell}>{tx("Calls")}</span>
+              </th>
+            )}
           </tr>
         </thead>
         <tbody>
-          {rows.map((m) => {
-            const location = frameLocation(profile, m.frame);
+          {sites.map((x) => {
+            const location = frameLocation(profile, x.frame);
             return (
-              <tr key={m.frame} onDoubleClick={() => openFrame(profile, m.frame)}>
+              <tr key={x.frame} onClick={() => onSelect(x.frame)} onDoubleClick={() => openFrame(profile, x.frame)}>
                 <td className={styles.methodCell}>
-                  <span className={styles.name}>{profile.frames[m.frame]!.name}</span>
-                  <TypeMark profile={profile} frame={m.frame} />
+                  <span className={styles.name}>{profile.frames[x.frame]!.name}</span>
                   {location && <span className={styles.muted}>{location}</span>}
                 </td>
                 <td className={styles.num}>
-                  {formatWeight(m.selfWeight ?? 0, profile.unit)}{" "}
-                  <span className={styles.muted}>{share(m.selfWeight ?? 0, total)}</span>
+                  {formatWeight(x.total, profile.unit)} <span className={styles.muted}>{share(x.total, total)}</span>
                 </td>
-                <td className={styles.num}>
-                  {formatWeight(m.total ?? 0, profile.unit)}{" "}
-                  <span className={styles.muted}>{share(m.total ?? 0, total)}</span>
-                </td>
+                {x.calls !== null && <td className={styles.count}>{formatCalls(x.calls, x.primitiveCalls)}</td>}
               </tr>
             );
           })}
+          {!sites.length && (
+            <tr>
+              <td className={styles.muted}>
+                <T>None</T>
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
     </div>
@@ -349,7 +452,7 @@ export function ProfilerView() {
       <div className={styles.body}>
         {tab === "flame" && <FlameGraph key={snapshot.id} profile={profile} query={query} />}
         {tab === "tree" && <CallTree key={snapshot.id} profile={profile} />}
-        {tab === "methods" && <MethodList profile={profile} query={query} />}
+        {tab === "methods" && <MethodList key={snapshot.id} profile={profile} query={query} />}
       </div>
     </div>
   );

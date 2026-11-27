@@ -4,6 +4,8 @@ import { workflowSettings } from "@/platform/workflowSettings";
 import { call, commands, type LaunchConfig, type RunConfig } from "@/platform/ipc";
 import { hostOs } from "@/platform/remote";
 import { flutterDeviceFor, parseFlutterRun } from "@/workbench/flutterDevices";
+import { isJinjaTemplate } from "./breakpoints/languages";
+import { useBreakpoints } from "./breakpoints/store";
 
 function isAbsolute(p: string) {
   return p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
@@ -151,8 +153,8 @@ function debugpyLaunch(rc: RunConfig, cwd: string): LaunchConfig {
     if (tool) args = args.slice(1);
   }
   if (tool) {
-    // A console script (`pytest`, `uvicorn`, …): run it as a module.
-    extra.module = tool;
+    // A console script (`pytest`, `uvicorn`, …): run it as a module; `django-admin` is `python -m django`.
+    extra.module = tool === "django-admin" ? "django" : tool;
     out.args = [...args];
   } else if (args[0] === "-m" && args[1]) {
     extra.module = args[1];
@@ -162,6 +164,11 @@ function debugpyLaunch(rc: RunConfig, cwd: string): LaunchConfig {
     out.args = args.slice(1);
     if (args[0].endsWith("manage.py")) extra.django = true;
   }
+  if (extra.module === "django") extra.django = true;
+  // Jinja2 templates' breakpoints: Flask, or one already in a template (`python app.py`). Not on for every
+  // run: debugpy would take any non-`.py` breakpoint (a page's script) for a template one and trace every frame.
+  const templates = Object.entries(useBreakpoints.getState().byFile).some(([p, l]) => l.length && isJinjaTemplate(p));
+  if (!extra.django && (extra.module === "flask" || templates)) extra.jinja = true;
   out.extraJson = JSON.stringify(extra);
   return out;
 }
