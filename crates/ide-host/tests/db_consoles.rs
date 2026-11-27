@@ -9,7 +9,7 @@ async fn new_query_consoles_are_numbered_after_the_default_one() {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path();
     let host = Arc::new(Host::new(common::host_config(base)));
-    let root = base.join("data/scratches/consoles/db/pg");
+    let root = base.join("data/consoles/db/pg");
     let names = |paths: Vec<ide_core::IpcPath>| -> Vec<String> {
         paths.iter().map(|p| p.0.file_name().unwrap().to_string_lossy().into_owned()).collect()
     };
@@ -31,26 +31,11 @@ async fn new_query_consoles_are_numbered_after_the_default_one() {
 }
 
 #[tokio::test]
-async fn old_query_consoles_move_under_scratches_without_overwriting() {
+async fn consoles_root_is_the_directory_listed_in_the_project_view() {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path();
     let host = Arc::new(Host::new(common::host_config(base)));
-    let old = base.join("data/consoles/db/pg");
-    let new = base.join("data/scratches/consoles/db/pg");
-    std::fs::create_dir_all(&old).unwrap();
-    std::fs::write(old.join("console.sql"), "select 1").unwrap();
-    std::fs::write(old.join("console_1.sql"), "select 2").unwrap();
-
-    let consoles = db::db_consoles(&host, "pg".into(), false).unwrap();
-    assert_eq!(consoles.len(), 2);
-    assert!(consoles.iter().all(|path| path.0.starts_with(&new)));
-    assert_eq!(std::fs::read_to_string(new.join("console.sql")).unwrap(), "select 1");
-    assert!(!old.exists());
-
-    // A conflicting destination keeps both files rather than overwriting either console.
-    std::fs::create_dir_all(&old).unwrap();
-    std::fs::write(old.join("console.sql"), "old copy").unwrap();
-    db::db_consoles(&host, "pg".into(), false).unwrap();
-    assert_eq!(std::fs::read_to_string(new.join("console.sql")).unwrap(), "select 1");
-    assert_eq!(std::fs::read_to_string(old.join("console.sql")).unwrap(), "old copy");
+    let root = db::db_consoles_dir(&host).unwrap();
+    assert_eq!(root.0, base.join("data/consoles/db"));
+    assert!(root.0.is_dir());
 }

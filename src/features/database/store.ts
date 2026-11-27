@@ -806,7 +806,6 @@ export function consoleDecorations(s: Pick<DatabaseState, "consoles" | "sources"
     } else if (tint) out.set(path, { tint });
   }
   for (const root of roots) {
-    out.set(root, { label: tx("Database Consoles"), icon: "db-folder" });
     const separator = root.includes("\\") ? "\\" : "/";
     for (const source of s.sources) {
       if (!source.id) continue;

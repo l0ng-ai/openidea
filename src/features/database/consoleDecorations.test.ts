@@ -9,23 +9,21 @@ describe("query console file decorations", () => {
     const decorations = consoleDecorations({
       sources: [source, { id: "analytics", name: "Analytics", driver: "postgres" } as DataSource],
       consoles: {
-        "/data/scratches/consoles/db/pg/console.sql": "pg",
-        "/data/scratches/consoles/db/pg.sales/console_1.sql": "pg:sales",
+        "/data/consoles/db/pg/console.sql": "pg",
+        "/data/consoles/db/pg.sales/console_1.sql": "pg:sales",
       },
     });
 
-    expect(decorations.get("/data/scratches/consoles/db")).toMatchObject({
-      label: "Database Consoles",
-      icon: "db-folder",
-    });
-    expect(decorations.get("/data/scratches/consoles/db/pg")).toMatchObject({ label: "Orders", icon: "db-postgres" });
+    // The root is registered by the database feature, not decorated as a folder path.
+    expect(decorations.get("/data/consoles/db")).toBeUndefined();
+    expect(decorations.get("/data/consoles/db/pg")).toMatchObject({ label: "Orders", icon: "db-postgres" });
     // A data source whose console has not been opened still gets a readable folder name.
-    expect(decorations.get("/data/scratches/consoles/db/analytics")).toMatchObject({ label: "Analytics" });
-    expect(decorations.get("/data/scratches/consoles/db/pg.sales")).toMatchObject({
+    expect(decorations.get("/data/consoles/db/analytics")).toMatchObject({ label: "Analytics" });
+    expect(decorations.get("/data/consoles/db/pg.sales")).toMatchObject({
       label: "Orders: sales",
       icon: "db-postgres",
     });
-    expect(decorations.get("/data/scratches/consoles/db/pg/console.sql")).toMatchObject({
+    expect(decorations.get("/data/consoles/db/pg/console.sql")).toMatchObject({
       tabTitle: "console [Orders]",
     });
   });
@@ -33,12 +31,10 @@ describe("query console file decorations", () => {
   it("recognises Windows separators", () => {
     const decorations = consoleDecorations({
       sources: [source],
-      consoles: { "C:\\Users\\me\\data\\scratches\\consoles\\db\\pg\\console.sql": "pg" },
+      consoles: { "C:\\Users\\me\\data\\consoles\\db\\pg\\console.sql": "pg" },
     });
 
-    expect(decorations.get("C:\\Users\\me\\data\\scratches\\consoles\\db")).toMatchObject({
-      label: "Database Consoles",
-    });
-    expect(decorations.get("C:\\Users\\me\\data\\scratches\\consoles\\db\\pg")).toMatchObject({ label: "Orders" });
+    expect(decorations.get("C:\\Users\\me\\data\\consoles\\db")).toBeUndefined();
+    expect(decorations.get("C:\\Users\\me\\data\\consoles\\db\\pg")).toMatchObject({ label: "Orders" });
   });
 });

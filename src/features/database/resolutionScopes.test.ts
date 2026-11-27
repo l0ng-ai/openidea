@@ -52,8 +52,8 @@ describe("the data source a SQL file resolves against", () => {
     expect(consoleSource("/p/scratch.sql")).toBe("main");
   });
 
-  it("recovers a query console's data source from its Scratches path", () => {
-    expect(consoleSource("/data/scratches/consoles/db/orders/console.sql")).toBe("orders");
-    expect(consoleSource("/data/scratches/consoles/db/orders.sales/console_1.sql")).toBe("orders:sales");
+  it("recovers a query console's data source from its path", () => {
+    expect(consoleSource("/data/consoles/db/orders/console.sql")).toBe("orders");
+    expect(consoleSource("/data/consoles/db/orders.sales/console_1.sql")).toBe("orders:sales");
   });
 });
