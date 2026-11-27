@@ -6809,6 +6809,7 @@
   "Reload Notebook from Disk": "从磁盘重新加载笔记本",
   "Restart Kernel": "重启内核",
   "Jupyter Variables": "Jupyter 变量",
+  "Could not read the variables": "无法读取变量",
   "Jupyter variables": "Jupyter 变量",
   "No notebook open": "没有打开的笔记本",
   "No kernel running": "没有运行中的内核",

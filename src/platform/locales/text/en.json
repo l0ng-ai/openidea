@@ -4013,6 +4013,7 @@
   "Reports requirements in requirements.txt and pyproject.toml that the project's Python interpreter does not have installed, or whose installed version does not match.": "Reports requirements in requirements.txt and pyproject.toml that the project's Python interpreter does not have installed, or whose installed version does not match.",
   "Python Console": "Python Console",
   "Jupyter Variables": "Jupyter Variables",
+  "Could not read the variables": "Could not read the variables",
   "Jupyter variables": "Jupyter variables",
   "No notebook open": "No notebook open",
   "No kernel running": "No kernel running",
