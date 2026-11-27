@@ -62,7 +62,10 @@ describe("mavenModuleScope", () => {
   });
 
   it("ignores a linked build's projects: their folders aren't under this root", () => {
-    const linked = model([project("app", "app"), { ...project("app", "shared"), projectRoot: "/elsewhere" }]);
+    const linked = model([
+      project("app", "app", ["shared"]),
+      { ...project("shared", "shared"), projectRoot: "/elsewhere" },
+    ]);
     expect(mavenModuleScope("/p", "app", linked)).toEqual(["/p/app"]);
   });
 
@@ -82,8 +85,10 @@ describe("scopeToRunModule", () => {
     expect(scopeToRunModule(hits, "/p", "core", nested)).toEqual(["/p/core/src/main/java/com/example/Task.java"]);
   });
 
-  it("doesn't treat a folder with the same prefix as the module", () => {
-    expect(scopeToRunModule(["/p/core-extra/Task.java"], "/p", "core", nested)).toEqual(["/p/core-extra/Task.java"]);
+  it("doesn't treat a folder whose name starts with the module's as the module", () => {
+    expect(scopeToRunModule(["/p/core/Task.java", "/p/core-extra/Task.java"], "/p", "core", nested)).toEqual([
+      "/p/core/Task.java",
+    ]);
   });
 
   it("keeps every candidate when the scope is unknown or matches none", () => {
