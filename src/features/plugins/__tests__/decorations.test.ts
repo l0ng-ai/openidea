@@ -250,6 +250,31 @@ it("keeps the Markdown hover after an edit shifts the label", async () => {
   vi.useRealTimers();
 });
 
+it("keeps a line-end label on its line across Enter, and stretches with its own line", () => {
+  const message = () => editor.view.dom.querySelector(".cm-plugin-after")!;
+  setPluginDecorations("test", [
+    {
+      ...set(),
+      items: [{ range, style: "highlight", hover: null, after: " + model", markdownHover: "**model** card" }],
+    },
+  ]);
+  expect(editor.view.posAtDOM(message())).toBe(editor.view.state.doc.line(1).to);
+
+  // Enter at the line's end: the label annotates the old line, so it must not walk into the one
+  // Enter creates (the lens used to follow every Enter pressed at the end of its line).
+  editor.view.dispatch({ changes: { from: editor.view.state.doc.length, insert: "\nnew" } });
+  expect(editor.view.state.doc.lines).toBe(2);
+  expect(editor.view.posAtDOM(message())).toBe(editor.view.state.doc.line(1).to);
+
+  // Splitting the annotated range moves the label with its text below the break.
+  editor.view.dispatch({ changes: { from: 3, insert: "\n" } });
+  expect(editor.view.posAtDOM(message())).toBe(editor.view.state.doc.line(2).to);
+
+  // Typing at that line's end keeps the label glued to the line's new end.
+  editor.view.dispatch({ changes: { from: editor.view.state.doc.line(2).to, insert: "s" } });
+  expect(editor.view.posAtDOM(message())).toBe(editor.view.state.doc.line(2).to);
+});
+
 it("updates an open hover card when the plugin loads the conversation", async () => {
   const item = (markdownHover: string) => ({
     ...set(),
