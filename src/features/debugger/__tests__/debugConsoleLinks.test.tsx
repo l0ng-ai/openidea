@@ -93,6 +93,8 @@ describe("Debug console links", () => {
         line: 15,
       }),
       "/repo/demo-app",
+      true,
+      undefined,
     );
   });
 

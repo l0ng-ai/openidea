@@ -6,7 +6,7 @@
 //! (`window_take_launch`), and re-taken whenever [`LAUNCH_EVENT`] fires (a
 //! second app instance asking an already-loaded window to open a path).
 //!
-//! Auxiliary windows ([`AuxKind`]: Settings, Compare with Local, Diff, Sync with Deployed) belong to a project window and share its project (see
+//! Auxiliary windows ([`AuxKind`]: Settings, Compare with Local, Diff, Sync with Deployed, New Project, Get from VCS, Remote Development) belong to a project window and share its project (see
 //! [`AppState::project`]). Their labels name the kind and the parent
 //! (`settings-main`, `comparison-project-2-3`, `diff-main-0`); their [`Launch`] says what to show.
 
@@ -46,6 +46,12 @@ const EDITOR_SIZE: (f64, f64) = (1100.0, 720.0);
 const EDITOR_MIN_SIZE: (f64, f64) = (640.0, 360.0);
 const DEPLOYMENT_SIZE: (f64, f64) = (1400.0, 900.0);
 const DEPLOYMENT_MIN_SIZE: (f64, f64) = (800.0, 500.0);
+const NEW_PROJECT_SIZE: (f64, f64) = (860.0, 620.0);
+const NEW_PROJECT_MIN_SIZE: (f64, f64) = (720.0, 480.0);
+const CLONE_SIZE: (f64, f64) = (920.0, 620.0);
+const CLONE_MIN_SIZE: (f64, f64) = (640.0, 420.0);
+const CONNECT_SIZE: (f64, f64) = (600.0, 460.0);
+const CONNECT_MIN_SIZE: (f64, f64) = (520.0, 380.0);
 
 /// What a freshly opened window should do once its frontend is up.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -83,6 +89,9 @@ pub struct Launch {
     /// Editor windows: the file to show (Open in New Window → lightweight aux editor).
     #[serde(default)]
     pub editor: Option<Box<EditorLaunch>>,
+    /// Get from VCS windows: the repository URL to fill in.
+    #[serde(default)]
+    pub clone_url: Option<String>,
 }
 
 /// What a lightweight editor window shows: a file, with optional caret / selection (0-based), or
@@ -638,11 +647,22 @@ pub enum AuxKind {
     Diff,
     Editor,
     Deployment,
+    NewProject,
+    Clone,
+    Connect,
 }
 
 impl AuxKind {
-    const ALL: [AuxKind; 5] =
-        [AuxKind::Settings, AuxKind::Comparison, AuxKind::Diff, AuxKind::Editor, AuxKind::Deployment];
+    const ALL: [AuxKind; 8] = [
+        AuxKind::Settings,
+        AuxKind::Comparison,
+        AuxKind::Diff,
+        AuxKind::Editor,
+        AuxKind::Deployment,
+        AuxKind::NewProject,
+        AuxKind::Clone,
+        AuxKind::Connect,
+    ];
 
     /// Label prefix, and the key of the one remembered geometry shared by every window of the kind.
     pub fn name(self) -> &'static str {
@@ -652,6 +672,9 @@ impl AuxKind {
             AuxKind::Diff => "diff",
             AuxKind::Editor => "editor",
             AuxKind::Deployment => "deployment",
+            AuxKind::NewProject => "new-project",
+            AuxKind::Clone => "clone",
+            AuxKind::Connect => "connect",
         }
     }
 
@@ -663,17 +686,23 @@ impl AuxKind {
     /// Shows the project's documents: gets its parent's events and edits made in sibling windows,
     /// and asks about its own unsaved changes before the parent closes it.
     pub fn shares_documents(self) -> bool {
-        self != AuxKind::Settings
+        !self.dialog()
     }
 
-    /// Has no actions of its own: menu items run in its project window.
-    fn runs_menu_in_parent(self) -> bool {
-        self == AuxKind::Settings
+    /// Has no actions of its own: menu items run in its project window, which owns the menu.
+    pub fn runs_menu_in_parent(self) -> bool {
+        self.dialog()
     }
 
     /// Needs its parent to have a project open.
     fn needs_project(self) -> bool {
-        self != AuxKind::Settings
+        !self.dialog()
+    }
+
+    /// A dialog in its own window (Settings, New Project, Get from VCS, Remote Development):
+    /// works without the parent's project or documents, and leaves the menu to the parent.
+    fn dialog(self) -> bool {
+        matches!(self, AuxKind::Settings | AuxKind::NewProject | AuxKind::Clone | AuxKind::Connect)
     }
 
     pub fn min_size(self) -> (f64, f64) {
@@ -683,6 +712,9 @@ impl AuxKind {
             AuxKind::Diff => DIFF_MIN_SIZE,
             AuxKind::Editor => EDITOR_MIN_SIZE,
             AuxKind::Deployment => DEPLOYMENT_MIN_SIZE,
+            AuxKind::NewProject => NEW_PROJECT_MIN_SIZE,
+            AuxKind::Clone => CLONE_MIN_SIZE,
+            AuxKind::Connect => CONNECT_MIN_SIZE,
         }
     }
 
@@ -693,6 +725,9 @@ impl AuxKind {
             AuxKind::Diff => DIFF_SIZE,
             AuxKind::Editor => EDITOR_SIZE,
             AuxKind::Deployment => DEPLOYMENT_SIZE,
+            AuxKind::NewProject => NEW_PROJECT_SIZE,
+            AuxKind::Clone => CLONE_SIZE,
+            AuxKind::Connect => CONNECT_SIZE,
         }
     }
 }
@@ -2129,6 +2164,60 @@ pub fn open_deployment_window(
     )
 }
 
+/// Opens (or focuses) the New Project window of `parent`'s project window: a separate window
+/// centred over it, so the wizard can be moved and sized on its own.
+pub fn open_new_project_window(app: &AppHandle, parent: &WebviewWindow, background: Option<String>) -> IdeResult<()> {
+    open_auxiliary_window(
+        app,
+        parent,
+        AuxWindow {
+            kind: AuxKind::NewProject,
+            title: "New Project",
+            size: AuxKind::NewProject.default_size(),
+            min_size: AuxKind::NewProject.min_size(),
+            launch: Launch::default(),
+            background,
+        },
+    )
+}
+
+/// Opens (or focuses, filling in `url`) the Get from VCS window of `parent`'s project window.
+pub fn open_clone_window(
+    app: &AppHandle,
+    parent: &WebviewWindow,
+    url: Option<String>,
+    background: Option<String>,
+) -> IdeResult<()> {
+    open_auxiliary_window(
+        app,
+        parent,
+        AuxWindow {
+            kind: AuxKind::Clone,
+            title: "Get from Version Control",
+            size: AuxKind::Clone.default_size(),
+            min_size: AuxKind::Clone.min_size(),
+            launch: Launch { clone_url: url.filter(|u| !u.trim().is_empty()), ..Default::default() },
+            background,
+        },
+    )
+}
+
+/// Opens (or focuses) the Remote Development window of `parent`'s project window.
+pub fn open_connect_window(app: &AppHandle, parent: &WebviewWindow, background: Option<String>) -> IdeResult<()> {
+    open_auxiliary_window(
+        app,
+        parent,
+        AuxWindow {
+            kind: AuxKind::Connect,
+            title: "Remote Development",
+            size: AuxKind::Connect.default_size(),
+            min_size: AuxKind::Connect.min_size(),
+            launch: Launch::default(),
+            background,
+        },
+    )
+}
+
 #[cfg(any(target_os = "macos", test))]
 fn resolve_aux_geometry(saved: Option<AuxGeometry>, default_size: (f64, f64), min_size: (f64, f64)) -> AuxGeometry {
     match saved.filter(|g| g.width.is_finite() && g.height.is_finite() && g.width > 0.0 && g.height > 0.0) {
@@ -3276,6 +3365,10 @@ mod tests {
         assert_eq!(auxiliary("diff-project-2-3"), Some((AuxKind::Diff, "project-2")));
         assert_eq!(auxiliary("editor-project-2-3"), Some((AuxKind::Editor, "project-2")));
         assert_eq!(auxiliary("deployment-project-2"), Some((AuxKind::Deployment, "project-2")));
+        assert_eq!(auxiliary("new-project-project-2"), Some((AuxKind::NewProject, "project-2")));
+        assert_eq!(auxiliary("new-project-main"), Some((AuxKind::NewProject, "main")));
+        assert_eq!(auxiliary("clone-project-2"), Some((AuxKind::Clone, "project-2")));
+        assert_eq!(auxiliary("connect-main"), Some((AuxKind::Connect, "main")));
         for label in ["main", "project-1", "comparison-main", "comparison-main-x", "settings-", "settingsmain"] {
             assert_eq!(auxiliary(label), None, "{label}");
         }
@@ -3305,6 +3398,9 @@ mod tests {
             ("settings-main", "app.checkForUpdates", Parent { label: "main", raise: true }),
             ("settings-project-2", "file.newFile", Parent { label: "project-2", raise: true }),
             ("settings-main", "editor.closeTab", Parent { label: "main", raise: true }),
+            ("new-project-main", "file.newFile", Parent { label: "main", raise: true }),
+            ("clone-main", "vcs.clone", Parent { label: "main", raise: true }),
+            ("new-project-project-2", "editor.closeTab", Parent { label: "project-2", raise: true }),
             ("settings-main", "file.settings", Parent { label: "main", raise: false }),
             ("settings-main", "app.quit", Parent { label: "main", raise: false }),
             ("comparison-main-0", "app.quit", Parent { label: "main", raise: false }),
@@ -3374,6 +3470,9 @@ mod tests {
             "comparison-project-2-0",
             "diff-main-9",
             "deployment-main",
+            "new-project-main",
+            "clone-main",
+            "connect-main",
         ] {
             assert!(!keeps_window_state(label), "{label} must not use physical window-state");
         }

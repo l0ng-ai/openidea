@@ -623,6 +623,13 @@ export const commands = {
 	docRearrange: (doc: DocId) => typedError<TextEdit[], IdeError>(__TAURI_INVOKE("doc_rearrange", { doc })),
 	/**  Load Changes from Disk: discards the buffer's unsaved changes and reads its file again. */
 	docReloadFromDisk: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_reload_from_disk", { doc })),
+	/**
+	 *  Keeps the encoding the user chose for a project file in the project's File Encodings
+	 *  mappings, so the file opens in it again. A converted document is kept once it is saved:
+	 *  until then its file is still in the old encoding. Nothing is kept for a document without
+	 *  a file in the project.
+	 */
+	docRememberEncoding: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_remember_encoding", { doc })),
 	docSave: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_save", { doc })),
 	docSaveAll: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_save_all")),
 	/**
@@ -2395,10 +2402,20 @@ export const commands = {
 	/**  Opens an empty (welcome) window; returns its label. */
 	windowNew: () => typedError<string, IdeError>(__TAURI_INVOKE("window_new")),
 	/**
+	 *  Opens this window's Get from VCS window (or focuses it), filling in `url` when given.
+	 *  `background` (`#rrggbb`) paints a new window until its page has loaded.
+	 */
+	windowOpenClone: (url: string | null, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_clone", { url, background })),
+	/**
 	 *  Opens a window listing the files that differ between two revisions of this window's project.
 	 *  `background` (`#rrggbb`) paints it until its page has loaded.
 	 */
 	windowOpenComparison: (comparison: ComparisonLaunch, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_comparison", { comparison, background })),
+	/**
+	 *  Opens this window's Remote Development window (or focuses it). `background` (`#rrggbb`)
+	 *  paints a new window until its page has loaded.
+	 */
+	windowOpenConnect: (background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_connect", { background })),
 	/**
 	 *  Opens this window's Sync with Deployed window comparing `paths` with `server` (or hands them
 	 *  to the open one). `background` (`#rrggbb`) paints a new window until its page has loaded.
@@ -2427,6 +2444,11 @@ export const commands = {
 	 *  itself, in LightEdit.
 	 */
 	windowOpenFiles: (files: string[]) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("window_open_files", { files })),
+	/**
+	 *  Opens this window's New Project window (or focuses it). `background` (`#rrggbb`) paints a new
+	 *  window until its page has loaded.
+	 */
+	windowOpenNewProject: (background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_new_project", { background })),
 	/**
 	 *  Opens `path` in a new window (`new_window`) or tells the caller to open it
 	 *  itself (`current`). A project already open in some window is focused instead.
@@ -2491,6 +2513,8 @@ export const commands = {
 	deployment: DeploymentLaunch | null,
 	/**  Editor windows: the file to show (Open in New Window → lightweight aux editor). */
 	editor: EditorLaunch_Serialize | null,
+	/**  Get from VCS windows: the repository URL to fill in. */
+	cloneUrl: string | null,
 } | null>("window_take_launch"),
 	/**
 	 *  Local bootstrap snapshot for a `settings-<parent>` window, avoiding a sequential
@@ -6720,7 +6744,10 @@ export type EditorConfigProps = {
 	indentSize: number | null,
 	tabWidth: number | null,
 	endOfLine: LineEnding | null,
-	/**  `utf-8`, `utf-8-bom`, `utf-16le`, `utf-16be` or `latin1`. */
+	/**
+	 *  `utf-8`, `utf-8-bom`, `utf-16le`, `utf-16be`, `latin1` or an encoding
+	 *  Settings › Editor › File Encodings lists (`iso-8859-15`, `windows-1252`, `gbk`, …).
+	 */
 	charset: string | null,
 	trimTrailingWhitespace: boolean | null,
 	insertFinalNewline: boolean | null,
@@ -6847,7 +6874,7 @@ export type EditorSettings_Deserialize = {
 	gutterIconsDisabled?: string[],
 	showGutterIcons?: boolean,
 	codeStyle?: CodeStyleSettings_Deserialize,
-	encodings?: EncodingSettings,
+	encodings?: EncodingSettings_Deserialize,
 };
 
 export type EditorSettings_Serialize = {
@@ -6907,7 +6934,7 @@ export type EditorSettings_Serialize = {
 	gutterIconsDisabled: string[],
 	showGutterIcons: boolean,
 	codeStyle: CodeStyleSettings_Serialize,
-	encodings: EncodingSettings,
+	encodings: EncodingSettings_Serialize,
 };
 
 /**  Editor › General › Editor Tabs. */
@@ -6940,7 +6967,10 @@ export type EditorTabsSettings = {
 export type EmptyCherryPickAction = "skip" | "createEmpty";
 
 /**  Editor › File Encodings. */
-export type EncodingSettings = {
+export type EncodingSettings = EncodingSettings_Serialize | EncodingSettings_Deserialize;
+
+/**  Editor › File Encodings. */
+export type EncodingSettings_Deserialize = {
 	/**  Fallback for files outside the project that are not valid UTF-8 (WHATWG label). */
 	global?: string,
 	/**  Encoding of new files and fallback for project files that are not valid UTF-8. */
@@ -6951,6 +6981,30 @@ export type EncodingSettings = {
 	nativeToAscii?: boolean,
 	/**  Create UTF-8 files: `never` (no BOM) | `always` (with BOM) | `windows` (with BOM on Windows). */
 	utf8Bom?: string,
+	/**
+	 *  Encoding (WHATWG label) of a file or of the files in a folder, by its path
+	 *  relative to the project with `/` separators. The status bar's choice is kept here.
+	 */
+	mappings?: { [key in string]: string },
+};
+
+/**  Editor › File Encodings. */
+export type EncodingSettings_Serialize = {
+	/**  Fallback for files outside the project that are not valid UTF-8 (WHATWG label). */
+	global: string,
+	/**  Encoding of new files and fallback for project files that are not valid UTF-8. */
+	project: string,
+	/**  Fallback for `.properties` files. */
+	properties: string,
+	/**  Display properties Unicode escapes as characters and save non-ASCII as escapes. */
+	nativeToAscii: boolean,
+	/**  Create UTF-8 files: `never` (no BOM) | `always` (with BOM) | `windows` (with BOM on Windows). */
+	utf8Bom: string,
+	/**
+	 *  Encoding (WHATWG label) of a file or of the files in a folder, by its path
+	 *  relative to the project with `/` separators. The status bar's choice is kept here.
+	 */
+	mappings: { [key in string]: string },
 };
 
 export type EntryKind = "file" | "dir" | "symlink";
@@ -9496,6 +9550,8 @@ export type Launch_Deserialize = {
 	deployment?: DeploymentLaunch | null,
 	/**  Editor windows: the file to show (Open in New Window → lightweight aux editor). */
 	editor?: EditorLaunch_Deserialize | null,
+	/**  Get from VCS windows: the repository URL to fill in. */
+	cloneUrl?: string | null,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
@@ -9527,6 +9583,8 @@ export type Launch_Serialize = {
 	deployment: DeploymentLaunch | null,
 	/**  Editor windows: the file to show (Open in New Window → lightweight aux editor). */
 	editor: EditorLaunch_Serialize | null,
+	/**  Get from VCS windows: the repository URL to fill in. */
+	cloneUrl: string | null,
 };
 
 export type LegacyPasswordAction = "check" | "retry" | "removePlaintext";

@@ -130,12 +130,15 @@ describe("Go JSON tests", () => {
     const line = record("p", "output", "TestFail", {
       Output: "    main_test.go:6: failure " + "x".repeat(9000) + "\n",
     });
-    expect(output.feed(line.slice(0, 22))).toBe("");
-    const text = output.feed(line.slice(22) + "\n" + record("p", "fail", "TestFail"));
+    expect(output.feed(line.slice(0, 22))).toEqual([]);
+    const text = output
+      .feed(line.slice(22) + "\n" + record("p", "fail", "TestFail"))
+      .map((c) => c.text)
+      .join("");
     expect(text).toContain("main_test.go:6: failure");
     expect(text).not.toContain('"Action"');
     expect(findOutputLinks(text.slice(0, 100)).some((link) => link.kind === "file")).toBe(true);
-    expect(output.end()).toBe("");
+    expect(output.end()).toEqual([]);
     expect(results.counts().failed).toBe(1);
   });
 
