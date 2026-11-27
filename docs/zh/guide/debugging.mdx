@@ -155,6 +155,7 @@ C 和 C++ 的配置也可以改用 GDB 14 及以上版本（`gdb -i dap`）：�
 | **远程 JVM 调试**             | 附加到带 JDWP agent 启动的 JVM，或者等待 JVM 主动连接（**调试器模式**：**附加到远程 JVM** / **监听远程 JVM**）。表单会给出远程 JVM 需要加的启动参数。 |
 | **Go 远程**                   | 附加到用 `dlv --headless` 启动的 Delve 服务。                                                                                                         |
 | **Python 远程调试 (debugpy)** | 附加到用 debugpy 监听的 Python 进程。                                                                                                                 |
+| **Python 调试服务器**         | 监听用 `debugpy.connect` 连接进来的 Python 程序。表单给出要加到程序里的代码；程序结束后 IDE 会重新开始监听。                                          |
 | **附加到 Node.js**            | 附加到用 `--inspect` 启动的 Node.js 进程。                                                                                                            |
 | **PHP 远程调试 (Xdebug)**     | 监听 Xdebug 连接，用于 php-fpm 或容器里运行的 PHP。                                                                                                   |
 | **附加到 Godot**              | 调试 Godot 编辑器正在运行的游戏。                                                                                                                     |

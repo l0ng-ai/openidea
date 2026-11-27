@@ -239,3 +239,70 @@ export const unittestType: RunConfigTypeContribution = {
     };
   },
 };
+
+/**
+ * Python doctest (PyCharm's "Python tests › Doctests"): the docstring examples of files, or of one
+ * class or function in a file (`calc.py::Stock.take`), with doctest's option flags.
+ */
+export const doctestType: RunConfigTypeContribution = {
+  id: "doctest",
+  label: "Python doctest",
+  icon: "file-python",
+  description: "Run the examples in Python docstrings",
+  get defaults() {
+    return { command: systemPython() };
+  },
+  debugAdapter: "debugpy",
+  fields: [
+    {
+      key: "target",
+      label: "Target",
+      mono: true,
+      required: true,
+      placeholder: "calc.py",
+      hint: "Files, or a class or function in one: calc.py::Stock.take",
+    },
+    { key: "options", label: "Options", mono: true, placeholder: "e.g. -o ELLIPSIS -o NORMALIZE_WHITESPACE" },
+    {
+      key: "command",
+      label: "Command",
+      mono: true,
+      placeholder: "python3",
+      required: true,
+      hint: "e.g. python3, .venv/bin/python, uv, poetry",
+    },
+    {
+      key: "runnerArgs",
+      label: "Runner arguments",
+      mono: true,
+      placeholder: "run python",
+      hint: "e.g. `run python` for uv/poetry; empty calls the interpreter itself",
+    },
+  ],
+  commandLine(p) {
+    return {
+      command: p.command?.trim() || systemPython(),
+      args: [
+        ...parseArgs(p.runnerArgs ?? ""),
+        "-m",
+        "doctest",
+        ...parseArgs(p.options ?? ""),
+        ...parseArgs(p.target ?? ""),
+      ],
+    };
+  },
+  paramsFrom(c) {
+    if (c.kind !== "doctest") return null;
+    const at = c.args.findIndex((a, i) => a === "-m" && c.args[i + 1] === "doctest");
+    if (at < 0) return null;
+    const rest = c.args.slice(at + 2);
+    // `-o` takes the next argument; every other option stands alone.
+    const isOption = (a: string, i: number) => a.startsWith("-") || rest[i - 1] === "-o";
+    return {
+      command: c.command,
+      runnerArgs: formatArgs(c.args.slice(0, at)),
+      target: formatArgs(rest.filter((a, i) => !isOption(a, i))),
+      options: formatArgs(rest.filter(isOption)),
+    };
+  },
+};

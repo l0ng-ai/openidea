@@ -492,6 +492,7 @@ describe("add service categories", () => {
       python: "Python",
       pytest: "Python",
       unittest: "Python",
+      doctest: "Python",
       phpunit: "Others",
       composer: "Others",
       cc: "C/C++",

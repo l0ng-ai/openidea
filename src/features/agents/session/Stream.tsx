@@ -56,8 +56,9 @@ import { WorkingRow } from "./WorkingRow";
  * Lets the rows of a long conversation skip rendering while off screen (`data-measured`, see
  * the CSS), so showing the tab again or restyling it costs what is on screen, not the whole
  * history. A row skips only once it was laid out: it keeps its real height, and scrolling up
- * doesn't jump (WebKit has no scroll anchoring). A new width lays them out again once it
- * settles; Find in Conversation (`enabled` false) needs every row laid out.
+ * doesn't jump (WebKit has no scroll anchoring). Rows near the view (`data-near`) always render.
+ * A new width lays them out again once it settles; Find in Conversation (`enabled` false) needs
+ * every row laid out.
  */
 function useOffscreenRows(
   ref: RefObject<HTMLElement | null>,
@@ -122,9 +123,43 @@ function useOffscreenRows(
       measured.current = { width: el.clientWidth, fitWindowWidth, fontZoom };
       unmark();
     };
+    // Rows within a viewport of the view always render. WebKit on macOS can keep a row that
+    // scrolled into view skipped after the offset moved without a user scroll (following the end
+    // as a reply streams, the composer shrinking after a send): it paints blank, or keeps its
+    // remembered height while the reply grows, so the end of the reply can't be scrolled to.
+    const near =
+      typeof IntersectionObserver === "undefined"
+        ? null
+        : new IntersectionObserver(
+            (records) => {
+              for (const { target, isIntersecting } of records) {
+                if (isIntersecting) target.setAttribute("data-near", "");
+                else target.removeAttribute("data-near");
+              }
+            },
+            { root: el, rootMargin: "100% 0px" },
+          );
+    const watched = new Set<Element>();
+    const watch = () => {
+      if (!near) return;
+      for (const row of watched) {
+        if (row.parentNode === el) continue;
+        near.unobserve(row);
+        watched.delete(row);
+      }
+      for (const row of el.querySelectorAll(`:scope > .${styles.conversationRow}`)) {
+        if (watched.has(row)) continue;
+        watched.add(row);
+        near.observe(row);
+      }
+    };
     remeasure();
+    watch();
     mark();
-    const rows = new MutationObserver(mark);
+    const rows = new MutationObserver(() => {
+      watch();
+      mark();
+    });
     rows.observe(el, { childList: true });
     // Earlier rows load in front of the first one shown, which then loses its author header while
     // it may be off-screen: lay it out again, or it keeps the height it had with the header.
@@ -146,6 +181,8 @@ function useOffscreenRows(
       cancelAnimationFrame(frame);
       window.clearTimeout(timer);
       rows.disconnect();
+      near?.disconnect();
+      for (const row of watched) row.removeAttribute("data-near");
       authors.disconnect();
       resize.disconnect();
     };
@@ -153,6 +190,31 @@ function useOffscreenRows(
   // Keep independent of `visible`: when a kept-alive tab hides, `data-selection` must stay until
   // the selection leaves and WebKit clears off-screen rows' highlights before skipping again.
   useSelectionVisibility(ref, enabled, `.${styles.conversationRow}`);
+}
+
+/**
+ * Scrolls the conversation to `top`, first marking the rows a viewport around it `data-near`
+ * (as `useOffscreenRows` would after the move). WebKit doesn't repaint a row that skipped
+ * rendering when it turns visible after the offset jumped there: the view stays blank until the
+ * next change to the conversation (sending from far up, then waiting for the reply).
+ */
+function scrollStreamTo(el: HTMLElement, top: number) {
+  revealRowsAt(el, top);
+  el.scrollTop = top;
+}
+
+export function revealRowsAt(el: HTMLElement, top: number) {
+  const view = el.clientHeight;
+  const target = Math.max(0, Math.min(top, el.scrollHeight - view));
+  if (Math.abs(target - el.scrollTop) <= view) return;
+  const origin = el.getBoundingClientRect().top - el.scrollTop;
+  const rows = el.querySelectorAll(`:scope > .${styles.conversationRow}`);
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const box = rows[i]!.getBoundingClientRect();
+    if (box.top - origin > target + 2 * view) continue;
+    if (box.bottom - origin < target - view) break;
+    rows[i]!.setAttribute("data-near", "");
+  }
 }
 
 /** Images remain visible beside the work's folded summary, without duplicating them when it opens. */
@@ -403,7 +465,7 @@ export function Stream({
   const onDiagramDrawn = useCallback(() => {
     const el = ref.current;
     if (!el) return;
-    if (position.current.stick && !dragging.current) el.scrollTop = el.scrollHeight;
+    if (position.current.stick && !dragging.current) scrollStreamTo(el, el.scrollHeight);
     updateJumpVisibility(el);
   }, [updateJumpVisibility]);
   useLayoutEffect(() => {
@@ -432,8 +494,8 @@ export function Stream({
     if (!el || entries === null || !visible) return;
     trimSlack();
     if (position.current.stick) {
-      if (!dragging.current) el.scrollTop = el.scrollHeight;
-    } else if (!restored.current) el.scrollTop = position.current.top;
+      if (!dragging.current) scrollStreamTo(el, el.scrollHeight);
+    } else if (!restored.current) scrollStreamTo(el, position.current.top);
     restored.current = true;
     updateJumpVisibility(el);
   });
@@ -453,7 +515,7 @@ export function Stream({
     if (!el) return;
     const observer = new ResizeObserver(() => {
       trimSlack();
-      if (position.current.stick && !dragging.current) el.scrollTop = el.scrollHeight;
+      if (position.current.stick && !dragging.current) scrollStreamTo(el, el.scrollHeight);
       else if (!position.current.stick && el.scrollHeight <= el.clientHeight && !dragging.current) loadWhenStill();
       updateJumpVisibility(el);
     });
@@ -528,6 +590,7 @@ export function Stream({
     if (!el) return;
     scrollingUp.current = false;
     position.current = { top: el.scrollTop, stick: true };
+    revealRowsAt(el, el.scrollHeight);
     if (typeof el.scrollTo === "function") el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
     else el.scrollTop = el.scrollHeight;
     setAway(false);
@@ -688,7 +751,7 @@ export function Stream({
               const stick =
                 (atEnd && !scrollingUp.current && (movedDown || stayedAtEnd)) || (position.current.stick && !byUser);
               // Still following: back to the end the offset was moved away from.
-              if (stick && !atEnd && !dragging.current) el.scrollTop = el.scrollHeight;
+              if (stick && !atEnd && !dragging.current) scrollStreamTo(el, el.scrollHeight);
               position.current = { top: el.scrollTop, stick };
               positions.set(key, position.current);
               updateJumpVisibility(el);

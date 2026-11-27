@@ -261,7 +261,7 @@ export function breakpointGutter(ctx: EditorDocContext): Extension {
           else if (bp) updateBreakpoint(path, bp.id, { enabled: !bp.enabled });
           return;
         }
-        if (!canPlaceBreakpoint(ctx.language) && !bp) return;
+        if (!canPlaceBreakpoint(ctx.language, path) && !bp) return;
         e.preventDefault();
         // Acts on release over the same line: a drag across the gutter selects lines instead.
         const up = (u: MouseEvent) => {

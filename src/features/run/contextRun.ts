@@ -381,7 +381,8 @@ function peekContent(path: string): string | undefined {
 /** Whether the file's runnability depends on its text (`package main`, `fn main`, `#!`…). */
 function needsContent(path: string): boolean {
   const name = path.slice(path.lastIndexOf("/") + 1);
-  return /\.(go|rs|java|kt|c|cpp|cc|cxx|zig)$/.test(name) || !name.includes(".");
+  // Python: a module with docstring examples runs its doctests.
+  return /\.(go|rs|java|kt|c|cpp|cc|cxx|zig|py)$/.test(name) || !name.includes(".");
 }
 
 export async function prepareMenu(_menu: ContextMenuId, ctx: MenuGroupContext): Promise<void> {
