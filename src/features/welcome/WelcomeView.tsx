@@ -148,7 +148,7 @@ export function WelcomeView() {
   const reopening = useSession((s) => s.reopening);
   // A remote project connecting with no dialog or list row to show it (a new window's).
   const connecting = useRemoteProgress((s) => s.location);
-  const connectDialog = useConnectDialog((s) => s.open);
+  const connectDialog = useConnectDialog((s) => s.open || s.inWindow);
   const listOpening = useRecent((s) => s.opening);
   const opening = useProject((s) => s.opening);
   const Plugins = useSettingsPages((s) => s.pages.get(PLUGINS_PAGE)?.component);

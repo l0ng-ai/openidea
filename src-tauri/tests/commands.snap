@@ -10,6 +10,7 @@ agent_cli_update                             trusted            project_host bin
 agent_cli_update_check                       trusted            project_host bindings async
 agent_commands                               always             project_host bindings async
 agent_context_usage                          trusted            project_host bindings async
+agent_copilot_auth_status                    outside_restricted project_host bindings async
 agent_create                                 trusted            project_host bindings async
 agent_custom_import                          trusted            desktop      bindings sync
 agent_custom_remove                          trusted            desktop      bindings sync
@@ -19,9 +20,11 @@ agent_entries                                always             project_host bin
 agent_external_sessions                      trusted            project_host bindings async
 agent_fork                                   trusted            project_host bindings async
 agent_fork_session                           trusted            project_host bindings async
+agent_gh_login_spawn                         outside_restricted project_host bindings async
 agent_grouped_changes                        trusted            project_host bindings async
 agent_hermes_profiles                        trusted            project_host bindings async
 agent_import_session                         trusted            project_host bindings async
+agent_login_spawn                            outside_restricted project_host bindings async
 agent_mcp_discover_sources                   always             project_host bindings async
 agent_mcp_import                             always             project_host bindings sync
 agent_mcp_import_selected                    always             project_host bindings async
@@ -241,6 +244,7 @@ doc_outline                                  always             project_host bin
 doc_python_facts                             always             project_host bindings async
 doc_rearrange                                always             project_host bindings async
 doc_reload_from_disk                         always             project_host bindings async
+doc_remember_encoding                        always             project_host bindings async
 doc_save                                     always             project_host bindings async
 doc_save_all                                 always             project_host bindings async
 doc_save_as                                  always             project_host bindings async
@@ -315,6 +319,8 @@ gh_pr_prepare_diff                           trusted            desktop      bin
 gh_pr_review                                 trusted            desktop      bindings async
 gh_pr_review_comments                        trusted            desktop      bindings async
 gh_pr_view                                   trusted            desktop      bindings async
+gh_project_account_status                    outside_restricted project_host bindings async
+gh_set_project_account                       outside_restricted project_host bindings async
 git_credential_forget                        always             desktop      bindings sync
 git_credentials                              always             desktop      bindings sync
 gradle_dependencies                          trusted            project_host bindings async
@@ -862,12 +868,15 @@ window_group_restore                         always             desktop      bin
 window_group_select                          always             desktop      bindings async
 window_is_fullscreen                         always             desktop      bindings sync
 window_new                                   always             desktop      bindings async
+window_open_clone                            always             desktop      bindings async
 window_open_comparison                       always             desktop      bindings async
+window_open_connect                          always             desktop      bindings async
 window_open_deployment                       always             desktop      bindings async
 window_open_diff                             always             desktop      bindings async
 window_open_editor                           always             desktop      bindings async
 window_open_file_in_new_window               always             desktop      bindings async
 window_open_files                            always             desktop      bindings async
+window_open_new_project                      always             desktop      bindings async
 window_open_project                          always             desktop      bindings async
 window_open_projects                         always             desktop      bindings sync
 window_open_remote                           always             desktop      bindings async

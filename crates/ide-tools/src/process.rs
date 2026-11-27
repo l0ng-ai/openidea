@@ -441,6 +441,17 @@ impl Http {
         self
     }
 
+    /// Looks up `gh` on `search_path` (e.g. a path that includes IDE-managed tools).
+    pub(crate) fn with_gh_from(mut self, search_path: &std::ffi::OsStr) -> Self {
+        self.gh = which::which_in("gh", Some(search_path), ".").ok();
+        self
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn gh_path(&self) -> Option<&Path> {
+        self.gh.as_deref()
+    }
+
     /// Skips `GITHUB_TOKEN` / `GH_TOKEN` / `gh auth token` (e.g. retrying a public GitHub endpoint after HTTP 401).
     pub fn without_github_auth(mut self) -> Self {
         self.gh = None;

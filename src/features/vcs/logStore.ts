@@ -302,6 +302,28 @@ export function setLogBranches(branches: readonly string[]) {
   void reloadLog();
 }
 
+/**
+ * Follows a branch rename: the Branch filter of every open view, the choice
+ * remembered for the repository and "Log: branch" tabs keep tracking the branch
+ * under its new name instead of filtering an unknown revision.
+ */
+export function renameBranchInLogFilters(repo: string, from: string, to: string) {
+  const rename = (branches: readonly string[]) => branches.map((b) => (b === from ? to : b));
+  const remembered = rememberedLogBranches(repo);
+  if (remembered?.includes(from)) rememberLogBranches(repo, rename(remembered));
+  const s = useGitLog.getState();
+  if (s.filters.branches.includes(from))
+    useGitLog.setState({ filters: { ...s.filters, branches: rename(s.filters.branches) } });
+  for (const [id, view] of parked)
+    if (view.filters.branches.includes(from))
+      setViewState(id, { filters: { ...view.filters, branches: rename(view.filters.branches) } });
+  if (s.logTabs.some((t) => t.kind === "branch" && t.target === from))
+    useGitLog.setState((l) => ({
+      logTabs: l.logTabs.map((t) => (t.kind === "branch" && t.target === from ? { ...t, target: to } : t)),
+    }));
+  if (s.filters.branches.includes(from)) void reloadLog();
+}
+
 const loadPromises = new Map<string, Promise<void>>();
 const pageRequests = new Map<string, Set<RequestId>>();
 const cherryRequests = new Map<string, { repo: string | null; request: RequestId }[]>();

@@ -179,7 +179,7 @@ jobs:
     with: { tag: "${{ github.event.inputs.tag || github.ref_name }}" }
     secrets: inherit
 
-  # The cask in l0ng-ai/homebrew-tap; skipped for prereleases and without HOMEBREW_TAP_TOKEN.
+  # The cask in l0ng-ai/homebrew-tap; skipped for prereleases and without HOMEBREW_TAP_DEPLOY_KEY.
   homebrew:
     needs: publish
     uses: ./.github/workflows/homebrew.yml

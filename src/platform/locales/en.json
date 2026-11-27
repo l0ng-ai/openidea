@@ -145,6 +145,7 @@
   "menu.code.overrideMethods": "Override Methods…",
   "menu.code.implementMethods": "Implement Methods…",
   "menu.code.insertLiveTemplate": "Insert Live Template…",
+  "menu.code.saveAsLiveTemplate": "Save as Live Template…",
   "menu.code.moveLineDown": "Move Line Down",
   "menu.code.moveLineUp": "Move Line Up",
   "menu.code.optimizeImports": "Optimize Imports",

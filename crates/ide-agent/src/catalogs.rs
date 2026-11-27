@@ -283,6 +283,20 @@ impl AgentCatalogs {
         }
     }
 
+    /// Clears a failed discovery cooldown so a fresh sign-in can immediately load models.
+    pub(crate) fn clear_failed_cooldown(&self, shared: &Shared, provider: &str) {
+        let key = Self::key(shared, provider);
+        let mut state = self.state.lock();
+        if let Some(entry) = state.entries.get_mut(&key)
+            && entry.flight.is_none()
+            && entry.error.is_some()
+        {
+            entry.completed = None;
+            entry.retry_at_ms = None;
+            entry.error = None;
+        }
+    }
+
     fn snapshot(&self, shared: &Shared, provider: &str, entry: &Entry) -> AgentModelCatalog {
         let catalog = entry.catalog.clone().unwrap_or_default();
         let model_failure = entry.requested_model.as_ref().and_then(|model| entry.model_failures.get(model));

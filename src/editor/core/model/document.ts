@@ -476,9 +476,11 @@ export class DocModel {
 
   /** `restored`: the changes put back text from the VCS version ([`restoresVcsText`]). */
   onLocal(changes: ChangeSet, origin: EditorSlot | DocAttachmentTarget, restored = false) {
+    // Dirty first: whatever fails below (stale touched-range coordinates, a reused model whose
+    // transport disagrees), the edit must still be saveable — a false `dirty` turns save(),
+    // Save All, the autosave on close and the close prompt into silent no-ops.
+    if (!this.meta.dirty) this.setMeta({ dirty: true });
     this.sync.local(changes);
-    if (restored) this.modified.restore(changes);
-    else this.modified.add(changes);
     let end = false;
     changes.iterChangedRanges((_fromA, toA) => {
       if (toA === changes.length) end = true;
@@ -489,7 +491,15 @@ export class DocModel {
       if (s !== origin) s.applyExternal(changes, [mirroredChange.of(true), Transaction.addToHistory.of(false)]);
     for (const a of this.attachments)
       if (a !== origin) a.applyExternal(changes, [mirroredChange.of(true), Transaction.addToHistory.of(false)]);
-    if (!this.meta.dirty) this.setMeta({ dirty: true });
+    try {
+      if (restored) this.modified.restore(changes);
+      else this.modified.add(changes);
+    } catch (e) {
+      // The ranges only decide which lines save-time whitespace trimming touches.
+      console.warn(`document ${this.path}: touched ranges dropped`, e);
+      this.modified.clear();
+      this.modified.all = true;
+    }
     this.scheduleRefresh();
   }
 
@@ -763,7 +773,10 @@ export class DocModel {
 
   save(reason: "explicit" | "auto" | "exact"): Promise<void> {
     const run = async () => {
-      if (this.closed || this.meta.readOnly || !this.meta.dirty) return;
+      // `dirty` can lag behind the buffer: a dropped backend event (a file opened under two path
+      // spellings has only one model receiving them) or a reused model. Only a buffer with
+      // nothing left to send is a real no-op — otherwise Ctrl+S would silently write nothing.
+      if (this.closed || this.meta.readOnly || (!this.meta.dirty && this.sync.idle)) return;
       const slot = this.primarySlot();
       if (reason === "explicit") {
         for (const p of _saveParticipants()) {
@@ -875,6 +888,8 @@ export class DocumentManager {
   );
   readonly byPath = new Map<string, DocModel>();
   readonly byId = new Map<DocId, DocModel>();
+  /** Every model sharing a backend document; a file open under two path spellings has more than one. */
+  private readonly byDoc = new Map<DocId, Set<DocModel>>();
   private opening = new Map<string, Promise<DocModel>>();
   contributionsVersion = 0;
   private disposers: Array<() => void> = [];
@@ -896,9 +911,10 @@ export class DocumentManager {
   start() {
     this.disposers.push(
       this.workspaceHistory.start(),
-      this.backend.onPatched((e) => this.byId.get(e.doc)?.sync.remote(e)),
-      this.backend.onLanguage?.((e) => this.byId.get(e.doc)?.setLanguage(e.language, e.uiMode)) ?? (() => {}),
-      this.backend.onDirty((e) => this.byId.get(e.doc)?.onBackendDirty(e)),
+      this.backend.onPatched((e) => this.modelsOf(e.doc).forEach((m) => m.sync.remote(e))),
+      this.backend.onLanguage?.((e) => this.modelsOf(e.doc).forEach((m) => m.setLanguage(e.language, e.uiMode))) ??
+        (() => {}),
+      this.backend.onDirty((e) => this.modelsOf(e.doc).forEach((m) => m.onBackendDirty(e))),
     );
     let prev = useEditorRegistry.getState().contributions;
     this.disposers.push(
@@ -914,10 +930,30 @@ export class DocumentManager {
 
   stop() {
     this.disposers.splice(0).forEach((d) => d());
+    this.byDoc.clear();
   }
 
   get(path: string): DocModel | undefined {
     return this.byPath.get(path);
+  }
+
+  private modelsOf(doc: DocId): DocModel[] {
+    const models = this.byDoc.get(doc);
+    return models ? [...models] : [];
+  }
+
+  private remember(model: DocModel) {
+    this.byId.set(model.doc, model);
+    const models = this.byDoc.get(model.doc) ?? new Set<DocModel>();
+    models.add(model);
+    this.byDoc.set(model.doc, models);
+  }
+
+  private forgetModel(model: DocModel) {
+    const models = this.byDoc.get(model.doc);
+    if (!models) return;
+    models.delete(model);
+    if (!models.size) this.byDoc.delete(model.doc);
   }
 
   /** Registers a backend document opened outside `acquire` (a minted untitled buffer). */
@@ -925,7 +961,7 @@ export class DocumentManager {
     const model = new DocModel(this, info);
     void model.loadLanguage();
     this.byPath.set(model.path, model);
-    this.byId.set(model.doc, model);
+    this.remember(model);
     _emitEditorEvent({ type: "docOpened", doc: model.doc, path: model.path, language: info.language });
     return model;
   }
@@ -946,7 +982,12 @@ export class DocumentManager {
   /** Opens (or returns the already open) document model for `path`. */
   acquire(path: string): Promise<DocModel> {
     const existing = this.byPath.get(path);
-    if (existing) return Promise.resolve(existing);
+    if (existing) {
+      // A reopened file reuses this model; the ranges it touched before say nothing about the
+      // text the new tab starts from, and only poison save-time whitespace trimming.
+      if (!existing.getMeta().dirty) existing.modified.clear();
+      return Promise.resolve(existing);
+    }
     let p = this.opening.get(path);
     if (!p) {
       p = (async () => {
@@ -974,7 +1015,7 @@ export class DocumentManager {
         // The first slot must include the lazy mode, not briefly render plain text.
         await model.loadLanguage();
         this.byPath.set(path, model);
-        this.byId.set(model.doc, model);
+        this.remember(model);
         _emitEditorEvent({ type: "docOpened", doc: model.doc, path, language: info.language });
         return model;
       })().finally(() => this.opening.delete(path));
@@ -1029,6 +1070,7 @@ export class DocumentManager {
     model.dispose();
     this.byPath.delete(model.path);
     this.byId.delete(model.doc);
+    this.forgetModel(model);
     useDocMeta.setState((s) => {
       const next = { ...s };
       delete next[model.path];

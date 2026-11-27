@@ -36,6 +36,34 @@
 .tabs {
   min-width: 0;
 }
+.accountBadge {
+  flex: 0 1 auto;
+  height: 22px;
+  min-width: 48px;
+  max-width: 100px;
+  padding: 0 6px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-secondary);
+  font-family: var(--font-ui);
+  font-size: var(--fs-small);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.accountBadge:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.accountInline {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1-5);
+  margin-top: 8px;
+}
 
 /* Repository selector (several GitHub remotes) */
 .selector {

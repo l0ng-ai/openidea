@@ -14,9 +14,13 @@ describe("auxiliaryWindow", () => {
     expect(auxiliaryWindow("editor-main-0")).toEqual({ kind: "editor", parent: "main" });
     expect(auxiliaryWindow("editor-project-2-14")).toEqual({ kind: "editor", parent: "project-2" });
     expect(auxiliaryWindow("deployment-project-2")).toEqual({ kind: "deployment", parent: "project-2" });
+    expect(auxiliaryWindow("new-project-main")).toEqual({ kind: "new-project", parent: "main" });
+    expect(auxiliaryWindow("new-project-project-2")).toEqual({ kind: "new-project", parent: "project-2" });
+    expect(auxiliaryWindow("clone-main")).toEqual({ kind: "clone", parent: "main" });
+    expect(auxiliaryWindow("connect-project-2")).toEqual({ kind: "connect", parent: "project-2" });
   });
 
-  it.each(["settings", "comparison", "diff", "editor", "deployment"])(
+  it.each(["settings", "comparison", "diff", "editor", "deployment", "new-project", "clone", "connect"])(
     "grants %s windows permission to close",
     (kind) => {
       expect(capability.windows).toContain(`${kind}-*`);

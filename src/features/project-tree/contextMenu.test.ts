@@ -53,6 +53,7 @@ const OTHER_ACTIONS = [
   "diff.compareWith",
   "diff.compareFiles",
   "diff.compareDirectories",
+  "diff.compareFileWithEditor",
   "vcs.commit",
   "vcs.addToVcs",
   "vcs.annotate",
@@ -98,6 +99,23 @@ describe("project view context menu", () => {
     const mixed = labels(contextMenuItems([node("/p/left", true), node("/p/a.txt")]));
     for (const label of ["Compare Directories", "Compare Files", "Compare With…"]) expect(mixed).not.toContain(label);
     expect(labels(contextMenuItems([node("/p/a.txt"), node("/p/b.txt")]))).toContain("Compare Files");
+  });
+
+  it("offers Compare File with Editor for a single file other than the editor's", () => {
+    const label = "Compare File with Editor";
+    expect(labels(contextMenuItems([node("/p/a.txt")]))).not.toContain(label);
+    setContext("editorPath", "/p/b.txt");
+    try {
+      const items = labels(contextMenuItems([node("/p/a.txt")]));
+      expect(items.indexOf(label)).toBe(items.indexOf("Compare With…") + 1);
+      expect(labels(contextMenuItems([node("/p/b.txt")]))).not.toContain(label);
+      expect(labels(contextMenuItems([node("/p/left", true)]))).not.toContain(label);
+      expect(labels(contextMenuItems([node("/p/a.txt"), node("/p/c.txt")]))).not.toContain(label);
+      setContext("editorPath", "git-revision:7b22/a.txt");
+      expect(labels(contextMenuItems([node("/p/a.txt")]))).not.toContain(label);
+    } finally {
+      clearContext("editorPath");
+    }
   });
 
   it("shows Compare With…'s shortcut on every comparison it runs (#3806)", () => {

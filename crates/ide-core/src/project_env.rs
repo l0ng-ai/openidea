@@ -14,8 +14,31 @@ pub type Changes = Arc<Vec<(OsString, Option<OsString>)>>;
 
 struct Entry {
     root: PathBuf,
+    direnv: Vec<(OsString, Option<OsString>)>,
+    github_token: Option<OsString>,
     changes: Changes,
     loading: bool,
+}
+
+impl Entry {
+    fn new(root: PathBuf) -> Self {
+        Self { root, direnv: Vec::new(), github_token: None, changes: Changes::default(), loading: false }
+    }
+
+    fn rebuild(&mut self) {
+        let mut combined = Vec::with_capacity(self.direnv.len() + usize::from(self.github_token.is_some()));
+        if let Some(token) = &self.github_token {
+            combined.push(("GH_TOKEN".into(), Some(token.clone())));
+        }
+        // `.envrc` entries override the project GitHub token when both define `GH_TOKEN`.
+        combined.retain(|(k, _)| !self.direnv.iter().any(|(dk, _)| dk == k));
+        combined.extend(self.direnv.iter().cloned());
+        self.changes = Arc::new(combined);
+    }
+
+    fn is_idle_empty(&self) -> bool {
+        !self.loading && self.direnv.is_empty() && self.github_token.is_none()
+    }
 }
 
 static ENTRIES: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
@@ -31,35 +54,103 @@ pub fn begin_loading(root: &Path) {
     let mut entries = entries();
     match entries.iter_mut().find(|e| e.root == root) {
         Some(entry) => entry.loading = true,
-        None => entries.push(Entry { root: root.to_path_buf(), changes: Changes::default(), loading: true }),
+        None => {
+            let mut entry = Entry::new(root.to_path_buf());
+            entry.loading = true;
+            entries.push(entry);
+        }
     }
 }
 
-/// What children started in `root` (or below it) get on top of the IDE's own environment
-/// (`None`: removed). Ends a [`begin_loading`].
+/// What children started in `root` (or below it) get from direnv on top of the IDE's own
+/// environment (`None`: removed). Ends a [`begin_loading`].
 pub fn set(root: &Path, changes: Vec<(OsString, Option<OsString>)>) {
     let mut entries = entries();
-    let changes = Arc::new(changes);
-    match entries.iter_mut().find(|e| e.root == root) {
-        Some(entry) => {
-            entry.changes = changes;
+    match entries.iter_mut().position(|e| e.root == root) {
+        Some(idx) => {
+            let entry = &mut entries[idx];
+            entry.direnv = changes;
             entry.loading = false;
+            entry.rebuild();
+            if entry.is_idle_empty() {
+                entries.remove(idx);
+            }
         }
-        None => entries.push(Entry { root: root.to_path_buf(), changes, loading: false }),
+        None if !changes.is_empty() => {
+            let mut entry = Entry::new(root.to_path_buf());
+            entry.direnv = changes;
+            entry.rebuild();
+            entries.push(entry);
+        }
+        None => {}
     }
     SETTLED.notify_all();
 }
 
 /// Ends a [`begin_loading`] that read nothing new (an error): the last environment stays.
 pub fn settle(root: &Path) {
-    if let Some(entry) = entries().iter_mut().find(|e| e.root == root) {
-        entry.loading = false;
+    let mut entries = entries();
+    if let Some(idx) = entries.iter().position(|e| e.root == root) {
+        entries[idx].loading = false;
+        if entries[idx].is_idle_empty() {
+            entries.remove(idx);
+        }
     }
     SETTLED.notify_all();
 }
 
-/// `root` has no environment of its own any more (closed, or not trusted).
+/// `root` has no direnv environment of its own any more (no `.envrc`, closed, or not trusted).
+/// Preserves any project-scoped GitHub token until [`remove_all`] or [`set_github_token`].
 pub fn remove(root: &Path) {
+    let mut entries = entries();
+    if let Some(idx) = entries.iter().position(|e| e.root == root) {
+        let entry = &mut entries[idx];
+        entry.direnv.clear();
+        entry.loading = false;
+        entry.rebuild();
+        if entry.is_idle_empty() {
+            entries.remove(idx);
+        }
+    }
+    SETTLED.notify_all();
+}
+
+/// Sets or clears the project-scoped `GH_TOKEN` injected for children started in `root`
+/// (unless overridden by `root`'s direnv `.envrc`). Returns whether the effective token changed.
+pub fn set_github_token(root: &Path, token: Option<OsString>) -> bool {
+    let token = token.filter(|t| !t.is_empty());
+    let mut entries = entries();
+    match entries.iter().position(|e| e.root == root) {
+        Some(idx) => {
+            if entries[idx].github_token == token {
+                return false;
+            }
+            let entry = &mut entries[idx];
+            entry.github_token = token;
+            entry.rebuild();
+            if entry.is_idle_empty() {
+                entries.remove(idx);
+            }
+            true
+        }
+        None => {
+            let Some(token) = token else { return false };
+            let mut entry = Entry::new(root.to_path_buf());
+            entry.github_token = Some(token);
+            entry.rebuild();
+            entries.push(entry);
+            true
+        }
+    }
+}
+
+/// The project-scoped `GH_TOKEN` configured for the innermost project holding `dir`, if any.
+pub fn github_token(dir: &Path) -> Option<OsString> {
+    find(&entries(), dir).and_then(|e| e.github_token.clone())
+}
+
+/// Removes both direnv and project GitHub token entries for `root` (project closed or untrusted).
+pub fn remove_all(root: &Path) {
     entries().retain(|e| e.root != root);
     SETTLED.notify_all();
 }
@@ -134,5 +225,27 @@ mod tests {
         assert!(!is_loading(root));
         assert_eq!(*for_dir(root), [change("NEW", Some("2"))]);
         remove(root);
+    }
+
+    #[test]
+    fn github_token_survives_direnv_absence_and_yields_to_explicit_envrc_override() {
+        let root = Path::new("/openidea-test-env/gh-project");
+        let worktrees = Path::new("/openidea-test-env/gh-project.worktrees");
+        assert!(set_github_token(root, Some("gho_work".into())));
+        assert!(!set_github_token(root, Some("gho_work".into())), "idempotent");
+        assert!(set_github_token(worktrees, Some("gho_work".into())));
+        remove(root); // no `.envrc` in `root`
+        assert_eq!(*for_dir(&root.join("src")), [change("GH_TOKEN", Some("gho_work"))]);
+        assert_eq!(*for_dir(&worktrees.join("task-1")), [change("GH_TOKEN", Some("gho_work"))]);
+        assert_eq!(github_token(&worktrees.join("task-1")), Some("gho_work".into()));
+
+        // An explicit `.envrc` GH_TOKEN overrides the project GitHub account token.
+        set(root, vec![change("GH_TOKEN", Some("gho_from_envrc")), change("FOO", Some("bar"))]);
+        assert_eq!(*for_dir(root), [change("GH_TOKEN", Some("gho_from_envrc")), change("FOO", Some("bar"))]);
+
+        remove_all(root);
+        remove_all(worktrees);
+        assert!(for_dir(root).is_empty());
+        assert!(for_dir(worktrees).is_empty());
     }
 }

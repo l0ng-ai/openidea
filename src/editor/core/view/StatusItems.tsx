@@ -534,12 +534,20 @@ function EncodingPicker({ meta }: { meta: DocMeta }) {
     setTarget(null);
     const model = editorController().manager.get(meta.path);
     if (!model || !(reload ? canReload : canConvert)) return;
-    void editorController()
-      .manager.backend.setEncoding(meta.doc, encoding, reload)
+    const { backend } = editorController().manager;
+    void backend
+      .setEncoding(meta.doc, encoding, reload)
       .then((enc) => {
         model.setMeta({ encoding: enc.encoding, hasBom: enc.hasBom, ...(reload ? {} : { dirty: true }) });
         // Reopening the tab must fetch the re-decoded contents, not the old cache.
         if (reload && isVirtualUri(meta.path)) invalidateVirtualDocument(meta.path);
+        backend.rememberEncoding?.(meta.doc).catch((e: unknown) =>
+          notifications().notify({
+            level: "warning",
+            title: tx("The encoding was not saved to the project settings"),
+            body: e instanceof Error ? e.message : String(e),
+          }),
+        );
       })
       .catch((e: unknown) =>
         notifications().notify({

@@ -145,6 +145,7 @@
   "menu.code.overrideMethods": "重写方法…",
   "menu.code.implementMethods": "实现方法…",
   "menu.code.insertLiveTemplate": "插入实时模板…",
+  "menu.code.saveAsLiveTemplate": "另存为实时模板…",
   "menu.code.moveLineDown": "下移行",
   "menu.code.moveLineUp": "上移行",
   "menu.code.optimizeImports": "优化导入",

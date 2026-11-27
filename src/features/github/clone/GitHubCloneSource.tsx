@@ -1,8 +1,9 @@
 /** Clone Repository › GitHub: the repositories of the account gh is signed in to. */
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import type { GhAccountRepo, GhAccountRepos } from "@/bindings";
+import { GH_MANUAL_INSTALL_URL, installGhTool } from "@/platform/ghTool";
 import { tx } from "@/platform/i18n";
-import { call, commands } from "@/platform/ipc";
+import { call, commands, isCancelled } from "@/platform/ipc";
 import {
   Button,
   EmptyState,
@@ -37,6 +38,8 @@ export function GitHubCloneSource({ url, onUrl, onClone, disabled }: CloneSource
   const [state, setState] = useState<GhAccountRepos | null>(null);
   const [query, setQuery] = useState("");
   const [attempt, setAttempt] = useState(0);
+  const [installingGh, setInstallingGh] = useState(false);
+  const [installError, setInstallError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -50,14 +53,26 @@ export function GitHubCloneSource({ url, onUrl, onClone, disabled }: CloneSource
 
   const rows = useMemo(() => (state?.kind === "ready" ? matchRepos(state.repos, query) : []), [state, query]);
   const active = rows.findIndex((r) => r.repo.cloneUrl === url);
+  const reload = () => {
+    setInstallError(null);
+    setState(null);
+    setAttempt((n) => n + 1);
+  };
+  const installGh = () => {
+    if (installingGh) return;
+    setInstallingGh(true);
+    setInstallError(null);
+    void installGhTool()
+      .promise.then((installed) => {
+        if (installed) reload();
+      })
+      .catch((e: unknown) => {
+        if (!isCancelled(e)) setInstallError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => setInstallingGh(false));
+  };
   const retry = (
-    <Button
-      size="small"
-      onClick={() => {
-        setState(null);
-        setAttempt((n) => n + 1);
-      }}
-    >
+    <Button size="small" onClick={reload}>
       <T>Retry</T>
     </Button>
   );
@@ -77,15 +92,24 @@ export function GitHubCloneSource({ url, onUrl, onClone, disabled }: CloneSource
         title="GitHub CLI is not installed"
         actions={
           <>
-            <Button size="small" onClick={() => void openInBrowser("https://cli.github.com")}>
-              <T>Install gh…</T>
+            <Button size="small" variant="primary" disabled={installingGh} onClick={installGh}>
+              {installingGh ? (
+                <>
+                  <Spinner size={12} /> <T>Installing…</T>
+                </>
+              ) : (
+                <T>Install GitHub CLI</T>
+              )}
+            </Button>
+            <Button size="small" onClick={() => void openInBrowser(GH_MANUAL_INSTALL_URL)}>
+              <T>Download manually…</T>
             </Button>
             {retry}
           </>
         }
       >
         <T>GitHub repositories are listed with the</T> <code>gh</code> <T>command line tool. Install it, then run</T>{" "}
-        <code>gh auth login</code>.
+        <code>gh auth login</code>.{installError && <div className={styles.muted}>{installError}</div>}
       </EmptyState>
     );
   if (state.kind === "notLoggedIn")

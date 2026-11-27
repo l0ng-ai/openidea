@@ -1,0 +1,47 @@
+id = "electron"
+name = "Electron"
+group = "JavaScript"
+icon = "project-electron"
+order = 11
+description = "A desktop app on Electron from Electron Forge's create-electron-app."
+
+[[requires]]
+program = "node"
+min = "20.19"
+hint = "Install Node.js 20.19 or later: https://nodejs.org"
+
+[[requires]]
+program = "{{pm}}"
+when = { pm = ["pnpm", "yarn"] }
+hint = "Install it, or choose npm."
+
+[[fields]]
+id = "template"
+label = "Template:"
+type = "choice"
+options = [
+    { value = "vite-ts", label = "Vite + TypeScript" },
+    { value = "vite", label = "Vite" },
+    { value = "webpack-ts", label = "webpack + TypeScript" },
+]
+default = "vite-ts"
+
+[[fields]]
+id = "pm"
+label = "Package manager:"
+type = "choice"
+segmented = true
+options = ["npm", "pnpm", "yarn"]
+default = "npm"
+
+# Forge installs the dependencies itself: it adds them to package.json by installing them.
+[[steps]]
+label = "Running create-electron-app"
+package = "create-electron-app@latest"
+cwd = "parent"
+args = [
+    "init", "{{name}}", "--skip-git", "--package-manager", "{{pm}}",
+    { when = { template = ["vite", "vite-ts"] }, args = ["--template", "vite"] },
+    { when = { template = "webpack-ts" }, args = ["--template", "webpack"] },
+    { when = { template = ["vite-ts", "webpack-ts"] }, args = ["--typescript"] },
+]

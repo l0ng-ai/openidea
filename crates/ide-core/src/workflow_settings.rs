@@ -25,6 +25,17 @@ pub struct VcsSettings {
     pub issue_navigation: Vec<IssueLink>,
     /// Directory Mappings: repository roots added to or excluded from the detected ones.
     pub mappings: VcsMappings,
+    /// Settings › Version Control › GitHub: per-project GitHub CLI account selection.
+    pub github: GithubSettings,
+}
+
+/// Settings › Version Control › GitHub (`vcs.github`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GithubSettings {
+    /// GitHub CLI (`gh`) account login on `github.com` explicitly chosen for this project.
+    /// Empty means automatic (`gh`'s own active account, with no `GH_TOKEN` injected).
+    pub account: String,
 }
 
 /// Directory Mappings on top of repository detection. Paths are relative to the project
@@ -68,6 +79,7 @@ impl Default for VcsSettings {
             shelf: ShelfSettings::default(),
             issue_navigation: Vec::new(),
             mappings: VcsMappings::default(),
+            github: GithubSettings::default(),
         }
     }
 }
