@@ -535,6 +535,27 @@ describe("project clipboard ownership", () => {
     expect(useProjectTree.getState().clipboard?.remote).toBe(true);
   });
 
+  it("joins a refresh that is still reading instead of reading again", async () => {
+    let finish!: (paths: string[]) => void;
+    const files = vi.fn(
+      () =>
+        new Promise<string[]>((r) => {
+          finish = r;
+        }),
+    );
+    setOsClipboardForTests({ files, hasFiles: async () => false, setFiles: async () => true });
+    const first = refreshOsClipboard();
+    const second = refreshOsClipboard();
+    expect(second).toBe(first);
+    await vi.waitFor(() => expect(files).toHaveBeenCalledTimes(1));
+    finish([]);
+    await first;
+    // Settled: the next focus reads again.
+    void refreshOsClipboard();
+    await vi.waitFor(() => expect(files).toHaveBeenCalledTimes(2));
+    finish([]);
+  });
+
   it("waits for the hand-off before reading the OS clipboard", async () => {
     let finish!: (written: boolean) => void;
     const files = vi.fn(async () => ["/p/source.txt"]);

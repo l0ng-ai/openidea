@@ -16,6 +16,7 @@ import {
   selectDotnet,
 } from "./store";
 import { isDotnetProjectPath, isDotnetSolutionPath } from "./target";
+import { activateTree } from "./tree";
 
 const NUGET = "nuget";
 
@@ -129,6 +130,8 @@ export function activate() {
         ];
       },
     }),
+    // #5635: discovered solutions and projects as Project view nodes.
+    activateTree(),
   ];
   return () => {
     resetDotnet();

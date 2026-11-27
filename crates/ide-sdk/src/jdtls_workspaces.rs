@@ -79,6 +79,17 @@ fn clear_temp(cfg: &LanguageServerConfig, workspace: &Path) {
         return;
     }
     let temp = temp_dir(workspace);
+    let legacy = workspace.join(TEMP_DIR);
+    if temp != legacy {
+        // Earlier versions kept the temporary files in the workspace whatever its path, and a
+        // workspace in use is never removed as unused, so that folder would stay forever.
+        match std::fs::remove_dir_all(&legacy) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                tracing::debug!("jdtls: cannot remove the old temporary {}: {e}", legacy.display());
+            }
+            _ => {}
+        }
+    }
     for entry in std::fs::read_dir(&temp).into_iter().flatten().flatten() {
         let path = entry.path();
         let removed = if entry.file_type().is_ok_and(|t| t.is_dir()) {
@@ -268,8 +279,12 @@ mod tests {
         assert_ne!(temp_dir(&ws), temp_dir(&root(&data).join("q")));
 
         std::fs::create_dir_all(Path::new(&arg).join("jdt-apt-1")).unwrap();
+        // Left in the workspace by a version that kept the temporary files there.
+        std::fs::create_dir_all(ws.join(TEMP_DIR).join("jdt-apt-0")).unwrap();
+        std::fs::write(ws.join(TEMP_DIR).join("jdt-apt-0").join("0_processor.jar"), "").unwrap();
         mark_used(&cfg);
         assert_eq!(std::fs::read_dir(&arg).unwrap().count(), 0);
+        assert!(!ws.join(TEMP_DIR).exists());
         std::fs::remove_dir_all(&arg).unwrap();
     }
 
