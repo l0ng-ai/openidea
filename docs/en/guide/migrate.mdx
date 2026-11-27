@@ -37,11 +37,16 @@ Use **File › Manage IDE Settings › Import Settings from JetBrains IDE…** a
 A confirmation lists what will be imported before anything changes:
 
 - Color schemes (the `.icls` files) and the color scheme in use
+- Keymaps and the active keymap
 - Editor font: family, size, line spacing (as line height) and ligatures
 - Trailing-space stripping, final newline on save, sticky lines, whitespace display, soft wraps
+- Tabs and indents from the current code style scheme
+- Live templates from `templates/*.xml`, including their groups, abbreviations, `$VAR$` bodies, variables and mapped language contexts
 - **Confirm before exiting the IDE**
 
-Keymaps, code styles, live templates, inspection profiles and plugins are not imported; the confirmation lists the ones it skipped. Imported values go to the global settings.
+The confirmation shows imported and skipped live-template counts before anything is written. Cancelling changes nothing. Imported templates join the per-user custom templates without replacing built-ins or unrelated templates; importing again updates the same `jetbrains.*` ids instead of adding duplicates. Unknown or ambiguous contexts are listed as skipped rather than made global. Unsupported macro expressions are preserved as text for editing but are not evaluated; imported defaults still apply, otherwise the field remains editable.
+
+Inspection profiles, plugins and code style options other than Tabs and Indents are not imported; the confirmation lists them as skipped. Imported settings go to the global settings layer.
 
 ### Import a theme
 

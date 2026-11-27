@@ -39,6 +39,7 @@ import {
 } from "./popupStore";
 import { editPreviewLines } from "./workspaceEdit";
 import { featureBackoff } from "./availability";
+import { foreground } from "./foreground";
 import { iconNode } from "@/ui/iconNode";
 import { editorPrefs } from "@/platform/editorSettings";
 import { spellingIntentions } from "./spelling";
@@ -219,7 +220,7 @@ export async function applyQuickFix(view: EditorView) {
   try {
     for (const p of problems) {
       // oxlint-disable-next-line no-await-in-loop -- applies the first available fix, then stops; later fixes are not requested
-      const fix = (await quickFixesAt(view, p.from, p.to, p.problem))[0];
+      const fix = (await foreground(() => quickFixesAt(view, p.from, p.to, p.problem)))[0];
       if (view.state.doc !== state.doc) return;
       if (fix) return applyCodeAction(view, fix);
     }
@@ -606,8 +607,9 @@ export async function showIntentions(view: EditorView) {
   try {
     let failure: unknown = null;
     // Like IDEA, only applicable intentions are listed (servers also report disabled refactorings).
+    // The user waits for this answer: background requests to the same server give way.
     const [actions, found] = await Promise.all([
-      fetchIntentions(view).catch((e: unknown) => {
+      foreground(() => fetchIntentions(view)).catch((e: unknown) => {
         failure = e;
         return null;
       }),
@@ -660,7 +662,7 @@ export async function runKindAction(
   let actions: CodeAction[];
   try {
     // An empty kind asks for every action (filtered by title only).
-    actions = await fetchActions(view, kind ? [kind] : [], opts.whole);
+    actions = await foreground(() => fetchActions(view, kind ? [kind] : [], opts.whole));
   } catch (e) {
     if (!isCancelled(e) && opts.fallback && (await opts.fallback(isUnavailable(e) ? "notReady" : "error"))) return;
     reportLspError(view, e, true);

@@ -731,6 +731,41 @@ async fn reformat_uses_the_formatter_chain_and_preserves_a_dirty_buffer() {
     assert!(p.documents.is_dirty(doc.id).unwrap());
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn optimize_imports_is_a_write_tool_with_only_a_files_argument() {
+    let h = Harness::new();
+    h.trust().await;
+    let tools = Registry::new(h.host.clone()).tools(&h.root).unwrap();
+    let tool = tools.iter().find(|t| t.name == "optimize_imports").expect("optimize_imports is registered");
+    assert!(!tool.read_only && !tool.destructive);
+    assert_eq!(tool.input_schema["required"], json!(["files"]));
+    assert!(tool.input_schema["properties"].get("optimizeImports").is_none());
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn optimize_imports_removes_unused_imports_without_reformatting() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = Harness::new();
+    h.trust().await;
+    let ruff = h.root.join("fake-ruff");
+    std::fs::write(
+        &ruff,
+        "#!/bin/sh\n[ \"$1 $2 $3 $4 $5\" = \"check --extend-select I --fixable I,F401\" ] || exit 2\nsed '/^import sys$/d'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&ruff, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let p = h.host.project("main").unwrap();
+    p.settings
+        .set(ide_workspace::SettingsScope::Project, "languages.ruff.path", json!(ruff.to_string_lossy()))
+        .unwrap();
+    let path = h.root.join("src/example.py");
+    std::fs::write(&path, "import os\nimport sys\n\nprint(os)\n").unwrap();
+    let diff = h.call("optimize_imports", json!({"files":["src/example.py"]})).await;
+    assert!(diff.contains("-import sys"), "{diff}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "import os\n\nprint(os)\n");
+}
+
 /// Answers `execute_run_configuration`'s window requests the way the Run tool window does:
 /// starts the configuration in a tab and says whether it started. Returns what it started.
 fn config_run_window(h: &Harness) -> Arc<std::sync::Mutex<Vec<ide_run::RunConfig>>> {

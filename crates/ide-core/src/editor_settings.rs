@@ -33,6 +33,10 @@ pub struct EditorGeneralSettings {
     pub remove_trailing_blank_lines: bool,
     /// Copy as rich text (HTML with syntax colours) by default.
     pub rich_text_copy: bool,
+    /// Gutter › Highlight modified lines in the gutter: the VCS change bars next to the line numbers.
+    pub highlight_modified_lines: bool,
+    /// Gutter › Highlight modified lines in error stripe on the scrollbar (with `highlight_modified_lines`).
+    pub highlight_modified_lines_in_scrollbar: bool,
 }
 
 impl Default for EditorGeneralSettings {
@@ -51,6 +55,8 @@ impl Default for EditorGeneralSettings {
             keep_trailing_on_caret_line: true,
             remove_trailing_blank_lines: false,
             rich_text_copy: true,
+            highlight_modified_lines: true,
+            highlight_modified_lines_in_scrollbar: true,
         }
     }
 }

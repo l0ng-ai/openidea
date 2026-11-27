@@ -1,12 +1,12 @@
 /**
  * Import Settings… with a JetBrains `settings.zip`: maps the archive's colour
- * schemes, keymaps, fonts, tabs and indents, and the editor / general options
- * OpenIDEA has to settings writes, after a confirmation listing them. Only keys
- * present in the archive are written (JetBrains leaves defaults out). The rest
- * is listed as not imported.
+ * schemes, keymaps, fonts, tabs and indents, live templates, and the editor /
+ * general options OpenIDEA has to settings writes, after a confirmation listing
+ * them. Only keys present in the archive are written (JetBrains leaves defaults
+ * out). The rest is listed as not imported.
  */
 import { Fragment } from "react";
-import type { CustomKeymap, JetBrainsSettings, LanguageCodeStyle } from "@/bindings";
+import type { CustomKeymap, JetBrainsSettings, LanguageCodeStyle, LanguageInfo } from "@/bindings";
 import { customSchemes } from "@/platform/colorScheme";
 import { createFontProbeCanvas, fontsLoaded, monoFontFamily } from "@/platform/fonts";
 import { tx } from "@/platform/i18n";
@@ -17,6 +17,8 @@ import { guessOs } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
 import { notifications } from "@/workbench/contributions";
 import { ask } from "@/workbench/messages";
+import { parseJetBrainsTemplates, type JetBrainsTemplateImport } from "@/features/templates/live/jetbrains";
+import { saveImportedTemplates } from "@/features/templates/live/store";
 import styles from "./app.module.css";
 import {
   CODE_INSIGHT_FLAGS,
@@ -39,6 +41,8 @@ export interface JetBrainsImportPlan {
   invalid: string[];
   /** IDEA action ids the imported keymaps bind that have no counterpart here. */
   unknownActions: string[];
+  /** Custom live templates are committed once after confirmation, not through settings writes. */
+  liveTemplates?: JetBrainsTemplateImport;
 }
 
 /** The settings the import builds on (`settingsGetGlobal`). */
@@ -141,6 +145,7 @@ export async function planJetBrainsImport(
   bundle: JetBrainsSettings,
   current: CurrentSettings,
   fontHeight: FontHeight = measuredFontHeight,
+  languages?: readonly LanguageInfo[],
 ): Promise<JetBrainsImportPlan> {
   const { editor } = current;
   const plan: JetBrainsImportPlan = { writes: [], rows: [], skipped: [], invalid: [], unknownActions: [] };
@@ -349,17 +354,32 @@ export async function planJetBrainsImport(
   const general = options(bundle.files["options/ide.general.xml"], "GeneralSettings");
   add("general.confirmExit", bool(general.get("confirmExit")), tx("Confirm before exiting the IDE"));
 
+  const templateFiles = Object.fromEntries(
+    Object.entries(bundle.files).filter(([file]) => /^templates\/[^/]+\.xml$/.test(file)),
+  );
+  if (Object.keys(templateFiles).length) {
+    const catalog = languages ?? (await commands.languages().catch(() => []));
+    const parsed = parseJetBrainsTemplates(templateFiles, catalog);
+    if (parsed.templates.length || parsed.skipped.length || parsed.invalid.length) {
+      plan.liveTemplates = parsed;
+      const imported = parsed.templates.length;
+      const skipped = parsed.skipped.length + parsed.invalid.length;
+      plan.rows.push({ label: tx("Live templates"), value: tx`${imported} imported, ${skipped} skipped` });
+      for (const file of parsed.invalid) if (!plan.invalid.includes(file)) plan.invalid.push(file);
+    }
+  }
+
   const has = (prefix: string) => bundle.entries.some((e) => e.startsWith(prefix));
   if (has("codestyles/")) plan.skipped.push(tx("Code Style options other than Tabs and Indents"));
-  if (has("templates/")) plan.skipped.push(tx("Live templates"));
   if (has("inspection/")) plan.skipped.push(tx("Inspections"));
   if (has("installed.txt")) plan.skipped.push(tx("Plugins"));
   return plan;
 }
 
 function Summary({ plan }: { plan: JetBrainsImportPlan }) {
-  const left = [...plan.skipped, ...plan.invalid];
+  const left = [...plan.skipped, ...(plan.liveTemplates?.skipped ?? []), ...plan.invalid];
   const unknown = plan.unknownActions;
+  const unsupported = plan.liveTemplates?.unsupported.join(", ") ?? "";
   return (
     <div className={styles.importSummary}>
       <div>{tx("These settings will be imported:")}</div>
@@ -377,6 +397,7 @@ function Summary({ plan }: { plan: JetBrainsImportPlan }) {
         </div>
       )}
       {unknown.length > 0 && <div>{tx`Not available in OpenIDEA (${unknown.length}): ${unknown.join(", ")}.`}</div>}
+      {unsupported && <div>{tx`Unsupported template expressions (kept as text, not evaluated): ${unsupported}.`}</div>}
     </div>
   );
 }
@@ -385,10 +406,12 @@ function Summary({ plan }: { plan: JetBrainsImportPlan }) {
 export async function importJetBrainsSettings(path: string) {
   const bundle = await call(commands.settingsReadJetbrains(path));
   const plan = await planJetBrainsImport(bundle, await commands.settingsGetGlobal());
-  if (!plan.writes.length) {
+  if (!plan.writes.length && !plan.liveTemplates?.templates.length) {
+    const details = [...plan.invalid, ...(plan.liveTemplates?.skipped ?? [])].join(", ");
     notifications().notify({
       level: "warning",
       title: "No settings OpenIDEA can import were found",
+      body: details || undefined,
       key: "app.settingsImport",
     });
     return;
@@ -404,6 +427,7 @@ export async function importJetBrainsSettings(path: string) {
   for (const [key, value] of plan.writes)
     // oxlint-disable-next-line no-await-in-loop -- each write updates the settings value stored once at the end
     settings = await call(commands.settingsSet("global", key, JSON.stringify(value)));
+  if (plan.liveTemplates?.templates.length) saveImportedTemplates(plan.liveTemplates.templates);
   useProject.setState({ settings });
   notifications().notify({ level: "info", title: "Settings imported", body: path, key: "app.settingsImport" });
 }
