@@ -9132,6 +9132,7 @@
   "Lines {lines}": "第 {lines} 行",
   "Open Editors": "已打开的编辑器",
   "Enter Folder": "进入文件夹",
+  "Subcommands": "子命令",
   "Click to edit": "点击编辑",
   "Show less": "收起",
   "Show {more} more lines": "展开其余 {more} 行",
