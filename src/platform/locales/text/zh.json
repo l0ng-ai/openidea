@@ -10749,5 +10749,11 @@
   "tests.test_models": "tests.test_models",
   "unittest": "unittest",
   "1 file of the report is not in this project.": "报告中有 1 个文件不在此项目中。",
-  "{count} files of the report are not in this project.": "报告中有 {count} 个文件不在此项目中。"
+  "{count} files of the report are not in this project.": "报告中有 {count} 个文件不在此项目中。",
+  "Python doctest": "Python doctest 测试",
+  "Run the examples in Python docstrings": "运行 Python 文档字符串中的示例",
+  "calc.py": "calc.py",
+  "Files, or a class or function in one: calc.py::Stock.take": "文件，或文件中的某个类或函数：calc.py::Stock.take",
+  "e.g. -o ELLIPSIS -o NORMALIZE_WHITESPACE": "例如 -o ELLIPSIS -o NORMALIZE_WHITESPACE",
+  "Run doctests": "运行 doctest"
 }

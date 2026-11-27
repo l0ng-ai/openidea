@@ -4287,5 +4287,11 @@
   "tests.test_models": "tests.test_models",
   "unittest": "unittest",
   "1 file of the report is not in this project.": "1 file of the report is not in this project.",
-  "{count} files of the report are not in this project.": "{count} files of the report are not in this project."
+  "{count} files of the report are not in this project.": "{count} files of the report are not in this project.",
+  "Python doctest": "Python doctest",
+  "Run the examples in Python docstrings": "Run the examples in Python docstrings",
+  "calc.py": "calc.py",
+  "Files, or a class or function in one: calc.py::Stock.take": "Files, or a class or function in one: calc.py::Stock.take",
+  "e.g. -o ELLIPSIS -o NORMALIZE_WHITESPACE": "e.g. -o ELLIPSIS -o NORMALIZE_WHITESPACE",
+  "Run doctests": "Run doctests"
 }

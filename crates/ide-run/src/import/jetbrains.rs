@@ -342,6 +342,7 @@ impl Cx<'_> {
             DJANGO_TESTS => self.django_tests(name, c, &mut ignored)?,
             PYTHON_TESTS if matches!(factory, "py.test" | "pytest") => self.pytest(name, c, &mut ignored)?,
             PYTHON_TESTS if factory == "Unittests" => self.unittest(name, c, &mut ignored)?,
+            PYTHON_TESTS if factory == "Doctests" => self.doctest(name, c, &mut ignored)?,
             NPM => self.npm(name, c, &mut ignored)?,
             JEST | VITEST => self.js_tests(name, c, ty == VITEST, &mut ignored)?,
             NODE => self.node(name, c, &mut ignored)?,
@@ -694,6 +695,34 @@ impl Cx<'_> {
         }
         args.extend(self.args_quoted(field("_new_additionalArguments").as_deref(), Quotes::Single, &dir)?);
         let mut rc = config(name, "unittest", exe, args, Some("debugpy"));
+        rc.cwd = cwd.map(Into::into);
+        rc.is_test = true;
+        self.python_env(c, &mut rc, ignored)?;
+        Ok(rc)
+    }
+
+    /// PyCharm's Doctests: a file, or a Python target (`shop.money.round_eur`) as the IDE's
+    /// `file::qualname` (the module found on disk like pytest's targets).
+    fn doctest(&self, name: &str, c: &El, ignored: &mut Vec<String>) -> Res<RunConfig> {
+        let (exe, mut args, dir, cwd) = self.interpreter(c, ignored)?;
+        args.extend(["-m".to_owned(), "doctest".to_owned()]);
+        let field = |key: &str| c.option(key).map(json_string).filter(|v| !v.trim().is_empty());
+        args.extend(self.args_quoted(field("_new_additionalArguments").as_deref(), Quotes::Single, &dir)?);
+        if let Some(target) = field("_new_target") {
+            let target = self.expand(&target)?;
+            match field("_new_targetType").as_deref() {
+                Some("PYTHON") => match self.python_target(&target, &dir) {
+                    Some(node) => args.push(match node.split_once("::") {
+                        Some((file, rest)) => format!("{file}::{}", rest.replace("::", ".")),
+                        None => node,
+                    }),
+                    None => ignored.push("_new_target".into()),
+                },
+                Some("CUSTOM") => {}
+                _ => args.push(path_from(self.root, file_url_path(&target), &dir)),
+            }
+        }
+        let mut rc = config(name, "doctest", exe, args, Some("debugpy"));
         rc.cwd = cwd.map(Into::into);
         rc.is_test = true;
         self.python_env(c, &mut rc, ignored)?;
