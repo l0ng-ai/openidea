@@ -143,16 +143,24 @@ pub fn coalescing_sink(sink: SharedSink, runtime: tokio::runtime::Handle) -> Sha
 /// (IDEA) unless the user is already looking at an OpenIDEA window. The focus
 /// check and the request both touch the windowing system, so they run on the
 /// main thread; `emit` itself can come from any debug worker thread.
-fn flash_taskbar_unless_focused(app: &AppHandle) {
+fn flash_taskbar_unless_focused(app: &AppHandle, owner: Option<&str>) {
     let handle = app.clone();
+    let owner = owner.map(str::to_owned);
     let _ = app.run_on_main_thread(move || {
         if crate::application_focus::application_active(&handle) {
             return;
         }
-        for window in handle.webview_windows().values() {
-            let _ = window.request_user_attention(Some(UserAttentionType::Informational));
+        let windows = handle.webview_windows();
+        for label in attention_windows(windows.keys(), owner.as_deref()) {
+            let _ = windows[label].request_user_attention(Some(UserAttentionType::Informational));
         }
     });
+}
+
+/// The windows that ask for attention: the window of the project whose session stopped (on
+/// Windows each one flashes its own taskbar button), or every window when the event has none.
+fn attention_windows<'a>(labels: impl Iterator<Item = &'a String>, owner: Option<&str>) -> Vec<&'a String> {
+    labels.filter(|label| owner.is_none_or(|owner| label.as_str() == owner)).collect()
 }
 
 /// Sends `event` to `peers` (failures ignored: a window may be closing) and then to `owner`,
@@ -179,7 +187,7 @@ impl EventSink for TauriSink {
             IdeEvent::Debug { event: ide_core::event::DebugEvent::Stopped { reason, .. }, .. }
             if matches!(reason.as_str(), "breakpoint" | "function breakpoint")
         ) {
-            flash_taskbar_unless_focused(&self.app);
+            flash_taskbar_unless_focused(&self.app, self.window.as_deref());
         }
         // A confirmation waits for the user: bring the window up. Other requests (an agent's
         // run, opening a file) need nothing from the user and leave the focus where it is.
@@ -221,6 +229,13 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
     use std::time::Instant;
+
+    #[test]
+    fn a_breakpoint_asks_for_attention_in_its_own_project_window() {
+        let labels: Vec<String> = ["main", "project-1", "project-2"].map(String::from).into();
+        assert_eq!(attention_windows(labels.iter(), Some("project-1")), [&labels[1]]);
+        assert_eq!(attention_windows(labels.iter(), None).len(), 3);
+    }
 
     fn setup() -> (ide_core::SharedSink, Arc<Mutex<Vec<IdeEvent>>>) {
         let events = Arc::new(Mutex::new(Vec::new()));
