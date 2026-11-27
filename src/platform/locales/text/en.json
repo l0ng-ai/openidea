@@ -277,6 +277,7 @@
   "Suggested names": "Suggested names",
   "Choose the Statement to Unwrap/Remove": "Choose the Statement to Unwrap/Remove",
   "Choose Test for {stem} ({count} found)": "Choose Test for {stem} ({count} found)",
+  "'{newName}' is not a valid fixture name": "'{newName}' is not a valid fixture name",
   "Create Test for {file}": "Create Test for {file}",
   "Choose Test Subject for {stem} ({count} found)": "Choose Test Subject for {stem} ({count} found)",
   "Code Style": "Code Style",
