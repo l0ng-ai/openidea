@@ -393,6 +393,7 @@ impl Host {
         // After the cancels: a capture or open still running then discards what it registers.
         ops::heap::close_window_snapshots(self, window);
         let project = self.projects.write().remove(window)?;
+        project.closed.cancel();
         if let Some(plugins) = self.plugin_host() {
             if self.windows_for_root(&project.root).is_empty() {
                 plugins.project_closed(&project.root, window);
@@ -650,6 +651,7 @@ impl Host {
         self.terminals.kill_all();
         let projects: Vec<_> = self.projects.write().drain().map(|(_, p)| p).collect();
         for project in &projects {
+            project.closed.cancel();
             project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
             project.flutter.kill();
             project.devtools.kill();
@@ -787,5 +789,246 @@ mod tests {
         assert!(project.upgrade().is_none(), "the closed project is dropped");
         host.open_project("main", &root).unwrap();
         host.close_project("main");
+    }
+
+    async fn minimal_debug_adapter<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>(
+        stream: S,
+    ) {
+        use ide_jsonrpc::framing;
+        use serde_json::{Value, json};
+        use tokio::io::BufReader;
+
+        let (r, mut w) = tokio::io::split(stream);
+        let mut r = BufReader::new(r);
+        let mut seq = 1000;
+        while let Ok(Some(body)) = framing::read_message(&mut r).await {
+            let msg: Value = serde_json::from_slice(&body).unwrap();
+            if msg["type"] != "request" {
+                continue;
+            }
+            let cmd = msg["command"].as_str().unwrap_or_default();
+            seq += 1;
+            let resp = json!({
+                "seq": seq,
+                "type": "response",
+                "request_seq": msg["seq"],
+                "command": cmd,
+                "success": true,
+                "body": if cmd == "initialize" {
+                    json!({"supportsConfigurationDoneRequest": true})
+                } else {
+                    json!({})
+                }
+            });
+            if framing::write_message(&mut w, &serde_json::to_vec(&resp).unwrap()).await.is_err() {
+                break;
+            }
+            if cmd == "initialize" {
+                seq += 1;
+                let ev = json!({"seq": seq, "type": "event", "event": "initialized"});
+                if framing::write_message(&mut w, &serde_json::to_vec(&ev).unwrap()).await.is_err() {
+                    break;
+                }
+            }
+            if cmd == "disconnect" {
+                break;
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn closing_project_during_debug_start_cancels_the_launch_and_keeps_other_windows() {
+        use ide_dap::adapter::{AdapterIo, AdapterLauncher, AdapterSpec, LaunchFuture};
+
+        struct BlockingLauncher {
+            blocked_cwd: PathBuf,
+            entered: Arc<tokio::sync::Notify>,
+            release: Arc<tokio::sync::Notify>,
+        }
+
+        impl AdapterLauncher for BlockingLauncher {
+            fn launch(&self, spec: AdapterSpec, _reuse: Option<u16>) -> LaunchFuture {
+                let block = spec.cwd == self.blocked_cwd;
+                let entered = self.entered.clone();
+                let release = self.release.clone();
+                Box::pin(async move {
+                    if block {
+                        entered.notify_one();
+                        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), release.notified()).await;
+                    }
+                    let (client, server) = tokio::io::duplex(1 << 16);
+                    tokio::spawn(minimal_debug_adapter(server));
+                    let (r, w) = tokio::io::split(client);
+                    Ok(AdapterIo {
+                        launch_after_configuration: false,
+                        reader: Box::new(r),
+                        writer: Box::new(w),
+                        child: None,
+                        port: None,
+                        stderr: Arc::default(),
+                        program_output: None,
+                    })
+                })
+            }
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let root_a = base.join("proj-a");
+        let root_b = base.join("proj-b");
+        std::fs::create_dir(&root_a).unwrap();
+        std::fs::create_dir(&root_b).unwrap();
+
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let mut host = Host::new(HostConfig { local_data_dir: base.join("local"), ..HostConfig::for_test(&base) });
+        host.debugger = ide_dap::DebugManager::with_launcher(
+            host.languages.clone(),
+            Arc::new(BlockingLauncher {
+                blocked_cwd: root_a.clone(),
+                entered: entered.clone(),
+                release: release.clone(),
+            }),
+        );
+        let host = Arc::new(host);
+        host.open_project("main", &root_a).unwrap();
+        host.set_project_trust(&root_a, true, false).await.unwrap();
+        host.open_project("other", &root_b).unwrap();
+        host.set_project_trust(&root_b, true, false).await.unwrap();
+
+        let launch_cfg = |cwd: &Path| ide_dap::LaunchConfig {
+            name: "app".into(),
+            adapter: "codelldb".into(),
+            request: "launch".into(),
+            program: Some("/bin/true".into()),
+            args: vec![],
+            cwd: Some(cwd.into()),
+            env: Default::default(),
+            extra_json: None,
+        };
+
+        let other_id = ops::debug::debug_start(&host, "other", launch_cfg(&root_b)).await.unwrap();
+        let start_a = tokio::spawn({
+            let host = host.clone();
+            let cfg = launch_cfg(&root_a);
+            async move { ops::debug::debug_start(&host, "main", cfg).await }
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
+        host.close_project("main");
+        release.notify_waiters();
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), start_a).await.unwrap().unwrap();
+        assert_eq!(
+            result.as_ref().map_err(|e| e.kind),
+            Err(ide_core::error::ErrorKind::Cancelled),
+            "debug_start should fail as cancelled when project closes mid-launch, got {result:?}"
+        );
+        assert!(host.debugger.sessions(Some("main")).is_empty(), "closed window must have no live debug sessions");
+        assert_eq!(
+            host.debugger.sessions(Some("other")).into_iter().map(|s| s.id).collect::<Vec<_>>(),
+            vec![other_id],
+            "other window's debug session must remain alive"
+        );
+
+        host.close_project("other");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn closing_project_during_cargo_debug_build_cancels_build_and_skips_adapter() {
+        use ide_dap::adapter::{AdapterIo, AdapterLauncher, AdapterSpec, LaunchFuture};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingLauncher(Arc<AtomicUsize>);
+
+        impl AdapterLauncher for CountingLauncher {
+            fn launch(&self, _spec: AdapterSpec, _reuse: Option<u16>) -> LaunchFuture {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                let (client, server) = tokio::io::duplex(1 << 16);
+                tokio::spawn(minimal_debug_adapter(server));
+                let (r, w) = tokio::io::split(client);
+                Box::pin(async move {
+                    Ok(AdapterIo {
+                        launch_after_configuration: false,
+                        reader: Box::new(r),
+                        writer: Box::new(w),
+                        child: None,
+                        port: None,
+                        stderr: Arc::default(),
+                        program_output: None,
+                    })
+                })
+            }
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let root = base.join("rust-proj");
+        let marker = root.join("build-script.pid");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"slowbuild\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("build.rs"),
+            format!(
+                "fn main() {{\n    std::fs::write({:?}, std::process::id().to_string()).unwrap();\n    std::thread::sleep(std::time::Duration::from_secs(5));\n}}\n",
+                marker
+            ),
+        )
+        .unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+
+        let launches = Arc::new(AtomicUsize::new(0));
+        let mut host = Host::new(HostConfig { local_data_dir: base.join("local"), ..HostConfig::for_test(&base) });
+        host.debugger =
+            ide_dap::DebugManager::with_launcher(host.languages.clone(), Arc::new(CountingLauncher(launches.clone())));
+        let host = Arc::new(host);
+        host.open_project("main", &root).unwrap();
+        host.set_project_trust(&root, true, false).await.unwrap();
+
+        let cfg = ide_dap::LaunchConfig {
+            name: "cargo build".into(),
+            adapter: "codelldb".into(),
+            request: "launch".into(),
+            program: None,
+            args: vec![],
+            cwd: Some(root.clone().into()),
+            env: Default::default(),
+            extra_json: Some(serde_json::json!({ "cargo": { "args": ["build", "--bin", "slowbuild"] } }).to_string()),
+        };
+        let start = tokio::spawn({
+            let host = host.clone();
+            async move { ops::debug::debug_start(&host, "main", cfg).await }
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let build_pid: u32 = loop {
+            if let Ok(text) = std::fs::read_to_string(&marker)
+                && let Ok(pid) = text.trim().parse::<u32>()
+            {
+                break pid;
+            }
+            assert!(std::time::Instant::now() < deadline, "cargo build script never started");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        };
+
+        host.close_project_detached("main");
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), start).await.unwrap().unwrap();
+        host.wait_detached_closes();
+        assert_eq!(
+            result.as_ref().map_err(|e| e.kind),
+            Err(ide_core::error::ErrorKind::Cancelled),
+            "cargo build debug_start should be cancelled on close, got {result:?}"
+        );
+        assert_eq!(launches.load(Ordering::SeqCst), 0, "adapter must not be launched after close");
+        assert!(host.debugger.sessions(Some("main")).is_empty(), "no session may be registered after close");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while ide_core::process::process_alive(build_pid) {
+            assert!(std::time::Instant::now() < deadline, "cargo build script pid {build_pid} outlived cancellation");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
     }
 }

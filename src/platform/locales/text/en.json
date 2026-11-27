@@ -1197,9 +1197,16 @@
   "Select Ruff Configuration Directory": "Select Ruff Configuration Directory",
   "Empty uses the nearest project pyproject.toml ([tool.ruff]), ruff.toml, or .ruff.toml. A configured directory must contain one of them.": "Empty uses the nearest project pyproject.toml ([tool.ruff]), ruff.toml, or .ruff.toml. A configured directory must contain one of them.",
   "Ruff reads the nearest pyproject.toml ([tool.ruff]), ruff.toml, or .ruff.toml. Use it before the language server when preferred.": "Ruff reads the nearest pyproject.toml ([tool.ruff]), ruff.toml, or .ruff.toml. Use it before the language server when preferred.",
-  "Run Ruff on save for enabled languages when it is the selected formatting provider.": "Run Ruff on save for enabled languages when it is the selected formatting provider.",
+  "Run Ruff formatting on save for enabled languages when it is the selected formatting provider.": "Run Ruff formatting on save for enabled languages when it is the selected formatting provider.",
+  "Format on save": "Format on save",
+  "Fix safe lint issues on save": "Fix safe lint issues on save",
+  "Runs ruff check --fix-only on Python files when saving. This is separate from formatting and from Format on save.": "Runs ruff check --fix-only on Python files when saving. This is separate from formatting and from Format on save.",
+  "Fix Ruff safe lint issues": "Fix Ruff safe lint issues",
+  "Runs ruff check --fix-only on Python files before composing the commit. This does not format code.": "Runs ruff check --fix-only on Python files before composing the commit. This does not format code.",
   "Ruff formatting failed": "Ruff formatting failed",
   "Ruff formatting timed out": "Ruff formatting timed out",
+  "Ruff safe fixes failed": "Ruff safe fixes failed",
+  "Ruff safe fixes timed out": "Ruff safe fixes timed out",
   "Ruff configuration path does not exist: {path}": "Ruff configuration path does not exist: {path}",
   "Ruff configuration directory has no ruff.toml, .ruff.toml, or pyproject.toml with [tool.ruff]: {path}": "Ruff configuration directory has no ruff.toml, .ruff.toml, or pyproject.toml with [tool.ruff]: {path}",
   "Show lines added and deleted": "Show lines added and deleted",
@@ -4359,5 +4366,6 @@
   "Runs, debug sessions and the Python Console send matplotlib figures to the Plots tool window, unless the run sets MPLBACKEND. Off: figures open in matplotlib's own window.": "Runs, debug sessions and the Python Console send matplotlib figures to the Plots tool window, unless the run sets MPLBACKEND. Off: figures open in matplotlib's own window.",
   "cProfile": "cProfile",
   "py-spy": "py-spy",
-  "Automatic uses py-spy where it is installed and can sample without root (not on macOS), else cProfile from the standard library.": "Automatic uses py-spy where it is installed and can sample without root (not on macOS), else cProfile from the standard library."
+  "Automatic uses py-spy where it is installed and can sample without root (not on macOS), else cProfile from the standard library.": "Automatic uses py-spy where it is installed and can sample without root (not on macOS), else cProfile from the standard library.",
+  "No safe lint fixes to apply": "No safe lint fixes to apply"
 }

@@ -1395,6 +1395,8 @@ pub struct ExternalFormatterSettings {
     /// Prefer this formatter even when a language server offers formatting.
     pub prefer: bool,
     pub run_on_save: bool,
+    /// Ruff only: apply safe lint fixes (`ruff check --fix-only`) on save, independently of formatting.
+    pub fix_on_save: bool,
 }
 
 impl Default for ExternalFormatterSettings {
@@ -1423,6 +1425,7 @@ impl Default for ExternalFormatterSettings {
             .collect(),
             prefer: false,
             run_on_save: false,
+            fix_on_save: false,
         }
     }
 }
@@ -1952,6 +1955,16 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ruff_safe_fixes_on_save_default_off_and_round_trip() {
+        let old: Settings = serde_json::from_str(r#"{"languages":{"ruff":{"runOnSave":true}}}"#).unwrap();
+        assert!(old.languages.ruff.run_on_save);
+        assert!(!old.languages.ruff.fix_on_save);
+        let on: Settings = serde_json::from_str(r#"{"languages":{"ruff":{"fixOnSave":true}}}"#).unwrap();
+        assert!(on.languages.ruff.fix_on_save);
+        assert_eq!(serde_json::to_value(&on).unwrap()["languages"]["ruff"]["fixOnSave"], true);
+    }
 
     #[test]
     fn python_interpreter_may_name_a_run_target() {
