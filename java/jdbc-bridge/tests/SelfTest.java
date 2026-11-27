@@ -3,16 +3,20 @@ package ai.openidea.jdbc;
 import java.io.*;
 import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.sql.*;
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Logger;
 
 /** Drives the bridge over its actual pipes with a deterministic JDBC driver. */
 public class SelfTest {
     public static class Fixture implements Driver {
+        private static final CountDownLatch releaseCancellation = new CountDownLatch(1);
         private boolean readonly;
         private boolean dropped;
         private int changes;
@@ -42,8 +46,11 @@ public class SelfTest {
             });
             return proxy(Connection.class, (p, m, a) -> switch (m.getName()) {
                 case "setReadOnly" -> { readonly = (boolean) a[0]; yield null; }
-                case "getMetaData" -> meta;
-                case "close" -> null;
+                case "getMetaData" -> {
+                    if (path.equals("fail-metadata")) throw new SQLException("private bootstrap detail");
+                    yield meta;
+                }
+                case "close" -> { System.err.println("connection closed"); yield null; }
                 case "createStatement" -> statement();
                 case "isClosed" -> false;
                 case "isValid" -> !dropped;
@@ -66,10 +73,14 @@ public class SelfTest {
 
         Statement statement() {
             var stop = new CountDownLatch(1);
+            var slowCancel = new AtomicBoolean();
             return proxy(Statement.class, (p, m, a) -> switch (m.getName()) {
                 case "execute" -> {
                     String sql = (String) a[0];
-                    if (sql.equals("wait") || sql.equals("ignore cancel")) {
+                    if (sql.equals("write marker")) Files.writeString(started, "once\n", StandardOpenOption.APPEND);
+                    if (sql.equals("release cancel gate")) releaseCancellation.countDown();
+                    if (sql.equals("wait for cancel gate")) slowCancel.set(true);
+                    if (sql.equals("wait") || sql.equals("ignore cancel") || slowCancel.get()) {
                         if (started != null) java.nio.file.Files.writeString(started, "started");
                         System.err.println("statement started");
                         if (sql.equals("ignore cancel")) Thread.sleep(60_000);
@@ -81,7 +92,15 @@ public class SelfTest {
                     changes++;
                     yield false;
                 }
-                case "cancel" -> { stop.countDown(); yield null; }
+                case "cancel" -> {
+                    if (slowCancel.get()) {
+                        System.err.println("cancel entered");
+                        if (!releaseCancellation.await(15, TimeUnit.SECONDS))
+                            throw new SQLException("cancel gate timed out");
+                    }
+                    stop.countDown();
+                    yield null;
+                }
                 case "getUpdateCount" -> changes;
                 case "close" -> null;
                 default -> throw new SQLFeatureNotSupportedException();
@@ -114,6 +133,175 @@ public class SelfTest {
         return bytes;
     }
 
+    static void sendOn(DataOutputStream out, long id, int connection, String... fields) throws IOException {
+        out.writeLong(id);
+        out.writeInt(connection);
+        out.writeInt(fields.length);
+        for (String field : fields) {
+            byte[] data = field.getBytes(StandardCharsets.UTF_8);
+            out.writeInt(data.length);
+            out.write(data);
+        }
+        out.flush();
+    }
+
+    record Tagged(long id, byte[] data) {
+        int status() { return data.length == 0 ? -1 : data[0]; }
+    }
+
+    static Tagged tagged(DataInputStream in) throws IOException {
+        return new Tagged(in.readLong(), reply(in));
+    }
+
+    static Tagged expect(DataInputStream in, long id, int status) throws IOException {
+        var message = tagged(in);
+        assert message.id() == id && message.status() == status
+            : "Expected reply " + id + "/" + status + ", got " + message.id() + "/" + message.status();
+        return message;
+    }
+
+    static Process start(String java, boolean multiplex) throws IOException {
+        var command = new ArrayList<>(List.of(java, "--enable-native-access=ALL-UNNAMED", "-cp", System.getProperty("java.class.path"),
+            OpenIdeaJdbc.class.getName()));
+        if (multiplex) command.add("--multiplex");
+        return new ProcessBuilder(command).start();
+    }
+
+    static void multiplex(String java) throws Exception {
+        var child = start(java, true);
+        try (var out = new DataOutputStream(child.getOutputStream());
+             var in = new DataInputStream(child.getInputStream());
+             var log = child.errorReader()) {
+            sendOn(out, 100, 0, "open", Fixture.class.getName(), "jdbc:fixture:", "", "", "false");
+            try {
+                expect(in, 100, 1);
+            } catch (IOException e) {
+                throw new AssertionError("The bridge did not accept the multiplex bootstrap frame", e);
+            }
+            sendOn(out, 101, 1, "open");
+            expect(in, 101, 1);
+            sendOn(out, 102, 2, "open");
+            expect(in, 102, 1);
+            sendOn(out, 103, 1, "query", "wait for cancel gate", "0", "2");
+            assert log.lines().anyMatch("statement started"::equals);
+            sendOn(out, 104, 1, "query", "overlap", "0", "2");
+            expect(in, 104, 0);
+
+            sendOn(out, 103, 2); // Wrong connection must not cancel the active request.
+            expect(in, 103, -1);
+            sendOn(out, 105, 2, "query", "independent console", "0", "2");
+            expect(in, 105, 1);
+            sendOn(out, 103, 1);
+            expect(in, 103, -1);
+            assert log.lines().anyMatch("cancel entered"::equals);
+            sendOn(out, 106, 0, "schemaColumns", "app");
+            expect(in, 106, 1); // The driver is still withholding the cancellation response.
+            sendOn(out, 107, 1, "close");
+            expect(in, 107, 1);
+            sendOn(out, 108, 1, "query", "retired", "0", "2");
+            expect(in, 108, 0);
+            sendOn(out, 109, 2, "query", "release cancel gate", "0", "2");
+            var first = tagged(in);
+            var second = tagged(in);
+            var statuses = Map.of(first.id(), first.status(), second.id(), second.status());
+            assert statuses.equals(Map.of(103L, 0, 109L, 1)) : statuses;
+            assert log.lines().anyMatch("connection closed"::equals);
+
+            sendOn(out, 110, 2, "query", "after sibling close", "0", "2");
+            expect(in, 110, 1);
+            sendOn(out, 111, 0, "valid");
+            assert new String(expect(in, 111, 1).data(), StandardCharsets.UTF_8).contains("true");
+        } finally {
+            child.destroyForcibly().waitFor();
+        }
+    }
+
+    static void capacity(String java) throws Exception {
+        var child = start(java, true);
+        try (var out = new DataOutputStream(child.getOutputStream());
+             var in = new DataInputStream(child.getInputStream());
+             var log = child.errorReader()) {
+            sendOn(out, 200, 0, "open", Fixture.class.getName(), "jdbc:fixture:fail-metadata", "", "", "false");
+            var failure = new String(expect(in, 200, 0).data(), StandardCharsets.UTF_8);
+            assert failure.contains("JDBC connection failed") && !failure.contains("private bootstrap detail");
+            assert log.lines().anyMatch("connection closed"::equals);
+            sendOn(out, 201, 0, "open", Fixture.class.getName(), "jdbc:fixture:", "", "", "false");
+            expect(in, 201, 1);
+
+            for (int i = 1; i <= 31; i++) {
+                sendOn(out, 201 + i, i, "open");
+                expect(in, 201 + i, 1);
+            }
+            sendOn(out, 300, 32, "open");
+            var full = new String(expect(in, 300, 0).data(), StandardCharsets.UTF_8);
+            assert full.contains("Close") && full.contains("try again") : full;
+            sendOn(out, 301, 31, "query", "survives admission failure", "0", "2");
+            expect(in, 301, 1);
+
+            sendOn(out, 302, 1, "close");
+            expect(in, 302, 1);
+            sendOn(out, 303, 1, "query", "retired", "0", "2");
+            expect(in, 303, 0);
+            assert log.lines().anyMatch("connection closed"::equals);
+            boolean reopened = false;
+            for (int attempt = 0; attempt < 20; attempt++) {
+                int id = 33 + attempt;
+                sendOn(out, 304 + attempt, id, "open");
+                var response = tagged(in);
+                assert response.id() == 304 + attempt;
+                if (response.status() == 1) {
+                    reopened = true;
+                    break;
+                }
+                assert response.status() == 0;
+                Thread.sleep(5);
+            }
+            assert reopened : "A closed console did not release its connection slot";
+            sendOn(out, 330, 0, "valid");
+            expect(in, 330, 1);
+        } finally {
+            child.destroyForcibly().waitFor();
+        }
+    }
+
+    static void brokenStreams(String java) throws Exception {
+        var marker = Files.createTempFile("openidea-jdbc-write-", ".txt");
+        try {
+            for (boolean breakOutput : new boolean[]{false, true}) {
+                Files.writeString(marker, "");
+                var child = start(java, true);
+                try (var out = new DataOutputStream(child.getOutputStream());
+                     var in = new DataInputStream(child.getInputStream());
+                     var log = child.errorReader()) {
+                    sendOn(out, 400, 0, "open", Fixture.class.getName(), "jdbc:fixture:" + marker, "", "", "false");
+                    expect(in, 400, 1);
+                    sendOn(out, 401, 1, "open");
+                    expect(in, 401, 1);
+                    if (breakOutput) in.close();
+                    sendOn(out, 402, 1, "query", "write marker", "0", "2");
+                    if (!breakOutput) {
+                        expect(in, 402, 1);
+                        out.writeLong(403);
+                        out.writeInt(1);
+                        out.writeInt(1);
+                        out.writeInt(8);
+                        out.writeByte(0); // A truncated field, not a clean EOF between frames.
+                        out.close();
+                    }
+                    assert child.waitFor(5, TimeUnit.SECONDS) : "Broken JDBC pipe did not terminate (stdout=" + breakOutput + ")";
+                    assert child.exitValue() != 0;
+                    long closed = log.lines().filter("connection closed"::equals).count();
+                    assert closed == 2 : "Broken stdout=" + breakOutput + " closed " + closed + " connections";
+                    assert Files.readAllLines(marker).equals(List.of("once")) : "JDBC write was replayed";
+                } finally {
+                    child.destroyForcibly().waitFor();
+                }
+            }
+        } finally {
+            Files.delete(marker);
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         var boundary = new DataOutputStream(OutputStream.nullOutputStream());
         OpenIdeaJdbc.text(boundary, "x".repeat(OpenIdeaJdbc.LIMIT - 14));
@@ -124,8 +312,7 @@ public class SelfTest {
             throw new AssertionError("Oversized reply accepted");
         } catch (IOException expected) {}
         var java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
-        var child = new ProcessBuilder(java, "-cp", System.getProperty("java.class.path"),
-                OpenIdeaJdbc.class.getName()).start();
+        var child = start(java, false);
         try (var out = new DataOutputStream(child.getOutputStream());
              var in = new DataInputStream(child.getInputStream());
              var log = child.errorReader()) {
@@ -163,5 +350,8 @@ public class SelfTest {
         } finally {
             child.destroyForcibly().waitFor();
         }
+        multiplex(java);
+        capacity(java);
+        brokenStreams(java);
     }
 }

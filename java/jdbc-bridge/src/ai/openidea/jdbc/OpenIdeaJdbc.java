@@ -11,8 +11,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 public final class OpenIdeaJdbc {
     static final int LIMIT = 16 * 1024 * 1024;
-    final DataInputStream input = new DataInputStream(new BufferedInputStream(System.in));
-    final DataOutputStream output = new DataOutputStream(new BufferedOutputStream(System.out));
     Connection connection;
     boolean catalogs;
     boolean namespaceKnown;
@@ -61,7 +59,7 @@ public final class OpenIdeaJdbc {
         }
     }
 
-    void open(List<String> a, DataOutputStream out) throws Exception {
+    static Connection connect(List<String> a) throws Exception {
         String className = a.get(0), url = a.get(1);
         Driver driver = Class.forName(className).asSubclass(Driver.class).getConstructor().newInstance();
         var props = new Properties();
@@ -80,6 +78,7 @@ public final class OpenIdeaJdbc {
             }
             props.setProperty("duckdb.read_only", "true");
         }
+        Connection connection;
         try { connection = driver.connect(url, props); }
         catch (SQLException e) {
             if (!duckDbReadOnly) throw e;
@@ -89,12 +88,33 @@ public final class OpenIdeaJdbc {
         if (readOnly && !duckDbReadOnly) {
             try { connection.setReadOnly(true); }
             catch (SQLException | UnsupportedOperationException e) {
+                try { connection.close(); } catch (SQLException ignored) {}
                 throw new ReadOnlyUnavailable("The JDBC driver rejected Read-only. Check the driver settings and database account privileges.");
             }
         }
-        var m = connection.getMetaData();
-        header(out, "version", "quote");
-        row(out, m.getDatabaseProductName() + " " + m.getDatabaseProductVersion(), m.getIdentifierQuoteString());
+        return connection;
+    }
+
+    @FunctionalInterface
+    interface OpenConnection {
+        Connection open(List<String> args) throws Exception;
+    }
+
+    private void open(List<String> args, DataOutputStream out, OpenConnection opener) throws Exception {
+        Connection opened = opener.open(args);
+        try {
+            var m = opened.getMetaData();
+            header(out, "version", "quote");
+            row(out, m.getDatabaseProductName() + " " + m.getDatabaseProductVersion(), m.getIdentifierQuoteString());
+            connection = opened;
+        } catch (Exception | LinkageError failure) {
+            try { opened.close(); } catch (SQLException ignored) {}
+            throw failure;
+        }
+    }
+
+    void close() throws SQLException {
+        if (connection != null) connection.close();
     }
 
     static String pattern(DatabaseMetaData m, String literal) throws SQLException {
@@ -241,15 +261,25 @@ public final class OpenIdeaJdbc {
                 cancelled = true;
                 st = statement;
             }
+            cancelStatement(st);
+        }
+
+        synchronized Statement requestCancel() {
+            if (cancelled) return null;
+            cancelled = true;
+            return statement;
+        }
+
+        static void cancelStatement(Statement st) {
             if (st != null) {
                 try { st.cancel(); } catch (SQLException | UnsupportedOperationException ignored) {}
             }
         }
     }
 
-    static List<String> readFields(DataInputStream in, int count) throws IOException {
+    static List<String> readFields(DataInputStream in, int count, int headerBytes) throws IOException {
         if (count < 1 || count > 8192) throw new IOException("Invalid JDBC field count");
-        int remaining = LIMIT - Long.BYTES - Integer.BYTES;
+        int remaining = LIMIT - headerBytes;
         var fields = new ArrayList<String>(count);
         for (int i = 0; i < count; i++) {
             remaining -= Integer.BYTES;
@@ -263,14 +293,14 @@ public final class OpenIdeaJdbc {
         return fields;
     }
 
-    ByteArrayOutputStream reply(Work work, List<String> a) throws IOException {
+    ByteArrayOutputStream reply(Work work, List<String> a, OpenConnection opener) throws IOException {
         var buffer = new ByteArrayOutputStream();
         var reply = new DataOutputStream(buffer);
         String op = a.remove(0);
         try {
             reply.writeBoolean(true);
             switch (op) {
-                case "open" -> open(a, reply);
+                case "open" -> open(a, reply, opener);
                 case "schemas" -> schemas(reply);
                 case "tables", "columns", "schemaColumns" -> metadata(op, a, reply);
                 case "namespace" -> {
@@ -349,14 +379,15 @@ public final class OpenIdeaJdbc {
         return buffer;
     }
 
-    synchronized void send(ByteArrayOutputStream reply) throws IOException {
-        output.writeInt(reply == null ? 0 : reply.size());
-        if (reply != null) reply.writeTo(output);
-        output.flush();
+    static void send(DataOutputStream output, ByteArrayOutputStream reply) throws IOException {
+        synchronized (output) {
+            output.writeInt(reply == null ? 0 : reply.size());
+            if (reply != null) reply.writeTo(output);
+            output.flush();
+        }
     }
 
-    void run() throws IOException {
-        System.setOut(System.err);
+    void run(DataInputStream input, DataOutputStream output) throws IOException {
         var active = new AtomicReference<Work>();
         var worker = Executors.newSingleThreadExecutor(r -> {
             var thread = new Thread(r, "jdbc-session");
@@ -371,17 +402,17 @@ public final class OpenIdeaJdbc {
                 if (count == 0) {
                     var work = active.get();
                     if (work != null && work.id == id) work.cancel();
-                    send(null); // Acknowledge even a cancel that raced with a completed request.
+                    send(output, null); // Acknowledge even a cancel that raced with a completed request.
                     continue;
                 }
-                var fields = readFields(input, count);
+                var fields = readFields(input, count, Long.BYTES + Integer.BYTES);
                 var work = new Work(id);
                 if (!active.compareAndSet(null, work)) throw new IOException("Overlapping JDBC requests");
                 worker.execute(() -> {
                     try {
-                        var result = reply(work, fields);
+                        var result = reply(work, fields, OpenIdeaJdbc::connect);
                         active.compareAndSet(work, null);
-                        send(result);
+                        send(output, result);
                     } catch (Throwable fatal) {
                         // Without a complete frame the parent must discard this session.
                         Runtime.getRuntime().halt(1);
@@ -394,8 +425,19 @@ public final class OpenIdeaJdbc {
     }
 
     public static void main(String[] args) throws Exception {
+        var input = new DataInputStream(new BufferedInputStream(System.in));
+        boolean multiplex = args.length == 1 && args[0].equals("--multiplex");
+        // PrintStream swallows broken pipe errors. The multiplexed writer needs
+        // the failure so it can close all peers and terminate the transport.
+        OutputStream wire = multiplex ? new FileOutputStream(FileDescriptor.out) : System.out;
+        var output = new DataOutputStream(new BufferedOutputStream(wire));
+        System.setOut(System.err);
+        if (multiplex) {
+            new MultiplexBridge(input, output).run();
+            return;
+        }
         var bridge = new OpenIdeaJdbc();
-        try { bridge.run(); }
-        finally { if (bridge.connection != null) bridge.connection.close(); }
+        try { bridge.run(input, output); }
+        finally { bridge.close(); }
     }
 }
