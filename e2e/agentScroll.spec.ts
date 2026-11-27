@@ -209,3 +209,48 @@ test("opens a folded process run with the keyboard and jumps back to the latest 
   await expect(jump).toBeHidden();
   await expect.poll(() => stream.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThan(40);
 });
+
+test("paints earlier turns past folded process runs longer than ENTRY_BATCH", async ({ page }) => {
+  const longRun = (prefix: string, count: number): AgentEntry[] =>
+    Array.from({ length: count }, (_, i): AgentEntry => ({
+      type: "tool",
+      id: `${prefix}-${i}`,
+      kind: i % 3 === 0 ? "edit" : i % 2 === 0 ? "execute" : "read",
+      title: `tool ${prefix}-${i}`,
+      status: "completed",
+      locations: [],
+      output: null,
+      diffs: [],
+    }));
+  const longProcessEntries: AgentEntry[] = [
+    { type: "user", text: "Earliest request before long runs", attachments: [], steered: false },
+    { type: "agent", text: "Initial reply" },
+    { type: "user", text: "Split PR into three focused PRs", attachments: [], steered: false },
+    ...longRun("batch-a", 75),
+    { type: "agent", text: "Interim status update" },
+    ...longRun("batch-b", 75),
+  ];
+  await page.goto("/");
+  await page.getByRole("tree", { name: "Project" }).waitFor();
+  await page.evaluate(
+    async ({ task, entries }) => {
+      const path = "/src/features/agents/store.ts";
+      const store = await import(path);
+      store.useAgents.setState({
+        loaded: true,
+        error: null,
+        providers: [],
+        tasks: new Map([[task.id, { ...task, status: "running" }]]),
+        entries: new Map([[task.id, entries]]),
+        unread: new Set(),
+        docked: null,
+      });
+      store.openTaskInEditorLocation(task.id);
+    },
+    { task, entries: longProcessEntries },
+  );
+  const stream = page.locator("[class*='_stream_']:visible");
+  await expect(stream.getByText("Earliest request before long runs")).toBeVisible();
+  await expect(stream.getByText("Split PR into three focused PRs")).toBeVisible();
+  await expect(stream.getByText("Interim status update")).toBeVisible();
+});

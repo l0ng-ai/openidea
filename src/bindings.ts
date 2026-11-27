@@ -44,6 +44,8 @@ export const commands = {
 	agentCommands: (provider: string, task: string | null) => typedError<AgentCommand[], IdeError>(__TAURI_INVOKE("agent_commands", { provider, task })),
 	/**  Reads the running session's context categories without sending a prompt. */
 	agentContextUsage: (task: string) => typedError<AgentContextUsage, IdeError>(__TAURI_INVOKE("agent_context_usage", { task })),
+	/**  Default Copilot CLI sign-in status alongside authenticated `github.com` accounts in `gh`. */
+	agentCopilotAuthStatus: () => typedError<CopilotAuthStatus, IdeError>(__TAURI_INVOKE("agent_copilot_auth_status")),
 	agentCreate: (request: NewAgentTask) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_create", { request })),
 	/**  Imports a JetBrains `acp.json` file's `agent_servers` entries as custom agents. */
 	agentCustomImport: (text: string) => typedError<AcpImportOutcome[], IdeError>(__TAURI_INVOKE("agent_custom_import", { text })),
@@ -69,12 +71,19 @@ export const commands = {
 	 *  as the agent's own fork, under an id the host chooses. `cwd` must be where it was recorded.
 	 */
 	agentForkSession: (provider: string, sessionId: string, cwd: string) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_fork_session", { provider, sessionId, cwd })),
+	/**
+	 *  Starts `gh auth login --hostname github.com` in an IDE-managed PTY (with ambient token
+	 *  variables cleared) and streams its output and exit code.
+	 */
+	agentGhLoginSpawn: (cols: number, rows: number, onEvent: Channel<AgentLoginEvent>) => typedError<TerminalInfo, IdeError>(__TAURI_INVOKE("agent_gh_login_spawn", { cols, rows, onEvent })),
 	/**  The task's uncommitted changes and the commits made since it started. */
 	agentGroupedChanges: (task: string) => typedError<AgentChanges, IdeError>(__TAURI_INVOKE("agent_grouped_changes", { task })),
 	/**  Hermes Agent profiles on this machine (`default` first); empty without Hermes. */
 	agentHermesProfiles: () => typedError<HermesProfile[], IdeError>(__TAURI_INVOKE("agent_hermes_profiles")),
 	/**  Imports an external session as a task: its first turn loads and replays it. */
 	agentImportSession: (provider: string, sessionId: string) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_import_session", { provider, sessionId })),
+	/**  Starts agent `id`'s interactive sign-in flow in an IDE-managed PTY and streams its output and exit code. */
+	agentLoginSpawn: (id: string, cols: number, rows: number, onEvent: Channel<AgentLoginEvent>) => typedError<TerminalInfo, IdeError>(__TAURI_INVOKE("agent_login_spawn", { id, cols, rows, onEvent })),
 	/**  Discovers external MCP configuration files on disk (CLI user configs + workspace `.mcp.json`). */
 	agentMcpDiscoverSources: () => typedError<McpExternalSource[], IdeError>(__TAURI_INVOKE("agent_mcp_discover_sources")),
 	/**  Copies MCP servers from `.mcp.json` and `.vscode/mcp.json` into the workspace settings once. */
@@ -787,6 +796,13 @@ export const commands = {
 	ghPrReview: (repo: string | null, number: number, event: ReviewEvent, body: string) => typedError<null, IdeError>(__TAURI_INVOKE("gh_pr_review", { repo, number, event, body })),
 	ghPrReviewComments: (repo: string | null, number: number) => typedError<PrReviewComment[], IdeError>(__TAURI_INVOKE("gh_pr_review_comments", { repo, number })),
 	ghPrView: (repo: string | null, number: number) => typedError<PullRequestDetails, IdeError>(__TAURI_INVOKE("gh_pr_view", { repo, number })),
+	/**  Reads the GitHub CLI (`gh`) keyring accounts and which account applies to `window`'s project. */
+	ghProjectAccountStatus: () => typedError<GhProjectAccountStatus, IdeError>(__TAURI_INVOKE("gh_project_account_status")),
+	/**
+	 *  Sets `vcs.github.account` for `window`'s project (or globally when no project is open),
+	 *  updates the project's `GH_TOKEN` environment immediately, and returns the updated status.
+	 */
+	ghSetProjectAccount: (account: string) => typedError<GhProjectAccountStatus, IdeError>(__TAURI_INVOKE("gh_set_project_account", { account })),
 	/**  Forgets the credential of `key` (a `git_credentials` entry). */
 	gitCredentialForget: (key: string) => __TAURI_INVOKE<void>("git_credential_forget", { key }),
 	/**  Settings › Git › Saved credentials: `scheme://host` of every saved entry. */
@@ -2380,10 +2396,20 @@ export const commands = {
 	/**  Opens an empty (welcome) window; returns its label. */
 	windowNew: () => typedError<string, IdeError>(__TAURI_INVOKE("window_new")),
 	/**
+	 *  Opens this window's Get from VCS window (or focuses it), filling in `url` when given.
+	 *  `background` (`#rrggbb`) paints a new window until its page has loaded.
+	 */
+	windowOpenClone: (url: string | null, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_clone", { url, background })),
+	/**
 	 *  Opens a window listing the files that differ between two revisions of this window's project.
 	 *  `background` (`#rrggbb`) paints it until its page has loaded.
 	 */
 	windowOpenComparison: (comparison: ComparisonLaunch, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_comparison", { comparison, background })),
+	/**
+	 *  Opens this window's Remote Development window (or focuses it). `background` (`#rrggbb`)
+	 *  paints a new window until its page has loaded.
+	 */
+	windowOpenConnect: (background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_connect", { background })),
 	/**
 	 *  Opens this window's Sync with Deployed window comparing `paths` with `server` (or hands them
 	 *  to the open one). `background` (`#rrggbb`) paints a new window until its page has loaded.
@@ -2412,6 +2438,11 @@ export const commands = {
 	 *  itself, in LightEdit.
 	 */
 	windowOpenFiles: (files: string[]) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("window_open_files", { files })),
+	/**
+	 *  Opens this window's New Project window (or focuses it). `background` (`#rrggbb`) paints a new
+	 *  window until its page has loaded.
+	 */
+	windowOpenNewProject: (background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_new_project", { background })),
 	/**
 	 *  Opens `path` in a new window (`new_window`) or tells the caller to open it
 	 *  itself (`current`). A project already open in some window is focused instead.
@@ -2476,6 +2507,8 @@ export const commands = {
 	deployment: DeploymentLaunch | null,
 	/**  Editor windows: the file to show (Open in New Window → lightweight aux editor). */
 	editor: EditorLaunch_Serialize | null,
+	/**  Get from VCS windows: the repository URL to fill in. */
+	cloneUrl: string | null,
 } | null>("window_take_launch"),
 	/**
 	 *  Local bootstrap snapshot for a `settings-<parent>` window, avoiding a sequential
@@ -2900,6 +2933,9 @@ export type AgentLimit = {
 	resetsMs: number | null,
 };
 
+/**  Output and completion of an interactive sign-in PTY started by the IDE. */
+export type AgentLoginEvent = { type: "output"; data: string } | { type: "exited"; code: number | null };
+
 /**  An MCP server passed to coding agents in `session/new`, `session/load` and `session/fork`. */
 export type AgentMcpServer = AgentMcpServer_Serialize | AgentMcpServer_Deserialize;
 
@@ -3014,6 +3050,8 @@ export type AgentProvider_Deserialize = {
 	commandReadOnlyReason: AgentCommandReadOnlyReason | null,
 	/**  Whether the command was found (on `PATH`). */
 	installed: boolean,
+	/**  Whether OpenIDEA can run this agent's sign-in flow directly in an embedded terminal. */
+	canSignIn?: boolean,
 	/**  The built-in command can be owned by a global npm package. */
 	canCheckCliUpdate?: boolean,
 	/**  Environment variables it starts with (from its agent file). */
@@ -3045,6 +3083,8 @@ export type AgentProvider_Serialize = {
 	commandReadOnlyReason: AgentCommandReadOnlyReason | null,
 	/**  Whether the command was found (on `PATH`). */
 	installed: boolean,
+	/**  Whether OpenIDEA can run this agent's sign-in flow directly in an embedded terminal. */
+	canSignIn: boolean,
 	/**  The built-in command can be owned by a global npm package. */
 	canCheckCliUpdate: boolean,
 	/**  Environment variables it starts with (from its agent file). */
@@ -4984,6 +5024,16 @@ export type ContributionCount = {
 export type ContributionInfo = {
 	point: string,
 	label: string,
+};
+
+/**  GitHub Copilot's default sign-in status alongside the accounts available through `gh`. */
+export type CopilotAuthStatus = {
+	authenticated: boolean,
+	login: string | null,
+	authType: string | null,
+	statusMessage: string | null,
+	ghInstalled: boolean,
+	ghAccounts: GhAuthAccount[],
 };
 
 export type CoveragePrepared = CoveragePrepared_Serialize | CoveragePrepared_Deserialize;
@@ -7706,6 +7756,12 @@ export type GhApiRequest = {
 	paginate: boolean,
 };
 
+/**  An authenticated `github.com` account stored in GitHub CLI (`gh`). */
+export type GhAuthAccount = {
+	login: string,
+	active: boolean,
+};
+
 /**  Whether pull requests can be shown for the project, and why not. */
 export type GhAvailability = { kind: "ready"; repo: GhRepo; 
 /**  The signed-in user. */
@@ -7716,6 +7772,18 @@ login: string | null } |
 { kind: "notLoggedIn"; message: string } | 
 /**  The project has no GitHub remote (or is not a git repository). */
 { kind: "notGitHub"; message: string } | { kind: "error"; message: string };
+
+/**  GitHub CLI accounts available on this machine and which one applies to the project. */
+export type GhProjectAccountStatus = {
+	ghInstalled: boolean,
+	accounts: GhAuthAccount[],
+	/**  Value of `vcs.github.account` (`""` = Automatic). */
+	configuredAccount: string,
+	/**  Account login currently used (`configured_account` if signed in, else `gh`'s active account). */
+	effectiveAccount: string | null,
+	/**  Non-active `gh` account with access to this project's GitHub remote when `configured_account` is empty. */
+	suggestedAccount: string | null,
+};
 
 export type GhRepo = {
 	/**  `owner/name`. */
@@ -7845,6 +7913,15 @@ export type GitSigningConfig = {
 export type GitSigningEdit = {
 	enabled: boolean | null,
 	key: string | null,
+};
+
+/**  Settings › Version Control › GitHub (`vcs.github`). */
+export type GithubSettings = {
+	/**
+	 *  GitHub CLI (`gh`) account login on `github.com` explicitly chosen for this project.
+	 *  Empty means automatic (`gh`'s own active account, with no `GH_TOKEN` injected).
+	 */
+	account?: string,
 };
 
 export type GoBuildTags = {
@@ -9468,6 +9545,8 @@ export type Launch_Deserialize = {
 	deployment?: DeploymentLaunch | null,
 	/**  Editor windows: the file to show (Open in New Window → lightweight aux editor). */
 	editor?: EditorLaunch_Deserialize | null,
+	/**  Get from VCS windows: the repository URL to fill in. */
+	cloneUrl?: string | null,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
@@ -9499,6 +9578,8 @@ export type Launch_Serialize = {
 	deployment: DeploymentLaunch | null,
 	/**  Editor windows: the file to show (Open in New Window → lightweight aux editor). */
 	editor: EditorLaunch_Serialize | null,
+	/**  Get from VCS windows: the repository URL to fill in. */
+	cloneUrl: string | null,
 };
 
 export type LegacyPasswordAction = "check" | "retry" | "removePlaintext";
@@ -14586,6 +14667,8 @@ export type VcsSettings = {
 	issueNavigation?: IssueLink[],
 	/**  Directory Mappings: repository roots added to or excluded from the detected ones. */
 	mappings?: VcsMappings,
+	/**  Settings › Version Control › GitHub: per-project GitHub CLI account selection. */
+	github?: GithubSettings,
 };
 
 /**  The tool that creates a new Python environment in "Add Python Interpreter". */

@@ -1,11 +1,31 @@
-/** Get from VCS: clone a repository into a new folder and open it as a project. */
-import { useEffect, useRef, useState } from "react";
+/**
+ * Get from VCS: clone a repository into a new folder and open it as a project. In the desktop app
+ * the dialog has its own native window (`clone-<parent>`, see `cloneWindow.tsx`), which hands the
+ * cloned folder back to its project window to open; remote windows show it in the page.
+ */
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Channel } from "@tauri-apps/api/core";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { logError } from "@/platform/errorLog";
 import { tx } from "@/platform/i18n";
-import { callDesktop, commands, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
+import { call, callDesktop, commands, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
 import { openProject } from "@/platform/project";
-import { Checkbox, Dialog, Icon, IconButton, Input, ProgressBar, Select, T, showContextMenu } from "@/ui";
+import { isRemoteWindow } from "@/platform/remote";
+import {
+  Checkbox,
+  Dialog,
+  Icon,
+  IconButton,
+  Input,
+  ProgressBar,
+  Select,
+  T,
+  showContextMenu,
+  type DialogButton,
+} from "@/ui";
 import { cloneSourceList, notifications, useCloneSources } from "@/workbench/contributions";
+import { windowBackgroundHex } from "@/workbench/theme";
+import { WindowDialogFrame } from "@/workbench/WindowDialogFrame";
 import { openDialog } from "./dialogs";
 import { progressFraction } from "./model";
 import logo from "../../../src-tauri/icons/128x128.png";
@@ -106,15 +126,120 @@ async function defaultParent(): Promise<string> {
   return "";
 }
 
+/** Sent by the Get from VCS window to its project window with the cloned folder. */
+export const CLONED = "openidea://clone/cloned";
+
 export function showCloneDialog(initialUrl = "") {
   if (!isTauri()) {
     notifications().notify({ group: "vcs", level: "warning", title: "Cloning requires the desktop app" });
     return;
   }
-  openDialog((close) => <CloneDialog onClose={close} initialUrl={initialUrl} />);
+  const inPage = () => openDialog((close) => <CloneDialog onClose={close} initialUrl={initialUrl} />);
+  if (isRemoteWindow()) {
+    inPage();
+    return;
+  }
+  void call(commands.windowOpenClone(initialUrl || null, windowBackgroundHex())).catch((e: unknown) => {
+    logError("cannot open the Get from VCS window", e);
+    inPage();
+  });
 }
 
-function CloneDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl: string }) {
+/** Opens a cloned folder as this window's project. */
+async function openCloned(dir: string) {
+  try {
+    await openProject(dir);
+  } catch (e) {
+    notifications().notify({
+      group: "vcs",
+      level: "error",
+      title: "Cloned, but the project could not be opened",
+      body: e instanceof Error ? e.message : String(e),
+    });
+  }
+}
+
+/** Opens what the Get from VCS window cloned, here in its project window. */
+export function installCloneHandoff(): () => void {
+  if (!isTauri()) return () => {};
+  let self: ReturnType<typeof getCurrentWebviewWindow>;
+  try {
+    self = getCurrentWebviewWindow();
+  } catch {
+    return () => {}; // Not a desktop window (tests).
+  }
+  let disposed = false;
+  let off: (() => void) | undefined;
+  void self
+    .listen<{ dir: string }>(CLONED, ({ payload }) => {
+      void self.setFocus().catch(() => {});
+      void openCloned(payload.dir);
+    })
+    .then((u) => (disposed ? u() : (off = u)));
+  return () => {
+    disposed = true;
+    off?.();
+  };
+}
+
+interface FrameProps {
+  standalone: boolean;
+  onCancel: () => void;
+  buttons: readonly DialogButton[];
+  children: ReactNode;
+  /** The clone sources; the window shows them full height. */
+  sidebar: ReactNode;
+}
+
+function Frame({ standalone, onCancel, buttons, children, sidebar }: FrameProps) {
+  if (standalone)
+    return (
+      <WindowDialogFrame
+        title="Get from Version Control"
+        buttons={buttons}
+        onCancel={onCancel}
+        sidebar={sidebar}
+        bodyClassName={styles.windowBody}
+      >
+        {children}
+      </WindowDialogFrame>
+    );
+  return (
+    <Dialog
+      open
+      title={
+        <span className={styles.dialogTitle}>
+          <img src={logo} alt="" draggable={false} />
+          <T>Clone Repository</T>
+        </span>
+      }
+      aria-label="Clone Repository"
+      onClose={onCancel}
+      width="min(920px, calc(100vw - 48px))"
+      resizable="both"
+      className={styles.dialog}
+      buttons={buttons}
+    >
+      {children}
+    </Dialog>
+  );
+}
+
+/**
+ * `standalone`: fills the Get from VCS window; the cloned folder goes to `onCloned` (its project
+ * window) instead of opening here.
+ */
+export function CloneDialog({
+  onClose,
+  initialUrl,
+  standalone = false,
+  onCloned,
+}: {
+  onClose: () => void;
+  initialUrl: string;
+  standalone?: boolean;
+  onCloned?: (dir: string) => Promise<void>;
+}) {
   /** Sidebar selection: "url" (Repository URL) or a contributed source's id; each keeps its own URL. */
   const [sourceId, setSourceId] = useState("url");
   const [urls, setUrls] = useState<Record<string, string>>({ url: initialUrl });
@@ -188,6 +313,23 @@ function CloneDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl:
     else void callDesktop("cancel_request", { id });
   };
 
+  useEffect(() => {
+    if (!standalone || !isTauri()) return;
+    // Closing the window stops a clone in progress instead of leaving it running unseen.
+    let disposed = false;
+    let off: (() => void) | undefined;
+    void getCurrentWebviewWindow()
+      .onCloseRequested(() => {
+        const id = request.current;
+        if (id !== null) void callDesktop("cancel_request", { id });
+      })
+      .then((u) => (disposed ? u() : (off = u)));
+    return () => {
+      disposed = true;
+      off?.();
+    };
+  }, [standalone]);
+
   const clone = async (picked?: string) => {
     const cloneUrl = picked ?? url;
     const target = (customDir ?? joinPath(parent, cloneDirName(cloneUrl))).trim();
@@ -205,17 +347,12 @@ function CloneDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl:
       await callDesktop("vcs_clone", { request: id, url: cloneUrl.trim(), dest: target, depth, onOutput: channel });
       writeParent(parentOf(target));
       rememberUrl(cloneUrl.trim());
-      onClose();
-      try {
-        await openProject(target);
-      } catch (e) {
-        notifications().notify({
-          group: "vcs",
-          level: "error",
-          title: "Cloned, but the project could not be opened",
-          body: e instanceof Error ? e.message : String(e),
-        });
+      if (onCloned) {
+        await onCloned(target);
+        return;
       }
+      onClose();
+      await openCloned(target);
     } catch (e) {
       if (isCancelled(e)) setError("Clone cancelled");
       else setError(e instanceof Error ? e.message : String(e));
@@ -226,165 +363,162 @@ function CloneDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl:
     }
   };
 
-  return (
-    <Dialog
-      open
-      title={
-        <span className={styles.dialogTitle}>
-          <img src={logo} alt="" draggable={false} />
-          <T>Clone Repository</T>
-        </span>
-      }
-      aria-label="Clone Repository"
-      onClose={cancel}
-      width="min(920px, calc(100vw - 48px))"
-      resizable="both"
-      className={styles.dialog}
-      buttons={[
-        { label: "Clone", role: "default", disabled: !!invalid || busy, onClick: () => void clone() },
-        { label: "Cancel", role: "cancel", onClick: cancel },
-      ]}
-    >
-      <div ref={layout} className={styles.layout} data-compact={compact || undefined}>
-        <aside className={styles.sidebar} aria-label={tx("Clone source")}>
-          {[{ id: "url", label: "Repository URL", icon: "branch" }, ...sources].map((s) => (
-            <button
-              key={s.id}
-              type="button"
-              className={styles.sourceItem}
-              data-selected={s.id === sourceId ? "" : undefined}
-              aria-pressed={s.id === sourceId}
-              disabled={busy}
-              onClick={() => setSourceId(s.id)}
-            >
-              <Icon name={s.icon} size={16} />
-              <span className={styles.sourceName}>
-                <T>{s.label}</T>
-              </span>
-            </button>
-          ))}
-        </aside>
-
-        <form
-          className={styles.form}
-          onSubmit={(e) => {
-            e.preventDefault();
-            void clone();
-          }}
+  const buttons: DialogButton[] = [
+    { label: "Clone", role: "default", disabled: !!invalid || busy, onClick: () => void clone() },
+    { label: "Cancel", role: "cancel", onClick: cancel },
+  ];
+  const sourceList = (
+    <aside className={standalone ? styles.windowSources : styles.sidebar} aria-label={tx("Clone source")}>
+      {[{ id: "url", label: "Repository URL", icon: "branch" }, ...sources].map((s) => (
+        <button
+          key={s.id}
+          type="button"
+          className={styles.sourceItem}
+          data-selected={s.id === sourceId ? "" : undefined}
+          aria-pressed={s.id === sourceId}
+          disabled={busy}
+          onClick={() => setSourceId(s.id)}
         >
-          {source ? (
-            <div className={styles.sourcePane}>
-              <source.component url={url} onUrl={setUrl} onClone={(u) => void clone(u)} disabled={busy} />
-            </div>
-          ) : (
-            <>
-              <div className={styles.fieldRow}>
-                <label htmlFor="vcs-clone-version">
-                  <T>Version control:</T>
-                </label>
-                <Select
-                  id="vcs-clone-version"
-                  aria-label="Version control"
-                  className={styles.versionSelect}
-                  value="git"
-                  options={[{ value: "git", label: "Git" }]}
-                  onChange={() => {}}
-                  disabled={busy}
-                />
-              </div>
-
-              <div className={styles.fieldRow}>
-                <label htmlFor="vcs-clone-url">
-                  <T>URL:</T>
-                </label>
-                <div ref={urlField} className={styles.comboField}>
-                  <Input
-                    id="vcs-clone-url"
-                    data-autofocus
-                    variant="bare"
-                    className={styles.fieldInput}
-                    value={url}
-                    disabled={busy}
-                    placeholder="https://github.com/user/repository.git"
-                    onChange={(e) => setUrl(e.target.value)}
-                  />
-                  <IconButton
-                    icon="chevron-down"
-                    size="normal"
-                    className={styles.fieldButton}
-                    title={recentUrls.length ? "Recent repository URLs" : "No recent repository URLs"}
-                    disabled={busy || !recentUrls.length}
-                    onClick={showUrlHistory}
-                  />
-                </div>
-              </div>
-            </>
-          )}
+          <Icon name={s.icon} size={16} />
+          <span className={styles.sourceName}>
+            <T>{s.label}</T>
+          </span>
+        </button>
+      ))}
+    </aside>
+  );
+  const formView = (
+    <form
+      className={styles.form}
+      onSubmit={(e) => {
+        e.preventDefault();
+        void clone();
+      }}
+    >
+      {source ? (
+        <div className={styles.sourcePane}>
+          <source.component url={url} onUrl={setUrl} onClone={(u) => void clone(u)} disabled={busy} />
+        </div>
+      ) : (
+        <>
+          <div className={styles.fieldRow}>
+            <label htmlFor="vcs-clone-version">
+              <T>Version control:</T>
+            </label>
+            <Select
+              id="vcs-clone-version"
+              aria-label="Version control"
+              className={styles.versionSelect}
+              value="git"
+              options={[{ value: "git", label: "Git" }]}
+              onChange={() => {}}
+              disabled={busy}
+            />
+          </div>
 
           <div className={styles.fieldRow}>
-            <label htmlFor="vcs-clone-dir">
-              <T>Directory:</T>
+            <label htmlFor="vcs-clone-url">
+              <T>URL:</T>
             </label>
-            <div className={styles.comboField}>
+            <div ref={urlField} className={styles.comboField}>
               <Input
-                id="vcs-clone-dir"
+                id="vcs-clone-url"
+                data-autofocus
                 variant="bare"
                 className={styles.fieldInput}
-                value={dir}
+                value={url}
                 disabled={busy}
-                onChange={(e) => setCustomDir(e.target.value)}
+                placeholder="https://github.com/user/repository.git"
+                onChange={(e) => setUrl(e.target.value)}
               />
               <IconButton
-                icon="folder-open"
+                icon="chevron-down"
                 size="normal"
                 className={styles.fieldButton}
-                title="Browse…"
-                disabled={busy}
-                onClick={() => void browse()}
+                title={recentUrls.length ? "Recent repository URLs" : "No recent repository URLs"}
+                disabled={busy || !recentUrls.length}
+                onClick={showUrlHistory}
               />
             </div>
           </div>
+        </>
+      )}
 
-          <div className={styles.shallowRow}>
-            <Checkbox
-              checked={shallow}
-              disabled={busy}
-              onChange={setShallow}
-              label={<T>Shallow clone with a history truncated to</T>}
-            />
-            <div className={styles.depthGroup}>
-              <Input
-                aria-label="Clone depth"
-                className={styles.depthInput}
-                type="number"
-                inputMode="numeric"
-                min={1}
-                step={1}
-                value={depthInput}
-                disabled={busy || !shallow}
-                invalid={shallow && depth === null}
-                onChange={(e) => setDepthInput(e.target.value)}
-              />
-              <T>commits</T>
-            </div>
-          </div>
-
-          <div className={styles.feedback}>
-            {busy && (
-              <div className={styles.progress} aria-live="polite">
-                <ProgressBar value={progress.fraction} aria-label="Clone progress" />
-                <span className={styles.hint}>{progress.line || tx("Cloning…")}</span>
-              </div>
-            )}
-            {error && <div className={styles.error}>{error}</div>}
-            {!busy && !error && url.trim() && invalid && (
-              <div className={styles.hint}>
-                <T>{invalid}</T>
-              </div>
-            )}
-          </div>
-        </form>
+      <div className={styles.fieldRow}>
+        <label htmlFor="vcs-clone-dir">
+          <T>Directory:</T>
+        </label>
+        <div className={styles.comboField}>
+          <Input
+            id="vcs-clone-dir"
+            variant="bare"
+            className={styles.fieldInput}
+            value={dir}
+            disabled={busy}
+            onChange={(e) => setCustomDir(e.target.value)}
+          />
+          <IconButton
+            icon="folder-open"
+            size="normal"
+            className={styles.fieldButton}
+            title="Browse…"
+            disabled={busy}
+            onClick={() => void browse()}
+          />
+        </div>
       </div>
-    </Dialog>
+
+      <div className={styles.shallowRow}>
+        <Checkbox
+          checked={shallow}
+          disabled={busy}
+          onChange={setShallow}
+          label={<T>Shallow clone with a history truncated to</T>}
+        />
+        <div className={styles.depthGroup}>
+          <Input
+            aria-label="Clone depth"
+            className={styles.depthInput}
+            type="number"
+            inputMode="numeric"
+            min={1}
+            step={1}
+            value={depthInput}
+            disabled={busy || !shallow}
+            invalid={shallow && depth === null}
+            onChange={(e) => setDepthInput(e.target.value)}
+          />
+          <T>commits</T>
+        </div>
+      </div>
+
+      <div className={styles.feedback}>
+        {busy && (
+          <div className={styles.progress} aria-live="polite">
+            <ProgressBar value={progress.fraction} aria-label="Clone progress" />
+            <span className={styles.hint}>{progress.line || tx("Cloning…")}</span>
+          </div>
+        )}
+        {error && <div className={styles.error}>{error}</div>}
+        {!busy && !error && url.trim() && invalid && (
+          <div className={styles.hint}>
+            <T>{invalid}</T>
+          </div>
+        )}
+      </div>
+    </form>
+  );
+
+  return (
+    <Frame standalone={standalone} onCancel={cancel} buttons={buttons} sidebar={sourceList}>
+      {standalone ? (
+        formView
+      ) : (
+        <div ref={layout} className={styles.layout} data-compact={compact || undefined}>
+          {sourceList}
+          {formView}
+        </div>
+      )}
+    </Frame>
   );
 }

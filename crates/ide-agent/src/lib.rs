@@ -33,6 +33,7 @@ pub use catalogs::AgentCatalogs;
 pub use cli_update::{AgentCliOffer, AgentCliUpdateResult};
 pub use external::ExternalSession;
 pub use model::*;
+pub use provider::{LoginLaunch, gh_authenticated_accounts, gh_login_launch};
 pub use skill_installer::{
     InstallRemoteSkillRequest, RemoteSkillBrowseResult, RemoteSkillCandidate, RemoteSkillFile, RemoteSkillPreview,
     SkillScanWarning, SkillScanWarningKind,
@@ -52,6 +53,49 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
+
+/// Resolves agent `id`'s interactive sign-in command without an open project.
+pub fn login_launch_without_project(
+    custom_agents_dir: Option<&Path>,
+    secrets: Option<&dyn EnvSecrets>,
+    cwd: &Path,
+    id: &str,
+) -> IdeResult<LoginLaunch> {
+    let spec = provider::load(custom_agents_dir, secrets)
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| IdeError::not_found(format!("unknown agent '{id}'")))?;
+    spec.login_launch(cwd, None)
+        .ok_or_else(|| IdeError::unavailable(format!("{} cannot be signed in directly from OpenIDEA", spec.name)))
+}
+
+/// Queries Copilot's default CLI sign-in status alongside authenticated `gh` accounts.
+pub async fn copilot_auth_status_with(
+    custom_agents_dir: Option<&Path>,
+    secrets: Option<&dyn EnvSecrets>,
+    cwd: &Path,
+) -> CopilotAuthStatus {
+    let copilot_spec = provider::load(custom_agents_dir, secrets).into_iter().find(|p| p.id == "copilot");
+    let cwd_buf = cwd.to_path_buf();
+    let cli_fut = async move {
+        let spec = copilot_spec?;
+        native::copilot::probe_auth_status(spec, cwd_buf).await
+    };
+    let gh_fut = tokio::task::spawn_blocking(provider::gh_authenticated_accounts);
+    let (cli, gh) = tokio::join!(cli_fut, gh_fut);
+    let (gh_installed, gh_accounts) = gh.unwrap_or((false, Vec::new()));
+    match cli {
+        Some(cli) => CopilotAuthStatus {
+            authenticated: cli.authenticated,
+            login: cli.login,
+            auth_type: cli.auth_type,
+            status_message: cli.status_message,
+            gh_installed,
+            gh_accounts,
+        },
+        None => CopilotAuthStatus { gh_installed, gh_accounts, ..CopilotAuthStatus::default() },
+    }
+}
 
 /// Receives the events of one project's tasks.
 pub type AgentSink = Arc<dyn Fn(AgentEvent) + Send + Sync>;
@@ -201,6 +245,8 @@ struct Shared {
     providers: RwLock<Vec<provider::ProviderSpec>>,
     /// Last probe of each provider.
     probes: Mutex<HashMap<String, AgentProbe>>,
+    /// `type: "terminal"` login arguments reported during `initialize`, by provider id.
+    terminal_auth_args: RwLock<HashMap<String, Vec<String>>>,
     /// Copilot CLI installs where `--headless` failed and fell back to `--acp`.
     copilot_acp_fallback: Mutex<HashSet<CopilotBinaryKey>>,
     /// [`IDLE_RELEASE`], in milliseconds (shorter in tests).
@@ -706,6 +752,7 @@ impl AgentManager {
             known,
             providers,
             probes: Mutex::new(HashMap::new()),
+            terminal_auth_args: RwLock::new(HashMap::new()),
             copilot_acp_fallback: Mutex::new(HashSet::new()),
             idle_release_ms: AtomicU64::new(IDLE_RELEASE.as_millis() as u64),
             mcp_servers_hook: RwLock::new(None),
@@ -785,16 +832,24 @@ impl AgentManager {
         *self.shared.git_executable.write() = Some(hook);
     }
 
+    /// Directory holding linked Git worktrees created for agent tasks of this project.
+    pub fn worktrees_dir(&self) -> &Path {
+        &self.shared.paths.worktrees_dir
+    }
+
     /// The agents (custom ones re-read), whether each is installed, and what they offered last time.
     pub fn providers(&self) -> Vec<AgentProvider> {
         let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref(), self.shared.env_secrets());
         let in_use: std::collections::HashSet<String> =
             self.tasks.read().values().map(|t| t.state.lock().task.provider.clone()).collect();
+        let terminal_auth = self.shared.terminal_auth_args.read();
         let list = specs
             .iter()
             .filter(|p| !provider::is_unlisted(p) || in_use.contains(&p.id))
             .map(|p| {
                 let mut info = provider::describe(p);
+                info.can_sign_in =
+                    p.can_sign_in(&self.shared.paths.project_root, terminal_auth.get(&p.id).map(Vec::as_slice));
                 let catalog = self.shared.paths.catalogs.cached(&self.shared, &p.id);
                 info.config = self.shared.config_for_new_task(catalog.config, &p.id);
                 info.thought_levels = self.shared.thought_levels_for_new_task(catalog.thought_levels, &p.id);
@@ -802,6 +857,7 @@ impl AgentManager {
                 info
             })
             .collect();
+        drop(terminal_auth);
         let mut prev = self.shared.providers.write();
         let mut probes = self.shared.probes.lock();
         probes.retain(|id, _| {
@@ -813,6 +869,35 @@ impl AgentManager {
         drop(probes);
         drop(prev);
         list
+    }
+
+    /// Resolves the interactive sign-in command for agent `id`.
+    pub fn login_launch(&self, id: &str) -> IdeResult<LoginLaunch> {
+        let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref(), self.shared.env_secrets());
+        let spec = specs
+            .into_iter()
+            .find(|p| p.id == id)
+            .ok_or_else(|| IdeError::not_found(format!("unknown agent '{id}'")))?;
+        let terminal_args = self.shared.terminal_auth_args.read().get(id).cloned();
+        let launch = spec.login_launch(&self.shared.paths.project_root, terminal_args.as_deref()).ok_or_else(|| {
+            IdeError::unavailable(format!("{} cannot be signed in directly from OpenIDEA", spec.name))
+        })?;
+        self.shared.paths.catalogs.clear_failed_cooldown(&self.shared, id);
+        Ok(launch)
+    }
+
+    /// Queries Copilot's default CLI sign-in status alongside authenticated `gh` accounts.
+    pub async fn copilot_auth_status(&self) -> CopilotAuthStatus {
+        let status = copilot_auth_status_with(
+            self.shared.paths.custom_agents_dir.as_deref(),
+            self.shared.env_secrets(),
+            &self.shared.paths.project_root,
+        )
+        .await;
+        if status.authenticated || !status.gh_accounts.is_empty() {
+            self.shared.paths.catalogs.clear_failed_cooldown(&self.shared, "copilot");
+        }
+        status
     }
 
     /// Overrides built-in `id`'s command with `command` (the driver and arguments stay
@@ -837,7 +922,9 @@ impl AgentManager {
         let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
             return Err(IdeError::unavailable("there is no custom agents directory"));
         };
-        provider::set_builtin_env(&dir, self.shared.env_secrets(), id, env)
+        provider::set_builtin_env(&dir, self.shared.env_secrets(), id, env)?;
+        self.shared.paths.catalogs.evict_if_idle(&self.shared, id);
+        Ok(())
     }
 
     /// Saves a new custom ACP agent through its agent file.
@@ -3509,6 +3596,14 @@ impl Task {
             let is_auth = matches!(&e, RpcError::Server { code, message, .. } if acp::auth_required(*code, message));
             SessionOpenError { message: self.describe(e), allow_acp_fallback: !is_auth }
         })?;
+        if let Some(args) = init.auth_methods.iter().find_map(|method| {
+            if method.get("type").and_then(Value::as_str) != Some("terminal") {
+                return None;
+            }
+            method.get("args")?.as_array()?.iter().map(|v| v.as_str().map(str::to_owned)).collect::<Option<Vec<_>>>()
+        }) {
+            self.shared.terminal_auth_args.write().insert(provider_id.to_owned(), args);
+        }
         let sign_in_message = spec.sign_in_message(&init.auth_methods);
         let can_load = init.load_session();
         let (capabilities, embedded) = capabilities_of(&init);

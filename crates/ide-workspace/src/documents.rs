@@ -174,6 +174,9 @@ struct DocState {
     /// The file changed on disk while this buffer had unsaved changes; autosave leaves it
     /// alone until the user saves explicitly or the buffer is reloaded.
     disk_conflict: bool,
+    /// External changes seen while the buffer had unsaved changes (each `disk_conflict`), so an
+    /// undo of a refactoring can tell a write by another program from the IDE's own saves.
+    external_writes: u64,
     /// Text as of that disk state: an edit that returns to it (undo) leaves the document clean.
     /// `None` for large files (no second copy), virtual documents, and once a pending encoding,
     /// line-ending or BOM change makes the buffer differ from the file whatever the text.
@@ -540,6 +543,7 @@ impl Documents {
             disk_mtime: loaded.mtime_ms,
             disk_len: disk_len(path),
             disk_conflict: false,
+            external_writes: 0,
             clean_text: None,
             closed: false,
             uri: None,
@@ -616,6 +620,7 @@ impl Documents {
             disk_mtime: 0.0,
             disk_len: 0,
             disk_conflict: false,
+            external_writes: 0,
             clean_text: None,
             closed: false,
             uri: Some(uri.to_owned()),
@@ -676,6 +681,7 @@ impl Documents {
             disk_mtime: 0.0,
             disk_len: 0,
             disk_conflict: false,
+            external_writes: 0,
             clean_text: None,
             closed: false,
             uri: Some(key.to_string_lossy().into_owned()),
@@ -948,25 +954,35 @@ impl Documents {
     /// on disk after this buffer was edited, which only an explicit save may overwrite.
     pub fn autosave(&self, doc: DocId) -> IdeResult<bool> {
         self.with_doc(doc, |st| {
-            // The watcher event for an external write may not have arrived yet: check the stamp now.
-            if st.dirty
-                && !st.disk_conflict
-                && st.uri.is_none()
-                && let Ok(meta) = std::fs::metadata(&st.path)
-                && st.changed_on_disk(&meta)
-            {
-                st.disk_mtime = ide_vfs::mtime_ms(&meta);
-                st.disk_len = meta.len();
-                st.disk_conflict = true;
-                // The text read before no longer matches the file: undoing back to it is not clean.
-                st.clean_text = None;
-                self.sink.emit(IdeEvent::DocDiskConflict { doc, path: st.path.to_string_lossy().into_owned() });
-            }
+            self.check_disk_conflict(doc, st);
             if st.dirty && st.disk_conflict {
                 return Ok(false);
             }
             self.write(doc, st).map(|()| true)
         })
+    }
+
+    /// An unsaved buffer whose file another program wrote: the watcher event may not have arrived
+    /// yet, so check the stamp now.
+    fn check_disk_conflict(&self, doc: DocId, st: &mut DocState) {
+        if st.dirty
+            && !st.disk_conflict
+            && st.uri.is_none()
+            && let Ok(meta) = std::fs::metadata(&st.path)
+            && st.changed_on_disk(&meta)
+        {
+            self.disk_conflict(doc, st, &meta);
+        }
+    }
+
+    fn disk_conflict(&self, doc: DocId, st: &mut DocState, meta: &std::fs::Metadata) {
+        st.disk_mtime = ide_vfs::mtime_ms(meta);
+        st.disk_len = meta.len();
+        st.disk_conflict = true;
+        st.external_writes += 1;
+        // The text read before no longer matches the file: undoing back to it is not clean.
+        st.clean_text = None;
+        self.sink.emit(IdeEvent::DocDiskConflict { doc, path: st.path.to_string_lossy().into_owned() });
     }
 
     fn write(&self, doc: DocId, st: &mut DocState) -> IdeResult<()> {
@@ -1443,12 +1459,7 @@ impl Documents {
                     if !st.changed_on_disk(&meta) {
                         return Ok(());
                     }
-                    st.disk_mtime = mtime;
-                    st.disk_len = meta.len();
-                    st.disk_conflict = true;
-                    // The text read before no longer matches the file: undoing back to it is not clean.
-                    st.clean_text = None;
-                    self.sink.emit(IdeEvent::DocDiskConflict { doc: id, path: st.path.to_string_lossy().into_owned() });
+                    self.disk_conflict(id, st, &meta);
                     return Ok(());
                 }
                 let loaded = if force_clean {

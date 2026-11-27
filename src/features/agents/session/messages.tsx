@@ -1,12 +1,14 @@
 import type { AgentEntry, AgentImage, AgentTask } from "@/bindings";
 import { useTx } from "@/platform/i18n";
 import { isImeKey } from "@/platform/ime";
+import { call, commands, isTauri } from "@/platform/ipc";
 import { basename } from "@/platform/project";
-import { copyText, fileIconName, Icon, IconButton, T } from "@/ui";
+import { Button, copyText, fileIconName, Icon, IconButton, T } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import clsx from "clsx";
 import { memo, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { AgentReply, MessageActions, ReplyActions } from "../AgentReply";
+import { AgentSignInDialog } from "../AgentSignInDialog";
 import { ImageStrip } from "../ImageStrip";
 import { ReferencedText } from "../ReferenceChip";
 import styles from "../Session.module.css";
@@ -14,12 +16,12 @@ import { SubmitButton } from "../SubmitButton";
 import { useAgentSettings } from "../agentSettings";
 import { messageTokens, parseMention } from "../composerModel";
 import { formatDuration, formatSentAt, userMessageText } from "../conversation";
-import { useAgentErrorText } from "../loginHint";
+import { isSignInErrorMessage, useAgentErrorText } from "../loginHint";
 import { isBusy, type ReplyTimes, type ReplyTurn } from "../model";
 import { useRevealedText } from "../reveal";
-import { forkTask, rerunFrom, resendMessage } from "../store";
+import { forkTask, refreshProviders, rerunFrom, resendMessage, useAgents } from "../store";
 import { PermissionLine, QuestionForm, type QuestionAnswer } from "./QuestionForm";
-import { samePropsExcept, type UserEntry } from "./shared";
+import { providerName, samePropsExcept, type UserEntry } from "./shared";
 import { SubagentCard, ThoughtEntry, ToolEntry } from "./toolEntries";
 
 /** When a message was sent, or when the turn behind a reply finished, and how long it took. */
@@ -219,12 +221,7 @@ function EntryView({
         </div>
       );
     case "error":
-      return (
-        <div className={styles.error} role="alert">
-          <Icon name="error" size={14} />
-          <AgentErrorText message={entry.message} />
-        </div>
-      );
+      return <AgentErrorEntry task={task} message={entry.message} />;
   }
 }
 
@@ -244,8 +241,37 @@ export const Entry = memo(
   }),
 );
 
-function AgentErrorText({ message }: { message: string }) {
-  return <span>{useAgentErrorText(message)}</span>;
+function AgentErrorEntry({ task, message }: { task: AgentTask; message: string }) {
+  const [signingIn, setSigningIn] = useState(false);
+  const text = useAgentErrorText(message);
+  const providerCanSignIn = useAgents((s) => s.providers.find((p) => p.id === task.provider)?.canSignIn ?? false);
+  const canSignIn = isTauri() && providerCanSignIn && isSignInErrorMessage(message);
+  const name = providerName(task.provider);
+  return (
+    <div className={styles.error} role="alert">
+      <Icon name="error" size={14} />
+      <div className={styles.errorContent}>
+        <span>{text}</span>
+        {canSignIn && (
+          <div>
+            <Button size="small" onClick={() => setSigningIn(true)}>
+              <T>Sign In…</T>
+            </Button>
+          </div>
+        )}
+      </div>
+      {signingIn && (
+        <AgentSignInDialog
+          target={{ kind: "agent", id: task.provider, name }}
+          onClose={() => setSigningIn(false)}
+          onCompleted={() => {
+            void refreshProviders();
+            void call(commands.agentRefreshModels(task.provider, true, null)).catch(() => {});
+          }}
+        />
+      )}
+    </div>
+  );
 }
 
 function UserMessage({

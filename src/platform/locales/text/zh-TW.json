@@ -611,7 +611,6 @@
   "Run `auggie login` in a terminal.": "在終端機中執行 `auggie login`。",
   "Run `claude` in a terminal and sign in.": "在終端機中執行 `claude` 並登入。",
   "Run `codex login` in a terminal.": "在終端機中執行 `codex login`。",
-  "Run `copilot` in a terminal and sign in.": "在終端機中執行 `copilot` 並登入。",
   "Run `cursor-agent login` in a terminal.": "在終端機中執行 `cursor-agent login`。",
   "Run `gemini` in a terminal and sign in.": "在終端機中執行 `gemini` 並登入。",
   "Run `goose configure` in a terminal.": "在終端機中執行 `goose configure`。",
@@ -1765,7 +1764,6 @@
   "Install a plugin folder with": "安裝外掛資料夾：",
   "Install and Debug": "安裝並偵錯",
   "Reinstall and Debug": "重新安裝並偵錯",
-  "Install gh…": "安裝 gh…",
   "Installed": "已安裝",
   "Installed packages": "已安裝的軟體包",
   "Installed plugins": "已安裝的外掛",
@@ -8513,6 +8511,7 @@
   "Previous Failed Test": "上一個失敗的測試",
   "Next Failed Test": "下一個失敗的測試",
   "Select First Failed Test When Finished": "完成後選取第一個失敗的測試",
+  "Track Running Test": "追蹤正在執行的測試",
   "Run '{name}' with Fuzzing": "使用模糊測試執行 '{name}'",
   "Reading…": "正在讀取…",
   "Editing…": "正在編輯…",
@@ -9202,8 +9201,6 @@
   "Unshelve Silently": "靜默取消擱置",
   "Remove All Watches": "移除所有監視",
   "GitHub account": "GitHub 帳號",
-  "Leave empty to use the active GitHub CLI account. OpenIDEA resolves the token at launch and never stores it.": "留空則使用 GitHub CLI 目前登入的帳號。OpenIDEA 在啟動時取得令牌，不會儲存它。",
-  "github-username": "GitHub 使用者名稱",
   "Change File Encoding": "更改檔案編碼",
   "Convert": "轉換",
   "Use {label} for this file?": "對此檔案使用 {label} 編碼？",
@@ -9387,5 +9384,7 @@
   "SQL INSERT": "SQL INSERT 陳述式",
   "SQL UPDATE": "SQL UPDATE 陳述式",
   "SQL DELETE": "SQL DELETE 陳述式",
-  "Column comment": "欄位註解"
+  "Column comment": "欄位註解",
+  "Get from Version Control": "從版本控制取得",
+  "Cannot connect to the remote host": "無法連線到遠端主機"
 }

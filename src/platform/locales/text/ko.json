@@ -64,7 +64,6 @@
   "Run `auggie login` in a terminal.": "터미널에서 `auggie login`을 실행하세요.",
   "Run `claude` in a terminal and sign in.": "터미널에서 `claude`를 실행하고 로그인하세요.",
   "Run `codex login` in a terminal.": "터미널에서 `codex login`을 실행하세요.",
-  "Run `copilot` in a terminal and sign in.": "터미널에서 `copilot`을 실행하고 로그인하세요.",
   "Run `cursor-agent login` in a terminal.": "터미널에서 `cursor-agent login`을 실행하세요.",
   "Run `gemini` in a terminal and sign in.": "터미널에서 `gemini`를 실행하고 로그인하세요.",
   "Run `goose configure` in a terminal.": "터미널에서 `goose configure`를 실행하세요.",
@@ -1117,7 +1116,6 @@
   "Install a plugin folder with": "다음으로 플러그인 폴더 설치",
   "Install and Debug": "설치 및 디버그",
   "Reinstall and Debug": "다시 설치 및 디버그",
-  "Install gh…": "gh 설치…",
   "Installed": "설치됨",
   "Installed packages": "설치된 패키지",
   "Installed plugins": "설치된 플러그인",
@@ -6294,5 +6292,7 @@
   "Blocked command pattern": "차단된 명령 패턴",
   "Mode applies to": "모드 적용 범위",
   "Context": "컨텍스트",
-  "Allow all optional permissions": "모든 선택 권한 허용"
+  "Allow all optional permissions": "모든 선택 권한 허용",
+  "Get from Version Control": "버전 관리에서 가져오기",
+  "Cannot connect to the remote host": "원격 호스트에 연결할 수 없음"
 }
