@@ -201,7 +201,8 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         let location = probe_location(data.path(), root, &found).unwrap();
         let index = std::fs::read_to_string(location.join("node_modules/@acme/plugin/index.js")).unwrap();
-        assert!(index.contains(&serde_json::to_string(&root.join("node_modules/@acme/plugin")).unwrap()), "{index}");
+        let payload = index.strip_prefix("module.exports = require(").and_then(|s| s.strip_suffix(");\n")).unwrap();
+        assert_eq!(serde_json::from_str::<PathBuf>(payload).unwrap(), root.join("node_modules/@acme/plugin"));
         let next_only =
             Declared { packages: found.packages.clone().into_iter().filter(|(n, _)| n == "next").collect(), ..found };
         let changed = probe_location(data.path(), root, &next_only).unwrap();
