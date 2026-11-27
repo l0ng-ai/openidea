@@ -26,6 +26,7 @@ pub mod lsp;
 pub mod maven_placeholder;
 pub mod nav;
 pub mod notebook;
+mod plots;
 pub mod project;
 pub mod pytest_fixtures;
 mod python;

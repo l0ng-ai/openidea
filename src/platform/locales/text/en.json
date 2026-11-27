@@ -4332,5 +4332,17 @@
   "Pull request link {text}": "Pull request link {text}",
   "Issue link {text}": "Issue link {text}",
   "Commit link {text}": "Commit link {text}",
-  "Link {text}": "Link {text}"
+  "Link {text}": "Link {text}",
+  "Plots": "Plots",
+  "Save Plot": "Save Plot",
+  "Cannot save the plot": "Cannot save the plot",
+  "Cannot copy the plot": "Cannot copy the plot",
+  "Plot {n}": "Plot {n}",
+  "Figures that Python code shows with plt.show() appear here.": "Figures that Python code shows with plt.show() appear here.",
+  "Save as PNG": "Save as PNG",
+  "Copy to Clipboard": "Copy to Clipboard",
+  "Delete Plot": "Delete Plot",
+  "Delete All Plots": "Delete All Plots",
+  "Show plots in tool window": "Show plots in tool window",
+  "Runs, debug sessions and the Python Console send matplotlib figures to the Plots tool window, unless the run sets MPLBACKEND. Off: figures open in matplotlib's own window.": "Runs, debug sessions and the Python Console send matplotlib figures to the Plots tool window, unless the run sets MPLBACKEND. Off: figures open in matplotlib's own window."
 }

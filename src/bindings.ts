@@ -8534,7 +8534,9 @@ export type IdeError = {
 
 export type IdeEvent = 
 /**  Project data source settings changed; reload the Database tree. */
-{ type: "dbSourcesChanged" } | { type: "mcpRequest"; id: number; request: McpUiRequest } | { type: "mcpRequestClosed"; id: number } | 
+{ type: "dbSourcesChanged" } | 
+/**  A Python run saved a matplotlib figure for the Plots tool window (a PNG file). */
+{ type: "plotAdded"; path: string } | { type: "mcpRequest"; id: number; request: McpUiRequest } | { type: "mcpRequestClosed"; id: number } | 
 /**  Project window membership or selection changed. */
 { type: "windowGroupsChanged" } | 
 /**  A project was loaded or unloaded for the MCP server without a window of its own. */
@@ -12262,6 +12264,11 @@ export type PythonSettings = {
 	 *  it, else unittest), `pytest` or `unittest`.
 	 */
 	testRunner?: string,
+	/**
+	 *  Show matplotlib figures of Python runs in the Plots tool window (the IDE sets `MPLBACKEND`
+	 *  unless the run sets it); off: matplotlib's own window.
+	 */
+	showPlotsInToolWindow?: boolean,
 };
 
 export type PythonStubLinks = {
