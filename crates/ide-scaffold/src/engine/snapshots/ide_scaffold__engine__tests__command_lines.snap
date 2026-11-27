@@ -20,8 +20,13 @@ dotnet:
   - "dotnet new console --name my-app --output my-app --language C#"
   - dotnet sln add my-app
   - dotnet new gitignore
+electron:
+  - npx --yes create-electron-app@latest init my-app --skip-git --package-manager npm --template vite --typescript
 elixir:
   - mix new . --app my_app
+expo:
+  - npx --yes create-expo-app@latest my-app --template blank-typescript --no-install --yes
+  - npm install
 express:
   - npm install
 fastapi:
@@ -76,6 +81,9 @@ symfony:
   - composer require webapp --no-interaction
 vite:
   - npx --yes create-vite@latest my-app --template react-ts --no-interactive
+  - npm install
+vue:
+  - npx --yes create-vue@latest my-app --ts
   - npm install
 zig:
   - zig init

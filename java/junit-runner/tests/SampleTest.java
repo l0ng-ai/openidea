@@ -3,6 +3,7 @@ package sample;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -10,9 +11,22 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 class SampleTest {
+    static {
+        System.out.println("loaded");
+    }
+
+    @BeforeAll
+    static void setUp() {
+        System.out.println("class set-up");
+    }
+
     @Test
-    void passes() {
+    void passes() throws InterruptedException {
         System.out.println("hello [ünï]");
+        System.err.println("to stderr");
+        Thread other = new Thread(() -> System.out.println("from a thread"));
+        other.start();
+        other.join();
     }
 
     @Test

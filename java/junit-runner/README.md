@@ -6,6 +6,11 @@ parameterized tests run too) and prints each test as the TeamCity service messag
 `src/features/run/gradleTests.gradle`, which the Run window's JVM parser already reads. It exits
 with 1 when a test failed or none ran.
 
+A test's stdout and stderr are reported with it (`testStdOut`, `testStdErr`), line by line as they
+are written; a class's own output (static initializers, `@BeforeAll`) with the class, and output
+outside any test, such as a thread the test started, is printed as is. Each line is printed once:
+JUnit's own output capture, which also copies everything to the original stream, stays off.
+
 JUnit Platform tests run on the Platform launcher. JUnit 4 and JUnit 3 tests run on JUnit 4's own
 `JUnitCore` (`Junit4Runner`) when the classpath has no JUnit Platform, or one without the Vintage
 engine, so a JUnit 4 project needs nothing beyond its `junit` dependency.
