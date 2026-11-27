@@ -25,6 +25,7 @@ The editor follows IntelliJ IDEA's behaviour and default keymap. Shortcuts below
 - Drag with `⌥` / `Alt` held (or with the middle mouse button on macOS and Windows) to make a rectangular selection without switching modes.
 - **Extend Selection** grows the selection to the enclosing word, expression, statement and block, using the syntax tree.
 - **Swap Selection Boundaries** moves the caret of each selection to its other end and keeps the text selected, so `⇧` / `Shift` with the arrow keys then extends or shrink it from that side. It has no default shortcut.
+- **Toggle Sticky Selection** starts a selection at each caret: arrow keys and other caret moves then extend it as if `⇧` / `Shift` were held. Run it again or press `Esc` to turn it off, which also removes the selection. Copying or editing the text turns it off too. It has no default shortcut.
 - **Select Line at Caret** selects the whole line at each caret together with its line break; a selection grows to the whole lines it touches. It has no default shortcut.
 
 ## Editing lines and code
@@ -57,9 +58,11 @@ The editor follows IntelliJ IDEA's behaviour and default keymap. Shortcuts below
 
 **Move Caret to Next Word** / **Previous Word in Different "CamelHumps" Mode** (and their **with Selection** variants), **Delete to Word Start** and **Delete to Word End in Different "CamelHumps" Mode** move or delete by word the other way from **Settings › Editor › General › Smart Keys › Use "CamelHumps" words**: by hump (`parse|HTML|Document`) while it is off, by whole word while it is on. They have no default shortcut.
 
-**Edit › Sort Lines** and **Edit › Reverse Lines** reorder the selected lines (the whole file without a selection); they have no default shortcut. Sort Lines orders by character code, so uppercase letters come before lowercase ones.
+**Edit › Sort Lines** and **Edit › Reverse Lines** reorder the selected lines (the whole file without a selection); they have no default shortcut. Sort Lines orders by character code, so uppercase letters come before lowercase ones. **Delete Duplicate Lines** works on the same lines and keeps only the first of each repeated line (the text must match exactly, whitespace included); run it from **Find Action** or assign a shortcut in **Settings › Keymap**.
 
 **Cut up to Line End** cuts from each caret to the end of its line, together with the line break when only whitespace is left (or the caret is already at the line end), so pressing it again on the same caret cuts the next line too; those repeated cuts collect into one clipboard entry. **Delete to Line Start** and **Delete to Line End** delete the same way without copying (to the line start, or the line break before the caret at the line start), or delete the selection. They have no default shortcut except in the Eclipse keymaps (`⇧⌘⌦` / `Ctrl+Shift+Delete` for Delete to Line End).
+
+**Kill to Word Start** and **Kill to Word End** cut from each caret back to the start of the previous word or on to the end of the next one, together with the whitespace and line breaks in between; with **Settings › Editor › General › Smart Keys › Use "CamelHumps" words** on they stop at humps (`parse|HTML|Document`). A selection is ignored. Repeated cuts at the same caret, and Cut up to Line End there, collect into one clipboard entry, the ones to the word start in front. They have no default shortcut.
 
 **Hungry Backspace** deletes all the spaces, tabs and line breaks before each caret in one go, up to the previous non-whitespace character; after anything else, or with a selection, it works like `⌫` / `Backspace`. It has no default shortcut.
 
@@ -154,6 +157,8 @@ With tabs placed left or right, the tab column is as wide as its longest name, u
 | **Scroll to Center**                  | `⌃L`  | `Ctrl+M`        |
 | **Scroll Up**                         | —     | `Ctrl+Up`       |
 | **Scroll Down**                       | —     | `Ctrl+Down`     |
+| **Scroll Left**                       | —     | —               |
+| **Scroll Right**                      | —     | —               |
 | **Scroll Up and Move if Necessary**   | —     | —               |
 | **Scroll Down and Move if Necessary** | —     | —               |
 | **Move Up and Scroll**                | —     | —               |
@@ -161,7 +166,7 @@ With tabs placed left or right, the tab column is as wide as its longest name, u
 | **Scroll to Top**                     | —     | —               |
 | **Scroll to Bottom**                  | —     | —               |
 
-**Scroll Up** and **Scroll Down** move the view by one line and leave the caret where it is, even when it scrolls out of sight. **Scroll Up and Move if Necessary** and **Scroll Down and Move if Necessary** also move the view by one line, but bring a caret the view doesn't show to its first or last line. **Move Up and Scroll** and **Move Down and Scroll** move the caret one line and the view with it, so the caret stays in the same place on screen; their **with Selection** variants select as they go. **Scroll to Top** and **Scroll to Bottom** show the start and the end of the file; the caret stays where it is too. They have no default shortcut: run them from Find Action or assign one in **Settings › Keymap**.
+**Scroll Up** and **Scroll Down** move the view by one line and leave the caret where it is, even when it scrolls out of sight; **Scroll Left** and **Scroll Right** do the same sideways, by one column. **Scroll Up and Move if Necessary** and **Scroll Down and Move if Necessary** also move the view by one line, but bring a caret the view doesn't show to its first or last line. **Move Up and Scroll** and **Move Down and Scroll** move the caret one line and the view with it, so the caret stays in the same place on screen; their **with Selection** variants select as they go. **Scroll to Top** and **Scroll to Bottom** show the start and the end of the file; the caret stays where it is too. They have no default shortcut: run them from Find Action or assign one in **Settings › Keymap**.
 
 - **View › Active Editor › Soft-Wrap** wraps long lines in the current editor. To wrap some file types by default, use **Settings › Editor › General**, section **Soft Wraps**.
 - **View › Reset Font Size** undoes font zoom in the active editor or focused surface (**View › Reset Font Size in All Editors** resets every open editor). **Increase Font Size in All Editors** and **Decrease Font Size in All Editors** resize every open editor together, starting from the active one, and have no default shortcut. Changing the font size with `⌘` / `Ctrl` + mouse wheel (scoped to **Active editor** by default, or **All editors**) can be turned on in **Settings › Editor › General**, section **Mouse Control**.

@@ -69,6 +69,7 @@ import { stringClipboard } from "./stringClipboard";
 import { filterCopiedText } from "./clipboard";
 import { LINE_INSET } from "./lineInset";
 import { codeLensPositions } from "./codeLens";
+import { stickyMove } from "./stickySelection";
 import { wheelZoomStep } from "@/platform/wheelZoom";
 
 // --- soft wraps ---------------------------------------------------------------
@@ -873,6 +874,6 @@ export function prefsExtension(o: PrefsOptions): Extension {
   if (!k.smartIndent) keys.push({ key: "Enter", run: insertNewlineKeepIndent });
   if (k.backspaceUnindent === "none") keys.push({ key: "Backspace", run: deleteCharBackwardStrict });
   else if (smartBackspaceApplies(k.backspaceUnindent, o.language)) keys.push({ key: "Backspace", run: smartBackspace });
-  if (keys.length) out.push(Prec.high(keymap.of(keys)));
+  if (keys.length) out.push(Prec.high(keymap.of(keys.map(stickyMove))));
   return out;
 }

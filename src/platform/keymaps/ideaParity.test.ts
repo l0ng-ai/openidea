@@ -66,6 +66,8 @@ describe("IDEA keymap parity", () => {
     // `Mac OS X 10.5+` removes the ⌘↑ / ⌘↓ it would inherit from `Mac OS X`.
     ["editor.scrollUp", [], ["Ctrl+Up"]],
     ["editor.scrollDown", [], ["Ctrl+Down"]],
+    ["editor.scrollLeft", [], []],
+    ["editor.scrollRight", [], []],
     ["editor.scrollUpAndMove", [], []],
     ["editor.scrollDownAndMove", [], []],
     ["editor.moveUpAndScroll", [], []],
@@ -87,8 +89,13 @@ describe("IDEA keymap parity", () => {
     ["code.deleteToLineStart", [], []],
     ["code.deleteToLineEnd", [], []],
     ["code.hungryBackspace", [], []],
+    // EditorKillToWordStart / End: only the Emacs keymap binds them.
+    ["code.killToWordStart", [], []],
+    ["code.killToWordEnd", [], []],
     // EditorSwapSelectionBoundaries has no shortcut.
     ["editor.swapSelectionBoundaries", [], []],
+    // EditorToggleStickySelection has no shortcut.
+    ["editor.toggleStickySelection", [], []],
     // EditorSelectLine has no shortcut.
     ["editor.selectLine", [], []],
     // CopyAsPlainText / CopyAsRichText have no shortcut.

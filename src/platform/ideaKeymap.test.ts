@@ -101,6 +101,15 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Scroll Left / Scroll Right", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="Mac OS X 10.5+"><action id="EditorScrollLeft"><keyboard-shortcut first-keystroke="meta alt LEFT"/></action><action id="EditorScrollRight"><keyboard-shortcut first-keystroke="meta alt RIGHT"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.scrollLeft"]).toEqual([normalizeBinding("Meta+Alt+Left")]);
+    expect(k.overrides["editor.scrollRight"]).toEqual([normalizeBinding("Meta+Alt+Right")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Scroll Up / Scroll Down and Move if Necessary", () => {
     const k = parseIdeaKeymap(
       `<keymap name="E" parent="$default"><action id="EditorScrollUpAndMove"><keyboard-shortcut first-keystroke="alt UP"/></action><action id="EditorScrollDownAndMove"><keyboard-shortcut first-keystroke="alt DOWN"/></action></keymap>`,
@@ -165,6 +174,15 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Kill to Word Start / End", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="K" parent="$default"><action id="EditorKillToWordStart"><keyboard-shortcut first-keystroke="alt BACK_SPACE"/></action><action id="EditorKillToWordEnd"><keyboard-shortcut first-keystroke="alt D"/></action></keymap>`,
+    );
+    expect(k.overrides["code.killToWordStart"]).toEqual([normalizeBinding("Alt+Backspace")]);
+    expect(k.overrides["code.killToWordEnd"]).toEqual([normalizeBinding("Alt+D")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Hungry Backspace", () => {
     const k = parseIdeaKeymap(
       `<keymap name="H" parent="$default"><action id="EditorHungryBackSpace"><keyboard-shortcut first-keystroke="control alt BACK_SPACE"/></action></keymap>`,
@@ -199,6 +217,14 @@ describe("IntelliJ IDEA keymap import", () => {
       `<keymap name="S" parent="$default"><action id="EditorSwapSelectionBoundaries"><keyboard-shortcut first-keystroke="control X" second-keystroke="control X"/></action></keymap>`,
     );
     expect(k.overrides["editor.swapSelectionBoundaries"]).toEqual([normalizeBinding("Ctrl+X Ctrl+X")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Toggle Sticky Selection", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="S" parent="$default"><action id="EditorToggleStickySelection"><keyboard-shortcut first-keystroke="control SPACE"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.toggleStickySelection"]).toEqual([normalizeBinding("Ctrl+Space")]);
     expect(k.unknownActions).toEqual([]);
   });
 
@@ -259,6 +285,14 @@ describe("IntelliJ IDEA keymap import", () => {
       "toolwindow.resizeUp": [normalizeBinding("Ctrl+Alt+Up")],
       "toolwindow.resizeDown": [normalizeBinding("Ctrl+Alt+Down")],
     });
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Delete Duplicate Lines", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="Mac OS X 10.5+"><action id="EditorUniqueLines"><keyboard-shortcut first-keystroke="shift meta 7"/></action></keymap>`,
+    );
+    expect(k.overrides["code.uniqueLines"]).toEqual([normalizeBinding("Shift+Meta+7")]);
     expect(k.unknownActions).toEqual([]);
   });
 
