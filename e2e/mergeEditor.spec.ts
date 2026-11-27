@@ -103,22 +103,34 @@ test("merge controls and pane titles fit while resizing the result", async ({ pa
   await expect.poll(() => text(result(page))).toContain("\nmine\n");
 });
 
-/** Capture the save boundary, keeping real editor state, dialogs and Apply behavior. */
+/**
+ * Capture the Git boundary, keeping real editor state, dialogs and Apply behavior. Apply writes
+ * the file through its document, which the page keeps in memory.
+ */
 async function captureWrites(page: Page) {
   await page.evaluate(async () => {
     const ipcPath = "/src/platform/ipc.ts";
+    const backendPath = "/src/editor/core/backend.ts";
     const { commands } = await import(ipcPath);
+    const { docBackend } = await import(backendPath);
+    docBackend().files.set("/project/demo.ts", "working copy\n");
     const calls: { command: string; args: unknown[] }[] = [];
     Object.assign(window, { mergeWrites: calls });
-    commands.fsReadText = async () => ({ status: "ok", data: "working copy\n" });
-    commands.docOpen = async () => ({ status: "ok", data: { id: 777, version: 1 } });
-    for (const command of ["docEdit", "docSave", "docClose", "vcsAcceptConflictSide", "vcsStage"])
+    for (const command of ["vcsAcceptConflictSide", "vcsStage"])
       commands[command] = async (...args: unknown[]) => {
         calls.push({ command, args });
         return { status: "ok", data: null };
       };
   });
 }
+
+/** The text Apply saved to the file. */
+const saved = (page: Page) =>
+  page.evaluate(async () => {
+    const backendPath = "/src/editor/core/backend.ts";
+    const { docBackend } = await import(backendPath);
+    return docBackend().files.get("/project/demo.ts") as string;
+  });
 
 const writes = (page: Page) =>
   page.evaluate(
@@ -130,7 +142,7 @@ const writes = (page: Page) =>
       ).mergeWrites,
   );
 
-test("CRLF resolutions use UTF-16 editor positions and preserve line endings on Apply", async ({ page }) => {
+test("Apply saves a CRLF resolution with UTF-16 text as resolved", async ({ page }) => {
   const base = "标题😀\r\nunchanged\r\nbase\r\ntail";
   const ours = base.replace("base", "左侧🚀");
   await mountMerge(page, [base, ours, base.replace("base", "右侧🧪")]);
@@ -144,8 +156,9 @@ test("CRLF resolutions use UTF-16 editor positions and preserve line endings on 
   await page.locator("#merge-host").getByRole("button", { name: "Apply", exact: true }).click();
   await expect.poll(async () => (await writes(page)).some((call) => call.command === "vcsStage")).toBe(true);
   const calls = await writes(page);
-  expect(calls.map((call) => call.command)).toEqual(["docEdit", "docSave", "docClose", "vcsStage"]);
-  expect(calls[0]!.args[2]).toEqual({ changes: [{ from: 0, to: 13, insert: ours }] });
+  expect(calls.map((call) => call.command)).toEqual(["vcsStage"]);
+  // Documents keep `\n`; saving writes the file's own line ending.
+  expect(await saved(page)).toBe(ours.replace(/\r\n/g, "\n"));
 });
 
 test("Apply writes and stages unresolved text only after confirmation", async ({ page }) => {
@@ -159,7 +172,7 @@ test("Apply writes and stages unresolved text only after confirmation", async ({
   await apply.click();
   await page.getByRole("button", { name: "Mark Resolved", exact: true }).click();
   await expect.poll(async () => (await writes(page)).some((call) => call.command === "vcsStage")).toBe(true);
-  expect((await writes(page))[0]!.args[2]).toEqual({ changes: [{ from: 0, to: 13, insert: BASE }] });
+  expect(await saved(page)).toBe(BASE);
 });
 
 test("footer buttons work when a click doesn't focus them, as in WebKit", async ({ page }) => {

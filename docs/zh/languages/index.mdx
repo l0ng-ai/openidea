@@ -55,7 +55,7 @@ IDE 安装工具从不需要 `sudo`。工具装在本地数据目录下 IDE 自�
 
 | 方式                   | 适用于                                                                                                                                                                                |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| npm                    | 基于 Node 的服务器，如 vtsls、Pyright、Intelephense，以及 Vue、Svelte、Astro、Angular、CSS、HTML、JSON、YAML、Bash、Dockerfile 的服务器。需要 Node.js。                               |
+| npm                    | 基于 Node 的服务器，如 vtsls、Pyright、Intelephense，以及 Vue、Svelte、Astro、Angular、CSS、Sass、HTML、JSON、YAML、Bash、Dockerfile 的服务器。需要 Node.js。                         |
 | pip 安装到私有虚拟环境 | basedpyright、ty、pyrefly、Ruff（有 `uv` 时用 `uv`）。                                                                                                                                |
 | pip 安装到私有目录     | debugpy。                                                                                                                                                                             |
 | `go install`           | gopls、Delve、sqls。需要 Go。                                                                                                                                                         |
@@ -155,7 +155,7 @@ IDE 安装工具从不需要 `sudo`。工具装在本地数据目录下 IDE 自�
 | reStructuredText    | `restructuredtext` | `.rst`                                                      | 是   | —           | —                                                                                                 | —                        |
 | Ruby                | `ruby`             | `.rb`, `.rake`, `.gemspec`, `.ru`, `.rbi`, …                | 是   | 是          | **ruby-lsp** → **solargraph**                                                                     | rdbg                     |
 | Rust                | `rust`             | `.rs`                                                       | 是   | 是          | **rust-analyzer**                                                                                 | **codelldb**             |
-| Sass                | `sass`             | `.sass`                                                     | 是   | —           | —                                                                                                 | —                        |
+| Sass                | `sass`             | `.sass`                                                     | 是   | —           | **some-sass-language-server**                                                                     | —                        |
 | Scala               | `scala`            | `.scala`, `.sc`, `.sbt`, `.mill`                            | 是   | 是          | metals                                                                                            | —                        |
 | SCSS                | `scss`             | `.scss`                                                     | 是   | —           | **vscode-css-language-server** + **stylelint**                                                    | —                        |
 | Shell Script        | `shellscript`      | `.sh`, `.bash`, `.zsh`, `.ksh`, `.ash`, …                   | 是   | 是          | **bash-language-server**                                                                          | **bash-debug**           |

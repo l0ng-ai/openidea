@@ -618,7 +618,9 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
                     params={params}
                     all={all}
                     invalid={!!errors[f.key]}
-                    onChange={(v) => setParam(f.key, v)}
+                    onChange={(v) =>
+                      f.set ? onChange(withParams(config, f.set(v, params), type)) : setParam(f.key, v)
+                    }
                   />
                 </Field>
               ))
@@ -971,24 +973,26 @@ function TypeField({
   const root = useProject((s) => s.project?.root ?? null);
   const listId = `run-field-${field.key}`;
   const [loaded, setLoaded] = useState<ReadonlyArray<{ value: string; label: string; detail?: string }>>([]);
+  // A select that stands for other params shows the value worked out from them.
+  const shown = field.control === "select" && field.value ? field.value(params) : value;
   useEffect(() => {
     let live = true;
     void field
-      .loadOptions?.()
+      .loadOptions?.(shown)
       .then((options) => live && setLoaded(options))
       .catch(() => {});
     return () => {
       live = false;
     };
-  }, [field]);
+  }, [field, shown]);
   if (field.control === "output") return <OutputField label={field.label} text={field.value?.(params) ?? ""} />;
   if (field.control === "select") {
     // Loaded options are detected data (JDKs, build modules), not catalog text.
     const options: SelectOption[] = [...(field.options ?? []), ...loaded.map((o) => ({ ...o, verbatim: true }))];
-    if (value && !options.some((o) => o.value === value)) options.push({ value, label: value, verbatim: true });
+    if (shown && !options.some((o) => o.value === shown)) options.push({ value: shown, label: shown, verbatim: true });
     return (
       <Select
-        value={value || (options[0]?.value ?? "")}
+        value={shown || (options[0]?.value ?? "")}
         options={options}
         onChange={onChange}
         aria-label={field.label}

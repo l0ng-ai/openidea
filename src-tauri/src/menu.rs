@@ -1427,6 +1427,7 @@ mod tests {
                 "code.quickTypeDefinition",
                 "localHistory.recentChanges",
                 "vim.toggle",
+                "code.saveAsLiveTemplate",
                 "editor.resetFontSize",
                 "diff.compareWithClipboard",
                 "view.quickSwitchScheme",

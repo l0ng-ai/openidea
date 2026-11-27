@@ -301,6 +301,11 @@ function dedentSelection(text: string, indent: string | undefined): string[] {
   return lines.map((l, i) => (i === 0 ? l.trimStart() : l.startsWith(strip!) ? l.slice(strip!.length) : l.trimStart()));
 }
 
+/** A template body that inserts `text` as is: dedented like `$SELECTION$`, `$` escaped. */
+export function bodyFromText(text: string, indent?: string): string {
+  return dedentSelection(text, indent).join("\n").replaceAll("$", "$$$$");
+}
+
 function commonPrefix(a: string, b: string): string {
   let i = 0;
   while (i < a.length && i < b.length && a[i] === b[i]) i++;

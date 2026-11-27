@@ -5,6 +5,7 @@ import { languages } from "@codemirror/language-data";
 import { completedSyntaxState } from "@/test/syntax";
 import {
   applicableTemplates,
+  bodyFromText,
   bodyVariables,
   evaluateExpression,
   expandTemplate,
@@ -267,5 +268,24 @@ describe("editor context", () => {
     expect(suggestVariableName("loadUserProfile(id)", "python")).toBe("load_user_profile");
     expect(suggestVariableName("fetchUsers()", "typescript")).toBe("fetchUsers");
     expect(suggestVariableName("42", "typescript")).toBe("value");
+  });
+});
+
+describe("bodyFromText (Save as Live Template)", () => {
+  it("expands back to the text, dedented, with dollars kept literal", () => {
+    const body = bodyFromText('if ($a) {\n      echo "$a$";\n    }\n', "    ");
+    expect(body).toBe('if ($$a) {\n  echo "$$a$$";\n}');
+    expect(bodyVariables(body)).toEqual([]);
+    expect(expandTemplate({ body }).preview).toBe('if ($a) {\n  echo "$a$";\n}');
+  });
+
+  it("keeps $END$ and $SELECTION$ as text", () => {
+    const body = bodyFromText("$END$ $SELECTION$");
+    expect(parseBody(body)).toEqual([{ t: "text", v: "$END$ $SELECTION$" }]);
+  });
+
+  it("strips the indentation the lines share when the first line's is unknown", () => {
+    expect(bodyFromText("a\n\t\tb\n\t\t\tc")).toBe("a\nb\n\tc");
+    expect(bodyFromText("single")).toBe("single");
   });
 });

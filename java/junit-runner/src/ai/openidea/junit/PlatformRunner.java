@@ -9,10 +9,10 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import org.junit.platform.engine.DiscoverySelector;
 import org.junit.platform.engine.TestExecutionResult;
 import org.junit.platform.engine.TestSource;
@@ -33,7 +33,8 @@ import org.junit.platform.launcher.core.LauncherFactory;
  */
 final class PlatformRunner implements TestExecutionListener {
     private final Reporter report;
-    private final Map<String, Long> started = new HashMap<>();
+    /** Written by the threads running the tests: JUnit may run them in parallel. */
+    private final Map<String, Long> started = new ConcurrentHashMap<>();
     /** The tests and classes each thread is running, innermost first: its output belongs to the first. */
     private final ThreadLocal<Deque<String>> owners = ThreadLocal.withInitial(ArrayDeque::new);
     private final List<Output> outputs = new ArrayList<>();
