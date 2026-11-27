@@ -38,7 +38,7 @@ fn conditions(text: &str) -> Option<(u32, u32)> {
 /// machine's `/home/…` is slow to look up on macOS).
 fn resolve(filename: &str, sources: &[(PathBuf, bool)], base: &Path) -> PathBuf {
     let p = Path::new(filename);
-    if p.is_absolute() {
+    if p.has_root() {
         return p.to_path_buf();
     }
     sources
@@ -100,7 +100,9 @@ pub(crate) fn parse(xml: &str, base: &Path) -> Result<Accumulator, quick_xml::Er
                     let raw = source.take().unwrap_or_default();
                     let text = quick_xml::escape::unescape(raw.trim()).map(|t| t.into_owned()).unwrap_or(raw);
                     if !text.is_empty() {
-                        let dir = base.join(text);
+                        let path = Path::new(&text);
+                        // Joining a drive-less foreign root on Windows would add the checkout's drive.
+                        let dir = if path.has_root() { path.to_path_buf() } else { base.join(path) };
                         let here = dir.is_dir();
                         sources.push((dir, here));
                     }
@@ -144,18 +146,19 @@ mod tests {
 </classes></package></packages></coverage>"#,
             tmp.path().join("b&amp;c").display()
         );
-        let suite = parse(&xml, Path::new("/root")).unwrap().finish("Cobertura");
+        let suite = parse(&xml, tmp.path()).unwrap().finish("Cobertura");
         assert!(suite.has_branches);
-        let paths: Vec<&Path> = suite.files.iter().map(|f| f.path.as_ref() as &Path).collect();
+        assert_eq!(suite.files.len(), 3);
+        let file = |path: &Path| suite.files.iter().find(|f| f.path.as_ref() as &Path == path).unwrap();
         // `m.py` exists under the second source; `n.py` falls back to the first.
-        assert_eq!(paths, [Path::new("/abs/x.py"), Path::new("/elsewhere/a/n.py"), second.join("m.py").as_path()]);
-        let m = &suite.files[2];
+        let m = file(&second.join("m.py"));
+        assert_eq!(file(Path::new("/elsewhere/a/n.py")).lines[0].hits, 0);
         assert_eq!(
             m.lines.iter().map(|l| (l.line, l.hits, l.branches_total, l.branches_covered)).collect::<Vec<_>>(),
             [(0, 1, 0, 0), (1, 5, 2, 1), (2, 0, 0, 0)]
         );
         assert!(m.lines[1].partial());
-        assert_eq!(suite.files[0].lines[0].line, 6);
+        assert_eq!(file(Path::new("/abs/x.py")).lines[0].line, 6);
         assert!(parse("<coverage><packages></coverage>", Path::new("/root")).is_err());
     }
 

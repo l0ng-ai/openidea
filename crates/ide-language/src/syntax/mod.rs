@@ -13,6 +13,7 @@ mod literals;
 mod outline;
 mod php_align;
 mod python_facts;
+mod python_fixtures;
 mod python_imports;
 mod rearrange;
 mod rst;
@@ -35,6 +36,10 @@ pub use literals::{Literal, LiteralKind, SpellingKind, SpellingRegion};
 pub use outline::{merge_kinds, merge_visibility};
 pub use php_align::PhpAlignment;
 pub use python_facts::{MethodBody, PythonClassFacts, PythonFacts, PythonMethodFacts, PythonSuppression};
+pub use python_fixtures::{
+    PytestFixture, PytestFixtureSlot, PytestFixtureUse, PytestFixtureUseKind, PytestModule, resolve_fixture,
+    visible_fixtures,
+};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::OnceLock;

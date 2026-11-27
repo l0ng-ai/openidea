@@ -27,6 +27,7 @@ pub mod maven_placeholder;
 pub mod nav;
 pub mod notebook;
 pub mod project;
+pub mod pytest_fixtures;
 mod python;
 pub mod python_stubs;
 pub mod refactor;

@@ -1839,3 +1839,41 @@
 .jdbcJarPath {
   overflow-wrap: anywhere;
 }
+
+.csvEditor {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.csvSource {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* Kept mounted while the table shows, so the document stays open. */
+.csvHidden {
+  display: none;
+}
+.csvData {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.csvStatus {
+  flex: 1;
+  padding: var(--space-3);
+  color: var(--fg-muted);
+}
+.csvSummary {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.csvTabs {
+  flex: none;
+  border-top: 1px solid var(--border);
+}

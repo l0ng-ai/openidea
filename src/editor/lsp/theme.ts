@@ -623,6 +623,11 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-js-interface": inheritedStyle("javascript-interface", "type"),
   ".cm-sem-js-type-alias": inheritedStyle("javascript-type-alias", "type"),
   ".cm-sem-js-type-parameter": inheritedStyle("javascript-type-parameter", "type"),
+  // IntelliJ's Java Interface / Abstract class / Enum / Type parameter: unset, they keep the type colour.
+  ".cm-sem-java-interface": inheritedStyle("java-interface", "type"),
+  ".cm-sem-java-abstract-class": inheritedStyle("java-abstract-class", "type"),
+  ".cm-sem-java-enum": inheritedStyle("java-enum", "type"),
+  ".cm-sem-java-type-parameter": inheritedStyle("java-type-parameter", "type"),
   // IDEA colours declarations, calls stay (nearly) plain text.
   ".cm-sem-function": semanticStyle("function-call", "function"),
   // Keep role selectors at one class so static/deprecated modifiers can override their styles.

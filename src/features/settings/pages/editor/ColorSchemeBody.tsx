@@ -752,7 +752,20 @@ const SAMPLES: Record<string, CodeSample> = {
       [
         ["public class ", "java.keyword"],
         ["Greeter", "java.className"],
+        ["<", "java.operator"],
+        ["T", "java.typeParameter"],
+        ["> ", "java.operator"],
+        ["extends ", "java.keyword"],
+        ["Shape", "java.abstractClass"],
+        [" implements ", "java.keyword"],
+        ["Named", "java.interface"],
         [" {", "java.operator"],
+      ],
+      [
+        ["    private ", "java.keyword"],
+        ["Mode", "java.enum"],
+        [" mode", "java.field"],
+        [";", "java.operator"],
       ],
       [
         ["    private static final ", "java.keyword"],

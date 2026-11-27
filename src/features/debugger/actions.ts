@@ -22,7 +22,7 @@ import type { EditorView } from "@codemirror/view";
 import { maybeEditorService, notifications, showStatusInfo, toolWindowService } from "@/workbench/contributions";
 import { classFileBreakpointReason } from "@/platform/classFiles";
 import { lineHasCode } from "./breakpoints/codeLines";
-import { canPlaceBreakpoint } from "./breakpoints/languages";
+import { canPlaceBreakpoint, templateBreakpoints } from "./breakpoints/languages";
 import {
   breakpointsOf,
   removeAllBreakpoints,
@@ -448,7 +448,8 @@ async function startConfig(arg: unknown) {
   // php-debug starts the PHP chosen in Settings unless the command names one.
   const php =
     config.debugAdapter === "php-debug" && isTauri() ? await call(commands.sdkPhpEffective()).catch(() => null) : null;
-  const launch = launchConfigFor(await withEnvFiles(prepared, root), root, php);
+  const templates = prepared.debugAdapter === "debugpy" ? await templateBreakpoints() : undefined;
+  const launch = launchConfigFor(await withEnvFiles(prepared, root), root, php, templates);
   if (!launch) {
     notifications().notify({
       group: "run",
@@ -520,7 +521,8 @@ export function registerDebugActions(): () => void {
         const config = await call(commands.pluginPrepareDebugRun(a.config));
         const root = useProject.getState().project?.root;
         if (!root) throw new Error("No project");
-        const launch = launchConfigFor(await withEnvFiles(config, root), root);
+        const templates = config.debugAdapter === "debugpy" ? await templateBreakpoints() : undefined;
+        const launch = launchConfigFor(await withEnvFiles(config, root), root, null, templates);
         if (!launch) throw new Error("This configuration has no debugger");
         let id: number | null = null;
         let stopped = false;
@@ -1073,7 +1075,7 @@ export function registerDebugActions(): () => void {
         if (!c || !breakpointPathAllowed(c.path)) return;
         const exists = useBreakpoints.getState().byFile[c.path]?.some((b) => b.line === c.line);
         const language = activeEditor()?.ctx.language ?? "";
-        if (!exists && !canPlaceBreakpoint(language)) {
+        if (!exists && !canPlaceBreakpoint(language, c.path)) {
           notifications().notify({
             level: "info",
             key: "debug.breakpointNotAllowed",

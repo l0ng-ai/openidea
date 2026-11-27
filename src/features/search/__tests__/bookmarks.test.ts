@@ -111,20 +111,22 @@ describe("bookmarks in a notebook", () => {
     const host = document.createElement("div");
     document.body.appendChild(host);
     const view = new EditorView({ doc: "a\nb\n", parent: host });
+    const cell = new EditorView({ doc: "x = 1\n", parent: host });
     const handle = { view, ctx: { doc: 1, path: "/p/a.ts", language: "", uiMode: null, readOnly: false } };
     _setActiveEditor(handle as TextEditorHandle);
     try {
       expect(caretLine()?.path).toBe("/p/a.ts");
-      const cell = new EditorView({ doc: "x = 1\n", parent: host });
       cell.focus();
       _setFocusedCellEditor(cell);
       expect(caretLine()).toBeNull();
       _setFocusedCellEditor(null);
       expect(caretLine()?.path).toBe("/p/a.ts");
     } finally {
+      _setFocusedCellEditor(null);
       _setActiveEditor(null);
+      cell.destroy();
       view.destroy();
-      view.dom.remove();
+      host.remove();
     }
   });
 });

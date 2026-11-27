@@ -22,6 +22,8 @@ import {
   explicitCompletion,
   makeCompletion,
   matchRanges,
+  completionValidFor,
+  pruneItems,
   positionCompletionInfo,
   sortAlphabetically,
 } from "./completion";
@@ -1121,5 +1123,163 @@ describe("`(` completion trigger", () => {
 
   it("does not ask the server when ( is typed in other languages", async () => {
     expect(await parensTypedInto("kotlin", "Kotlin", 904)).toBe(0);
+  });
+});
+
+describe("hyphenated completion tokens", () => {
+  let view: EditorView | null = null;
+  let calls = 0;
+
+  afterEach(() => {
+    view?.destroy();
+    view = null;
+    setInvokeRoute(null);
+    calls = 0;
+  });
+
+  /** A server item whose replace range covers `[0, end)` of the line. */
+  const ranged = (label: string, end: number, start = 0) =>
+    item({
+      label,
+      insertText: label,
+      replaceRange: { start: { line: 0, col: start }, end: { line: 0, col: end } },
+    });
+
+  function mount(doc: string, caret: number, reply: CompletionItem[], language = "typescriptreact") {
+    setInvokeRoute((cmd) => {
+      if (cmd === "cancel_request") return Promise.resolve(null);
+      if (cmd === "lsp_completion") {
+        calls++;
+        return Promise.resolve({ isIncomplete: false, items: reply });
+      }
+      return Promise.resolve(null);
+    });
+    view = new EditorView({
+      state: EditorState.create({
+        doc,
+        selection: { anchor: caret },
+        extensions: [
+          lspDoc.of({ doc: 950, path: "/p/a.tsx", language, uiMode: "TypeScript React", readOnly: false }),
+          completionExtension(),
+        ],
+      }),
+      parent: document.body,
+    });
+    return view;
+  }
+
+  const labels = () => currentCompletions(view!.state).map((c) => c.label);
+
+  it("offers items-center when the caret sits after items-c", async () => {
+    mount("items-c", 7, [ranged("items-baseline", 7), ranged("items-center", 7)]);
+    startCompletion(view!);
+    await vi.waitFor(() => expect(labels()).toContain("items-center"));
+  });
+
+  it("keeps the list across the hyphen instead of asking again", async () => {
+    mount("items", 5, [ranged("items-baseline", 5), ranged("items-center", 5)]);
+    startCompletion(view!);
+    await vi.waitFor(() => expect(labels()).toHaveLength(2));
+    const at = view!.state.selection.main.head;
+    view!.dispatch({ changes: { from: at, insert: "-" }, selection: { anchor: at + 1 }, userEvent: "input.type" });
+
+    view!.dispatch({ changes: { from: at + 1, insert: "c" }, selection: { anchor: at + 2 }, userEvent: "input.type" });
+
+    await vi.waitFor(() => expect(labels()).toEqual(["items-center"]));
+    expect(completionStatus(view!.state)).toBe("active");
+    expect(calls).toBe(1);
+  });
+
+  it("ignores a stray item whose range starts later than the rest", async () => {
+    mount("items-c", 7, [
+      ranged("items-baseline", 7),
+      ranged("items-center", 7),
+      ranged("items-start", 7),
+      ranged("items-end", 7),
+      ranged("items-stretch", 7),
+      ranged("center", 7, 6),
+    ]);
+    startCompletion(view!);
+    await vi.waitFor(() => expect(labels()).toContain("items-center"));
+  });
+
+  it("does not widen a range that is not a single token", async () => {
+    mount("this.foo", 8, [ranged("foobar", 8)], "javascript");
+    startCompletion(view!);
+    await vi.waitFor(() => expect(labels()).toContain("foobar"));
+  });
+
+  it("still re-queries when a hyphen does not continue any option", async () => {
+    mount("a", 1, [ranged("alpha", 1)], "javascript");
+    startCompletion(view!);
+    await vi.waitFor(() => expect(labels()).toEqual(["alpha"]));
+    const at = view!.state.selection.main.head;
+    view!.dispatch({ changes: { from: at, insert: "-b" }, selection: { anchor: at + 2 }, userEvent: "input.type" });
+    await vi.waitFor(() => expect(completionStatus(view!.state)).not.toBe("active"));
+  });
+
+  it("prunes a huge list to the options the typed token can still reach", () => {
+    const many = Array.from({ length: 3000 }, (_, i) => item({ label: `items-${i}`, insertText: `items-${i}` }));
+    many.push(item({ label: "items-center", insertText: "items-center" }));
+    const pruned = pruneItems(many, "items-c");
+    expect(pruned.items.map((i) => i.label)).toEqual(["items-center"]);
+    expect(pruned.prunedBy).toBe("items-c");
+  });
+
+  it("leaves small, empty, or unmatched lists alone", () => {
+    expect(pruneItems([item({ label: "a" })], "a").prunedBy).toBeNull();
+    const many = Array.from({ length: 3000 }, (_, i) => item({ label: `items-${i}` }));
+    expect(pruneItems(many, "").prunedBy).toBeNull();
+    expect(pruneItems(many, "zzz").prunedBy).toBeNull();
+  });
+
+  it("asks again when backspacing below the pruned token", () => {
+    const validFor = completionValidFor([item({ label: "items-center" })], "items-c");
+    expect(validFor("items-c")).toBe(true);
+    expect(validFor("items-cent")).toBe(true);
+    expect(validFor("items-")).toBe(false);
+    expect(validFor("foo-bar")).toBe(false);
+    expect(completionValidFor([item({ label: "alpha" })], null)("alpha")).toBe(true);
+  });
+
+  it("asks the server again after backspacing below the pruned token", async () => {
+    const reply = [
+      ...Array.from({ length: 1100 }, (_, i) =>
+        item({
+          label: `ite-${i}`,
+          insertText: `ite-${i}`,
+          replaceRange: { start: { line: 0, col: 0 }, end: { line: 0, col: 3 } },
+        }),
+      ),
+      ...Array.from({ length: 1100 }, (_, i) =>
+        item({
+          label: `zzz-${i}`,
+          insertText: `zzz-${i}`,
+          replaceRange: { start: { line: 0, col: 0 }, end: { line: 0, col: 3 } },
+        }),
+      ),
+    ];
+    mount("ite", 3, reply);
+    startCompletion(view!);
+    await vi.waitFor(() => expect(calls).toBe(1));
+    view!.dispatch({ changes: { from: 2, to: 3 }, selection: { anchor: 2 }, userEvent: "delete.backward" });
+    await vi.waitFor(() => expect(calls).toBe(2));
+  });
+
+  it("completes CSS properties across the hyphen too", async () => {
+    mount(
+      "background-c",
+      12,
+      [
+        item({
+          label: "background-color",
+          insertText: "background-color",
+          replaceRange: { start: { line: 0, col: 0 }, end: { line: 0, col: 12 } },
+        }),
+      ],
+      "css",
+    );
+    startCompletion(view!);
+    await vi.waitFor(() => expect(labels()).toContain("background-color"));
   });
 });

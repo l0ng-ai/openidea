@@ -58,7 +58,7 @@ import { missingAdapter } from "./missingAdapter";
 import { startFailureMessage } from "./startFailure";
 import { evaluateWithImports, forgetImports } from "./classImports";
 import { JAVA_ADAPTER } from "./java";
-import { reconnects } from "./remote";
+import { listensAgain, reconnects, remoteWaitingNote } from "./remote";
 import { isTracing, markTraceStop } from "./streams/streamStore";
 
 export type SessionStatus = "starting" | "running" | "paused" | "stopping" | "terminated";
@@ -380,16 +380,28 @@ function ownSession(id: DebugSessionId, event: DebugEvent): DebugSession | null 
   provisional.add(id);
   // The new root session takes the tab it replaces now, not once `debugStart` returns.
   const replaced = pendingReplacements[0];
-  const slot = replaced ? { tabOrder: replaced.tabOrder, pinned: replaced.pinned } : {};
+  // A Python Debug Server's `debugStart` returns once a program connects: until then it is starting.
+  // The start this session belongs to (by name): a server still waiting must not lend its configuration.
+  const at = event.kind === "started" ? pendingConfigs.findIndex((c) => c.name === event.name) : -1;
+  const rc = at >= 0 ? pendingConfigs.splice(at, 1)[0]!.runConfig : undefined;
+  const waiting = listensAgain(rc) ? { runConfig: rc, status: "starting" as const } : {};
+  const slot = { ...waiting, ...(replaced ? { tabOrder: replaced.tabOrder, pinned: replaced.pinned } : {}) };
   const s =
     event.kind === "started"
       ? adoptSession(id, { name: event.name, adapter: event.adapter, ...slot })
       : adoptSession(id, slot);
   if (replaced) {
+    // Listening again for the next program keeps the output of the previous ones.
+    const previous = replaced.session;
+    if (waiting.runConfig && previous != null)
+      useDebug.setState((cur) => ({
+        console: { ...cur.console, [id]: [...(cur.console[previous] ?? []), ...(cur.console[id] ?? [])] },
+      }));
     takeReplacement(replaced);
     useDebug.setState({ active: id });
     publishContext();
   }
+  if (waiting.runConfig) appendConsole(id, "system", `${remoteWaitingNote(rc, false, true)}\n`);
   return s;
 }
 
@@ -434,6 +446,8 @@ interface ReplacedTab {
 
 /** Finished tabs whose starting replacements have no session yet, oldest start first. */
 const pendingReplacements: ReplacedTab[] = [];
+/** The run configurations of starts in flight, oldest first. */
+const pendingConfigs: { name: string; runConfig?: RunConfig }[] = [];
 
 /** The new session is shown: the finished tab it replaces gives way. */
 function takeReplacement(r: ReplacedTab | undefined) {
@@ -992,7 +1006,13 @@ export async function startSession(
     await flushBreakpoints();
     options.preparation?.signal.throwIfAborted();
     const adapterStarted = performance.now();
-    const id = await call(commands.debugStart(launch));
+    const pending = { name: launch.name, runConfig: options.runConfig };
+    pendingConfigs.push(pending);
+    const id = await call(commands.debugStart(launch)).finally(() => {
+      // Its session took the entry when it was announced, unless it never was.
+      const at = pendingConfigs.indexOf(pending);
+      if (at >= 0) pendingConfigs.splice(at, 1);
+    });
     console.info("Debug adapter started", { name: launch.name, ms: performance.now() - adapterStarted });
     owned.add(id);
     if (afterDetach && !options.preparation) replaced = replaceFinished(launch.name, options.runConfig?.id);
@@ -1694,9 +1714,15 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
       patch(id, { exitCode: event.code });
       appendConsole(id, "system", `\nProcess finished with exit code ${event.code}\n`);
       break;
-    case "terminated":
+    case "terminated": {
+      // The connected program ended by itself (not Stop, not a wait cancelled or failed):
+      // a Python Debug Server waits for the next one.
+      const connected = s.status === "running" || s.status === "paused";
+      const again = s.parent == null && connected && listensAgain(s.runConfig) && !rerunning.has(id);
       markTerminated(id);
+      if (again) void rerunSession(id);
       break;
+    }
     case "capabilities":
       void loadCapabilities(id);
       break;

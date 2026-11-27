@@ -1438,10 +1438,13 @@ impl DbManager {
             }
             DbDriver::Postgres => {
                 let rel = pool.rows(&sql::postgres_relation(schema, name), 1).await?.into_iter().next();
-                let (oid, kind) = match rel.as_deref() {
-                    Some([Some(oid), Some(kind)]) => {
-                        (oid.parse::<u32>().map_err(|e| IdeError::invalid(e.to_string()))?, kind.clone())
-                    }
+                let (oid, kind, owner, comment) = match rel.as_deref() {
+                    Some([Some(oid), Some(kind), owner, comment]) => (
+                        oid.parse::<u32>().map_err(|e| IdeError::invalid(e.to_string()))?,
+                        kind.clone(),
+                        owner.clone(),
+                        comment.clone(),
+                    ),
                     _ => return Err(missing()),
                 };
                 if kind == "v" || kind == "m" {
@@ -1462,6 +1465,7 @@ impl DbManager {
                             data_type: it.next().flatten().unwrap_or_default(),
                             not_null: flag(&it.next().flatten()),
                             default: it.next().flatten(),
+                            comment: it.next().flatten(),
                         })
                     })
                     .collect::<Vec<_>>();
@@ -1475,7 +1479,18 @@ impl DbManager {
                     })
                     .collect::<Vec<_>>();
                 let indexes = cells(pool.rows(&sql::postgres_ddl_indexes(oid), MAX_META_ROWS).await?, 0);
-                Ok(sql::postgres_table_ddl(schema, name, &columns, &constraints, &indexes))
+                let grants = pool
+                    .rows(&sql::postgres_ddl_grants(oid), MAX_META_ROWS)
+                    .await?
+                    .into_iter()
+                    .filter_map(|r| {
+                        let mut it = r.into_iter();
+                        Some((it.next().flatten()?, it.next().flatten()?, flag(&it.next().flatten())))
+                    })
+                    .collect();
+                let triggers = cells(pool.rows(&sql::postgres_ddl_triggers(oid), MAX_META_ROWS).await?, 0);
+                let extras = sql::DdlExtras { comment, owner, grants, triggers };
+                Ok(sql::postgres_table_ddl(schema, name, &columns, &constraints, &indexes, &extras))
             }
         }
     }
