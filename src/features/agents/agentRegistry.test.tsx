@@ -10,7 +10,9 @@ import type {
   RegistryAgent,
   RequestId,
 } from "@/bindings";
-import { IpcError } from "@/platform/ipc";
+import { IpcError, commands as ipcCommands } from "@/platform/ipc";
+import * as openUrlMod from "@/platform/openUrl";
+import { disableRemote, enableRemote } from "@/platform/remote";
 import { setLocale, tx } from "@/platform/i18n";
 import { iconMarkup } from "@/ui/icons";
 import { MessagesHost } from "@/workbench/messages";
@@ -873,6 +875,96 @@ describe("Built-in executable overrides", () => {
         expect(screen.getByRole("button", { name: "GitHub account" })).toHaveTextContent("alice-work"),
       );
     } finally {
+      provideEmbeddedTerminal(undefined);
+    }
+  });
+
+  it("surfaces a device-code banner in Sign In dialog, copies locally, opens browser, and advances remote gh login", async () => {
+    provideEmbeddedTerminal(async () => ({
+      write: vi.fn(),
+      clear: vi.fn(),
+      focus: vi.fn(),
+      fit: vi.fn(),
+      dispose: vi.fn(),
+    }));
+    const openSpy = vi.spyOn(openUrlMod, "openExternalUrl").mockResolvedValue();
+    const termWriteSpy = vi.spyOn(ipcCommands, "termWrite").mockResolvedValue({ status: "ok", data: null });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    enableRemote({
+      target: { kind: "ssh", configId: "devbox" } as never,
+      root: "/home/alice/repo",
+      host: "devbox",
+      os: "linux",
+      commands: ["agent_gh_login_spawn", "term_write", "term_resize", "term_kill"],
+    });
+    let onLoginEvent: ((e: AgentLoginEvent) => void) | null = null;
+    try {
+      const commands = new FakeCommands();
+      commands.ghLoginSpawn = vi.fn(async (_cols, _rows, cb) => {
+        onLoginEvent = cb;
+        return 202;
+      });
+      commands.copilotAuthStatus = vi.fn<() => Promise<CopilotAuthStatus>>().mockResolvedValue({
+        authenticated: false,
+        login: null,
+        authType: null,
+        statusMessage: null,
+        ghInstalled: true,
+        ghAccounts: [],
+      });
+      commands.list = [
+        {
+          ...claudeProvider("copilot"),
+          id: "copilot",
+          name: "GitHub Copilot",
+          command: "copilot --headless --no-auto-update --stdio",
+          defaultProgram: "copilot",
+          loginHint: "Run `copilot login` in a terminal.",
+          installed: true,
+          canSignIn: true,
+          commandReadOnlyReason: "registry",
+        },
+      ];
+      await openCommands(commands, vi.fn(), "GitHub Copilot");
+
+      fireEvent.click(await screen.findByRole("button", { name: "Add account…" }));
+      expect(await screen.findByRole("dialog", { name: "Sign In to GitHub CLI" })).toBeInTheDocument();
+      await waitFor(() => expect(commands.ghLoginSpawn).toHaveBeenCalled());
+
+      act(() => {
+        onLoginEvent?.({
+          type: "output",
+          data: "! First copy your one-time code: \u001b[1mWDJB-MJHT\u001b[0m\r\nPress Enter to open https://github.com/login/device in your browser... ",
+        });
+      });
+
+      const banner = await screen.findByRole("region", { name: "Device verification code" });
+      expect(within(banner).getByText("WDJB-MJHT")).toBeInTheDocument();
+      expect(within(banner).getByText("github.com/login/device")).toBeInTheDocument();
+
+      await act(async () => {
+        fireEvent.click(within(banner).getByRole("button", { name: "Copy Code & Open Browser" }));
+      });
+
+      expect(writeText).toHaveBeenCalledWith("WDJB-MJHT");
+      expect(openSpy).toHaveBeenCalledWith("https://github.com/login/device");
+      expect(termWriteSpy).toHaveBeenCalledWith(202, "\r");
+      expect(within(banner).getByRole("button", { name: "Copied" })).toBeInTheDocument();
+
+      // Clicking again does not send a second Enter for the same code.
+      termWriteSpy.mockClear();
+      await act(async () => {
+        fireEvent.click(within(banner).getByRole("button", { name: "Copy Code & Open Browser" }));
+      });
+      expect(termWriteSpy).not.toHaveBeenCalled();
+    } finally {
+      disableRemote();
+      openSpy.mockRestore();
+      termWriteSpy.mockRestore();
       provideEmbeddedTerminal(undefined);
     }
   });

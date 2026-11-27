@@ -38,7 +38,7 @@ OpenIDEA 通过 `docker` 命令行操作 Docker，所以只要能提供可用的
 | **名称:**                        | 树中显示的名称。                                                                                                                                                                                                                                                                                                             |
 | **连接 Docker 守护进程的方式：** | **Docker CLI 默认值（DOCKER_HOST/当前上下文）**；**Unix 套接字**（套接字路径，或 `npipe://` 这类 Engine API URL）；**TCP/SSH 主机**（`tcp://host:2376` 或 `ssh://user@host`，可选一个包含 `ca.pem`、`cert.pem`、`key.pem` 的 TLS 证书文件夹）；**Docker 上下文**（上下文名称，例如 `desktop-linux`、`orbstack`、`colima`）。 |
 
-右键连接可以 **编辑连接…** 或 **移除连接**。连接是全局的，不属于某个项目。树通过 `docker events` 实时更新；守护进程未运行时，每 10 秒重试一次。
+右键连接可以 **编辑连接…** 或 **移除连接**。连接按运行主机保存（不属于某个项目）：远程窗口将连接保存在远端主机上，并连接该主机的 Docker 守护进程。树通过 `docker events` 实时更新；守护进程未运行时，每 10 秒重试一次。
 
 ### 镜像注册表
 
