@@ -1220,6 +1220,17 @@ fn py_config(
     c.debug("debugpy")
 }
 
+/// The variable a module-level `name = Flask(...)` / `name = FastAPI(...)` assigns, if any.
+fn web_app(text: &str, class: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let (var, value) = line.split_once('=')?;
+        let var = var.trim_end().split(':').next()?.trim_end();
+        let call = value.trim_start().strip_prefix(class)?.trim_start();
+        let ident = !var.is_empty() && var.chars().all(|c| c.is_alphanumeric() || c == '_');
+        (ident && call.starts_with('(')).then(|| var.to_owned())
+    })
+}
+
 fn uses_pytest(root: &Path) -> bool {
     if ["pytest.ini", "tox.ini", "conftest.py"].iter().any(|f| root.join(f).is_file()) {
         return true;
@@ -1284,6 +1295,28 @@ fn detect_python(top: &Path, root: &Path, out: &mut Vec<RunConfig>) {
             env.python(),
             &["manage.py", "runserver"],
         ));
+    }
+    for (file, module) in [("app.py", "app"), ("wsgi.py", "wsgi"), ("main.py", "main"), ("app/main.py", "app.main")] {
+        let Some(text) = read(&root.join(file)) else { continue };
+        if let Some(var) = web_app(&text, "FastAPI") {
+            let app = format!("{module}:{var}");
+            out.push(py_config(
+                format!("fastapi:{app}"),
+                format!("uvicorn {app}"),
+                "fastapi",
+                env.python(),
+                &["-m", "uvicorn", &app, "--reload"],
+            ));
+        } else if let Some(var) = web_app(&text, "Flask") {
+            let app = if var == "app" { module.to_owned() } else { format!("{module}:{var}") };
+            out.push(py_config(
+                format!("flask:{app}"),
+                format!("flask run ({app})"),
+                "flask",
+                env.python(),
+                &["-m", "flask", "--app", &app, "--debug", "run"],
+            ));
+        }
     }
     let mut modules = Vec::new();
     for base in [root.to_path_buf(), root.join("src")] {

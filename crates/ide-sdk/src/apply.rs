@@ -1993,8 +1993,7 @@ pub fn run_target<'a>(config: &RunConfig, settings: &'a Settings) -> Option<&'a 
 }
 
 fn is_python_config(config: &RunConfig, program: &str) -> bool {
-    matches!(config.kind.as_str(), "python" | "pytest" | "unittest" | "doctest" | "django-test")
-        || is_python_command(program)
+    ide_run::is_python_kind(&config.kind) || is_python_command(program)
 }
 
 /// Whether the configuration's `JAVA_HOME` is the one Settings choose (the Maven runner JRE,
@@ -2107,7 +2106,7 @@ pub fn apply_to_run_configs_in(configs: &mut [RunConfig], root: &Path, fallback:
         resolve_run_command(c, root, s);
         let mut path_dirs: Vec<PathBuf> = Vec::new();
         match c.kind.as_str() {
-            "python" | "pytest" | "unittest" | "doctest" | "django-test" => {
+            kind if ide_run::is_python_kind(kind) => {
                 let command = Path::new(&c.command);
                 let own = !c.detected && command.components().count() > 1 && is_python_command(&c.command);
                 let python = if own {
@@ -2125,10 +2124,7 @@ pub fn apply_to_run_configs_in(configs: &mut [RunConfig], root: &Path, fallback:
                     let runner_options = runner
                         && c.args.first().map(String::as_str) == Some("run")
                         && c.args.get(1).is_some_and(|a| a.starts_with('-'));
-                    if matches!(c.kind.as_str(), "python" | "unittest" | "doctest" | "django-test")
-                        && !runner_options
-                        && (runner || is_python_command(&c.command))
-                    {
+                    if c.kind != "pytest" && !runner_options && (runner || is_python_command(&c.command)) {
                         if runner && c.args.first().map(String::as_str) == Some("run") {
                             // `uv run python …` → `<interpreter> …`
                             let skip = if c.args.get(1).is_some_and(|a| is_python_command(a)) { 2 } else { 1 };

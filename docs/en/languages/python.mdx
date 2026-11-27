@@ -159,7 +159,13 @@ See [Debugging](/en/guide/debugging) for breakpoints, stepping and the debugger 
 
 ## Framework support
 
-Django is the only framework with dedicated support: the `manage.py runserver` and `manage.py test` configurations, the **Django tests** configuration type (target, settings module, options), running single `TestCase` tests from the gutter, and Django mode in the debugger. Other frameworks (Flask, FastAPI and so on) run as ordinary scripts or console scripts.
+Django has the `manage.py runserver` and `manage.py test` configurations, the **Django tests** configuration type (target, settings module, options), running single `TestCase` tests from the gutter, and Django mode in the debugger. Other frameworks run as ordinary scripts or console scripts, except Flask and FastAPI below.
+
+### Flask and FastAPI
+
+The **Flask server** configuration runs `python -m flask --app <app> run`: **Application** is what `--app` takes (a module or file, optionally with the app or factory, `hello:create_app()`; empty finds `app.py` or `wsgi.py`), **Debug mode** adds `--debug` (reloader and the in-browser debugger), and **Host**, **Port** and **Additional options** go to `flask run`. The **FastAPI** configuration runs `python -m uvicorn <module:app>` with **Reload on code changes** (`--reload`), **Host**, **Port** and further uvicorn options. Both use the Interpreter choice of Python configurations and debug with debugpy; Jinja2 template breakpoints work under Flask.
+
+A top-level `app.py`, `wsgi.py` or `main.py`, or `app/main.py`, that assigns `Flask(...)` or `FastAPI(...)` to a module-level name gets one of these configurations detected (`flask --app app --debug run`, `uvicorn app.main:app --reload`). An app created inside a factory function is not detected; add the configuration by hand.
 
 ### Django templates
 

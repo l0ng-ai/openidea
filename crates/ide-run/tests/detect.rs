@@ -677,6 +677,36 @@ fn python_projects() {
 }
 
 #[test]
+fn flask_and_fastapi_apps() {
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    let dir =
+        project(&[("requirements.txt", "flask\n"), ("app.py", "from flask import Flask\n\napp = Flask(__name__)\n")]);
+    let c = detect(dir.path());
+    let flask = find(&c, "flask:app");
+    assert_eq!(cmdline(flask), format!("{python} -m flask --app app --debug run"));
+    assert_eq!(flask.kind, "flask");
+    assert_eq!(flask.debug_adapter.as_deref(), Some("debugpy"));
+
+    let dir = project(&[
+        ("pyproject.toml", "[project]\nname = 'api'\n"),
+        ("uv.lock", ""),
+        ("app/main.py", "from fastapi import FastAPI\n\napi: FastAPI = FastAPI(title='x')\n"),
+    ]);
+    let c = detect(dir.path());
+    let api = find(&c, "fastapi:app.main:api");
+    assert_eq!(cmdline(api), "uv run python -m uvicorn app.main:api --reload");
+    assert_eq!(api.kind, "fastapi");
+
+    // An app made inside a factory, or a module that only imports Flask, is left to the user.
+    let dir = project(&[
+        ("requirements.txt", ""),
+        ("app.py", "from flask import Flask\n\ndef create_app():\n    app = Flask(__name__)\n    return app\n"),
+        ("main.py", "import flask\nFlaskApp = 1\n"),
+    ]);
+    assert!(detect(dir.path()).iter().all(|c| c.kind != "flask"));
+}
+
+#[test]
 fn python_unittest_projects() {
     const UNITTEST: &str = "import unittest\n\nclass T(unittest.TestCase):\n    pass\n";
     // The standard library's unittest and no pytest: `python -m unittest`.

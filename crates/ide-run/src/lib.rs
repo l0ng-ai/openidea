@@ -266,6 +266,12 @@ pub struct RunAttach {
 
 pub use external::{EXTERNAL_PREFIX, ExternalDetection, set_external_detection};
 
+/// Kinds whose command is a Python interpreter (or a runner of one): they get the project
+/// interpreter, `PYTHONUNBUFFERED` and the interpreter paths on `PYTHONPATH`.
+pub fn is_python_kind(kind: &str) -> bool {
+    matches!(kind, "python" | "pytest" | "unittest" | "doctest" | "django-test" | "flask" | "fastapi")
+}
+
 /// Detects configs from package.json scripts, Cargo.toml targets, build.gradle(.kts),
 /// pom.xml, go.mod, pyproject/pytest, Makefile.
 pub fn detect(root: &Path) -> Vec<RunConfig> {

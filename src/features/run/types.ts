@@ -29,6 +29,7 @@ import { goBuildType, goTestType } from "./goTypes";
 import { dotnetProjectType, dotnetTestType } from "./dotnetTypes";
 import { rakeType, rspecType, rubyScriptType } from "./rubyTypes";
 import { djangoTestType } from "./djangoTypes";
+import { fastapiType, flaskType } from "./pythonWebTypes";
 import { doctestType, pythonType, unittestType } from "./pythonTypes";
 import { phpunitType } from "./phpunitTypes";
 import { cypressType } from "./cypressType";
@@ -626,6 +627,8 @@ export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   rakeType,
   rspecType,
   djangoTestType,
+  flaskType,
+  fastapiType,
   phpunitType,
   dotnetProjectType,
   dotnetTestType,

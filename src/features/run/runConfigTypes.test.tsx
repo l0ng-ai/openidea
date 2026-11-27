@@ -514,6 +514,89 @@ describe("configuration types", () => {
     ).toBeNull();
   });
 
+  it("Flask and FastAPI round-trip commandLine / paramsFrom", () => {
+    const flask = typeFor("flask")!;
+    const fastapi = typeFor("fastapi")!;
+    expect(newConfigOfType(flask, [])).toMatchObject({
+      kind: "flask",
+      command: "python3",
+      args: ["-m", "flask", "--debug", "run"],
+      debugAdapter: "debugpy",
+    });
+    expect(newConfigOfType(fastapi, [])).toMatchObject({
+      kind: "fastapi",
+      args: ["-m", "uvicorn", "main:app", "--reload"],
+      debugAdapter: "debugpy",
+    });
+    const cases: Array<{ kind: string; command: string; args: string[]; params: Record<string, string> }> = [
+      {
+        kind: "flask",
+        command: "python3",
+        args: ["-m", "flask", "--app", "app", "--debug", "run"],
+        params: { command: "python3", runnerArgs: "", app: "app", debug: "true", host: "", port: "", options: "" },
+      },
+      {
+        kind: "flask",
+        command: "uv",
+        args: [
+          "run",
+          "python",
+          "-m",
+          "flask",
+          "--app",
+          "hello:create_app()",
+          "run",
+          "--host",
+          "0.0.0.0",
+          "--port",
+          "8080",
+          "--cert",
+          "adhoc",
+        ],
+        params: {
+          command: "uv",
+          runnerArgs: "run python",
+          app: "hello:create_app()",
+          host: "0.0.0.0",
+          port: "8080",
+          options: "--cert adhoc",
+        },
+      },
+      {
+        kind: "fastapi",
+        command: ".venv/bin/python",
+        args: ["-m", "uvicorn", "app.main:api", "--reload", "--port", "8001", "--log-level", "debug"],
+        params: {
+          command: ".venv/bin/python",
+          runnerArgs: "",
+          app: "app.main:api",
+          reload: "true",
+          host: "",
+          port: "8001",
+          options: "--log-level debug",
+        },
+      },
+    ];
+    for (const { kind, command, args, params } of cases) {
+      const type = kind === "flask" ? flask : fastapi;
+      const c = cfg(kind, { kind, command, args, detected: true });
+      expect(type.paramsFrom!(c)).toEqual(params);
+      expect(type.commandLine(params)).toEqual({ command, args });
+    }
+    // `flask run --debug` (Flask 2.3+) and `--port=…` are read too.
+    expect(
+      flask.paramsFrom!(
+        cfg("f", { kind: "flask", command: "python3", args: ["-m", "flask", "run", "--debug", "--port=5001"] }),
+      ),
+    ).toMatchObject({ debug: "true", port: "5001", options: "" });
+    // An option of the `flask` group without a field: edited as a plain command.
+    expect(
+      flask.paramsFrom!(
+        cfg("f", { kind: "flask", command: "python3", args: ["-m", "flask", "--env-file", ".env", "run"] }),
+      ),
+    ).toBeNull();
+  });
+
   it("pytest round-trips commandLine / paramsFrom and opens implicit context configs in the form", () => {
     const pytest = typeFor("pytest")!;
     expect(pytest.debugAdapter).toBe("debugpy");
