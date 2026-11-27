@@ -33,7 +33,7 @@ fn watch(project: &Project, dir: &Path) -> io::Result<()> {
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(dir)?;
     let sink = project.sink.clone();
-    // ponytail: every event of a finished PNG is sent (create, rename, modify); the window keeps each path once.
+    // Every event of a finished PNG is sent (create, rename, modify); the window keeps each path once.
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         for path in res.map(|e| e.paths).unwrap_or_default() {
             if is_plot(&path) && path.is_file() {
