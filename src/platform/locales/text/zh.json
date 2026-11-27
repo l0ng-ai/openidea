@@ -10673,5 +10673,8 @@
   "Uses GitHub CLI's active account without setting GH_TOKEN in the project environment.": "使用 GitHub CLI 当前活动账户，不在项目环境中设置 GH_TOKEN。",
   "Passes this account's GH_TOKEN to processes started in this project (terminals, agents, Git, and run configurations).": "将此账户的 GH_TOKEN 传递给此项目中启动的进程（终端、智能体、Git 和运行配置）。",
   "Get from Version Control": "从版本控制获取",
-  "Cannot connect to the remote host": "无法连接到远程主机"
+  "Cannot connect to the remote host": "无法连接到远程主机",
+  "Custom command": "自定义命令",
+  "{chosen} (not found)": "{chosen}（未找到）",
+  "The interpreter does not exist": "解释器不存在"
 }
