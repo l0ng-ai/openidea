@@ -912,3 +912,179 @@ test("Docker volume, Compose, and container dashboards show volume disk usage", 
   await expect(detail.getByText("Volume & Bind Mounts")).toBeVisible();
   await expect(detail).toContainText("380.2kB");
 });
+
+test("Services Docker routes to the remote host daemon and switches back on disconnect", async ({
+  workbench: page,
+}) => {
+  await stubDesktop(page);
+  await page.evaluate(async () => {
+    const localSnapshot = {
+      availability: { kind: "ready", clientVersion: "28.0.1", serverVersion: "28.0.1", context: "desktop-linux" },
+      executable: "/Applications/Docker.app/Contents/Resources/bin/docker",
+      containers: [
+        {
+          id: "local-1",
+          name: "local-dev-nginx",
+          image: "nginx:alpine",
+          command: "nginx -g 'daemon off;'",
+          state: "running",
+          status: "Up 3 hours",
+          ports: "8080->80/tcp",
+          createdAt: "2026-11-26T20:00:00Z",
+          composeProject: null,
+          composeService: null,
+          composeWorkingDir: null,
+          composeFiles: [],
+          mounts: [],
+          networks: ["bridge"],
+        },
+      ],
+      images: [],
+      volumes: [],
+      networks: [],
+      errors: [],
+    };
+
+    const remoteContainers = [
+      {
+        id: "ec397677d395",
+        name: "selfhost-runner-github-runner-1",
+        image: "myoung34/github-runner:2.338.2-ubuntu-noble",
+        command: '"/bin/bash -ec \'mkdir…"',
+        state: "running",
+        status: "Up 7 minutes",
+        ports: "",
+        createdAt: "2026-11-26T20:40:00Z",
+        composeProject: "selfhost-runner",
+        composeService: "github-runner-1",
+        composeWorkingDir: "/home/deng/selfhost-runner",
+        composeFiles: ["/home/deng/selfhost-runner/docker-compose.yml"],
+        mounts: [],
+        networks: ["selfhost_default"],
+      },
+      {
+        id: "4d7591278f60",
+        name: "selfhost-runner-github-runner-2",
+        image: "myoung34/github-runner:2.338.2-ubuntu-noble",
+        command: '"/bin/bash -ec \'mkdir…"',
+        state: "running",
+        status: "Up 7 minutes",
+        ports: "",
+        createdAt: "2026-11-26T20:40:00Z",
+        composeProject: "selfhost-runner",
+        composeService: "github-runner-2",
+        composeWorkingDir: "/home/deng/selfhost-runner",
+        composeFiles: ["/home/deng/selfhost-runner/docker-compose.yml"],
+        mounts: [],
+        networks: ["selfhost_default"],
+      },
+    ];
+
+    (window as unknown as { __emitRemoteDockerEvent?: () => void }).__emitRemoteDockerEvent = undefined;
+
+    window.__ipc.handlers.docker_settings = () => ({
+      connections: [{ id: "local", name: "Docker", endpoint: { kind: "default" } }],
+      registries: [],
+    });
+    window.__ipc.handlers.docker_snapshot = () => localSnapshot;
+    window.__ipc.handlers.docker_events = () => new Promise(() => {});
+    window.__ipc.handlers.cancel_request = () => null;
+
+    window.__ipc.handlers.remote_invoke = ({ cmd, args, onChannel }) => {
+      const parsed = JSON.parse(String(args ?? "{}")) as Record<string, unknown>;
+      if (cmd === "docker_settings") {
+        return JSON.stringify({
+          connections: [{ id: "remote", name: "Docker", endpoint: { kind: "default" } }],
+          registries: [],
+        });
+      }
+      if (cmd === "docker_snapshot") {
+        return JSON.stringify({
+          availability: { kind: "ready", clientVersion: "28.0.1", serverVersion: "28.0.1", context: "default" },
+          executable: "/usr/bin/docker",
+          containers: [...remoteContainers],
+          images: [],
+          volumes: [],
+          networks: [],
+          errors: [],
+        });
+      }
+      if (cmd === "docker_events") {
+        const eventChannelId = (parsed.onEvent as { $channel: number }).$channel;
+        (window as unknown as { __emitRemoteDockerEvent?: () => void }).__emitRemoteDockerEvent = () => {
+          remoteContainers.push({
+            ...remoteContainers[0]!,
+            id: "256e85609198",
+            name: "selfhost-runner-github-runner-3",
+            composeService: "github-runner-3",
+          });
+          window.__ipc.send(onChannel, {
+            id: eventChannelId,
+            data: JSON.stringify({ kind: "container", action: "start", id: "256e85609198" }),
+          });
+        };
+        return new Promise(() => {});
+      }
+      if (cmd === "cancel_request") return JSON.stringify(null);
+      throw { kind: "unavailable", message: `remote ${String(cmd)} is not stubbed`, detail: null };
+    };
+
+    const storeMod = "/src/features/services/store.ts";
+    const { loadSettings, useServices } = await import(/* @vite-ignore */ storeMod);
+    useServices.setState({ settings: null, conns: {} });
+    await loadSettings();
+  });
+
+  // 1. Local window initially shows the local desktop-linux Docker daemon and its container.
+  await page.keyboard.press("Meta+8");
+  const services = page.getByRole("region", { name: "Services", exact: true });
+  const tree = services.getByRole("tree", { name: "Services", exact: true });
+  await expect(tree.getByRole("treeitem", { name: /desktop-linux/ })).toBeVisible();
+  await tree.getByRole("treeitem", { name: /^Containers\b/ }).click();
+  await page.keyboard.press("ArrowRight");
+  await expect(tree.getByRole("treeitem", { name: /local-dev-nginx/ })).toBeVisible();
+
+  // 2. Attaching the window to SSH host deng@deng-thinkpad.local switches Services to remote Docker.
+  await page.evaluate(async () => {
+    const remoteMod = "/src/platform/remote.ts";
+    const projectMod = "/src/platform/project.ts";
+    const { enableRemote } = await import(/* @vite-ignore */ remoteMod);
+    const { useProject } = await import(/* @vite-ignore */ projectMod);
+    enableRemote({
+      target: { kind: "ssh", config: "thinkpad" },
+      root: useProject.getState().project.root,
+      host: "deng@deng-thinkpad.local",
+      os: "linux",
+      commands: ["docker_settings", "docker_snapshot", "docker_events", "cancel_request"],
+    });
+  });
+
+  await expect(page.getByRole("button", { name: "SSH: deng@deng-thinkpad.local" })).toBeVisible();
+  await expect(tree.getByRole("treeitem", { name: /desktop-linux/ })).toHaveCount(0);
+  const composeNode = tree.getByRole("treeitem", { name: /Docker-compose: selfhost-runner/ });
+  await expect(composeNode).toBeVisible();
+  await composeNode.click();
+  await page.keyboard.press("ArrowRight");
+  await expect(tree.getByRole("treeitem", { name: /github-runner-1/ })).toBeVisible();
+  await expect(tree.getByRole("treeitem", { name: /github-runner-2/ })).toBeVisible();
+
+  const remoteCmds = (await ipcCalls(page, "remote_invoke")).map((c) => c.cmd);
+  expect(remoteCmds).toContain("docker_settings");
+  expect(remoteCmds).toContain("docker_snapshot");
+  expect(remoteCmds).toContain("docker_events");
+
+  // 3. Live docker_events streamed from the remote daemon update the Services tree in place.
+  await page.evaluate(() => {
+    (window as unknown as { __emitRemoteDockerEvent?: () => void }).__emitRemoteDockerEvent?.();
+  });
+  await expect(tree.getByRole("treeitem", { name: /github-runner-3/ })).toBeVisible();
+
+  // 4. Disconnecting from the remote host restores the local Docker connection.
+  await page.evaluate(async () => {
+    const remoteMod = "/src/platform/remote.ts";
+    const { disableRemote } = await import(/* @vite-ignore */ remoteMod);
+    disableRemote();
+  });
+  await expect(tree.getByRole("treeitem", { name: /desktop-linux/ })).toBeVisible();
+  await expect(tree.getByRole("treeitem", { name: /selfhost-runner/ })).toHaveCount(0);
+});
