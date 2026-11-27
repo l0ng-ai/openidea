@@ -10472,6 +10472,8 @@
   "Interface name": "接口名",
   "Type alias": "类型别名",
   "Type parameter": "类型参数",
+  "Abstract class name": "抽象类名",
+  "Enum name": "枚举名",
   "Change Project Icon…": "更改项目图标…",
   "Reset Project Icon": "重置项目图标",
   "Cannot change the project icon": "无法更改项目图标",
