@@ -355,10 +355,10 @@ export const commands = {
 	dbConnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_connect", { id })),
 	dbConnected: () => typedError<string[], IdeError>(__TAURI_INVOKE("db_connected")),
 	dbConsolePath: (id: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("db_console_path", { id })),
-	/**  The project view root for every data source's query consoles (`<dataDir>/consoles/db`). */
-	dbConsolesDir: () => typedError<IpcPath, IdeError>(__TAURI_INVOKE("db_consoles_dir")),
 	/**  The query consoles of data source `id`; `create` adds the next one first. */
 	dbConsoles: (id: string, create: boolean) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("db_consoles", { id, create })),
+	/**  The project view root for every data source's query consoles (`<dataDir>/consoles/db`). */
+	dbConsolesDir: () => typedError<IpcPath, IdeError>(__TAURI_INVOKE("db_consoles_dir")),
 	dbCreateDatabase: (id: string, template: string, statement: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_create_database", { id, template, statement })),
 	dbDatabaseCatalog: (id: string, database: string) => typedError<DbCatalogSchema[], IdeError>(__TAURI_INVOKE("db_database_catalog", { id, database })),
 	dbDatabases: (id: string) => typedError<DbDatabases, IdeError>(__TAURI_INVOKE("db_databases", { id })),
