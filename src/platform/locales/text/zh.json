@@ -10844,5 +10844,8 @@
   "Link {text}": "链接 {text}",
   "Run manage.py Task…": "运行 manage.py 任务…",
   "No manage.py in this project": "此项目中没有 manage.py",
-  "manage.py Tasks": "manage.py 任务"
+  "manage.py Tasks": "manage.py 任务",
+  "Install django-types to complete Django model fields and managers": "安装 django-types 以补全 Django 模型字段和管理器",
+  "Installing django-types": "正在安装 django-types",
+  "Cannot install django-types": "无法安装 django-types"
 }
