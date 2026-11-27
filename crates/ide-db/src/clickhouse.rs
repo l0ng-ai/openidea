@@ -3,6 +3,7 @@ use crate::source::{DataSource, DbSslMode, DbTxMode};
 use ide_core::{CancellationToken, IdeError, IdeResult, error::ErrorKind};
 use parking_lot::RwLock;
 use reqwest::{Client, RequestBuilder, StatusCode, Url};
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -32,6 +33,7 @@ struct Session {
 /// The response format: a names line, a types line, then one JSON array per row, so rows past
 /// the grid's limit are skipped without being parsed.
 const FORMAT: &str = "JSONCompactEachRowWithNamesAndTypes";
+const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(600);
 const SESSION_LOST: &str = "ClickHouse HTTP session expired or is missing on this node (code 372). Reconnect to start a new session. Behind a load balancer, use one node or session affinity, or set use_http_session=false in Advanced for independent queries.";
 
 pub(crate) fn transaction_error() -> IdeError {
@@ -44,6 +46,7 @@ impl ClickhousePool {
             return Err(transaction_error());
         }
         let mut use_http_session = None;
+        let mut read_timeout = None;
         let mut settings = Vec::with_capacity(setup.params.len());
         for (name, value) in setup.params {
             if name.eq_ignore_ascii_case("use_http_session") {
@@ -57,6 +60,14 @@ impl ClickhousePool {
                 } else {
                     return Err(IdeError::invalid("ClickHouse use_http_session must be true or false"));
                 });
+            } else if name.eq_ignore_ascii_case("http_read_timeout") {
+                if read_timeout.is_some() {
+                    return Err(IdeError::invalid("ClickHouse http_read_timeout must be specified only once"));
+                }
+                let seconds = value.parse::<NonZeroU32>().map_err(|_| {
+                    IdeError::invalid("ClickHouse http_read_timeout must be a positive whole number of seconds")
+                })?;
+                read_timeout = Some(Duration::from_secs(u64::from(seconds.get())));
             } else if reserved_setting(&name) {
                 return Err(IdeError::invalid(format!("ClickHouse HTTP manages the {name} setting")));
             } else {
@@ -89,6 +100,7 @@ impl ClickhousePool {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let mut builder = Client::builder()
             .connect_timeout(timeout)
+            .read_timeout(read_timeout.unwrap_or(DEFAULT_READ_TIMEOUT))
             .pool_max_idle_per_host(4)
             .redirect(reqwest::redirect::Policy::none())
             .user_agent(concat!("OpenIDEA/", env!("CARGO_PKG_VERSION")));
@@ -275,8 +287,18 @@ impl ClickhousePool {
         let query_id = uuid::Uuid::new_v4().to_string();
         let request = self.request(&client, &query_id, skip.saturating_add(max_rows), &session).body(sql.to_owned());
         let started = Instant::now();
+        let request_error = |error: reqwest::Error| {
+            if error.is_timeout() && !error.is_connect() {
+                IdeError::new(
+                    ErrorKind::TimedOut,
+                    format!("ClickHouse HTTP response timed out. The query outcome is unknown (query_id={query_id})."),
+                )
+            } else {
+                http_error(error)
+            }
+        };
         let fetch = async {
-            let mut response = request.send().await.map_err(http_error)?;
+            let mut response = request.send().await.map_err(request_error)?;
             let execution_ms = started.elapsed().as_secs_f64() * 1000.0;
             let status = response.status();
             let header = |name: &str| response.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned);
@@ -289,11 +311,11 @@ impl ClickhousePool {
                         .and_then(|n| n.as_str().and_then(|n| n.parse::<u64>().ok()).or_else(|| n.as_u64()))
                 });
             if !status.is_success() || exception_code.as_deref().is_some_and(|code| code != "0") {
-                let body = response.bytes().await.map_err(http_error)?;
+                let body = response.bytes().await.map_err(request_error)?;
                 return Err(self.server_error(status, exception_code.as_deref(), &body));
             }
             let (columns, rows, has_more) = if format.as_deref().is_some_and(|f| f != FORMAT) {
-                let body = response.bytes().await.map_err(http_error)?;
+                let body = response.bytes().await.map_err(request_error)?;
                 if !body.iter().all(u8::is_ascii_whitespace) {
                     return Err(IdeError::invalid(
                         "ClickHouse result grids need the default output format; remove the query's FORMAT clause",
@@ -302,7 +324,7 @@ impl ClickhousePool {
                 (Vec::new(), Vec::new(), false)
             } else {
                 let mut reader = RowReader::new(skip, max_rows);
-                while let Some(chunk) = response.chunk().await.map_err(http_error)? {
+                while let Some(chunk) = response.chunk().await.map_err(request_error)? {
                     reader.push(&chunk)?;
                 }
                 reader.finish().map_err(|error| self.redact_error(error))?
@@ -895,6 +917,90 @@ mod tests {
                 assert_eq!(query_value(&url, "session_check").as_deref(), Some("1"));
                 assert_eq!(query_value(&url, "database"), None);
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn stalled_http_response_reports_unknown_outcome_with_query_id() {
+        for prefix in [
+            "",
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n",
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 128\r\nConnection: close\r\n\r\nCode:",
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let fixture = tokio::spawn(async move {
+                let (mut probe, _) = listener.accept().await.unwrap();
+                read_request(&mut probe).await;
+                reply(&mut probe, "200 OK", "", ONE).await;
+                drop(probe);
+
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = read_request(&mut stream).await;
+                let id = query_value(&request_url(&request), "query_id").unwrap();
+                stream.write_all(prefix.as_bytes()).await.unwrap();
+                assert_eq!(
+                    tokio::time::timeout(Duration::from_secs(4), stream.read(&mut [0])).await.unwrap().unwrap(),
+                    0
+                );
+                assert_eq!(query_value(&request_url(&request), "http_read_timeout"), None);
+                id
+            });
+            let source = DataSource { properties: vec![property("http_read_timeout", "1")], ..source(port) };
+            let pool = Pool::connect(&source, None, None).await.unwrap();
+            let error = tokio::time::timeout(
+                Duration::from_secs(3),
+                pool.execute("DELETE FROM fixture WHERE id = 1", 0, &CancellationToken::new()),
+            )
+            .await
+            .expect("ClickHouse must stop waiting for a stalled response")
+            .unwrap_err();
+            assert_eq!(error.kind, ErrorKind::TimedOut);
+            assert!(error.message.contains("outcome is unknown"), "{error}");
+            let id = fixture.await.unwrap();
+            assert!(error.message.contains(&format!("query_id={id}")), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn read_timeout_resets_while_response_keeps_arriving() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let fixture = tokio::spawn(async move {
+            let (mut probe, _) = listener.accept().await.unwrap();
+            read_request(&mut probe).await;
+            reply(&mut probe, "200 OK", "", ONE).await;
+            drop(probe);
+
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_request(&mut stream).await;
+            let (first, rest) = ONE.split_at(6);
+            let headers = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", ONE.len());
+            stream.write_all(headers.as_bytes()).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(1100)).await;
+            stream.write_all(first.as_bytes()).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(1100)).await;
+            stream.write_all(rest.as_bytes()).await.unwrap();
+        });
+        let source = DataSource { properties: vec![property("http_read_timeout", "2")], ..source(port) };
+        let pool = Pool::connect(&source, None, None).await.unwrap();
+        let result = pool.execute("SELECT 1", 1, &CancellationToken::new()).await.unwrap();
+        assert_eq!(result.rows, vec![vec![Some("1".into())]]);
+        fixture.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn http_read_timeout_rejects_invalid_or_duplicate_values() {
+        for properties in [
+            vec![property("http_read_timeout", "0")],
+            vec![property("http_read_timeout", "1.5")],
+            vec![property("http_read_timeout", "4294967296")],
+            vec![property("http_read_timeout", "1"), property("HTTP-READ-TIMEOUT", "2")],
+        ] {
+            let source = DataSource { properties, ..source(0) };
+            let error = Pool::connect(&source, None, None).await.err().unwrap();
+            assert_eq!(error.kind, ErrorKind::InvalidInput);
+            assert!(error.message.contains("http_read_timeout"), "{error}");
         }
     }
 
