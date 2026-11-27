@@ -6,8 +6,9 @@
  */
 import { lazyComponent, lazyWhen, type MenuItem } from "@/ui";
 import { activeEditor, lazyEditorExtension, registerEditorContribution } from "@/editor/api";
+import { onFileOperation } from "@/platform/fileOps";
 import { tx } from "@/platform/i18n";
-import { call, commands, onIdeEvent } from "@/platform/ipc";
+import { call, commands, emitLocalIdeEvent, onIdeEvent } from "@/platform/ipc";
 import { registerActions, type ActionContext } from "@/platform/actions";
 import { activeCellGrid } from "./cellActions";
 import {
@@ -18,9 +19,11 @@ import {
   type TableCommandTarget,
 } from "./tableEditorFocus";
 import { useProject } from "@/platform/project";
+import { useRemote } from "@/platform/remote";
 import {
   registerEditorKind,
   registerOverlay,
+  registerProjectViewRoot,
   registerServiceView,
   registerToolWindow,
   setFileDecorations,
@@ -147,7 +150,42 @@ function registerDatabaseWindow(): () => void {
 }
 
 export function activate(): () => void {
+  let disposed = false;
+  let unregisterConsolesRoot = () => {};
+  let consolesDir: string | null = null;
+  let consolesRootGeneration = 0;
+  const registerConsolesRoot = () => {
+    const current = ++consolesRootGeneration;
+    unregisterConsolesRoot();
+    unregisterConsolesRoot = () => {};
+    consolesDir = null;
+    void call(commands.dbConsolesDir())
+      .then((path) => {
+        if (disposed || current !== consolesRootGeneration) return;
+        consolesDir = path;
+        unregisterConsolesRoot = registerProjectViewRoot({
+          id: "db-consoles",
+          label: tx("Database Consoles"),
+          icon: "db-folder",
+          path,
+          order: 20,
+          scope: "scratches",
+        });
+      })
+      .catch((e: unknown) => console.warn("database consoles: no consoles folder", e));
+  };
+  registerConsolesRoot();
   const disposers = [
+    useRemote.subscribe((state, previous) => {
+      if (state.session !== previous.session) registerConsolesRoot();
+    }),
+    onFileOperation((op) => {
+      const removed =
+        consolesDir && op.kind === "deleted"
+          ? op.paths.filter((path) => path === consolesDir || path.startsWith(`${consolesDir}/`))
+          : [];
+      if (removed.length) emitLocalIdeEvent({ type: "fsChanged", created: [], modified: [], removed });
+    }),
     onIdeEvent("dbSourcesChanged", () => {
       void loadSources();
     }),
@@ -448,5 +486,10 @@ export function activate(): () => void {
       },
     ]),
   ];
-  return () => disposers.reverse().forEach((d) => d());
+  return () => {
+    disposed = true;
+    consolesRootGeneration++;
+    unregisterConsolesRoot();
+    disposers.reverse().forEach((d) => d());
+  };
 }
