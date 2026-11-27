@@ -129,6 +129,16 @@ OpenIDEA 会为 Java 和 Kotlin 中的 Spring Web 端点（带 `@RequestMapping`
 - 随处搜索中有 **端点** 标签页。
 - 在 `.http` 文件中，方法后面的 URL 补全会提示已知端点。
 
+### Flask 和 FastAPI
+
+Flask 和 FastAPI 的路由也会建立索引，来源是导入了这两个框架之一的 Python 文件（跳过虚拟环境和排除的文件夹）：
+
+- Flask：`@app.route(path, methods=[...])` 以及 `@app.get` / `post` / `put` / `patch` / `delete`，应用和蓝图上的都算，带上蓝图的 `url_prefix`，或 `register_blueprint(...)` 指定的前缀。
+- FastAPI：`@app.get` / `post` / `put` / `patch` / `delete` / `head` / `options` 和 `@app.api_route(path, methods=[...])`，应用和 `APIRouter` 上的都算，路由器的 `prefix` 加上 `include_router(...)` 给的前缀，支持嵌套路由器。
+- 在其他模块注册的蓝图和路由器会顺着导入找到。运行时拼出的路径（f-string、常量）会被跳过。
+- 路径参数写成 `{name}`（Flask 的 `<int:id>` 变成 `{id}`）。这些路由会出现在随处搜索的 **端点** 标签页中，在 `.http` 文件里参与补全，请求 URL 也能跳转到对应的视图函数。
+- 每个路由旁有 **在 HTTP 客户端中打开** 边栏图标，请求发往 `http://127.0.0.1:5000`（Flask）或 `http://127.0.0.1:8000`（FastAPI）。
+
 插件可以提供其他框架的端点，这些端点旁会有 **在 HTTP 客户端中打开** 边栏图标。
 
 ### Feign 导航

@@ -1599,6 +1599,8 @@ export const commands = {
 	python: IpcPath,
 	unsatisfied: UnsatisfiedRequirement[],
 } | null, IdeError>(__TAURI_INVOKE("python_requirements", { doc, request })),
+	/**  Flask and FastAPI sources for the request-path index of Search Everywhere. */
+	pythonRouteSources: () => typedError<RouteSource[], IdeError>(__TAURI_INVOKE("python_route_sources")),
 	/**  Recently opened files, most recent first (⌘E). */
 	recentFiles: () => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("recent_files")),
 	/**  The welcome screen's project groups. */

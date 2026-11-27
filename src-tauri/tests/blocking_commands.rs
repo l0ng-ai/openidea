@@ -33,6 +33,7 @@ const OFF_MAIN_THREAD: &[&str] = &[
     "plugin_secrets",
     "plugin_set_secret",
     "spring_route_sources",
+    "python_route_sources",
 ];
 
 #[test]
