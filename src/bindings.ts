@@ -2797,7 +2797,9 @@ images?: AgentImage[];
 /**  Text the tool reported (command output…), truncated. */
 output: string | null; diffs: AgentToolDiff[]; 
 /**  When the call started and ended (ms since the epoch); `None` in tasks saved before. */
-startedMs?: number | null; endedMs?: number | null } | { type: "plan"; items: AgentPlanItem[] } | 
+startedMs?: number | null; endedMs?: number | null; 
+/**  The command an `execute` call runs, from its structured input; `None` when the agent gave none. */
+command?: string | null } | { type: "plan"; items: AgentPlanItem[] } | 
 /**  A subagent the agent started: its own session, whose entries are listed separately. */
 { type: "subagent"; 
 /**  The subagent's session id. */

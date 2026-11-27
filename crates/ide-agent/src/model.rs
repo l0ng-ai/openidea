@@ -547,6 +547,9 @@ pub enum AgentEntry {
         started_ms: Option<f64>,
         #[serde(default)]
         ended_ms: Option<f64>,
+        /// The command an xecute call runs, from its structured input; None when the agent gave none.
+        #[serde(default)]
+        command: Option<String>,
     },
     Plan {
         items: Vec<AgentPlanItem>,

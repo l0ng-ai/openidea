@@ -91,6 +91,7 @@ impl Timeline {
                     diffs: Vec::new(),
                     started_ms: Some(crate::now_ms()),
                     ended_ms: None,
+                    command: None,
                 };
                 let index = match self.tools.get(&id) {
                     Some(&i) => {
@@ -154,7 +155,7 @@ impl Timeline {
     }
 
     fn merge_tool(&mut self, index: usize, update: &Value) {
-        let AgentEntry::Tool { title, kind, status, locations: locs, output, images, diffs, ended_ms, .. } =
+        let AgentEntry::Tool { title, kind, status, locations: locs, output, images, diffs, ended_ms, command, .. } =
             &mut self.entries[index]
         else {
             return;
@@ -170,6 +171,11 @@ impl Timeline {
             if matches!(s, AgentToolStatus::Completed | AgentToolStatus::Failed) && ended_ms.is_none() {
                 *ended_ms = Some(crate::now_ms());
             }
+        }
+        if let Some(raw) = update.pointer("/rawInput/command").or_else(|| update.pointer("/rawInput/cmd"))
+            && let Some(cmd) = crate::security::command_from_value(raw)
+        {
+            *command = Some(crate::shell_script(&cmd).unwrap_or(cmd));
         }
         if update.get("locations").is_some_and(Value::is_array) {
             *locs = locations(update.get("locations"));
