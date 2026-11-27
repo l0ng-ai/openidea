@@ -33,7 +33,14 @@ import {
   toggleCase,
   unselectOccurrence,
 } from "./cm/editing";
-import { cutToLineEnd, deleteToLogicalLineEnd, deleteToLogicalLineStart, hungryBackspace } from "./cm/lineDeletion";
+import {
+  cutToLineEnd,
+  deleteToLogicalLineEnd,
+  deleteToLogicalLineStart,
+  hungryBackspace,
+  killToWordEnd,
+  killToWordStart,
+} from "./cm/lineDeletion";
 import {
   emptyStack,
   extendSelection,
@@ -912,6 +919,14 @@ export function registerEditorActions(): () => void {
       keyWhen: "editorTextFocus || diffEditorFocus",
     }),
     edit("code.cutLineEnd", "Cut up to Line End", (v) => cutToLineEnd(v), {
+      category: "Editor Actions",
+      keyWhen: "editorTextFocus || diffEditorFocus",
+    }),
+    edit("code.killToWordStart", "Kill to Word Start", (v) => killToWordStart(editorPrefs().smartKeys.camelHumps)(v), {
+      category: "Editor Actions",
+      keyWhen: "editorTextFocus || diffEditorFocus",
+    }),
+    edit("code.killToWordEnd", "Kill to Word End", (v) => killToWordEnd(editorPrefs().smartKeys.camelHumps)(v), {
       category: "Editor Actions",
       keyWhen: "editorTextFocus || diffEditorFocus",
     }),

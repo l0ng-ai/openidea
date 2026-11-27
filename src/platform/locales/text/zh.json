@@ -1030,6 +1030,8 @@
   "Delete to Line Start": "删除到行首",
   "Delete to Line End": "删除到行尾",
   "Cut up to Line End": "剪切到行尾",
+  "Kill to Word Start": "剪切到词首",
+  "Kill to Word End": "剪切到词尾",
   "Hungry Backspace": "贪婪退格",
   "Swap Selection Boundaries": "交换选区边界",
   "Move Line Up": "上移行",
