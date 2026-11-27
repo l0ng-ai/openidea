@@ -6,13 +6,17 @@
  * A chip moves and deletes as one piece. Backspace right after one turns it back into its
  * text to edit (the completion opens on it); it folds again once the caret leaves it.
  *
+ * Web links (`https://…`, `[label](url)`) are chips too, once the caret leaves them: a click
+ * opens the page.
+ *
  * A ``` block (pasted code or terminal output) is a card while the caret is outside it; a click
  * on the card, or the caret at its end, opens it as text.
  */
 import { EditorState, StateEffect, StateField, type Extension, type Range, type Text } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType, keymap, type DecorationSet } from "@codemirror/view";
 import { fencedBlocks, isQuoteLine, messageTokens, parseMention, type FileRef, type Mention } from "./composerModel";
-import { chipElement, chipStyles, codeCardElement, openReference } from "./ReferenceChip";
+import { linkSpans } from "./composerLinks";
+import { chipElement, chipStyles, codeCardElement, linkChipElement, openReference } from "./ReferenceChip";
 
 /** The draft's referenced files: mentions of these are chips. */
 export const setReferences = StateEffect.define<readonly FileRef[]>();
@@ -24,34 +28,44 @@ const references = StateField.define<readonly FileRef[]>({
   },
 });
 
+/** A reference or link drawn as a chip. */
 interface Chip {
   from: number;
   to: number;
-  path: string;
-  mention: Mention;
 }
 
-/** `@` and `/` tokens of the line around `pos`, in document positions. */
-function lineTokens(doc: Text, pos: number) {
+interface LineToken {
+  kind: "file" | "command" | "link";
+  from: number;
+  to: number;
+  value: string;
+  /** A link's URL and label. */
+  url?: string;
+  label?: string | null;
+}
+
+/** `@`, `/` and link tokens of the line around `pos`, in document positions. */
+function lineTokens(doc: Text, pos: number): LineToken[] {
   const line = doc.lineAt(pos);
-  const out: {
-    kind: "file" | "command";
-    from: number;
-    to: number;
-    value: string;
-  }[] = [];
+  const links: LineToken[] = linkSpans(line.text).map((l) => ({
+    kind: "link",
+    from: line.from + l.from,
+    to: line.from + l.to,
+    value: line.text.slice(l.from, l.to),
+    url: l.url,
+    label: l.label,
+  }));
+  const out: LineToken[] = [...links];
   let offset = line.from;
   for (const token of messageTokens(line.text)) {
-    if (token.kind !== "text")
-      out.push({
-        kind: token.kind,
-        from: offset,
-        to: offset + token.value.length,
-        value: token.value,
-      });
-    offset += token.value.length;
+    const from = offset;
+    const to = offset + token.value.length;
+    offset = to;
+    // `@` or `/` inside a link (its label or URL) is part of it.
+    if (token.kind === "text" || links.some((l) => from < l.to && to > l.from)) continue;
+    out.push({ kind: token.kind, from, to, value: token.value });
   }
-  return out;
+  return out.sort((a, b) => a.from - b.from);
 }
 
 const unfold = StateEffect.define<number>();
@@ -63,7 +77,7 @@ const unfolded = StateField.define<number | null>({
     if (value === null) return null;
     const start = tr.changes.mapPos(value, 1);
     const head = tr.state.selection.main.head;
-    const token = lineTokens(tr.state.doc, start).find((t) => t.from === start && t.kind === "file");
+    const token = lineTokens(tr.state.doc, start).find((t) => t.from === start && t.kind !== "command");
     return token && head > token.from && head <= token.to ? start : null;
   },
 });
@@ -80,21 +94,44 @@ class ChipWidget extends WidgetType {
     return other.path === this.path && other.text === this.text;
   }
   toDOM(view: EditorView) {
-    const chip = chipElement(this.path, this.mention, () => {
-      const from = view.posAtDOM(chip);
-      const at = view.state.field(painted).chips.find((c) => c.from === from);
-      if (!at) return;
-      // The space typed after the reference goes with it.
-      const end = view.state.sliceDoc(at.to, at.to + 1) === " " ? at.to + 1 : at.to;
-      view.dispatch({ changes: { from: at.from, to: end }, userEvent: "delete" });
-      view.focus();
-    });
+    const chip: HTMLElement = chipElement(this.path, this.mention, () => removeChip(view, chip));
     // Keep the editor's focus and caret; a click opens the file.
     chip.addEventListener("mousedown", (e) => e.preventDefault());
     chip.addEventListener("click", (e) => {
       e.stopPropagation();
       openReference(this.path, this.mention);
     });
+    return chip;
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
+/** Deletes the chip at `dom`, with the space typed after it. */
+function removeChip(view: EditorView, dom: HTMLElement) {
+  const from = view.posAtDOM(dom);
+  const at = view.state.field(painted).chips.find((c) => c.from === from);
+  if (!at) return;
+  const end = view.state.sliceDoc(at.to, at.to + 1) === " " ? at.to + 1 : at.to;
+  view.dispatch({ changes: { from: at.from, to: end }, userEvent: "delete" });
+  view.focus();
+}
+
+class LinkChipWidget extends WidgetType {
+  constructor(
+    readonly url: string,
+    readonly label: string | null,
+  ) {
+    super();
+  }
+  eq(other: LinkChipWidget) {
+    return other.url === this.url && other.label === this.label;
+  }
+  toDOM(view: EditorView) {
+    const chip: HTMLElement = linkChipElement(this.url, this.label, () => removeChip(view, chip));
+    // Keep the editor's focus and caret.
+    chip.addEventListener("mousedown", (e) => e.preventDefault());
     return chip;
   }
   ignoreEvent() {
@@ -193,6 +230,18 @@ function paint(state: EditorState): Painted {
         decorations.push(Decoration.mark({ class: chipStyles.command }).range(token.from, token.to));
         continue;
       }
+      if (token.kind === "link") {
+        // Still being typed or pasted (the caret at its end), or opened to edit: as text.
+        if (editing === token.from || (head > token.from && head <= token.to)) {
+          decorations.push(Decoration.mark({ class: chipStyles.pending }).range(token.from, token.to));
+          continue;
+        }
+        const chip = Decoration.replace({ widget: new LinkChipWidget(token.url!, token.label ?? null) });
+        decorations.push(chip.range(token.from, token.to));
+        atomic.push(chip.range(token.from, token.to));
+        chips.push({ from: token.from, to: token.to });
+        continue;
+      }
       const mention = parseMention(token.value);
       const ref = mention && refs.find((f) => f.rel === mention.rel);
       if (!mention || !ref || editing === token.from) {
@@ -204,7 +253,7 @@ function paint(state: EditorState): Painted {
       });
       decorations.push(chip.range(token.from, token.to));
       atomic.push(chip.range(token.from, token.to));
-      chips.push({ from: token.from, to: token.to, path: ref.path, mention });
+      chips.push({ from: token.from, to: token.to });
     }
   }
   return {
@@ -218,8 +267,9 @@ function paint(state: EditorState): Painted {
 const painted = StateField.define<Painted>({
   create: paint,
   update(value, tr) {
-    // A ``` block opens while the caret is in it.
-    const fences = tr.selection && tr.state.doc.toString().includes("```");
+    // A ``` block opens while the caret is in it; a link is text while the caret is at its end.
+    const doc = tr.selection && tr.state.doc.toString();
+    const fences = !!doc && (doc.includes("```") || doc.includes("://"));
     const changed =
       tr.docChanged ||
       fences ||
