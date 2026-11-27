@@ -138,4 +138,10 @@ describe("files dropped from the OS", () => {
     expect(calls).toEqual(["file /x/b.txt (focus)", "project /work/app"]);
     useProject.setState({ lightEdit: false } as never);
   });
+
+  it("opens native Windows drop paths with the editor's POSIX spelling", async () => {
+    const { d, calls } = deps();
+    await handleFileDrop(["E:\\code\\test.txt", "\\\\?\\E:\\code\\long.txt"], 1, 1, d);
+    expect(calls).toEqual(["file E:/code/test.txt", "file E:/code/long.txt (focus)"]);
+  });
 });

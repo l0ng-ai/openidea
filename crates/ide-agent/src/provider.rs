@@ -2,7 +2,10 @@
 //! `<config>/agents/<id>.toml` (written by hand, or by installing one from the ACP
 //! Registry, see `registry`).
 
-use crate::{AcpImportOutcome, AgentCommandReadOnlyReason, AgentProvider, AgentSource, CustomAgentInput, EnvSecrets};
+use crate::{
+    AcpImportOutcome, AgentCommandReadOnlyReason, AgentProvider, AgentSource, CustomAgentInput, EnvSecrets,
+    GhAuthAccount,
+};
 use ide_core::{IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -73,7 +76,7 @@ const BUILTIN: &[(&str, &str, Driver, &[&str], &str)] = &[
         "GitHub Copilot",
         Driver::Copilot,
         &["copilot", "--headless", "--no-auto-update", "--stdio"],
-        "Run `copilot` in a terminal and sign in.",
+        "Run `copilot login` in a terminal.",
     ),
     ("cursor", "Cursor", Driver::Acp, &["cursor-agent", "acp"], "Run `cursor-agent login` in a terminal."),
     ("opencode", "OpenCode", Driver::Acp, &["opencode", "acp"], "Run `opencode auth login` in a terminal."),
@@ -151,12 +154,26 @@ impl ProviderSpec {
         cwd: &Path,
         strip_ambient_tokens: bool,
     ) -> Result<Self, String> {
-        let account = is_copilot_provider(&self.id).then(|| copilot_github_account(&self.env)).flatten();
+        let is_copilot = is_copilot_provider(&self.id);
+        let account = is_copilot.then(|| copilot_github_account(&self.env)).flatten();
+        let explicit_copilot_token =
+            self.env.iter().any(|(name, value)| name == "COPILOT_GITHUB_TOKEN" && !value.is_empty());
         let mut resolved = self.resolve_for_launch_base(cwd, strip_ambient_tokens || account.is_some());
         if let Some(account) = account {
             let token = github_token_for_account(&account)?;
+            // Keep any project-scoped `GH_TOKEN` untouched so `gh` commands inside Copilot's
+            // shell use the project's GitHub account while `COPILOT_GITHUB_TOKEN` bills `account`.
             resolved.env.retain(|(name, _)| !AMBIENT_COPILOT_AUTH_VARS.contains(&name.as_str()));
             resolved.env.push(("COPILOT_GITHUB_TOKEN".into(), token));
+        } else if is_copilot
+            && !strip_ambient_tokens
+            && !explicit_copilot_token
+            && ide_core::project_env::github_token(cwd).is_some()
+            && let Some(default_token) = default_github_token()
+        {
+            // A project-scoped `GH_TOKEN` targets repository/PR commands, not Copilot model
+            // billing: pin `COPILOT_GITHUB_TOKEN` to the user's global `gh` account when present.
+            resolved.env.push(("COPILOT_GITHUB_TOKEN".into(), default_token));
         }
         Ok(resolved)
     }
@@ -166,7 +183,7 @@ impl ProviderSpec {
             self.command = crate::native::newest_install(&self.command);
         }
         if is_copilot_provider(&self.id) {
-            self.env = sanitized_copilot_env(&self.env, strip_ambient_tokens);
+            self.env = sanitized_copilot_env(&self.env, cwd, strip_ambient_tokens);
             self.env.retain(|(name, _)| name != COPILOT_GITHUB_ACCOUNT_ENV);
         }
         let program = ide_jsonrpc::resolve_spawn_program(&self.command, &self.env);
@@ -175,6 +192,80 @@ impl ProviderSpec {
                 .to_string_lossy()
                 .into_owned();
         self
+    }
+
+    /// Resolves the executable, arguments, and environment to run this agent's interactive
+    /// sign-in flow directly in an IDE PTY without shell quoting.
+    pub(crate) fn login_launch(&self, cwd: &Path, terminal_auth_args: Option<&[String]>) -> Option<LoginLaunch> {
+        let search = ide_core::tool_path::search_path();
+        let resolve_exe = |cmd: &str, env: &[(String, String)]| -> Option<PathBuf> {
+            let spawned = ide_jsonrpc::resolve_spawn_program(cmd, env);
+            let candidate =
+                if spawned.components().count() > 1 && !spawned.is_absolute() { cwd.join(&spawned) } else { spawned };
+            if candidate.is_absolute() && is_executable(&candidate) {
+                return Some(candidate);
+            }
+            ide_core::tool_path::find_command(&candidate.to_string_lossy(), &search, cwd)
+        };
+
+        if let Some((separate_cmd, separate_args)) = match self.id.as_str() {
+            "claude-acp" => Some(("claude", &[][..])),
+            "codex-acp" => Some(("codex", &["login"][..])),
+            "vibe" => Some(("vibe", &[][..])),
+            _ => None,
+        } {
+            let program = resolve_exe(separate_cmd, &self.env)?;
+            return Some(LoginLaunch {
+                program,
+                args: separate_args.iter().map(|s| (*s).to_owned()).collect(),
+                env: self.env.iter().cloned().collect(),
+            });
+        }
+
+        if let Some(builtin) = builtin_spec(&self.id) {
+            let args = terminal_auth_args
+                .filter(|_| matches!(self.source, AgentSource::Registry { .. }))
+                .map(<[String]>::to_vec)
+                .or_else(|| builtin_login_args(&builtin))?;
+            let resolved = self.clone().resolve_for_launch_base(cwd, true);
+            let program = resolve_exe(&resolved.command, &resolved.env)?;
+            let mut env: BTreeMap<String, String> = resolved.env.into_iter().collect();
+            if is_copilot_provider(&self.id) {
+                for key in AMBIENT_COPILOT_AUTH_VARS {
+                    env.insert(key.to_owned(), String::new());
+                }
+            }
+            return Some(LoginLaunch { program, args, env });
+        }
+
+        let args = terminal_auth_args?.to_vec();
+        let resolved = self.clone().resolve_for_launch_base(cwd, true);
+        let program = resolve_exe(&resolved.command, &resolved.env)?;
+        Some(LoginLaunch { program, args, env: resolved.env.into_iter().collect() })
+    }
+
+    pub(crate) fn can_sign_in(&self, cwd: &Path, terminal_auth_args: Option<&[String]>) -> bool {
+        self.login_launch(cwd, terminal_auth_args).is_some()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoginLaunch {
+    pub program: PathBuf,
+    pub args: Vec<String>,
+    pub env: BTreeMap<String, String>,
+}
+
+fn builtin_login_args(builtin: &ProviderSpec) -> Option<Vec<String>> {
+    let prefix = format!("Run `{}", builtin.command);
+    let rest = builtin.login_hint.strip_prefix(&prefix)?.strip_prefix([' ', '`']);
+    match rest {
+        Some(after_space) if builtin.login_hint[prefix.len()..].starts_with(' ') => {
+            let (args, _) = after_space.split_once('`')?;
+            Some(args.split_whitespace().map(str::to_owned).collect())
+        }
+        Some(_) => Some(Vec::new()),
+        None => None,
     }
 }
 
@@ -194,16 +285,15 @@ pub(crate) fn copilot_github_account(env: &[(String, String)]) -> Option<String>
         .map(str::to_owned)
 }
 
+fn find_gh_executable() -> Option<PathBuf> {
+    ide_core::tool_path::find_gh_executable()
+}
+
 fn github_token_for_account(account: &str) -> Result<String, String> {
-    let path = ide_core::process::shell_env()
-        .find(|(name, _)| name == "PATH")
-        .map(|(_, value)| value)
-        .or_else(|| ide_core::process::host_var_os("PATH"));
-    let program = path
-        .as_deref()
-        .and_then(|path| ide_core::process::find_executable("gh", path))
+    let program = find_gh_executable()
         .ok_or_else(|| "GitHub CLI (`gh`) is required to select a Copilot GitHub account".to_owned())?;
     let mut command = std::process::Command::new(program);
+    ide_core::process::prepare(&mut command);
     command.args(["auth", "token", "--hostname", "github.com", "--user", account]).envs(ide_core::process::shell_env());
     for name in AMBIENT_COPILOT_AUTH_VARS {
         command.env_remove(name);
@@ -229,6 +319,140 @@ fn github_token_for_account(account: &str) -> Result<String, String> {
     Ok(token.to_owned())
 }
 
+/// Interactive `gh auth login` launch for adding/switching GitHub CLI accounts in-IDE,
+/// with ambient `GITHUB_TOKEN` / `GH_TOKEN` cleared so `gh` does not refuse to run.
+pub fn gh_login_launch() -> IdeResult<LoginLaunch> {
+    let program = find_gh_executable().ok_or_else(|| IdeError::unavailable("GitHub CLI (`gh`) is not installed"))?;
+    let mut env = BTreeMap::new();
+    for key in AMBIENT_COPILOT_AUTH_VARS {
+        env.insert(key.to_owned(), String::new());
+    }
+    Ok(LoginLaunch {
+        program,
+        args: vec!["auth".into(), "login".into(), "--hostname".into(), "github.com".into()],
+        env,
+    })
+}
+
+/// Returns `(gh_installed, authenticated_accounts)` for `github.com` from `gh auth status`,
+/// ignoring ambient token environment variables so keyring accounts remain visible.
+pub fn gh_authenticated_accounts() -> (bool, Vec<GhAuthAccount>) {
+    let Some(program) = find_gh_executable() else {
+        return (false, Vec::new());
+    };
+    let run_gh = |args: &[&str]| -> Option<std::process::Output> {
+        let mut command = std::process::Command::new(&program);
+        ide_core::process::prepare(&mut command);
+        command
+            .args(args)
+            .envs(ide_core::process::shell_env())
+            .env("GH_PROMPT_DISABLED", "1")
+            .env("GH_NO_UPDATE_NOTIFIER", "1")
+            .env("NO_COLOR", "1");
+        for name in AMBIENT_COPILOT_AUTH_VARS {
+            command.env_remove(name);
+        }
+        command.output().ok()
+    };
+    if let Some(output) = run_gh(&["auth", "status", "--json", "hosts"]) {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Some(accounts) = parse_gh_auth_status_json(&stdout) {
+            return (true, accounts);
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.contains("unknown flag: --json") {
+            return (true, Vec::new());
+        }
+    }
+    let fallback = run_gh(&["auth", "status", "--hostname", "github.com"])
+        .map(|out| format!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+        .map(|text| parse_gh_auth_status_text(&text))
+        .unwrap_or_default();
+    (true, fallback)
+}
+
+fn parse_gh_auth_status_json(text: &str) -> Option<Vec<GhAuthAccount>> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Entry {
+        #[serde(default)]
+        state: Option<String>,
+        #[serde(default)]
+        active: bool,
+        #[serde(default)]
+        login: String,
+        #[serde(default)]
+        token_source: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct Response {
+        #[serde(default)]
+        hosts: BTreeMap<String, Vec<Entry>>,
+    }
+    let parsed: Response = serde_json::from_str(text.trim()).ok()?;
+    let mut accounts: Vec<GhAuthAccount> = Vec::new();
+    if let Some(entries) = parsed.hosts.get("github.com") {
+        for entry in entries {
+            let login = entry.login.trim();
+            if login.is_empty() {
+                continue;
+            }
+            if entry.state.as_deref().is_some_and(|s| s != "success") {
+                continue;
+            }
+            // Tokens from the environment (`GH_TOKEN`, `GITHUB_TOKEN`, …) are not keyring accounts.
+            if entry.token_source.as_deref().is_some_and(|source| source.ends_with("_TOKEN") || source == "env") {
+                continue;
+            }
+            if let Some(existing) = accounts.iter_mut().find(|a| a.login == login) {
+                existing.active |= entry.active;
+            } else {
+                accounts.push(GhAuthAccount { login: login.to_owned(), active: entry.active });
+            }
+        }
+    }
+    Some(accounts)
+}
+
+fn parse_gh_auth_status_text(text: &str) -> Vec<GhAuthAccount> {
+    let mut accounts: Vec<GhAuthAccount> = Vec::new();
+    let mut current: Option<usize> = None;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some((_, rest)) = trimmed.split_once("Logged in to github.com account ") {
+            let login = rest.split_whitespace().next().unwrap_or("").trim();
+            current = None;
+            if !login.is_empty() && !rest.contains("_TOKEN") {
+                if let Some(idx) = accounts.iter().position(|a| a.login == login) {
+                    current = Some(idx);
+                } else {
+                    accounts.push(GhAuthAccount { login: login.to_owned(), active: false });
+                    current = Some(accounts.len() - 1);
+                }
+            }
+        } else if trimmed.starts_with("- Active account: true")
+            && let Some(idx) = current
+        {
+            accounts[idx].active = true;
+        }
+    }
+    accounts
+}
+
+fn default_github_token() -> Option<String> {
+    let program = find_gh_executable()?;
+    let mut command = std::process::Command::new(program);
+    ide_core::process::prepare(&mut command);
+    command.args(["auth", "token", "--hostname", "github.com"]).envs(ide_core::process::shell_env());
+    for name in AMBIENT_COPILOT_AUTH_VARS {
+        command.env_remove(name);
+    }
+    let output = command.output().ok().filter(|out| out.status.success())?;
+    let token = String::from_utf8(output.stdout).ok()?;
+    let token = token.trim();
+    (!token.is_empty()).then(|| token.to_owned())
+}
+
 pub(crate) fn prefer_stored_copilot_auth() -> bool {
     PREFER_STORED_COPILOT_AUTH.load(std::sync::atomic::Ordering::Acquire)
 }
@@ -237,18 +461,17 @@ pub(crate) fn mark_prefer_stored_copilot_auth() {
     PREFER_STORED_COPILOT_AUTH.store(true, std::sync::atomic::Ordering::Release);
 }
 
-pub(crate) fn has_unconfigured_copilot_ambient_token(spec_env: &[(String, String)]) -> bool {
+pub(crate) fn has_unconfigured_copilot_ambient_token(spec_env: &[(String, String)], cwd: &Path) -> bool {
     AMBIENT_COPILOT_AUTH_VARS.iter().any(|&key| {
         !spec_env.iter().any(|(k, v)| k == key && !v.is_empty())
-            && ambient_copilot_env_value(key).is_some_and(|v| !v.is_empty())
+            && ambient_copilot_env_value(key, cwd).is_some_and(|v| !v.is_empty())
     })
 }
 
-fn ambient_copilot_env_value(key: &str) -> Option<String> {
-    ide_core::process::shell_env()
-        .find(|(k, _)| *k == key)
-        .map(|(_, v)| v.to_string_lossy().into_owned())
-        .or_else(|| ide_core::process::host_var_os(key).map(|v| v.to_string_lossy().into_owned()))
+fn ambient_copilot_env_value(key: &str, cwd: &Path) -> Option<String> {
+    ide_core::process::host_var_os_in(cwd, key).map(|v| v.to_string_lossy().into_owned()).or_else(|| {
+        ide_core::process::shell_env().find(|(k, _)| *k == key).map(|(_, v)| v.to_string_lossy().into_owned())
+    })
 }
 
 /// Builds child environment overrides for `copilot`:
@@ -259,9 +482,10 @@ fn ambient_copilot_env_value(key: &str) -> Option<String> {
 ///   while preserving any token explicitly configured in OpenIDEA's agent `spec_env`.
 pub(crate) fn sanitized_copilot_env(
     spec_env: &[(String, String)],
+    cwd: &Path,
     strip_ambient_tokens: bool,
 ) -> Vec<(String, String)> {
-    sanitize_copilot_env_with(spec_env, strip_ambient_tokens, ambient_copilot_env_value)
+    sanitize_copilot_env_with(spec_env, strip_ambient_tokens, |key| ambient_copilot_env_value(key, cwd))
 }
 
 pub(crate) fn sanitize_copilot_env_with(
@@ -389,6 +613,7 @@ pub(crate) fn describe(spec: &ProviderSpec) -> AgentProvider {
         command_editable: reason.is_none(),
         command_read_only_reason: reason,
         installed: installed(&spec.command),
+        can_sign_in: spec.can_sign_in(Path::new("."), None),
         can_check_cli_update: spec.source == AgentSource::Builtin && crate::cli_update::package(&spec.id).is_some(),
         env: spec.env.iter().cloned().collect(),
         config: vec![],
@@ -902,6 +1127,22 @@ mod tests {
     }
 
     #[test]
+    fn every_builtin_login_hint_yields_the_arguments_sign_in_runs() {
+        // Sign In runs the arguments in the hint's backticks: rewording a hint must keep that form.
+        for spec in builtins() {
+            if matches!(spec.id.as_str(), "claude-acp" | "codex-acp" | "vibe") {
+                continue;
+            }
+            assert!(builtin_login_args(&spec).is_some(), "{}: {}", spec.id, spec.login_hint);
+        }
+        let args = |id: &str| builtin_login_args(&builtin_spec(id).unwrap()).unwrap();
+        assert_eq!(args("copilot"), ["login"]);
+        assert_eq!(args("goose"), ["configure"]);
+        assert_eq!(args("hermes"), ["model"]);
+        assert!(args("qwen").is_empty());
+    }
+
+    #[test]
     fn login_hints_cover_all_builtin_commands_and_preserve_separate_login_tools() {
         for spec in builtins() {
             let separate = matches!(spec.id.as_str(), "claude-acp" | "codex-acp" | "vibe");
@@ -1160,12 +1401,12 @@ mod tests {
             "copilot",
             BTreeMap::from([
                 ("REGISTRY_SETTING".into(), "kept".into()),
-                (COPILOT_GITHUB_ACCOUNT_ENV.into(), "dengliu_microsoft".into()),
+                (COPILOT_GITHUB_ACCOUNT_ENV.into(), "alice-work".into()),
             ]),
         )
         .unwrap();
         let spec = load(Some(dir.path()), None).into_iter().find(|spec| spec.id == "copilot").unwrap();
-        assert_eq!(copilot_github_account(&spec.env).as_deref(), Some("dengliu_microsoft"));
+        assert_eq!(copilot_github_account(&spec.env).as_deref(), Some("alice-work"));
 
         set_builtin_env(dir.path(), None, "copilot", BTreeMap::from([("REGISTRY_SETTING".into(), "changed".into())]))
             .unwrap_err();
@@ -1174,7 +1415,7 @@ mod tests {
     #[test]
     fn launch_metadata_never_passes_the_github_account_control_to_copilot() {
         let mut spec = builtin_spec("copilot").unwrap();
-        spec.env.push((COPILOT_GITHUB_ACCOUNT_ENV.into(), "dengliu_microsoft".into()));
+        spec.env.push((COPILOT_GITHUB_ACCOUNT_ENV.into(), "alice-work".into()));
         let resolved = spec.resolve_for_launch(Path::new("."));
         assert!(resolved.env.iter().all(|(name, _)| name != COPILOT_GITHUB_ACCOUNT_ENV));
     }
@@ -1457,5 +1698,69 @@ mod tests {
             sanitize_copilot_env_with(&explicit, true, lookup),
             vec![("GITHUB_TOKEN".into(), String::new()), ("GH_TOKEN".into(), "github_pat_custom".into())]
         );
+    }
+
+    #[test]
+    fn parses_gh_auth_status_json_and_text_without_ambient_token_entries() {
+        let raw = r#"{
+            "hosts": {
+                "github.com": [
+                    {"state": "failed", "active": true, "login": "bad", "tokenSource": "GITHUB_TOKEN"},
+                    {"state": "success", "active": true, "login": "alice", "tokenSource": "keyring"},
+                    {"state": "success", "active": false, "login": "alice-work", "tokenSource": "keyring"},
+                    {"state": "success", "active": false, "login": "env_user", "tokenSource": "GH_TOKEN"}
+                ],
+                "ghe.example.com": [
+                    {"state": "success", "active": true, "login": "corp", "tokenSource": "keyring"}
+                ]
+            }
+        }"#;
+        assert_eq!(
+            parse_gh_auth_status_json(raw),
+            Some(vec![
+                GhAuthAccount { login: "alice".into(), active: true },
+                GhAuthAccount { login: "alice-work".into(), active: false },
+            ])
+        );
+
+        let text = "\
+github.com
+  ✓ Logged in to github.com account env_user (GH_TOKEN)
+  - Active account: true
+  ✓ Logged in to github.com account alice (keyring)
+  - Active account: false
+  ✓ Logged in to github.com account alice-work (keyring)
+  - Active account: true
+";
+        assert_eq!(
+            parse_gh_auth_status_text(text),
+            vec![
+                GhAuthAccount { login: "alice".into(), active: false },
+                GhAuthAccount { login: "alice-work".into(), active: true },
+            ]
+        );
+    }
+
+    #[test]
+    fn login_launch_resolves_paths_with_spaces_and_clears_ambient_copilot_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        let app_support = dir.path().join("Application Support/copilot");
+        std::fs::create_dir_all(&app_support).unwrap();
+        let bin = app_support.join(if cfg!(windows) { "copilot.cmd" } else { "copilot" });
+        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut spec = builtin_spec("copilot").unwrap();
+        spec.command = bin.to_string_lossy().into_owned();
+        spec.source = AgentSource::Registry { version: "1.0.115".into(), update: None };
+        let launch = spec.login_launch(dir.path(), None).unwrap();
+        assert_eq!(launch.program, bin);
+        assert_eq!(launch.args, ["login"]);
+        assert_eq!(launch.env.get("GITHUB_TOKEN").map(String::as_str), Some(""));
+        assert_eq!(launch.env.get("GH_TOKEN").map(String::as_str), Some(""));
+        assert_eq!(launch.env.get("COPILOT_GITHUB_TOKEN").map(String::as_str), Some(""));
     }
 }

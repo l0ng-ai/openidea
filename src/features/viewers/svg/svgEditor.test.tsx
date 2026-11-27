@@ -72,6 +72,39 @@ describe("SVG editor", () => {
     expect(screen.queryByText("The SVG source is not valid.")).toBeNull();
   });
 
+  it("measures a retyped SVG's size from a fresh image, not the sized <img>", () => {
+    // WebKit reports the previous natural size on the shown <img>; a detached Image reports the new one.
+    const probes: { onload: (() => void) | null; src: string; naturalWidth: number; naturalHeight: number }[] = [];
+    vi.stubGlobal(
+      "Image",
+      class {
+        onload: (() => void) | null = null;
+        naturalWidth = 360;
+        naturalHeight = 300;
+        set src(value: string) {
+          this._src = value;
+          probes.push(this);
+        }
+        get src() {
+          return this._src;
+        }
+        _src = "";
+      },
+    );
+    try {
+      const source = '<svg xmlns="http://www.w3.org/2000/svg" width="360" height="300"/>';
+      render(<ImageViewer input={imageInput(PATH)} source={source} />);
+      Object.defineProperty(image(), "naturalWidth", { value: 400 });
+      Object.defineProperty(image(), "naturalHeight", { value: 300 });
+      fireEvent.load(image());
+      expect(probes.map((p) => p.src)).toEqual([svgDataUrl(source)]);
+      act(() => probes[0]?.onload?.());
+      expect(screen.getByText("360 × 300")).toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("keeps the SVG layout apart from Markdown's, and the layout actions set the tab's own", async () => {
     const off = activateViewers();
     setContext("textEditorActive", true);

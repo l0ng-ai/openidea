@@ -392,8 +392,35 @@ impl SettingsStore {
         {
             return Err(IdeError::invalid(format!("{setting} belongs to user settings")));
         }
+        self.set_segments(scope, key, &key.split('.').collect::<Vec<_>>(), value)
+    }
+
+    /// Sets (`null`: removes) the `entry` of the map setting `map`, e.g. `editor.encodings.mappings`.
+    /// Unlike a dotted key of [`set`](Self::set), `entry` may hold dots: a file path.
+    pub fn set_map_entry(
+        &self,
+        scope: SettingsScope,
+        map: &str,
+        entry: &str,
+        value: serde_json::Value,
+    ) -> IdeResult<Settings> {
+        if scope == SettingsScope::Project
+            && let Some(setting) = user_only_setting(map, &serde_json::json!({ entry: value }))
+        {
+            return Err(IdeError::invalid(format!("{setting} belongs to user settings")));
+        }
+        let segments: Vec<&str> = map.split('.').chain([entry]).collect();
+        self.set_segments(scope, &format!("{map}.{entry}"), &segments, value)
+    }
+
+    fn set_segments(
+        &self,
+        scope: SettingsScope,
+        key: &str,
+        segments: &[&str],
+        value: serde_json::Value,
+    ) -> IdeResult<Settings> {
         let file = self.file(scope).ok_or_else(|| IdeError::invalid("no project is open"))?.to_path_buf();
-        let segments: Vec<&str> = key.split('.').collect();
         if segments.iter().any(|s| s.is_empty()) {
             return Err(IdeError::invalid(format!("invalid settings key {key:?}")));
         }
@@ -421,7 +448,7 @@ impl SettingsStore {
             .parse()
             .map_err(|e| IdeError::invalid(format!("{} is not valid TOML; fix it first: {e}", file.display())))?;
         let new_value = if value.is_null() { None } else { Some(json_to_toml(&value)?) };
-        set_in_document(&mut doc, &segments, new_value, map_entry);
+        set_in_document(&mut doc, segments, new_value, map_entry);
         let new_text = doc.to_string();
 
         // Validate the resulting stack before touching the disk.
@@ -790,6 +817,52 @@ mod tests {
             global_only.set(SettingsScope::Project, "editor.fontSize", json!(1)).unwrap_err().kind,
             ide_core::error::ErrorKind::InvalidInput
         );
+    }
+
+    #[test]
+    fn map_entry_named_by_a_path_is_written_under_its_table() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        let proj = tmp.path().join("proj");
+        let file = proj.join(".openidea/settings.toml");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "[editor]\ntabSize = 8 # wide\n").unwrap();
+        let store = SettingsStore::load(&cfg, Some(&proj));
+
+        let key = "editor.encodings.mappings";
+        let s = store.set_map_entry(SettingsScope::Project, key, "src/a.b/A.java", json!("iso-8859-15")).unwrap();
+        assert_eq!(s.editor.encodings.mappings.get("src/a.b/A.java").map(String::as_str), Some("iso-8859-15"));
+        assert_eq!(s.editor.tab_size, 8);
+        let written =
+            "[editor]\ntabSize = 8 # wide\n\n[editor.encodings.mappings]\n\"src/a.b/A.java\" = \"iso-8859-15\"\n";
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), written);
+
+        // Setting it again changes nothing; another entry joins the table; `null` removes one.
+        store.set_map_entry(SettingsScope::Project, key, "src/a.b/A.java", json!("iso-8859-15")).unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), written);
+        store.set_map_entry(SettingsScope::Project, key, "web", json!("gbk")).unwrap();
+        let s = store.set_map_entry(SettingsScope::Project, key, "src/a.b/A.java", Json::Null).unwrap();
+        assert_eq!(s.editor.encodings.mappings.into_iter().collect::<Vec<_>>(), [("web".into(), "gbk".into())]);
+
+        for (map, entry) in [("editor.encodings.nope", "a"), (key, "")] {
+            let err = store.set_map_entry(SettingsScope::Project, map, entry, json!("gbk")).unwrap_err();
+            assert_eq!(err.kind, ide_core::error::ErrorKind::InvalidInput);
+        }
+    }
+
+    #[test]
+    fn an_encoding_mapping_that_is_not_a_label_does_not_drop_the_project_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let proj = tmp.path().join("proj");
+        std::fs::create_dir_all(proj.join(".openidea")).unwrap();
+        std::fs::write(
+            proj.join(".openidea/settings.toml"),
+            "[editor]\ntabSize = 8\n[editor.encodings.mappings]\nsrc = \"gbk\"\ncount = 5\n",
+        )
+        .unwrap();
+        let s = SettingsStore::load(&tmp.path().join("cfg"), Some(&proj)).effective();
+        assert_eq!(s.editor.tab_size, 8);
+        assert_eq!(s.editor.encodings.mappings.into_iter().collect::<Vec<_>>(), [("src".into(), "gbk".into())]);
     }
 
     #[test]

@@ -69,10 +69,7 @@ fn output_mode_precedence_and_disallowed_combinations() {
     .unwrap();
 
     assert_eq!(
-        mock.configuration_run_options()
-            .into_iter()
-            .map(|(id, _, _, _, mode)| (id, mode))
-            .collect::<Vec<_>>(),
+        mock.configuration_run_options().into_iter().map(|(id, _, _, _, mode)| (id, mode)).collect::<Vec<_>>(),
         vec![
             (id1, OutputMode::Pty),
             (id2, OutputMode::Pipes),
@@ -85,34 +82,46 @@ fn output_mode_precedence_and_disallowed_combinations() {
 
     // Debug with None forces pipes; explicit Pty with debug is rejected.
     mock.set_user_run_output_override("pty-default", None);
-    let debug_id = host::start_run_with_options(
-        "pty-default",
-        &[],
-        &RunStartOptions { debug: true, output_mode: None },
-    )
-    .unwrap();
+    let debug_id =
+        host::start_run_with_options("pty-default", &[], &RunStartOptions { debug: true, output_mode: None }).unwrap();
     assert_eq!(mock.configuration_run_options().last().unwrap().0, debug_id);
     assert_eq!(mock.configuration_run_options().last().unwrap().4, OutputMode::Pipes);
     assert!(matches!(
-        host::start_run_with_options("pty-default", &[], &RunStartOptions { debug: true, output_mode: Some(OutputMode::Pty) }),
+        host::start_run_with_options(
+            "pty-default",
+            &[],
+            &RunStartOptions { debug: true, output_mode: Some(OutputMode::Pty) }
+        ),
         Err(Error::Invalid(_))
     ));
 
     // Disallowed combinations: test, stdin redirection, remote target.
     assert!(matches!(
-        host::start_run_with_options("test-pipes", &[], &RunStartOptions { debug: false, output_mode: Some(OutputMode::Pty) }),
+        host::start_run_with_options(
+            "test-pipes",
+            &[],
+            &RunStartOptions { debug: false, output_mode: Some(OutputMode::Pty) }
+        ),
         Err(Error::Invalid(_))
     ));
     mock.set_run_configuration_stdin_file("pipes-default", true);
     mock.set_user_run_output_override("pipes-default", None);
     assert!(matches!(
-        host::start_run_with_options("pipes-default", &[], &RunStartOptions { debug: false, output_mode: Some(OutputMode::Pty) }),
+        host::start_run_with_options(
+            "pipes-default",
+            &[],
+            &RunStartOptions { debug: false, output_mode: Some(OutputMode::Pty) }
+        ),
         Err(Error::Invalid(_))
     ));
     mock.set_run_configuration_stdin_file("pipes-default", false);
     mock.set_run_configuration_remote_target("pipes-default", true);
     assert!(matches!(
-        host::start_run_with_options("pipes-default", &[], &RunStartOptions { debug: false, output_mode: Some(OutputMode::Pty) }),
+        host::start_run_with_options(
+            "pipes-default",
+            &[],
+            &RunStartOptions { debug: false, output_mode: Some(OutputMode::Pty) }
+        ),
         Err(Error::Invalid(_))
     ));
 }

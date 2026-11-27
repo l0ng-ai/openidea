@@ -111,17 +111,21 @@ describe("TeamcityOutput", () => {
     const results = new TestResults();
     const parser = phpunitParser();
     const output = new TeamcityOutput((line) => results.apply(parser.feed(line)));
-    const shown =
-      output.feed(
+    const shown = [
+      ...output.feed(
         "PHPUnit 11.5 by Sebastian Bergmann\n##teamcity[testSuiteStarted name='CalcTest']\n##teamcity[testStar",
-      ) +
-      output.feed("ted name='testAdd']\r\n##teamcity[testFinished name='testAdd' duration='1']\nOK (1 test") +
-      output.end();
-    expect(shown).toBe("PHPUnit 11.5 by Sebastian Bergmann\nOK (1 test\n");
+      ),
+      ...output.feed("ted name='testAdd']\r\n##teamcity[testFinished name='testAdd' duration='1']\nOK (1 test"),
+      ...output.end(),
+    ];
+    expect(shown).toEqual([
+      { kind: "stdout", text: "PHPUnit 11.5 by Sebastian Bergmann\n" },
+      { kind: "stdout", text: "OK (1 test\n" },
+    ]);
     expect(results.counts()).toMatchObject({ passed: 1 });
   });
 
-  it("shows a test's own output and failures in the console when asked (JVM runs)", () => {
+  it("shows a test's own output, its stderr as stderr, and failures in the console when asked (JVM runs)", () => {
     const lines = [
       "##teamcity[testStarted name='prints' className='demo.GreeterTest']",
       "##teamcity[testStdOut name='prints' className='demo.GreeterTest' out='输出结果：OpenIdea|n']",
@@ -134,11 +138,16 @@ describe("TeamcityOutput", () => {
       "",
     ].join("\n");
     const fed: string[] = [];
-    expect(new TeamcityOutput((line) => fed.push(line), true).feed(lines)).toBe(
-      "输出结果：OpenIdea\nwarn [x]\njava.lang.AssertionError: no\n\tat demo.GreeterTest.fails(GreeterTest.java:15)\n1 test completed\n",
-    );
+    expect(new TeamcityOutput((line) => fed.push(line), true).feed(lines)).toEqual([
+      { kind: "stdout", text: "输出结果：OpenIdea\n" },
+      { kind: "stderr", text: "warn [x]\n" },
+      {
+        kind: "stdout",
+        text: "java.lang.AssertionError: no\n\tat demo.GreeterTest.fails(GreeterTest.java:15)\n1 test completed\n",
+      },
+    ]);
     expect(fed).toHaveLength(8);
-    expect(new TeamcityOutput(() => {}).feed(lines)).toBe("1 test completed\n");
+    expect(new TeamcityOutput(() => {}).feed(lines)).toEqual([{ kind: "stdout", text: "1 test completed\n" }]);
   });
 });
 

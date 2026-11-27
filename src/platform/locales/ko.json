@@ -118,6 +118,7 @@
   "menu.code.overrideMethods": "메서드 재정의…",
   "menu.code.implementMethods": "메서드 구현…",
   "menu.code.insertLiveTemplate": "라이브 템플릿 삽입…",
+  "menu.code.saveAsLiveTemplate": "라이브 템플릿으로 저장…",
   "menu.code.moveLineDown": "줄 아래로 이동",
   "menu.code.moveLineUp": "줄 위로 이동",
   "menu.code.optimizeImports": "import 최적화",

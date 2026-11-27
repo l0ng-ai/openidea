@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { emitLocalIdeEvent, type IdeEvent, type RemoteEntry, type Settings } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useRemoteProgress } from "@/platform/remote";
-import { ConnectHost } from "./ConnectDialog";
+import { ConnectDialog, ConnectHost } from "./ConnectDialog";
 import { closeConnectDialog, openConnectDialog, useConnectDialog } from "./model";
 
 const { list, distros, globalSettings, openRemote, executeAction } = vi.hoisted(() => ({
@@ -152,4 +152,19 @@ it("opens a folder of the chosen WSL distribution, without browsing over SFTP", 
   fireEvent.click(screen.getByRole("button", { name: "Open" }));
   await waitFor(() => expect(openRemote).toHaveBeenCalledWith({ kind: "wsl", distro: installed[1] }, "~"));
   expect(list).not.toHaveBeenCalled();
+});
+
+it("in its own window, hands the connection to its project window and shows its failure", async () => {
+  const close = vi.fn();
+  const connect = vi.fn().mockRejectedValueOnce(new Error("Host key mismatch")).mockResolvedValueOnce(true);
+  render(<ConnectDialog standalone onClose={close} onConnect={connect} />);
+  expect(screen.queryByRole("dialog")).toBeNull();
+  await waitFor(() => expect(screen.getByRole("button", { name: "Open" })).toBeEnabled());
+  fireEvent.click(screen.getByRole("button", { name: "Open" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Host key mismatch");
+  expect(close).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Open" }));
+  await waitFor(() => expect(close).toHaveBeenCalled());
+  expect(connect).toHaveBeenLastCalledWith({ kind: "ssh", config: "first" }, "~");
+  expect(openRemote).not.toHaveBeenCalled();
 });

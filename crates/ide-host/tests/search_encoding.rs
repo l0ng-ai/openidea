@@ -50,3 +50,25 @@ async fn find_in_files_decodes_closed_files_with_the_project_encoding() {
     project.documents.set_file_defaults(defaults);
     assert!(find(&host, "中文搜索验证").await.is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn find_in_files_decodes_closed_files_with_the_editorconfig_charset() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(temp.path()).unwrap();
+    let root = base.join("project");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join(".editorconfig"), "root = true\n[*.java]\ncharset = iso-8859-15\n").unwrap();
+    std::fs::write(root.join("A.java"), b"// a\xe7\xe3o \xa4 needle\n").unwrap();
+    let host = Host::new(common::host_config(&base));
+    host.trust.decide(&root, true, false).unwrap();
+    let project = host.open_project("main", &root).unwrap();
+    let mut defaults = project.documents.file_defaults();
+    defaults.project_fallback = "gbk".into();
+    project.documents.set_file_defaults(defaults);
+
+    let files = find(&host, "ação €").await;
+
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].matches[0].text, "// ação € needle", "the text the editor shows");
+    assert_eq!(find(&host, "needle").await[0].matches[0].text, "// ação € needle");
+}

@@ -29,15 +29,19 @@ fn tools(host: &Host, window: &str) -> IdeResult<Tools> {
         &root,
         &settings,
     ));
-    // Godot is usually an app bundle / Flatpak outside the search path.
-    let found = ide_sdk::godot::find(None).map(|p| (ide_sdk::godot::COMMAND.to_owned(), p));
+    // Godot and GitHub CLI can live in app bundles / MSI / Snap folders outside the search path.
+    let mut found: std::collections::BTreeMap<_, _> =
+        ide_sdk::godot::find(None).map(|p| (ide_sdk::godot::COMMAND.to_owned(), p)).into_iter().collect();
+    if let Some(gh) = ide_core::tool_path::find_gh_outside_search_path() {
+        found.insert("gh".to_owned(), gh);
+    }
     let runtime = ide_sdk::apply::tool_install_environment(&root, &settings);
     let work_dir = (!root.as_os_str().is_empty()).then_some(root);
     Ok(Tools::new(&data)
         .with_downloads(settings.tool_downloads.clone())
         .with_runtime(runtime.commands, runtime.env)
         .with_custom_paths(custom)
-        .with_found_paths(found.into_iter().collect())
+        .with_found_paths(found)
         .with_work_dir(work_dir))
 }
 

@@ -30,5 +30,20 @@ export async function bootAuxiliaryWindow(aux: { kind: AuxKind; parent: string }
       mountWindowRoot(bootDeploymentWindow(aux.parent));
       return;
     }
+    case "new-project": {
+      const { bootNewProjectWindow } = await import("./newProjectWindowBoot");
+      mountWindowRoot(bootNewProjectWindow(aux.parent));
+      return;
+    }
+    case "connect": {
+      const { bootConnectWindow } = await import("./connectWindowBoot");
+      mountWindowRoot(bootConnectWindow(aux.parent));
+      return;
+    }
+    case "clone": {
+      const { bootCloneWindow } = await import("./cloneWindowBoot");
+      mountWindowRoot(bootCloneWindow(aux.parent));
+      return;
+    }
   }
 }

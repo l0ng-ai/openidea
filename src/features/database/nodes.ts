@@ -88,6 +88,11 @@ export function nodeTarget(n: DbNode): string | null {
   return n.key.split("/")[0] ?? null;
 }
 
+/** The schema a node is, or is inside of; `null` for data sources, databases and messages. */
+export function nodeSchema(n: DbNode): string | null {
+  return "schema" in n && n.schema ? n.schema : null;
+}
+
 /** The table (or view) a node is, or is inside of. */
 export function tableOf(n: DbNode): (TableRef & { view: boolean; kind: DbTableKind }) | null {
   if (n.kind === "table")

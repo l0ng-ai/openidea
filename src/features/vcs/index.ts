@@ -46,6 +46,7 @@ import { registerCompareActions } from "./compare";
 import { activateDiffViewer } from "./diffViewer";
 import { installDiffEditorHost } from "./DiffWindow";
 import { VcsDialogHost } from "./dialogs";
+import { installCloneHandoff } from "./clone";
 import { changeMarkers } from "./gutter";
 import { installHunkPopup } from "./HunkPopup";
 import { LOCAL_HISTORY_KIND } from "./localHistoryKind";
@@ -285,6 +286,7 @@ export function activate(): () => void {
     trackMergeRebaseItem(),
     installHunkPopup(),
     registerOverlay({ id: "vcs.dialogs", component: VcsDialogHost }),
+    installCloneHandoff(),
     registerOverlay({ id: "vcs.branches", component: BranchesPopupHost }),
     registerOverlay({ id: "vcs.syncCommits", component: SyncCommitsPopupHost }),
     activateConflictBanner(),

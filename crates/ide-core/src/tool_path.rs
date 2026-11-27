@@ -73,6 +73,38 @@ pub fn find_command(command: &str, search: &OsStr, root: &Path) -> Option<PathBu
     dirs.into_iter().find_map(|dir| names.iter().map(|name| dir.join(name)).find(|p| is_executable(p)))
 }
 
+const GH_FALLBACK_PATHS: &[&str] = if cfg!(windows) {
+    &[r"C:\Program Files\GitHub CLI\gh.exe"]
+} else {
+    &["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh", "/snap/bin/gh"]
+};
+
+/// Locates `gh` across `OPENIDEA_GH`, [`search_path`] (which includes IDE-managed tools
+/// only when installed, then the user's `PATH`), and standard OS install locations.
+pub fn find_gh_executable() -> Option<PathBuf> {
+    let explicit = std::env::var_os("OPENIDEA_GH").map(PathBuf::from);
+    find_gh_in(explicit.as_deref(), &search_path(), GH_FALLBACK_PATHS)
+}
+
+/// Locates a pre-installed `gh` outside [`search_path`] (`OPENIDEA_GH`, Windows Program Files,
+/// Linux Snap) so tool detection reports it as available without prompting for a duplicate install.
+pub fn find_gh_outside_search_path() -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os("OPENIDEA_GH").map(PathBuf::from).filter(|p| is_executable(p)) {
+        return Some(explicit);
+    }
+    GH_FALLBACK_PATHS.iter().map(PathBuf::from).find(|p| is_executable(p))
+}
+
+pub fn find_gh_in(explicit: Option<&Path>, search: &OsStr, fallbacks: &[&str]) -> Option<PathBuf> {
+    if let Some(explicit) = explicit.filter(|p| is_executable(p)) {
+        return Some(explicit.to_path_buf());
+    }
+    if let Some(found) = find_command("gh", search, Path::new("")) {
+        return Some(found);
+    }
+    fallbacks.iter().map(PathBuf::from).find(|p| is_executable(p))
+}
+
 fn is_executable(path: &Path) -> bool {
     let Ok(metadata) = path.metadata() else { return false };
     #[cfg(unix)]

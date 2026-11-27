@@ -28,6 +28,8 @@ import {
   StateEffect,
   StateField,
   type Extension,
+  type Text,
+  type Transaction,
 } from "@codemirror/state";
 import {
   Decoration,
@@ -45,7 +47,7 @@ import {
 } from "@codemirror/view";
 import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { createRoot } from "react-dom/client";
-import type { EditorDocContext } from "@/editor/api";
+import { problemProviders, type ContributedProblem, type EditorDocContext } from "@/editor/api";
 import { iconNode, spinnerNode } from "@/ui/iconNode";
 import { call, commands, type DbSessionContext, type DbStatementOutcome, type SqlStatement } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
@@ -73,6 +75,7 @@ import {
 } from "./sql/complete";
 import { sqlDriverOf, type SqlDriver } from "./sql/dialect";
 import { duckdbLanguage } from "./sql/duckdbHighlight";
+import { unsafeMessage } from "./sql/unsafe";
 import { WHOLE_FILE, sqlSupport, type SqlText } from "./sqlSupport";
 import { snowflakeLanguage } from "./sql/snowflakeHighlight";
 import {
@@ -101,6 +104,7 @@ import {
   setManualCommit,
   sourceById,
   useDatabase,
+  type ConfirmUnsafe,
 } from "./store";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
@@ -138,7 +142,14 @@ function activeSpan(ex: Executing | null) {
   return span && span.from < span.to ? span : undefined;
 }
 
+interface AskMark {
+  from: number;
+  to: number;
+  message: string;
+}
+
 interface RunState {
+  ask?: AskMark | null;
   marks: readonly RunMark[];
   /** Message of the bottom error banner (`null`: hidden). */
   banner: string | null;
@@ -146,12 +157,25 @@ interface RunState {
 }
 
 const setRun = StateEffect.define<RunState>();
+const setAsk = StateEffect.define<AskMark | null>();
+
+/** Saving can append the final newline without changing any submitted SQL or statement offsets. */
+function savedFinalNewline(tr: Transaction): boolean {
+  if (!tr.docChanged || !tr.isUserEvent("input.save")) return false;
+  const end = tr.startState.doc.length;
+  let only = true;
+  tr.changes.iterChanges((from, to, _f, _t, insert) => {
+    only &&= from === end && to === end && insert.toString() === "\n";
+  });
+  return only;
+}
 
 const runField = StateField.define<RunState>({
   create: () => ({ marks: [], banner: null, executing: null }),
   update(value, tr) {
-    for (const e of tr.effects) if (e.is(setRun)) return e.value;
-    if (!tr.docChanged) return value;
+    for (const e of tr.effects) if (e.is(setRun)) value = { ...e.value, ask: value.ask };
+    for (const e of tr.effects) if (e.is(setAsk)) value = { ...value, ask: e.value };
+    if (!tr.docChanged || savedFinalNewline(tr)) return value;
     // The request runs the text it was sent; edits only move where that shows.
     const ex = value.executing;
     const executing = ex && {
@@ -173,7 +197,7 @@ const runField = StateField.define<RunState>({
           timingAt: tr.changes.mapPos(m.timingAt),
         });
     }
-    return { ...value, marks, executing };
+    return { ...value, marks, executing, ask: null };
   },
   provide: (f) => [
     EditorView.decorations.compute([f], (state) => {
@@ -188,16 +212,25 @@ const runField = StateField.define<RunState>({
         ranges.push(Decoration.widget({ widget: new ElapsedWidget(active.startedAt), side: 1 }).range(at));
       }
       for (const m of st.marks) {
-        if (m.error)
-          ranges.push(
-            Decoration.mark({ class: "cm-openidea-db-error", attributes: { title: m.error } }).range(m.from, m.to),
-          );
+        if (m.error) ranges.push(Decoration.mark({ class: "cm-openidea-db-error" }).range(m.from, m.to));
         if (m.ms !== null)
           ranges.push(Decoration.widget({ widget: new TimingWidget(m.ms), side: 1 }).range(m.timingAt));
       }
+      const u = st.ask;
+      if (u && u.from < u.to) ranges.push(Decoration.mark({ class: "cm-openidea-db-warning" }).range(u.from, u.to));
       return Decoration.set(ranges, true);
     }),
-    showPanel.from(f, (st) => (st.banner ? errorBanner(st.banner) : null)),
+    showPanel.from(f, (st) => (st.ask ? askBanner(st.ask) : st.banner ? errorBanner(st.banner) : null)),
+    // The editor's hover shows the run errors and the unsafe-query warning like other problems.
+    problemProviders.compute([f], (state) => {
+      const st = state.field(f);
+      const problems: ContributedProblem[] = [];
+      for (const m of st.marks)
+        if (m.error && m.from < m.to) problems.push({ from: m.from, to: m.to, severity: "error", message: m.error });
+      const u = st.ask;
+      if (u && u.from < u.to) problems.push({ from: u.from, to: u.to, severity: "warning", message: u.message });
+      return () => problems;
+    }),
   ],
 });
 
@@ -253,19 +286,27 @@ class ExecutingMarker extends GutterMarker {
 }
 
 class RunMarker extends GutterMarker {
-  constructor(readonly error: string | null) {
+  constructor(
+    readonly error: string | null,
+    readonly warning: string | null = null,
+  ) {
     super();
   }
   eq(other: RunMarker) {
-    return other.error === this.error;
+    return other.error === this.error && other.warning === this.warning;
   }
   toDOM() {
+    if (this.warning) {
+      const el = iconNode("warning", 14, "cm-openidea-db-run-warning");
+      el.dataset.tooltip = this.warning;
+      return el;
+    }
     const el = iconNode(
       this.error ? "error" : "check",
       14,
       this.error ? "cm-openidea-db-run-error" : "cm-openidea-db-run-ok",
     );
-    el.title = this.error ?? "Executed";
+    el.dataset.tooltip = this.error ?? tx("Executed");
     return el;
   }
 }
@@ -277,10 +318,13 @@ const runGutter = gutter({
     const doc = view.state.doc;
     const active = activeSpan(st.executing);
     const line = active ? doc.lineAt(active.from).from : undefined;
+    const unsafe = st.ask;
+    const unsafeLine = unsafe && unsafe.from <= doc.length ? doc.lineAt(unsafe.from).from : -1;
     const ranges: Range<GutterMarker>[] = st.marks
-      .filter((m) => m.from <= doc.length)
+      .filter((m) => m.from <= doc.length && doc.lineAt(m.from).from !== unsafeLine)
       .map((m) => new RunMarker(m.error).range(doc.lineAt(m.from).from));
-    if (line !== undefined) ranges.push(new ExecutingMarker().range(line));
+    if (line !== undefined && line !== unsafeLine) ranges.push(new ExecutingMarker().range(line));
+    if (unsafe && unsafeLine >= 0) ranges.push(new RunMarker(null, unsafe.message).range(unsafeLine));
     return RangeSet.of(ranges, true);
   },
 });
@@ -305,16 +349,111 @@ function errorBanner(message: string) {
   };
 }
 
+type AskChoice = "execute" | "suppress" | "cancel";
+
+/** The answer to the banner a view asks with. */
+const askAnswers = new WeakMap<EditorView, (choice: AskChoice) => void>();
+/** Consoles whose unsafe queries run without asking (Execute and Suppress), until the app restarts. */
+const unsafeSuppressed = new Set<string>();
+
+function askBanner(mark: AskMark) {
+  return (view: EditorView): Panel => {
+    const dom = document.createElement("div");
+    dom.className = "cm-openidea-db-banner cm-openidea-db-banner-warning";
+    dom.setAttribute("role", "alert");
+    const text = document.createElement("span");
+    text.className = "cm-openidea-db-banner-text";
+    text.textContent = mark.message;
+    text.dataset.tooltip = mark.message;
+    const answer = (choice: AskChoice) => askAnswers.get(view)?.(choice);
+    const action = (label: string, choice: AskChoice) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "cm-openidea-db-banner-action";
+      b.textContent = label;
+      b.onclick = () => answer(choice);
+      return b;
+    };
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "cm-openidea-db-banner-close";
+    close.setAttribute("aria-label", tx("Close"));
+    close.appendChild(iconNode("close", 14));
+    close.onclick = () => answer("cancel");
+    const actions = [action(tx("Execute"), "execute"), action(tx("Execute and Suppress"), "suppress")];
+    dom.append(text, ...actions, close);
+    return { dom, top: false };
+  };
+}
+
+/**
+ * Editing or closing the console while the unsafe-query banner waits cancels the run.
+ */
+const cancelAskOnEdit = [
+  EditorView.updateListener.of((u) => {
+    if (!u.docChanged) return;
+    if (u.transactions.every((tr) => !tr.docChanged || savedFinalNewline(tr))) {
+      const preparing = preparingViews.get(u.view);
+      if (preparing?.doc === u.startState.doc) preparing.doc = u.state.doc;
+      return;
+    }
+    if (u.startState.field(runField).ask) askAnswers.get(u.view)?.("cancel");
+  }),
+  ViewPlugin.define((view) => ({
+    destroy: () => {
+      closedViews.add(view);
+      askAnswers.get(view)?.("cancel");
+    },
+  })),
+];
+/** Views destroyed with a question open: nothing more to dispatch to them. */
+const closedViews = new WeakSet<EditorView>();
+
+/** Shows `mark` in the banner and waits for the answer. */
+function ask(view: EditorView, mark: AskMark): Promise<AskChoice> {
+  askAnswers.get(view)?.("cancel");
+  return new Promise<AskChoice>((resolve) => {
+    askAnswers.set(view, (choice) => {
+      askAnswers.delete(view);
+      if (!closedViews.has(view) && view.state.field(runField, false)?.ask) view.dispatch({ effects: setAsk.of(null) });
+      resolve(choice);
+    });
+    view.dispatch({ effects: setAsk.of(mark) });
+  });
+}
+
+/** Shows the unsafe-query banner for `statement` and waits for the answer (true: run it). */
+function confirmUnsafe(view: EditorView, path: string, current: () => boolean): ConfirmUnsafe {
+  return async (statement, unsafe) => {
+    if (!current()) return false;
+    if (unsafeSuppressed.has(path)) return true;
+    const len = view.state.doc.length;
+    const choice = await ask(view, {
+      from: Math.min(len, statement.from + unsafe.from),
+      to: Math.min(len, statement.from + unsafe.to),
+      message: unsafeMessage(unsafe),
+    });
+    if (choice === "suppress") unsafeSuppressed.add(path);
+    return choice !== "cancel";
+  };
+}
+
 let nextExecution = 0;
+const preparingViews = new WeakMap<EditorView, { doc: Text }>();
 
 /** Runs `from`–`to` of `view`, following each statement as it executes. */
 async function executeRange(view: EditorView, path: string, from: number, to: number) {
   const token = ++nextExecution;
   const sent = view.state.doc;
+  askAnswers.get(view)?.("cancel");
+  const preparing = { doc: sent };
+  preparingViews.set(view, preparing);
+  const current = () =>
+    !closedViews.has(view) && view.state.doc === preparing.doc && preparingViews.get(view) === preparing;
   const start = (statements: readonly SqlStatement[]) => {
     const st = view.state.field(runField, false);
     // The offsets are into the text sent; an edit since (while asking for parameters) leaves them unplaced.
-    if (!st || view.state.doc !== sent) return;
+    if (!st || !current()) return;
     const spans = statements.map((st) => ({ from: st.from, to: st.to }));
     const first = spans[0]!;
     const last = spans[spans.length - 1]!;
@@ -322,35 +461,44 @@ async function executeRange(view: EditorView, path: string, from: number, to: nu
     view.dispatch({ effects: setRun.of({ marks, banner: null, executing: { token, spans, active: null } }) });
   };
   try {
-    await executeConsole(path, sent.toString(), from, to, start, (events) => {
-      const st = view.state.field(runField, false);
-      const ex = st?.executing;
-      if (!st || ex?.token !== token) return;
-      const last = events[events.length - 1]!;
-      const active = last.type === "started" ? { index: last.index, startedAt: Date.now() } : null;
-      const marks = [...st.marks];
-      let banner = st.banner;
-      const placed = new Map<number, DbStatementOutcome>();
-      for (const event of events) {
-        if (event.type === "started") continue;
-        const span = ex.spans[event.index];
-        if (!span || span.from >= span.to) continue;
-        const { from, to } = span;
-        const { error, result } = event.outcome;
-        marks.push({
-          from,
-          to,
-          timingAt: view.state.sliceDoc(to, to + 1) === ";" ? to + 1 : to,
-          error,
-          ms: result?.elapsedMs ?? null,
-        });
-        if (error) banner = `[${sourceById(consoleSource(path))?.name ?? ""}] ${error}`;
-        placed.set(event.index, { ...event.outcome, statement: { ...event.outcome.statement, ...span } });
-      }
-      view.dispatch({ effects: setRun.of({ marks, banner, executing: { ...ex, active } }) });
-      return placed;
-    });
+    await executeConsole(
+      path,
+      sent.toString(),
+      from,
+      to,
+      start,
+      (events) => {
+        const st = view.state.field(runField, false);
+        const ex = st?.executing;
+        if (!st || ex?.token !== token) return;
+        const last = events[events.length - 1]!;
+        const active = last.type === "started" ? { index: last.index, startedAt: Date.now() } : null;
+        const marks = [...st.marks];
+        let banner = st.banner;
+        const placed = new Map<number, DbStatementOutcome>();
+        for (const event of events) {
+          if (event.type === "started") continue;
+          const span = ex.spans[event.index];
+          if (!span || span.from >= span.to) continue;
+          const { from, to } = span;
+          const { error, result } = event.outcome;
+          marks.push({
+            from,
+            to,
+            timingAt: view.state.sliceDoc(to, to + 1) === ";" ? to + 1 : to,
+            error,
+            ms: result?.elapsedMs ?? null,
+          });
+          if (error) banner = `[${sourceById(consoleSource(path))?.name ?? ""}] ${error}`;
+          placed.set(event.index, { ...event.outcome, statement: { ...event.outcome.statement, ...span } });
+        }
+        view.dispatch({ effects: setRun.of({ marks, banner, executing: { ...ex, active } }) });
+        return placed;
+      },
+      confirmUnsafe(view, path, current),
+    );
   } finally {
+    if (preparingViews.get(view) === preparing) preparingViews.delete(view);
     const st = view.state.field(runField, false);
     if (st?.executing?.token === token) view.dispatch({ effects: setRun.of({ ...st, executing: null }) });
   }
@@ -1372,6 +1520,7 @@ export function consoleExtension(ctx: EditorDocContext): Extension {
     consolePath.of(ctx.path),
     runField,
     runGutter,
+    cancelAskOnEdit,
     previewField,
     previewLayer,
     previewSync,

@@ -56,7 +56,7 @@ test("an SVG file opens as its source with the image beside it", async ({ workbe
   // Not an SVG yet: the preview says so, and draws the source once it is typed.
   await expect(page.getByText("The SVG source is not valid.", { exact: true })).toBeVisible();
   await page.locator(".cm-content").click();
-  await page.keyboard.press("ControlOrMeta+A");
+  await page.keyboard.press("Meta+A");
   await page.keyboard.insertText(
     '<svg xmlns="http://www.w3.org/2000/svg" width="128" height="96"><rect width="128" height="96"/></svg>',
   );

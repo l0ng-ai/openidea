@@ -1,4 +1,4 @@
-//! Editor › Code Style › JavaScript / TypeScript (Spaces, Punctuation) as the TypeScript
+//! Editor › Code Style › JavaScript / TypeScript (Spaces, Punctuation, Imports) as the TypeScript
 //! servers' `typescript.format.*` / `typescript.preferences.*` settings (`javascript.*` for
 //! JavaScript and JSX). tsserver applies them to Reformat Code and to the code it writes:
 //! quick fixes, auto-imports, refactorings and organize imports.
@@ -48,12 +48,7 @@ pub fn configure(cfg: &mut LanguageServerConfig, server_root: &Path, settings: &
             .and_then(|e| e.resolve_pairs(&server_root.join(format!("index.{ext}"))))
             .unwrap_or_default();
         let section = section(language, code_style.languages.get(language), &pairs);
-        if !section.is_empty() {
-            layer.insert(language.into(), Value::Object(section));
-        }
-    }
-    if layer.is_empty() {
-        return;
+        layer.insert(language.into(), Value::Object(section));
     }
     let mut merged = Value::Object(layer);
     if let Some(own) = cfg.settings.take() {
@@ -96,10 +91,30 @@ fn section(
     if !format.is_empty() {
         section.insert("format".into(), Value::Object(format));
     }
-    // vtsls reads `quoteStyle` (VS Code's name), typescript-language-server tsserver's `quotePreference`.
+    // vtsls reads VS Code's names (`quoteStyle`, `importModuleSpecifier`), typescript-language-server
+    // tsserver's (`quotePreference`, `importModuleSpecifierPreference`).
+    let mut preferences = Map::new();
     if let Some(quotes) = quotes {
-        section.insert("preferences".into(), json!({ "quoteStyle": quotes, "quotePreference": quotes }));
+        preferences.insert("quoteStyle".into(), json!(quotes));
+        preferences.insert("quotePreference".into(), json!(quotes));
     }
+    let paths = ["shortest", "relative", "non-relative", "project-relative"];
+    if let Some(paths) = pick(style.and_then(|s| s.import_module_specifier.as_ref()), &paths) {
+        preferences.insert("importModuleSpecifier".into(), json!(paths));
+        preferences.insert("importModuleSpecifierPreference".into(), json!(paths));
+    }
+    let endings = ["auto", "minimal", "index", "js"];
+    if let Some(ending) = pick(style.and_then(|s| s.import_module_specifier_ending.as_ref()), &endings) {
+        preferences.insert("importModuleSpecifierEnding".into(), json!(ending));
+    }
+    // Sent even when empty: vtsls has no default for these, so a list left out keeps tsserver's
+    // previous one, and clearing it would only apply after a restart. `[]` excludes nothing.
+    let none = Vec::new();
+    let patterns = style.map_or(&none, |s| &s.auto_import_file_exclude_patterns);
+    let regexes = style.map_or(&none, |s| &s.auto_import_specifier_exclude_regexes);
+    preferences.insert("autoImportFileExcludePatterns".into(), json!(patterns));
+    preferences.insert("autoImportSpecifierExcludeRegexes".into(), json!(regexes));
+    section.insert("preferences".into(), Value::Object(preferences));
     section
 }
 
@@ -133,9 +148,17 @@ mod tests {
                 "typescript": {
                     "format": { "semicolons": "remove", "insertSpaceAfterOpeningAndBeforeClosingNonemptyBraces": false },
                     // The server's own settings win.
-                    "preferences": { "quoteStyle": "double", "quotePreference": "single" },
+                    "preferences": {
+                        "quoteStyle": "double",
+                        "quotePreference": "single",
+                        "autoImportFileExcludePatterns": [],
+                        "autoImportSpecifierExcludeRegexes": [],
+                    },
                 },
-                "javascript": { "format": { "semicolons": "insert" } },
+                "javascript": {
+                    "format": { "semicolons": "insert" },
+                    "preferences": { "autoImportFileExcludePatterns": [], "autoImportSpecifierExcludeRegexes": [] },
+                },
             })
         );
 
@@ -144,7 +167,52 @@ mod tests {
         assert_eq!(eslint.settings, None);
         let mut untouched = server("vtsls");
         configure(&mut untouched, dir.path(), &Settings::default());
-        assert_eq!(untouched.settings, None, "nothing set: the server's defaults");
+        // Nothing set: the server's defaults, and empty exclusion lists so that clearing one reaches
+        // a running server.
+        let empty = json!({ "autoImportFileExcludePatterns": [], "autoImportSpecifierExcludeRegexes": [] });
+        let empty = json!({ "typescript": { "preferences": empty }, "javascript": { "preferences": empty } });
+        assert_eq!(untouched.settings, Some(empty));
+    }
+
+    #[test]
+    fn import_style_reaches_the_preferences_of_each_language() {
+        let mut settings = Settings::default();
+        let ts = LanguageCodeStyle {
+            import_module_specifier: Some("relative".into()),
+            import_module_specifier_ending: Some("index".into()),
+            auto_import_file_exclude_patterns: vec!["**/index.ts".into()],
+            auto_import_specifier_exclude_regexes: vec!["^node:".into()],
+            ..Default::default()
+        };
+        settings.editor.code_style.languages.insert("typescript".into(), ts);
+        let js = LanguageCodeStyle {
+            import_module_specifier: Some("non-relative".into()),
+            // Not a tsserver value: left out.
+            import_module_specifier_ending: Some("ts".into()),
+            ..Default::default()
+        };
+        settings.editor.code_style.languages.insert("javascript".into(), js);
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = server("vtsls");
+        configure(&mut cfg, dir.path(), &settings);
+        assert_eq!(
+            cfg.settings.unwrap(),
+            json!({
+                "typescript": { "preferences": {
+                    "importModuleSpecifier": "relative",
+                    "importModuleSpecifierPreference": "relative",
+                    "importModuleSpecifierEnding": "index",
+                    "autoImportFileExcludePatterns": ["**/index.ts"],
+                    "autoImportSpecifierExcludeRegexes": ["^node:"],
+                } },
+                "javascript": { "preferences": {
+                    "importModuleSpecifier": "non-relative",
+                    "importModuleSpecifierPreference": "non-relative",
+                    "autoImportFileExcludePatterns": [],
+                    "autoImportSpecifierExcludeRegexes": [],
+                } },
+            })
+        );
     }
 
     #[test]
@@ -178,6 +246,6 @@ mod tests {
         configure(&mut cfg, dir.path(), &settings);
         let s = cfg.settings.unwrap();
         assert_eq!(s["typescript"]["format"], json!({ "semicolons": "insert" }));
-        assert_eq!(s.get("javascript"), None);
+        assert_eq!(s["javascript"].get("format"), None);
     }
 }
