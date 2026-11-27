@@ -10,7 +10,7 @@ import { tx, txPart, txTemplate } from "@/platform/i18n";
 import { AnsiStream, stripAnsi, type Span } from "@/ui/ansi";
 import { call, commands, IpcError, isCancelled, nextRequestId } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { attachDocument, editorsFor } from "@/editor/api";
+import { attachDocument, editorsFor, type TextEditorHandle } from "@/editor/api";
 import {
   maybeEditorService,
   notifications,
@@ -1006,34 +1006,32 @@ const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Applies edits (in the coordinates of `readWorkingText(path)`) to a working
- * file: through the open editor (one undoable transaction) or, when the file
- * isn't open, through a transient backend document that is saved.
+ * file through its open editor, as one undoable transaction.
  */
-export async function applyFileEdits(path: string, edits: TextEdit[], opts: { save?: boolean; exact?: boolean } = {}) {
-  const editor = editorsFor(path)[0];
-  if (editor) {
-    editor.view.dispatch({ changes: edits, userEvent: "input.vcs", scrollIntoView: true });
-    if (opts.save) {
-      if (opts.exact) await saveExactText(path);
-      else {
-        // Let editor/core sync the change to the backend before saving.
-        await tick(60);
-        await maybeEditorService()?.saveAll();
-      }
+async function applyEditorEdits(
+  editor: TextEditorHandle,
+  edits: TextEdit[],
+  opts: { save?: boolean; exact?: boolean },
+) {
+  const path = editor.ctx.path;
+  editor.view.dispatch({ changes: edits, userEvent: "input.vcs", scrollIntoView: true });
+  if (opts.save) {
+    if (opts.exact) await saveExactText(path);
+    else {
+      // Let editor/core sync the change to the backend before saving.
+      await tick(60);
+      await maybeEditorService()?.saveAll();
     }
-    return;
-  }
-  const info = await call(commands.docOpen(path));
-  try {
-    await call(commands.docEdit(info.id, info.version, { changes: [...edits].sort((a, b) => a.from - b.from) }));
-    await call(commands.docSave(info.id));
-  } finally {
-    void commands.docClose(info.id);
   }
 }
 
-/** Replaces the whole content of a working file. */
+/**
+ * Replaces the whole content of a working file: through its open editor or, when no editor view
+ * shows it, through its document, saved as is.
+ */
 export async function writeFileText(path: string, text: string, opts: { save?: boolean; exact?: boolean } = {}) {
+  const editor = editorsFor(path)[0];
+  if (!editor) return writeDocumentText(path, text);
   const current = (await readWorkingText(path)) ?? "";
   if (current === text) {
     if (opts.save) {
@@ -1042,7 +1040,24 @@ export async function writeFileText(path: string, text: string, opts: { save?: b
     }
     return;
   }
-  await applyFileEdits(path, [{ from: 0, to: current.length, insert: text }], opts);
+  await applyEditorEdits(editor, [{ from: 0, to: current.length, insert: text }], opts);
+}
+
+/**
+ * A tab in the background of its pane has no editor view but keeps the document: edit through
+ * the document so that tab shows the text too (a `doc_edit` through another reference to the
+ * backend document reaches no open view).
+ */
+async function writeDocumentText(path: string, text: string) {
+  const document = await attachDocument(path);
+  try {
+    if (document.readOnly) throw new Error(tx("File is read-only"));
+    const current = document.text();
+    if (current !== text) document.edit({ from: 0, to: current.length, insert: text }, "input.vcs");
+    await document.save({ exact: true });
+  } finally {
+    document.release();
+  }
 }
 
 /** Merge results keep their text even when the file is also shown in an editor tab. */
