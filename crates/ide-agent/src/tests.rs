@@ -642,13 +642,96 @@ async fn saved_conversation_reads_do_not_start_or_load_the_agent() {
     mgr.shutdown();
     let restored_agent = Arc::new(FakeAgent::default());
     let restored = manager(tmp.path(), restored_agent.clone());
+    // Listing the tasks leaves the conversation on disk until something asks for it.
+    assert_eq!(restored.subscribe_as("view", Arc::new(|_| {})).len(), 1);
+    assert!(!restored.task(&task.id).unwrap().state.lock().history.is_loaded());
     assert!(!restored.entries(&task.id, None).unwrap().is_empty());
+    assert!(restored.task(&task.id).unwrap().state.lock().history.is_loaded());
     assert!(restored_agent.calls.lock().is_empty());
     assert!(restored.entries("missing-task", None).is_err());
     assert!(restored.entries(&task.id, Some("missing-subagent".into())).is_err());
-    restored.task(&task.id).unwrap().state.lock().conversation = Conversation::default();
+    restored.task(&task.id).unwrap().state.lock().history.conversation = Conversation::default();
     assert!(restored.entries(&task.id, None).unwrap().is_empty());
     restored.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_archived_task_keeps_no_command_list_and_completes_the_known_one() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("hello"),
+            provider: "claude".into(),
+            config: Vec::new(),
+            isolation: Isolation::Local,
+            base: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    let names = |list: Vec<AgentCommand>| list.into_iter().map(|c| c.name).collect::<Vec<_>>();
+    let snapshot = |mgr: &AgentManager| mgr.task(&task.id).unwrap().state.lock().snapshot();
+    assert!(names(snapshot(&mgr).commands).contains(&"review".to_owned()));
+
+    mgr.archive(&task.id).unwrap();
+    assert!(snapshot(&mgr).commands.is_empty());
+    assert!(names(mgr.commands("claude", Some(&task.id)).await.unwrap()).contains(&"review".to_owned()));
+    mgr.shutdown();
+
+    // A list saved with an archived task (by an earlier version) isn't read back.
+    let other = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(other.path().join("store")).unwrap();
+    let name = format!("{}.json", task.id);
+    let mut file: Value =
+        serde_json::from_slice(&std::fs::read(tmp.path().join("store").join(&name)).unwrap()).unwrap();
+    assert_eq!(file["task"]["status"], json!("archived"));
+    file["task"]["commands"] = json!([{"name": "old", "description": "Old", "hint": null}]);
+    std::fs::write(other.path().join("store").join(&name), serde_json::to_vec(&file).unwrap()).unwrap();
+    let restored = manager(other.path(), Arc::new(FakeAgent::default()));
+    assert!(snapshot(&restored).commands.is_empty());
+    restored.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_conversation_that_cannot_be_read_is_never_saved_over() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("Keep this"),
+            provider: "claude".into(),
+            config: Vec::new(),
+            isolation: Isolation::Local,
+            base: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    mgr.shutdown();
+    // In a store of its own: a late save of the first manager can't touch it.
+    let name = format!("{}.json", task.id);
+    let mut file: Value =
+        serde_json::from_slice(&std::fs::read(tmp.path().join("store").join(&name)).unwrap()).unwrap();
+    file["entries"].as_array_mut().unwrap().push(json!({"type": "no-such-entry"}));
+    let damaged = serde_json::to_vec(&file).unwrap();
+    let other = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(other.path().join("store")).unwrap();
+    let path = other.path().join("store").join(&name);
+    std::fs::write(&path, &damaged).unwrap();
+
+    let restored = manager(other.path(), Arc::new(FakeAgent::default()));
+    // The task is listed from its own fields; its conversation shows empty.
+    assert_eq!(restored.subscribe_as("view", Arc::new(|_| {})).len(), 1);
+    assert!(restored.entries(&task.id, None).unwrap().is_empty());
+    restored.rename(&task.id, "Renamed").unwrap();
+    restored.shutdown();
+    assert_eq!(std::fs::read(&path).unwrap(), damaged);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1479,9 +1562,9 @@ async fn saving_a_large_task_does_not_hold_up_readers() {
     let path = task_file(tmp.path(), &task.id);
     for i in 0..24 {
         let text = format!("output {i}: \"quoted\"\n").repeat(40_000);
-        handle.state.lock().conversation.main.push(AgentEntry::Agent { text });
+        handle.state.lock().history.conversation.main.push(AgentEntry::Agent { text });
     }
-    let entries = handle.state.lock().conversation.main.entries.clone();
+    let entries = handle.state.lock().history.conversation.main.entries.clone();
     let started = std::time::Instant::now();
     let json = serde_json::to_vec(&entries).unwrap();
     let serialising = started.elapsed();
@@ -1574,7 +1657,7 @@ async fn concurrent_saves_keep_the_newest_state_of_each_task() {
         let task = idle_task(&mgr, name).await;
         let handle = mgr.task(&task.id).unwrap();
         // Long enough that a save takes a while between the copy and the write.
-        handle.state.lock().conversation.main.push(AgentEntry::Agent { text: "text ".repeat(60_000) });
+        handle.state.lock().history.conversation.main.push(AgentEntry::Agent { text: "text ".repeat(60_000) });
         tasks.push((name, handle, task_file(tmp.path(), &task.id)));
     }
     // "<name> <n>", n growing with every change made under the state lock.
@@ -2693,7 +2776,7 @@ async fn startup_warnings_survive_replay_and_restart_without_failing_the_task() 
     mgr.shutdown();
     let restored = manager(tmp.path(), agent);
     let handle = restored.task(&task.id).unwrap();
-    assert_eq!(handle.state.lock().conversation.main.entries.iter().filter(|entry| matches!(entry, AgentEntry::Error {message} if message == "Project MCP config is disabled until trusted.")).count(), 1);
+    assert_eq!(handle.state.lock().history.conversation.main.entries.iter().filter(|entry| matches!(entry, AgentEntry::Error {message} if message == "Project MCP config is disabled until trusted.")).count(), 1);
     restored.shutdown();
 }
 
@@ -2789,13 +2872,13 @@ async fn forks_rollbacks_and_steering() {
             "state": {"state": "idle", "stopReason": "end_turn"}}),
         );
     }
-    handle.state.lock().conversation.main.entries.insert(0, AgentEntry::Agent { text: "Welcome".into() });
+    handle.state.lock().history.conversation.main.entries.insert(0, AgentEntry::Agent { text: "Welcome".into() });
     let rewinds = agent.calls.lock().iter().filter(|c| c.starts_with("_openidea/rollback")).count();
     let first = mgr.rollback(&task.id, 0, false).await.unwrap().unwrap();
     assert_eq!(first.text, "again");
     assert!(mgr.entries(&task.id, None).unwrap().is_empty());
     assert!(mgr.task(&task.id).unwrap().state.lock().session_id.is_none());
-    assert!(handle.state.lock().conversation.saved_subagents().is_empty());
+    assert!(handle.state.lock().history.conversation.saved_subagents().is_empty());
     assert!(handle.state.lock().task.usage.is_none());
     assert_eq!(agent.calls.lock().iter().filter(|c| c.starts_with("_openidea/rollback")).count(), rewinds);
     mgr.shutdown();
@@ -4951,7 +5034,7 @@ async fn rolling_back_to_a_message_puts_back_the_files_as_it_was_sent() {
             Isolation::Worktree => None,
         };
         assert_eq!(read("later.txt").as_deref(), later, "{case}");
-        assert_eq!(mgr.task(&task.id).unwrap().state.lock().turns.len(), 1, "{case}");
+        assert_eq!(mgr.task(&task.id).unwrap().state.lock().history.turns.len(), 1, "{case}");
 
         // Without `files` they stay; the first message takes the task back to its start.
         one_turn(&mgr, &task.id, Some("retry"), || write("a.txt", "again\n")).await;
@@ -4959,7 +5042,7 @@ async fn rolling_back_to_a_message_puts_back_the_files_as_it_was_sent() {
         assert_eq!(read("a.txt").as_deref(), Some("again\n"), "{case}");
         mgr.rollback(&task.id, 0, true).await.unwrap();
         assert_eq!(read("a.txt").as_deref(), Some("base\n"), "{case}");
-        assert!(mgr.task(&task.id).unwrap().state.lock().turns.is_empty(), "{case}");
+        assert!(mgr.task(&task.id).unwrap().state.lock().history.turns.is_empty(), "{case}");
         let left = std::fs::read_dir(repo.dir.join("store").join(format!("{}.turn", task.id)));
         assert!(left.map_or(true, |mut d| d.next().is_none()), "{case}: no copies left");
         mgr.delete(&task.id, true).await.unwrap();
@@ -4980,7 +5063,7 @@ async fn a_message_sent_before_turns_were_recorded_cannot_take_the_files_back() 
     one_turn(&mgr, &task.id, Some("more"), || repo.write("a.txt", "base\nturn 1\nturn 2\n")).await;
     one_turn(&mgr, &task.id, Some("last"), || repo.write("a.txt", "base\nturn 1\nturn 2\nturn 3\n")).await;
     // As a task saved with its last turn's record only.
-    mgr.task(&task.id).unwrap().state.lock().turns[1] = None;
+    mgr.task(&task.id).unwrap().state.lock().history.turns[1] = None;
     assert!(mgr.rollback(&task.id, 1, true).await.is_err());
     assert_eq!(turn_starts(&mgr.entries(&task.id, None).unwrap()).len(), 3, "nothing changed");
     assert_eq!(repo.read("a.txt"), "base\nturn 1\nturn 2\nturn 3\n");
@@ -5008,7 +5091,7 @@ async fn rolling_back_to_first_message_without_turn_record_checks_before_changin
     {
         let handle = mgr.task(&task.id).unwrap();
         let mut s = handle.state.lock();
-        s.turns[0] = None;
+        s.history.turns[0] = None;
         s.saved = None;
     }
     assert!(mgr.rollback(&task.id, 0, true).await.is_err());

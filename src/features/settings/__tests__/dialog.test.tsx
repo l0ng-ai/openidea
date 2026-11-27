@@ -229,6 +229,32 @@ describe("Settings dialog", () => {
     expect(within(dialog).getByRole("button", { name: "Apply" })).toBeDisabled();
   });
 
+  it("keeps Ruff safe fixes on save separate from formatting", async () => {
+    useProject.setState({ project: { root: "/project" } as never });
+    const dialog = await openDialog("python.ruff");
+    const format = within(dialog).getByRole("checkbox", { name: "Format on save" });
+    const fix = within(dialog).getByRole("checkbox", { name: "Fix safe lint issues on save" });
+    expect(format).not.toBeChecked();
+    expect(fix).not.toBeChecked();
+    expect(within(dialog).getByText(/ruff check --fix-only/)).toBeInTheDocument();
+    fireEvent.click(fix);
+    expect(format).not.toBeChecked();
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+    expect(settingsSet).toHaveBeenCalledExactlyOnceWith("project", "languages.ruff.fixOnSave", "true");
+  });
+
+  it("offers Ruff safe fixes as a distinct before-commit modification", async () => {
+    const dialog = await openDialog("vcs.commit");
+    const fix = within(dialog).getByRole("checkbox", { name: "Fix Ruff safe lint issues" });
+    const reformat = within(dialog).getByRole("checkbox", { name: "Reformat code" });
+    expect(fix).not.toBeChecked();
+    expect(reformat).not.toBeChecked();
+    fireEvent.click(fix);
+    expect(reformat).not.toBeChecked();
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+    expect(settingsSet).toHaveBeenCalledWith("global", "vcs.commit.fixOnCommit", "true");
+  });
+
   it("stages manual editor and proportional CJK fallback names and applies them", async () => {
     const dialog = await openDialog("editor.font");
     fireEvent.change(within(dialog).getByRole("combobox", { name: "Font" }), { target: { value: "Maple Mono NF" } });

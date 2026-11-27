@@ -227,7 +227,13 @@ when = "serviceKind == 'spring-boot' && serviceRunning"
 
 To launch the selected configuration with the plugin's Java agent, bind the agent to an
 executor instead (`executor` on `[[contributes.javaAgents]]`): **Run … with** and
-**Debug … with** entries then appear beside Run and Debug, also in this menu.
+**Debug … with** entries then appear beside Run and Debug, also in this menu. For an
+entry of your own, the command runs `pluginExecutor.<plugin id>.run` (or `.debug`) with
+its argument as it came, which needs `ide.commands`:
+
+```rust
+host::execute_command("pluginExecutor.hotreload.run", arg.as_deref())?;
+```
 
 ## Status bar items
 

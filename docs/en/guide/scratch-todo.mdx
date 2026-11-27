@@ -35,6 +35,12 @@ They are listed under **Scratches** in the Project view, where you can open, ren
 
 Because a scratch file is outside every project, some language servers give it only syntax checks; completion and navigation may be limited. A banner at the top of the editor says so when the server reports it.
 
+### Scratch buffers
+
+Run **New Scratch Buffer** from **Find Action** (`⇧⌘A` / `Ctrl+Shift+A`). It has no default shortcut. The action cycles through five plain-text files, `buffer1.txt` through `buffer5.txt`, then returns to `buffer1.txt`. It creates a file only when that buffer is missing; an existing buffer opens again with its contents unchanged. There is no language chooser.
+
+Scratch buffers use the same `scratches` folder described above, are shared by all projects, and never create files in the project.
+
 ## TODO
 
 OpenIDEA collects comments that contain `TODO`, `FIXME`, `HACK` or `XXX` in the **TODO** tool window and highlights them in the editor, each pattern in its own colour.

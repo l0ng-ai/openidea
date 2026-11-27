@@ -250,6 +250,8 @@ pub struct CommitSettings {
     pub reformat: bool,
     pub optimize_imports: bool,
     pub cleanup: bool,
+    /// Apply Ruff's safe lint fixes before composing the commit, independently of formatting.
+    pub fix_on_commit: bool,
     pub blank_line_after_subject: bool,
     pub limit_subject: bool,
     pub subject_limit: u32,
@@ -291,6 +293,7 @@ impl Default for CommitSettings {
             reformat: false,
             optimize_imports: false,
             cleanup: false,
+            fix_on_commit: false,
             blank_line_after_subject: true,
             limit_subject: true,
             subject_limit: 72,
@@ -738,6 +741,16 @@ impl Default for AgentSecuritySettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ruff_safe_fixes_on_commit_default_off_and_round_trip() {
+        let old: CommitSettings = serde_json::from_str(r#"{"reformat":true}"#).unwrap();
+        assert!(old.reformat);
+        assert!(!old.fix_on_commit);
+        let on: CommitSettings = serde_json::from_str(r#"{"fixOnCommit":true}"#).unwrap();
+        assert!(on.fix_on_commit);
+        assert_eq!(serde_json::to_value(&on).unwrap()["fixOnCommit"], true);
+    }
 
     #[test]
     fn clone_submodules_defaults_on_and_can_be_disabled() {

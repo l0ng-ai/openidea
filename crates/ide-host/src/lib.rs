@@ -125,6 +125,7 @@ pub struct Host {
     pub(crate) rebase_editors: Arc<ops::vcs::RebaseEditors>,
     /// The IDE's Java build: resident javac processes shared by every window's launches.
     pub(crate) java_build: Arc<ide_build::jbuild::JavaBuildService>,
+    pub(crate) metrics_sampler: Mutex<ops::host_metrics::HostMetricsSampler>,
     /// SSH connections of Settings › SSH Configurations.
     pub ssh: Arc<ide_ssh::SshManager>,
     /// SFTP deployment, remote file editing and runs on run targets.
@@ -255,6 +256,7 @@ impl Host {
             heap_requests: Default::default(),
             rebase_editors: Default::default(),
             java_build: Default::default(),
+            metrics_sampler: Default::default(),
             languages,
             syntax,
             config_dir,

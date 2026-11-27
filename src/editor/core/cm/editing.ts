@@ -1123,6 +1123,85 @@ export const cycleCase: Command = (view) => {
   return true;
 };
 
+export const transpose: Command = (view) => {
+  const { state } = view;
+  if (state.readOnly) return false;
+  const { selection } = state;
+
+  if (selection.ranges.every((r) => r.empty)) {
+    const original = Array.from(state.doc.toString());
+    const chars = [...original];
+    const offsets = [0];
+    for (const char of chars) offsets.push(offsets[offsets.length - 1]! + char.length);
+    const indexAt = (offset: number) => {
+      let low = 0;
+      let high = offsets.length - 1;
+      while (low <= high) {
+        const mid = (low + high) >> 1;
+        const at = offsets[mid]!;
+        if (at === offset) return mid;
+        if (at < offset) low = mid + 1;
+        else high = mid - 1;
+      }
+      return -1;
+    };
+    let changed = false;
+    const ranges = selection.ranges.map((range) => {
+      if (range.head === 0) return range;
+      const at = indexAt(range.head);
+      if (at < 0) return range;
+      let lineEnd = at;
+      while (lineEnd < chars.length && chars[lineEnd] !== "\n") lineEnd++;
+      if (at < lineEnd) {
+        const after = chars[at]!;
+        [chars[at - 1], chars[at]] = [after, chars[at - 1]!];
+        changed = true;
+        return EditorSelection.cursor(range.head + after.length);
+      }
+      if (at < 2) return range;
+      [chars[at - 2], chars[at - 1]] = [chars[at - 1]!, chars[at - 2]!];
+      changed = true;
+      return range;
+    });
+    if (!changed) return false;
+    const changes: { from: number; to: number; insert: string }[] = [];
+    let at = 0;
+    while (at < chars.length) {
+      if (chars[at] === original[at]) {
+        at++;
+        continue;
+      }
+      const start = at;
+      while (at < chars.length && chars[at] !== original[at]) at++;
+      changes.push({ from: offsets[start]!, to: offsets[at]!, insert: chars.slice(start, at).join("") });
+    }
+    view.dispatch({
+      changes,
+      selection: EditorSelection.create(ranges, selection.mainIndex),
+      scrollIntoView: true,
+      userEvent: "input.transpose",
+    });
+    recordSelectionAfter(view);
+    return true;
+  }
+
+  if (selection.ranges.length < 2 || selection.ranges.some((r) => r.empty)) return false;
+  // changeByRange maps later ranges through earlier replacements when lengths differ.
+  const ordered = selection.ranges.map((range, index) => ({ range, index })).sort((a, b) => b.range.to - a.range.to);
+  const texts = ordered.map(({ range }) => state.sliceDoc(range.from, range.to));
+  const replacements = new Map(ordered.map(({ index }, i) => [index, texts[(i + 1) % texts.length]!]));
+  const tr = state.changeByRange((r) => {
+    const insert = replacements.get(selection.ranges.indexOf(r))!;
+    return {
+      changes: { from: r.from, to: r.to, insert },
+      range: EditorSelection.range(r.from, r.from + insert.length),
+    };
+  });
+  view.dispatch(state.update(tr, { scrollIntoView: true, userEvent: "input.transpose" }));
+  recordSelectionAfter(view);
+  return true;
+};
+
 /** ⌥⇧G: Add Carets to Ends of Selected Lines. */
 export const addCaretsToLineEnds: Command = (view) => {
   const { state } = view;

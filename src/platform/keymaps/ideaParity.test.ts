@@ -93,6 +93,8 @@ describe("IDEA keymap parity", () => {
     // EditorKillToWordStart / End: only the Emacs keymap binds them.
     ["code.killToWordStart", [], []],
     ["code.killToWordEnd", [], []],
+    // EditorTranspose has no shortcut.
+    ["code.transpose", [], []],
     // EditorSwapSelectionBoundaries has no shortcut.
     ["editor.swapSelectionBoundaries", [], []],
     // EditorToggleStickySelection has no shortcut.
