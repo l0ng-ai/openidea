@@ -3,7 +3,8 @@ name: Homebrew
 # Updates the cask in the project tap, l0ng-ai/homebrew-tap (scripts/homebrew-cask.ts), so
 # `brew install --cask l0ng-ai/tap/openidea` installs the new release. Release runs it after
 # publishing; run it by hand to write the cask of an existing tag again. Skipped for prereleases
-# and without the HOMEBREW_TAP_TOKEN secret (contents: write on l0ng-ai/homebrew-tap).
+# and without the HOMEBREW_TAP_DEPLOY_KEY secret (the private half of a write deploy key on
+# l0ng-ai/homebrew-tap).
 on:
   workflow_call:
     inputs:
@@ -27,17 +28,17 @@ jobs:
     env:
       TAG: ${{ inputs.tag }}
       TAP: l0ng-ai/homebrew-tap
-      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Check tag and token
+      - name: Check tag and deploy key
         id: check
         run: |
           if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::notice::$TAG is not a stable release: the cask stays as is"
             echo "skip=true" >> "$GITHUB_OUTPUT"
-          elif [ -z "$HOMEBREW_TAP_TOKEN" ]; then
-            echo "::notice::HOMEBREW_TAP_TOKEN unset: not updating the cask for $TAG"
+          elif [ -z "$HOMEBREW_TAP_DEPLOY_KEY" ]; then
+            echo "::notice::HOMEBREW_TAP_DEPLOY_KEY unset: not updating the cask for $TAG"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/checkout@v5
@@ -47,7 +48,7 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         with:
           repository: ${{ env.TAP }}
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
           path: tap
       - uses: actions/setup-node@v5
         if: steps.check.outputs.skip != 'true'
