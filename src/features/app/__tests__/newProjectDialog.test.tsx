@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GeneratorInfo } from "@/bindings";
-import { NewProjectOverlay, showNewProject } from "../NewProject";
+import { NewProjectDialog, NewProjectOverlay, showNewProject } from "../NewProject";
 
 const mocks = vi.hoisted(() => ({
   freeName: vi.fn(),
@@ -113,6 +113,18 @@ describe("File › New Project… name and location", () => {
     fireEvent.click(createButton());
     await waitFor(() => expect(mocks.open).toHaveBeenCalled());
     expect(localStorage.getItem("openidea.newProject.location")).toBe("/elsewhere");
+  });
+
+  it("in its own window, hands the created project to its project window instead of opening it", async () => {
+    const created = vi.fn(() => Promise.resolve());
+    render(<NewProjectDialog standalone onClose={() => {}} onCreated={created} />);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(nameInput()).toHaveValue("untitled2"));
+    await waitFor(() => expect(createButton()).toBeEnabled());
+    fireEvent.click(createButton());
+    await waitFor(() => expect(created).toHaveBeenCalledWith("/work/projects/untitled2"));
+    expect(mocks.open).not.toHaveBeenCalled();
+    expect(localStorage.getItem("openidea.newProject.location")).toBe("/work/projects");
   });
 });
 

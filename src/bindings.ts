@@ -2395,10 +2395,20 @@ export const commands = {
 	/**  Opens an empty (welcome) window; returns its label. */
 	windowNew: () => typedError<string, IdeError>(__TAURI_INVOKE("window_new")),
 	/**
+	 *  Opens this window's Get from VCS window (or focuses it), filling in `url` when given.
+	 *  `background` (`#rrggbb`) paints a new window until its page has loaded.
+	 */
+	windowOpenClone: (url: string | null, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_clone", { url, background })),
+	/**
 	 *  Opens a window listing the files that differ between two revisions of this window's project.
 	 *  `background` (`#rrggbb`) paints it until its page has loaded.
 	 */
 	windowOpenComparison: (comparison: ComparisonLaunch, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_comparison", { comparison, background })),
+	/**
+	 *  Opens this window's Remote Development window (or focuses it). `background` (`#rrggbb`)
+	 *  paints a new window until its page has loaded.
+	 */
+	windowOpenConnect: (background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_connect", { background })),
 	/**
 	 *  Opens this window's Sync with Deployed window comparing `paths` with `server` (or hands them
 	 *  to the open one). `background` (`#rrggbb`) paints a new window until its page has loaded.
@@ -2427,6 +2437,11 @@ export const commands = {
 	 *  itself, in LightEdit.
 	 */
 	windowOpenFiles: (files: string[]) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("window_open_files", { files })),
+	/**
+	 *  Opens this window's New Project window (or focuses it). `background` (`#rrggbb`) paints a new
+	 *  window until its page has loaded.
+	 */
+	windowOpenNewProject: (background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_new_project", { background })),
 	/**
 	 *  Opens `path` in a new window (`new_window`) or tells the caller to open it
 	 *  itself (`current`). A project already open in some window is focused instead.
@@ -2491,6 +2506,8 @@ export const commands = {
 	deployment: DeploymentLaunch | null,
 	/**  Editor windows: the file to show (Open in New Window → lightweight aux editor). */
 	editor: EditorLaunch_Serialize | null,
+	/**  Get from VCS windows: the repository URL to fill in. */
+	cloneUrl: string | null,
 } | null>("window_take_launch"),
 	/**
 	 *  Local bootstrap snapshot for a `settings-<parent>` window, avoiding a sequential
@@ -9496,6 +9513,8 @@ export type Launch_Deserialize = {
 	deployment?: DeploymentLaunch | null,
 	/**  Editor windows: the file to show (Open in New Window → lightweight aux editor). */
 	editor?: EditorLaunch_Deserialize | null,
+	/**  Get from VCS windows: the repository URL to fill in. */
+	cloneUrl?: string | null,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
@@ -9527,6 +9546,8 @@ export type Launch_Serialize = {
 	deployment: DeploymentLaunch | null,
 	/**  Editor windows: the file to show (Open in New Window → lightweight aux editor). */
 	editor: EditorLaunch_Serialize | null,
+	/**  Get from VCS windows: the repository URL to fill in. */
+	cloneUrl: string | null,
 };
 
 export type LegacyPasswordAction = "check" | "retry" | "removePlaintext";

@@ -8839,5 +8839,7 @@
   "SQL INSERT": "SQL INSERT",
   "SQL UPDATE": "SQL UPDATE",
   "SQL DELETE": "SQL DELETE",
-  "Column comment": "Sütun yorumu"
+  "Column comment": "Sütun yorumu",
+  "Get from Version Control": "Sürüm Kontrolünden Al",
+  "Cannot connect to the remote host": "Uzak sunucuya bağlanılamıyor"
 }
