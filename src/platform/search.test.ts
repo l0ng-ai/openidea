@@ -83,17 +83,22 @@ describe("shared search pieces", () => {
   });
 
   it("keeps Gradle modules after a sync", () => {
-    // Root shapes ide-host `with_gradle_roots` writes for a synced multi-module build.
+    // Root shapes ide-host `with_gradle_roots` writes for a synced multi-module build,
+    // including included builds outside the project root.
     const synced = projectModules(
       [
         { path: "src/main/java", kind: "source", detectedFrom: "Gradle" },
         { path: "lib/src/main/java", kind: "source", detectedFrom: "lib/Gradle" },
         { path: "lib/build", kind: "excluded", detectedFrom: "lib/Gradle" },
+        { path: "ws/svc/src/main/java", kind: "source", detectedFrom: "/ws/svc/Gradle" },
+        { path: "C:/ws/win-svc/src/main/java", kind: "source", detectedFrom: "C:/ws/win-svc/Gradle" },
       ],
       "app",
     );
     expect(synced).toEqual([
       { path: "", name: "app" },
+      { path: "/ws/svc", name: "svc" },
+      { path: "C:/ws/win-svc", name: "win-svc" },
       { path: "lib", name: "lib" },
     ]);
   });

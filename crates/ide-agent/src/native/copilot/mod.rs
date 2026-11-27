@@ -114,7 +114,7 @@ pub(crate) fn is_missing_binary_error(err: &std::io::Error) -> bool {
 pub(crate) async fn discover(spec: ProviderSpec, cwd: PathBuf) -> Result<Discovered, DiscoverError> {
     tokio::time::timeout(DISCOVER_TIMEOUT, async move {
         let prefer_stored = crate::provider::prefer_stored_copilot_auth();
-        let has_ambient = crate::provider::has_unconfigured_copilot_ambient_token(&spec.env);
+        let has_ambient = crate::provider::has_unconfigured_copilot_ambient_token(&spec.env, &cwd);
         match discover_once(spec.clone(), cwd.clone(), prefer_stored).await {
             Err(err)
                 if !prefer_stored
@@ -181,6 +181,78 @@ async fn discover_once(spec: ProviderSpec, cwd: PathBuf, strip_ambient: bool) ->
         allow_acp_fallback: e.code != AUTH_REQUIRED && !crate::acp::auth_required(e.code, &e.message),
         message: e.message,
     });
+    peer.kill();
+    res
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CliAuthStatus {
+    pub authenticated: bool,
+    pub login: Option<String>,
+    pub auth_type: Option<String>,
+    pub status_message: Option<String>,
+}
+
+/// Queries `auth.getStatus` on Copilot's headless server (ignoring any IDE-selected `gh`
+/// account override so the UI can show what the "Default" account resolves to).
+pub(crate) async fn probe_auth_status(mut spec: ProviderSpec, cwd: PathBuf) -> Option<CliAuthStatus> {
+    spec.env.retain(|(name, _)| name != crate::provider::COPILOT_GITHUB_ACCOUNT_ENV);
+    tokio::time::timeout(Duration::from_secs(8), async move {
+        let prefer_stored = crate::provider::prefer_stored_copilot_auth();
+        let has_ambient = crate::provider::has_unconfigured_copilot_ambient_token(&spec.env, &cwd);
+        let first = probe_auth_once(spec.clone(), cwd.clone(), prefer_stored).await;
+        if !prefer_stored
+            && has_ambient
+            && first.as_ref().is_none_or(|s| !s.authenticated)
+            && let Some(retry) = probe_auth_once(spec, cwd, true).await
+        {
+            if retry.authenticated {
+                crate::provider::mark_prefer_stored_copilot_auth();
+            }
+            return Some(retry);
+        }
+        first
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+async fn probe_auth_once(spec: ProviderSpec, cwd: PathBuf, strip_ambient: bool) -> Option<CliAuthStatus> {
+    let launch = tokio::task::spawn_blocking({
+        let cwd = cwd.clone();
+        move || spec.resolve_for_launch_with_copilot_env(&cwd, strip_ambient)
+    })
+    .await
+    .ok()?
+    .ok()?;
+    let cwd = dunce::canonicalize(&cwd).unwrap_or(cwd);
+    let args = headless_args(&launch.args);
+    let peer = Peer::spawn_framed(
+        &launch.command,
+        &args,
+        &cwd,
+        &launch.env,
+        Arc::new(ide_jsonrpc::NoopHandler),
+        Box::new(|_| {}),
+        Framing::ContentLength,
+    )
+    .ok()?;
+    let res = async {
+        handshake(&peer).await.ok()?;
+        let auth: Value = peer.request("auth.getStatus", json!({}), None).await.ok()?;
+        let authenticated = auth.get("isAuthenticated").and_then(Value::as_bool).unwrap_or(false);
+        let str_field = |key: &str| {
+            auth.get(key).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned)
+        };
+        Some(CliAuthStatus {
+            authenticated,
+            login: str_field("login"),
+            auth_type: str_field("authType"),
+            status_message: str_field("statusMessage"),
+        })
+    }
+    .await;
     peer.kill();
     res
 }

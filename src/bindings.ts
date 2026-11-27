@@ -44,6 +44,8 @@ export const commands = {
 	agentCommands: (provider: string, task: string | null) => typedError<AgentCommand[], IdeError>(__TAURI_INVOKE("agent_commands", { provider, task })),
 	/**  Reads the running session's context categories without sending a prompt. */
 	agentContextUsage: (task: string) => typedError<AgentContextUsage, IdeError>(__TAURI_INVOKE("agent_context_usage", { task })),
+	/**  Default Copilot CLI sign-in status alongside authenticated `github.com` accounts in `gh`. */
+	agentCopilotAuthStatus: () => typedError<CopilotAuthStatus, IdeError>(__TAURI_INVOKE("agent_copilot_auth_status")),
 	agentCreate: (request: NewAgentTask) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_create", { request })),
 	/**  Imports a JetBrains `acp.json` file's `agent_servers` entries as custom agents. */
 	agentCustomImport: (text: string) => typedError<AcpImportOutcome[], IdeError>(__TAURI_INVOKE("agent_custom_import", { text })),
@@ -69,6 +71,11 @@ export const commands = {
 	 *  as the agent's own fork, under an id the host chooses. `cwd` must be where it was recorded.
 	 */
 	agentForkSession: (provider: string, sessionId: string, cwd: string) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_fork_session", { provider, sessionId, cwd })),
+	/**
+	 *  Starts `gh auth login --hostname github.com` in an IDE-managed PTY (with ambient token
+	 *  variables cleared) and streams its output and exit code.
+	 */
+	agentGhLoginSpawn: (cols: number, rows: number, onEvent: Channel<AgentLoginEvent>) => typedError<TerminalInfo, IdeError>(__TAURI_INVOKE("agent_gh_login_spawn", { cols, rows, onEvent })),
 	/**  The task's uncommitted changes and the commits made since it started. */
 	agentGroupedChanges: (task: string) => typedError<AgentChanges, IdeError>(__TAURI_INVOKE("agent_grouped_changes", { task })),
 	/**  Hermes Agent profiles on this machine (`default` first); empty without Hermes. */
@@ -788,6 +795,13 @@ export const commands = {
 	ghPrReview: (repo: string | null, number: number, event: ReviewEvent, body: string) => typedError<null, IdeError>(__TAURI_INVOKE("gh_pr_review", { repo, number, event, body })),
 	ghPrReviewComments: (repo: string | null, number: number) => typedError<PrReviewComment[], IdeError>(__TAURI_INVOKE("gh_pr_review_comments", { repo, number })),
 	ghPrView: (repo: string | null, number: number) => typedError<PullRequestDetails, IdeError>(__TAURI_INVOKE("gh_pr_view", { repo, number })),
+	/**  Reads the GitHub CLI (`gh`) keyring accounts and which account applies to `window`'s project. */
+	ghProjectAccountStatus: () => typedError<GhProjectAccountStatus, IdeError>(__TAURI_INVOKE("gh_project_account_status")),
+	/**
+	 *  Sets `vcs.github.account` for `window`'s project (or globally when no project is open),
+	 *  updates the project's `GH_TOKEN` environment immediately, and returns the updated status.
+	 */
+	ghSetProjectAccount: (account: string) => typedError<GhProjectAccountStatus, IdeError>(__TAURI_INVOKE("gh_set_project_account", { account })),
 	/**  Forgets the credential of `key` (a `git_credentials` entry). */
 	gitCredentialForget: (key: string) => __TAURI_INVOKE<void>("git_credential_forget", { key }),
 	/**  Settings › Git › Saved credentials: `scheme://host` of every saved entry. */
@@ -4994,6 +5008,16 @@ export type ContributionInfo = {
 	label: string,
 };
 
+/**  GitHub Copilot's default sign-in status alongside the accounts available through `gh`. */
+export type CopilotAuthStatus = {
+	authenticated: boolean,
+	login: string | null,
+	authType: string | null,
+	statusMessage: string | null,
+	ghInstalled: boolean,
+	ghAccounts: GhAuthAccount[],
+};
+
 export type CoveragePrepared = CoveragePrepared_Serialize | CoveragePrepared_Deserialize;
 
 export type CoveragePrepared_Deserialize = ({ status: "ready"; runner: string; 
@@ -7683,6 +7707,12 @@ export type GhApiRequest = {
 	paginate: boolean,
 };
 
+/**  An authenticated `github.com` account stored in GitHub CLI (`gh`). */
+export type GhAuthAccount = {
+	login: string,
+	active: boolean,
+};
+
 /**  Whether pull requests can be shown for the project, and why not. */
 export type GhAvailability = { kind: "ready"; repo: GhRepo; 
 /**  The signed-in user. */
@@ -7693,6 +7723,18 @@ login: string | null } |
 { kind: "notLoggedIn"; message: string } | 
 /**  The project has no GitHub remote (or is not a git repository). */
 { kind: "notGitHub"; message: string } | { kind: "error"; message: string };
+
+/**  GitHub CLI accounts available on this machine and which one applies to the project. */
+export type GhProjectAccountStatus = {
+	ghInstalled: boolean,
+	accounts: GhAuthAccount[],
+	/**  Value of `vcs.github.account` (`""` = Automatic). */
+	configuredAccount: string,
+	/**  Account login currently used (`configured_account` if signed in, else `gh`'s active account). */
+	effectiveAccount: string | null,
+	/**  Non-active `gh` account with access to this project's GitHub remote when `configured_account` is empty. */
+	suggestedAccount: string | null,
+};
 
 export type GhRepo = {
 	/**  `owner/name`. */
@@ -7822,6 +7864,15 @@ export type GitSigningConfig = {
 export type GitSigningEdit = {
 	enabled: boolean | null,
 	key: string | null,
+};
+
+/**  Settings › Version Control › GitHub (`vcs.github`). */
+export type GithubSettings = {
+	/**
+	 *  GitHub CLI (`gh`) account login on `github.com` explicitly chosen for this project.
+	 *  Empty means automatic (`gh`'s own active account, with no `GH_TOKEN` injected).
+	 */
+	account?: string,
 };
 
 export type GoBuildTags = {
@@ -14563,6 +14614,8 @@ export type VcsSettings = {
 	issueNavigation?: IssueLink[],
 	/**  Directory Mappings: repository roots added to or excluded from the detected ones. */
 	mappings?: VcsMappings,
+	/**  Settings › Version Control › GitHub: per-project GitHub CLI account selection. */
+	github?: GithubSettings,
 };
 
 /**  The tool that creates a new Python environment in "Add Python Interpreter". */

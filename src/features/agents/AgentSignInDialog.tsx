@@ -1,6 +1,7 @@
 /**
- * Interactive sign-in dialog for coding agents (`copilot login`, `codex login`, `claude`, …),
- * backed by an IDE-managed PTY (`agent_login_spawn`) and a lazily loaded embedded terminal widget.
+ * Interactive sign-in dialog for coding agents (`copilot login`, `codex login`, `claude`, …)
+ * and GitHub CLI (`gh auth login`), backed by an IDE-managed PTY (`agent_login_spawn` /
+ * `agent_gh_login_spawn`) and a lazily loaded embedded terminal widget.
  */
 import { useEffect, useRef, useState } from "react";
 import type { AgentLoginEvent, TerminalId } from "@/bindings";
@@ -11,10 +12,11 @@ import { embeddedTerminal, type EmbeddedTerminal } from "@/workbench/contributio
 import styles from "./AgentSignInDialog.module.css";
 import { tauriCommands } from "./registry";
 
-export type SignInTarget = { kind: "agent"; id: string; name: string };
+export type SignInTarget = { kind: "agent"; id: string; name: string } | { kind: "gh" };
 
 export interface SignInSpawner {
   loginSpawn?(id: string, cols: number, rows: number, onEvent: (e: AgentLoginEvent) => void): Promise<TerminalId>;
+  ghLoginSpawn?(cols: number, rows: number, onEvent: (e: AgentLoginEvent) => void): Promise<TerminalId>;
 }
 
 export function AgentSignInDialog({
@@ -40,7 +42,8 @@ export function AgentSignInDialog({
   const [exitCode, setExitCode] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const agentId = target.id;
+  const targetKind = target.kind;
+  const agentId = target.kind === "agent" ? target.id : "";
 
   useEffect(() => {
     const el = hostRef.current;
@@ -108,12 +111,15 @@ export function AgentSignInDialog({
 
       try {
         const custom = callbacksRef.current.spawner;
-        const ptyId = await (custom?.loginSpawn ?? tauriCommands.loginSpawn!)(
-          agentId,
-          pendingSize.cols,
-          pendingSize.rows,
-          onEvent,
-        );
+        const ptyId =
+          targetKind === "gh"
+            ? await (custom?.ghLoginSpawn ?? tauriCommands.ghLoginSpawn!)(pendingSize.cols, pendingSize.rows, onEvent)
+            : await (custom?.loginSpawn ?? tauriCommands.loginSpawn!)(
+                agentId,
+                pendingSize.cols,
+                pendingSize.rows,
+                onEvent,
+              );
         if (disposed) {
           void commands.termKill(ptyId).catch(() => {});
           return;
@@ -131,10 +137,10 @@ export function AgentSignInDialog({
       killPty();
       term?.dispose();
     };
-  }, [agentId, attempt]);
+  }, [agentId, attempt, targetKind]);
 
   const running = exitCode === null && !error;
-  const title = tx`Sign In to ${target.name}`;
+  const title = target.kind === "gh" ? tx("Sign In to GitHub CLI") : tx`Sign In to ${target.name}`;
 
   const finishAndClose = () => {
     const id = ptyIdRef.current;

@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useSettingsPages } from "@/workbench/contributions";
+import { useGhProjectAccount } from "./data/account";
 import { activateSettingsPages } from "./settingsPages";
 import { GithubSettingsPage } from "./diff/GithubSettingsPage";
 import { setReviewDiffSettings, useReviewDiffSettings } from "./diff/settings";
@@ -10,6 +11,11 @@ const KEY = "openidea.github.reviewDiff.v1";
 beforeEach(() => {
   localStorage.removeItem(KEY);
   window.dispatchEvent(new StorageEvent("storage", { key: KEY }));
+  useGhProjectAccount.setState({ status: null, loading: false, saving: false, revision: 0 });
+});
+
+afterEach(() => {
+  useGhProjectAccount.setState({ status: null, loading: false, saving: false, revision: 0 });
 });
 
 describe("GitHub settings pages", () => {
@@ -48,5 +54,35 @@ describe("GitHub settings pages", () => {
     localStorage.setItem(KEY, "invalid JSON");
     window.dispatchEvent(new StorageEvent("storage", { key: KEY }));
     expect(useReviewDiffSettings.getState().autoMarkViewed).toBe(false);
+  });
+
+  it("suggests a matching non-active GitHub account and shows the GH_TOKEN scope note once chosen", () => {
+    useGhProjectAccount.setState({
+      status: {
+        ghInstalled: true,
+        accounts: [
+          { login: "alice", active: true },
+          { login: "alice-work", active: false },
+        ],
+        configuredAccount: "",
+        effectiveAccount: "alice",
+        suggestedAccount: "alice-work",
+      },
+    });
+    render(<GithubSettingsPage />);
+    const select = screen.getByRole("button", { name: "GitHub account" });
+    expect(select).toHaveTextContent("Automatic (alice)");
+    expect(
+      screen.getByText("Uses GitHub CLI's active account without setting GH_TOKEN in the project environment."),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Use alice-work for this project" }));
+    expect(screen.getByRole("button", { name: "GitHub account" })).toHaveTextContent("alice-work");
+    expect(useGhProjectAccount.getState().status?.configuredAccount).toBe("alice-work");
+    expect(
+      screen.getByText(
+        "Passes this account's GH_TOKEN to processes started in this project (terminals, agents, Git, and run configurations).",
+      ),
+    ).toBeInTheDocument();
   });
 });
