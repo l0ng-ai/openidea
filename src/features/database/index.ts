@@ -71,7 +71,11 @@ function consoleStartSchema(arg: unknown, id: string): string | undefined {
 
 function useDatabaseHeaderMenu(): MenuItem[] {
   const separate = useDatabase((s) => s.separateProceduresAndFunctions);
-  return [{ kind: "action", action: "db.separateProceduresAndFunctions", checked: separate }];
+  const comments = useDatabase((s) => s.showTableComments);
+  return [
+    { kind: "action", action: "db.separateProceduresAndFunctions", checked: separate },
+    { kind: "action", action: "db.showTableComments", checked: comments },
+  ];
 }
 
 const useDialogOpen = () => useDatabase((s) => !!s.dialog);

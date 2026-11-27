@@ -224,6 +224,7 @@ interface DatabaseState {
   /** Console path → its active schema (unqualified names resolve there; see `consoleSchema`). */
   consoleSchemas: Record<string, string>;
   separateProceduresAndFunctions: boolean;
+  showTableComments: boolean;
   completion: Record<string, DbCompletion>;
   results: ResultTab[];
   /** Results shown in the editor under their statements (In-Editor Results), oldest first. */
@@ -275,14 +276,20 @@ function readConsoleSchemas(): Record<string, string> {
   }
 }
 
-function readSeparateProceduresAndFunctions(): boolean {
+function readViewOptions(): Pick<DatabaseState, "separateProceduresAndFunctions" | "showTableComments"> {
   try {
     const raw = localStorage.getItem(VIEW_OPTIONS_KEY);
-    return raw ? JSON.parse(raw)?.separateProceduresAndFunctions === true : false;
+    const value = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    return {
+      separateProceduresAndFunctions: value.separateProceduresAndFunctions === true,
+      showTableComments: value.showTableComments !== false,
+    };
   } catch {
-    return false;
+    return { separateProceduresAndFunctions: false, showTableComments: true };
   }
 }
+
+const initialViewOptions = readViewOptions();
 
 export const useDatabase = create<DatabaseState>(() => ({
   sources: [],
@@ -297,7 +304,7 @@ export const useDatabase = create<DatabaseState>(() => ({
   objects: {},
   consoles: readBindings(),
   consoleSchemas: readConsoleSchemas(),
-  separateProceduresAndFunctions: readSeparateProceduresAndFunctions(),
+  ...initialViewOptions,
   completion: {},
   results: [],
   inline: [],
@@ -338,8 +345,19 @@ useDatabase.subscribe((state, previous) => {
 export function toggleSeparateProceduresAndFunctions() {
   const separateProceduresAndFunctions = !useDatabase.getState().separateProceduresAndFunctions;
   useDatabase.setState({ separateProceduresAndFunctions });
+  saveViewOptions();
+}
+
+export function toggleShowTableComments() {
+  const showTableComments = !useDatabase.getState().showTableComments;
+  useDatabase.setState({ showTableComments });
+  saveViewOptions();
+}
+
+function saveViewOptions() {
+  const { separateProceduresAndFunctions, showTableComments } = useDatabase.getState();
   try {
-    localStorage.setItem(VIEW_OPTIONS_KEY, JSON.stringify({ separateProceduresAndFunctions }));
+    localStorage.setItem(VIEW_OPTIONS_KEY, JSON.stringify({ separateProceduresAndFunctions, showTableComments }));
   } catch {
     // Per-viewer convenience only.
   }

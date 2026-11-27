@@ -5791,6 +5791,8 @@ export type DbTableGrant = {
 export type DbTableInfo = {
 	name: string,
 	kind: DbTableKind,
+	/**  The table's or view's comment; `None` when it has none, or the engine keeps no comments. */
+	comment?: string | null,
 };
 
 export type DbTableKind = "table" | "view" | "materializedView";

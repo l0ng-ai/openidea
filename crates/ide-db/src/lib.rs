@@ -146,6 +146,10 @@ pub struct SchemaObject {
 pub struct TableInfo {
     pub name: String,
     pub kind: DbTableKind,
+    /// The table's or view's comment; `None` when it has none, or the engine keeps no comments.
+    #[serde(default)]
+    #[specta(optional)]
+    pub comment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -1107,7 +1111,11 @@ impl DbManager {
             .filter_map(|r| {
                 let mut it = r.into_iter();
                 let name = it.next().flatten()?;
-                Some(TableInfo { name, kind: DbTableKind::from_catalog(it.next().flatten().as_deref()) })
+                Some(TableInfo {
+                    name,
+                    kind: DbTableKind::from_catalog(it.next().flatten().as_deref()),
+                    comment: it.next().flatten().filter(|comment| !comment.is_empty()),
+                })
             })
             .collect())
     }
