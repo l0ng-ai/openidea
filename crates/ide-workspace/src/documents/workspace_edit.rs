@@ -850,7 +850,7 @@ impl Documents {
                 let loaded = if state.encoding_chosen {
                     Self::load_as(path, &state.encoding, native_to_ascii)?
                 } else {
-                    Self::load_with_defaults(path, &defaults, state.editorconfig.as_ref())?
+                    Self::load_with_defaults(path, &defaults, state.editorconfig.as_ref())?.0
                 };
                 state.native_to_ascii = native_to_ascii;
                 self.replace_locked(id, state, &loaded.text)?;
