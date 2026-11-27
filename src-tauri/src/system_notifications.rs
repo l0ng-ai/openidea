@@ -3,7 +3,8 @@
 //! Driven by `show_system_notification` from the notification store. Honour
 //! global `[notifications].systemNotifications`; suppressed while any window is
 //! active. Click focuses the window that raised the toast — balloon actions stay
-//! in the IDE.
+//! in the IDE. On macOS a click only activates the app: tracking clicks there costs
+//! a waiting thread per toast.
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
