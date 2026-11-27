@@ -45,6 +45,7 @@ import { activate as services } from "./services";
 import { activate as github } from "./github";
 import { activate as httpClient } from "./http-client";
 import { activate as cucumber } from "./cucumber";
+import { activate as pytest } from "./pytest";
 import { activate as rails } from "./rails";
 import { activate as thymeleaf } from "./thymeleaf";
 import { activate as database } from "./database";
@@ -102,6 +103,7 @@ const features: Array<[string, Activate]> = [
   ["github", github],
   ["http-client", httpClient],
   ["cucumber", cucumber],
+  ["pytest", pytest],
   ["rails", rails],
   ["thymeleaf", thymeleaf],
   ["database", database],

@@ -12,7 +12,8 @@ const MAX_DIRS: usize = 4000;
 
 const JVM_LANGS: &[&str] = &["java", "kotlin", "groovy", "scala"];
 const GRADLE_FILES: &[&str] = &["build.gradle.kts", "build.gradle"];
-const PYTHON_FILES: &[&str] = &["pyproject.toml", "setup.py", "setup.cfg", "Pipfile", "requirements.txt"];
+/// Files that make a folder a Python project.
+pub const PYTHON_FILES: &[&str] = &["pyproject.toml", "setup.py", "setup.cfg", "Pipfile", "requirements.txt"];
 /// Never walked into while looking for modules (outputs, dependencies, VCS).
 const SKIP_DIRS: &[&str] =
     &["node_modules", "target", "build", "dist", "out", "venv", "__pycache__", "vendor", "bower_components"];

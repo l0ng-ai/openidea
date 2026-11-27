@@ -2,6 +2,7 @@ import { clearContext, setContext } from "@/platform/context";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
+import { useProjectRoots } from "@/platform/projectRoots";
 import { useRemote } from "@/platform/remote";
 import { resolveMenuItems, type MenuItem } from "@/ui";
 import { registerMenuGroup } from "@/workbench/contributions";
@@ -89,6 +90,7 @@ afterEach(() => {
   disposers.forEach((d) => d());
   useProject.setState({ project: null, settings: null });
   useProjectTree.setState({ root: null });
+  useProjectRoots.setState({ root: null, detected: [] });
   useRemote.setState({ session: null });
 });
 
@@ -205,6 +207,37 @@ describe("project view context menu", () => {
       "Link: /p/src,/p/src/a.ts true,false",
     ]);
     expect(useLspPopup.getState().popup).toMatchObject({ layout: "copyPath", anchor: { x: 10, y: 20 } });
+  });
+
+  it("offers the fully qualified name of Java classes and packages in Copy Path/Reference…", () => {
+    useProjectRoots.setState({
+      root: ROOT,
+      detected: [
+        { path: "src/main/java", kind: "source", detectedFrom: "pom.xml" },
+        { path: "src/test/java", kind: "test", detectedFrom: "pom.xml" },
+        { path: "web/src", kind: "source", detectedFrom: "web/package.json" },
+      ],
+    });
+    const reference = (nodes: ProjectNode[]) =>
+      chooser(contextMenuItems(nodes))?.filter((r) => r.startsWith("Reference:"));
+    expect(
+      reference([node("/p/src/main/java/com/example/App.java"), node("/p/src/main/java/com/example", true)]),
+    ).toEqual(["Reference: com.example.App\ncom.example"]);
+    expect(reference([node("/p/src/main/java/Main.java")])).toEqual(["Reference: Main"]);
+    expect(reference([node("/p/src/test/java/com/example/AppTest.java")])).toEqual(["Reference: com.example.AppTest"]);
+    // Not a Java class or package: the source root itself, other files, non-JVM roots, a mixed selection.
+    for (const nodes of [
+      [node("/p/src/main/java", true)],
+      [node("/p/src/main/java/com/example/app.properties")],
+      [node("/p/src/main/java/com/example/package-info.java")],
+      [node("/p/src/main/java/module-info.java")],
+      [node("/p/src/main/java/com/my-app", true)],
+      [node("/p/src/main/java/com/my-app/App.java")],
+      [node("/p/web/src/App.java")],
+      [node("/p/web/src/lib", true)],
+      [node("/p/src/main/java/com/example/App.java"), node("/p/README.md")],
+    ])
+      expect(reference(nodes)).toEqual([]);
   });
 
   it("offers no content root paths for library files in Copy Path/Reference…", () => {

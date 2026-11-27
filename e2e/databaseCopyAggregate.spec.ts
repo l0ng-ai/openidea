@@ -55,7 +55,7 @@ test("Copy Aggregation Result copies the selection's Sum, or the aggregate picke
   await amounts.first().click();
   await amounts.last().click({ modifiers: ["Shift"] });
 
-  await page.keyboard.press("ControlOrMeta+Shift+C");
+  await page.keyboard.press("Meta+Shift+C");
   await expect.poll(() => ipcCalls(page, "clipboard_write_text")).toEqual([{ text: "12.5" }]);
 
   await amounts.last().click({ button: "right", modifiers: ["Shift"] });
