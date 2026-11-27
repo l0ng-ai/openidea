@@ -190,6 +190,29 @@ describe("change markers in folds", () => {
   });
 });
 
+describe("change marker settings", () => {
+  it("hides the gutter bars and the scrollbar marks as Editor › General › Gutter says", async () => {
+    const { changeMarkerDisplay, gutterLaneMarkers, scrollbarMarks } = await import("@/editor/api");
+    const { changeMarkers } = await import("../gutter");
+    const shown = (display?: { gutter: boolean; scrollbar: boolean }) => {
+      const state = EditorState.create({
+        doc: "a\nB\nc\n",
+        extensions: [
+          changeMarkers({ path: "/p/f.txt" } as Parameters<typeof changeMarkers>[0]),
+          display ? changeMarkerDisplay.of(display) : [],
+        ],
+      }).update({ effects: setHunksEffect.of([h("modified", 1, 1, 1, 1, "b\n")]) }).state;
+      return {
+        gutter: state.facet(gutterLaneMarkers).reduce((n, set) => n + set.size, 0),
+        scrollbar: state.facet(scrollbarMarks).length,
+      };
+    };
+    expect(shown()).toEqual({ gutter: 1, scrollbar: 1 });
+    expect(shown({ gutter: true, scrollbar: false })).toEqual({ gutter: 1, scrollbar: 0 });
+    expect(shown({ gutter: false, scrollbar: false })).toEqual({ gutter: 0, scrollbar: 0 });
+  });
+});
+
 describe("hunkKeys", () => {
   it("identifies blocks by content, not position", () => {
     const a = hunkKeys("x\nB\nc\n", [h("modified", 1, 1, 1, 1, "b\n")]);
