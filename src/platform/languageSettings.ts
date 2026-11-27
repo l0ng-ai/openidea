@@ -40,7 +40,6 @@ const DEFAULT_FORMATTER: ExternalFormatterValid = {
   configurationDirectory: "",
   languages: [
     "markdown",
-    "mdx",
     "yaml",
     "css",
     "scss",

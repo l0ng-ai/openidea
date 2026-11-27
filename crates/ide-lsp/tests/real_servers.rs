@@ -1026,6 +1026,10 @@ async fn mdx_language_server_end_to_end() {
         .await;
     }
 
+    // Markdown headings come from the server too (marksman skips `.mdx` by default).
+    let symbols = mgr.document_symbols(doc).await.unwrap().unwrap();
+    assert!(symbols.iter().any(|s| s.name.contains("Hello")), "{symbols:?}");
+
     // `label={count}`: number is not assignable to string.
     retry("prop type error", Duration::from_secs(60), || {
         let found = events.lock().iter().any(|e| {
