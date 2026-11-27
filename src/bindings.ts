@@ -9294,6 +9294,17 @@ export type LanguageCodeStyle_Deserialize = {
 	quotes?: string | null,
 	/**  JavaScript / TypeScript › Spaces, by tsserver format option (`insertSpaceAfterCommaDelimiter`). */
 	spaces?: { [key in string]: boolean },
+	/**
+	 *  JavaScript / TypeScript › Imports › Import paths:
+	 *  `shortest` | `relative` | `non-relative` | `project-relative`.
+	 */
+	importModuleSpecifier?: string | null,
+	/**  JavaScript / TypeScript › Imports › Import path ending: `auto` | `minimal` | `index` | `js`. */
+	importModuleSpecifierEnding?: string | null,
+	/**  JavaScript / TypeScript › Imports › Do not auto-import from (globs). */
+	autoImportFileExcludePatterns?: string[],
+	/**  JavaScript / TypeScript › Imports › Do not auto-import specifiers matching (regexes). */
+	autoImportSpecifierExcludeRegexes?: string[],
 };
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
@@ -9336,6 +9347,17 @@ export type LanguageCodeStyle_Serialize = {
 	quotes?: string | null,
 	/**  JavaScript / TypeScript › Spaces, by tsserver format option (`insertSpaceAfterCommaDelimiter`). */
 	spaces?: { [key in string]: boolean },
+	/**
+	 *  JavaScript / TypeScript › Imports › Import paths:
+	 *  `shortest` | `relative` | `non-relative` | `project-relative`.
+	 */
+	importModuleSpecifier?: string | null,
+	/**  JavaScript / TypeScript › Imports › Import path ending: `auto` | `minimal` | `index` | `js`. */
+	importModuleSpecifierEnding?: string | null,
+	/**  JavaScript / TypeScript › Imports › Do not auto-import from (globs). */
+	autoImportFileExcludePatterns?: string[],
+	/**  JavaScript / TypeScript › Imports › Do not auto-import specifiers matching (regexes). */
+	autoImportSpecifierExcludeRegexes?: string[],
 };
 
 /**  Language identifier, e.g. `rust`, `typescript`, `kotlin`. Matches LSP `languageId`. */

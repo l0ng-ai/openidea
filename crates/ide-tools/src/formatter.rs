@@ -183,15 +183,10 @@ pub fn arguments(
         return vec!["format".into(), path];
     }
     if tool == "prettier" {
-        let parser = if config.parser == "markdown" && file.extension().is_some_and(|s| s == "mdx") {
-            "mdx"
-        } else {
-            &config.parser
-        };
         args.extend(
             [
                 "--parser",
-                parser,
+                config.parser.as_str(),
                 "--config-precedence",
                 "file-override",
                 "--tab-width",

@@ -356,6 +356,7 @@ export function registerMarkdownLiveSource(): () => void {
   return registerEditorContribution({
     id: "viewers.markdownLive",
     // The document's language: contributions are rebuilt when File Types change it.
-    extensions: (ctx) => (!ctx.virtual && ctx.language === "markdown" ? [livePlugin(ctx.path)] : []),
+    extensions: (ctx) =>
+      !ctx.virtual && (ctx.language === "markdown" || ctx.language === "mdx") ? [livePlugin(ctx.path)] : [],
   });
 }
