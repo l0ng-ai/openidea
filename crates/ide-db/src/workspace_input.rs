@@ -1,7 +1,7 @@
 //! Bounded, typed reads for staging explicitly selected database tables.
 use crate::{DataSource, DbDriver, DbManager, Pool, conn::db_err, jdbc::WorkspaceDuckDbSource, route::RouteUse, sql};
 use futures::TryStreamExt;
-use ide_core::{CancellationToken, IdeError, IdeResult};
+use ide_core::{CancellationToken, IdeError, IdeResult, error::ErrorKind};
 use sqlx::{Connection, Row, postgres::PgConnection, sqlite::SqlitePool};
 use std::{borrow::Cow, fmt::Write, time::Duration};
 
@@ -65,6 +65,14 @@ pub(crate) struct PreparedWorkspaceInput {
     duckdb: Option<WorkspaceDuckDbSource>,
 }
 
+fn input_error(source: &DataSource, mut error: IdeError) -> IdeError {
+    let name = source.name.trim();
+    if error.kind != ErrorKind::Cancelled && !name.is_empty() {
+        error.message = format!("{name} · {}", error.message);
+    }
+    error
+}
+
 /// Verify the saved source and relation before a workspace opens any source connection.
 pub(crate) async fn prepare_table(
     db: &DbManager,
@@ -78,23 +86,28 @@ pub(crate) async fn prepare_table(
         return Err(IdeError::invalid("Select a saved data source for the workspace"));
     }
     let source = db.source(&request.source_id)?;
-    if !source.options.startup_script.trim().is_empty() {
-        return Err(IdeError::invalid("Workspace inputs do not run saved source startup scripts"));
-    }
-    let mut request = request.clone();
-    normalize_relation(&source, &mut request)?;
-    let duckdb = match source.driver {
-        DbDriver::Jdbc => Some(db.prepare_workspace_duckdb_source(&source).await?),
-        DbDriver::Sqlite => {
-            let file =
-                source.file.as_deref().ok_or_else(|| IdeError::invalid("Choose a saved SQLite database file"))?;
-            if !tokio::fs::metadata(db.root.join(file)).await.is_ok_and(|meta| meta.is_file()) {
-                return Err(IdeError::invalid("Choose an existing SQLite database file as the workspace source"));
-            }
-            None
+    let (request, duckdb) = async {
+        if !source.options.startup_script.trim().is_empty() {
+            return Err(IdeError::invalid("Workspace inputs do not run saved source startup scripts"));
         }
-        _ => None,
-    };
+        let mut request = request.clone();
+        normalize_relation(&source, &mut request)?;
+        let duckdb = match source.driver {
+            DbDriver::Jdbc => Some(db.prepare_workspace_duckdb_source(&source).await?),
+            DbDriver::Sqlite => {
+                let file =
+                    source.file.as_deref().ok_or_else(|| IdeError::invalid("Choose a saved SQLite database file"))?;
+                if !tokio::fs::metadata(db.root.join(file)).await.is_ok_and(|meta| meta.is_file()) {
+                    return Err(IdeError::invalid("Choose an existing SQLite database file as the workspace source"));
+                }
+                None
+            }
+            _ => None,
+        };
+        Ok((request, duckdb))
+    }
+    .await
+    .map_err(|error| input_error(&source, error))?;
     Ok(PreparedWorkspaceInput { request, source, duckdb })
 }
 
@@ -116,11 +129,21 @@ pub(crate) async fn read_prepared_table(
     cancel: &CancellationToken,
 ) -> IdeResult<WorkspaceInput> {
     let PreparedWorkspaceInput { request, source, duckdb } = prepared;
-    let request = &request;
+    read_source(db, &source, &request, duckdb, selection, cancel).await.map_err(|error| input_error(&source, error))
+}
+
+async fn read_source(
+    db: &DbManager,
+    source: &DataSource,
+    request: &WorkspaceInputRequest,
+    duckdb: Option<WorkspaceDuckDbSource>,
+    selection: Option<&[&str]>,
+    cancel: &CancellationToken,
+) -> IdeResult<WorkspaceInput> {
     let driver = source.driver;
     if let Some(duckdb) = duckdb {
         let open = async {
-            let password = db.password(&source).await;
+            let password = db.password(source).await;
             duckdb.connect(password.as_deref()).await
         };
         let pool = tokio::select! {
@@ -133,8 +156,8 @@ pub(crate) async fn read_prepared_table(
         return result;
     }
     let open = async {
-        let password = db.password(&source).await;
-        let (mut target, route) = db.endpoint(&source, None, RouteUse::Connect).await?;
+        let password = db.password(source).await;
+        let (mut target, route) = db.endpoint(source, None, RouteUse::Connect).await?;
         if !request.database.is_empty() {
             target.select_database(Some(&request.database));
         }
@@ -149,14 +172,14 @@ pub(crate) async fn read_prepared_table(
             target.properties.push(crate::DbProperty { name: "use_http_session".into(), value: "false".into() });
         }
         let pool =
-            db.open_pool(&target, password.as_deref(), false).await.map_err(|e| db.connection_error(e, &source))?;
+            db.open_pool(&target, password.as_deref(), false).await.map_err(|e| db.connection_error(e, source))?;
         Ok::<_, IdeError>((pool, route))
     };
     let (pool, _route) = tokio::select! {
         biased;
         () = cancel.cancelled() => return Err(IdeError::cancelled()),
         () = tokio::time::sleep(Duration::from_secs(30)) =>
-            return Err(IdeError::new(ide_core::error::ErrorKind::TimedOut, "Workspace source connection timed out")),
+            return Err(IdeError::new(ErrorKind::TimedOut, "Workspace source connection timed out")),
         result = open => result?,
     };
     match &pool {
@@ -918,6 +941,52 @@ mod tests {
     const LIMITS: WorkspaceInputLimits = WorkspaceInputLimits { max_rows: 10, max_cell_bytes: 128, max_bytes: 4096 };
 
     #[tokio::test]
+    async fn workspace_names_the_saved_source_that_needs_jdbc_approval() -> IdeResult<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path();
+        let ssh = Arc::new(ide_ssh::SshManager::new(root.join("ssh.json")));
+        let db = DbManager::new(root.to_path_buf(), root.join("passwords.json"), root.join("history.json"), ssh)
+            .with_global_sources(root.join("global"));
+        let accounts =
+            DataSource { id: "pg".into(), name: "accounts".into(), driver: DbDriver::Postgres, ..Default::default() };
+        let geo = DataSource {
+            id: "duckdb-input".into(),
+            name: "geo".into(),
+            driver: DbDriver::Jdbc,
+            vendor: "duckdb".into(),
+            jdbc_driver: "duck".into(),
+            url: "jdbc:duckdb:/synthetic/approval-required.duckdb".into(),
+            ..Default::default()
+        };
+        let relation = |source: &DataSource, schema: &str| WorkspaceInputRequest {
+            source_id: source.id.clone(),
+            database: String::new(),
+            schema: schema.into(),
+            table: "items".into(),
+            limits: LIMITS,
+        };
+        let left = relation(&accounts, "public");
+        let right = relation(&geo, "main");
+        db.save_sources(vec![accounts, geo]).await?;
+        let cancel = CancellationToken::new();
+        let console = db.pool(&right.source_id).await.err().expect("the console must require saved JDBC approval");
+        assert_eq!(
+            console.message,
+            "Review this project's JDBC URL and properties, then save the data source before connecting",
+        );
+        let error = db.workspace_join_pair_for_test("duck", [&left, &right], ["id", "id"], &cancel).await.unwrap_err();
+        assert_eq!(error.kind, ide_core::error::ErrorKind::InvalidInput);
+        assert_eq!(error.message, format!("geo · {}", console.message));
+
+        cancel.cancel();
+        let cancelled =
+            db.workspace_join_pair_for_test("duck", [&left, &right], ["id", "id"], &cancel).await.unwrap_err();
+        assert_eq!(cancelled.kind, ide_core::error::ErrorKind::Cancelled);
+        assert_eq!(cancelled.message, "cancelled");
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn sqlite_workspace_reads_exact_integer_and_rejects_dynamic_types() -> IdeResult<()> {
         let temp = tempfile::tempdir()?;
         let root = temp.path();
@@ -965,7 +1034,7 @@ mod tests {
             let error = read_table(&db, &WorkspaceInputRequest { table: table.into(), ..request.clone() }, &cancel)
                 .await
                 .unwrap_err();
-            assert!(error.message.contains(message), "{error}");
+            assert!(error.message.strip_prefix("SQLite · ").is_some_and(|detail| detail.contains(message)), "{error}");
         }
         let generated = WorkspaceInputRequest { table: "computed".into(), ..request.clone() };
         let generated = read_table(&db, &generated, &cancel).await?;
