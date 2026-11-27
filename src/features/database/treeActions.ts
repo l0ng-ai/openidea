@@ -131,23 +131,18 @@ function failureText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** Refreshes selected data sources, at most four at a time, and reports failures once. */
+/** Refreshes every selected data source in parallel and reports failures once. */
 async function refreshSources(sources: Extract<DbNode, { kind: "source" }>[]): Promise<void> {
   const failures: string[] = [];
-  let next = 0;
-  const worker = async () => {
-    for (;;) {
-      const source = sources[next++];
-      if (!source) return;
+  await Promise.all(
+    sources.map(async (source) => {
       try {
-        // oxlint-disable-next-line no-await-in-loop -- each worker keeps one data source refresh in flight
         await refresh(source.source.id ?? "");
       } catch (e) {
         failures.push(`${source.source.name}: ${failureText(e)}`);
       }
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(4, sources.length) }, worker));
+    }),
+  );
   if (failures.length) {
     const failed = failures.length;
     const total = sources.length;

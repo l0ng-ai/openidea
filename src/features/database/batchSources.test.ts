@@ -76,4 +76,19 @@ describe("batch data source actions", () => {
     await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
     expect(refresh.mock.calls.map(([id]) => id).sort()).toEqual(["a", "b"]);
   });
+
+  it("refreshes more than four selected data sources", async () => {
+    const many = Array.from({ length: 6 }, (_, i) => ({
+      id: `source-${i}`,
+      name: `Source ${i}`,
+      driver: "postgres" as const,
+    }));
+    const manyNodes = many.map((source) => ({ kind: "source" as const, key: source.id, source }));
+    useDatabase.setState({ sources: many, selectedNode: manyNodes[0]!, selectedNodes: manyNodes });
+    const refresh = vi.spyOn(databaseStore, "refresh").mockResolvedValue();
+
+    act(() => void executeAction("db.refresh"));
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(6));
+    expect(refresh.mock.calls.map(([id]) => id).sort()).toEqual(many.map((source) => source.id));
+  });
 });
