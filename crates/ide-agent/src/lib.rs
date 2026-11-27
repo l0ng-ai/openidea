@@ -939,6 +939,11 @@ impl AgentManager {
                     }
                     f.task.retry = None;
                     f.task.background.clear();
+                    // What an archived task's agent offered is only a cache, and a long list
+                    // repeated in every archived task: its next session reports its own.
+                    if f.task.status == AgentStatus::Archived {
+                        f.task.commands = Vec::new();
+                    }
                     let task = Task::restore_saved(f, entries, path, shared.clone());
                     tasks.insert(task.id.clone(), task);
                 }
@@ -1143,7 +1148,14 @@ impl AgentManager {
             Some(id) => {
                 let task = self.task(id)?;
                 let s = task.state.lock();
-                (s.task.provider.clone(), s.task.commands.clone(), s.task.cwd.0.clone())
+                // A task without a session's list yet (archived, or just unarchived) offers
+                // what its agent offered last time in the project.
+                let offered = if s.task.commands.is_empty() {
+                    self.shared.known_commands(&s.task.provider)
+                } else {
+                    s.task.commands.clone()
+                };
+                (s.task.provider.clone(), offered, s.task.cwd.0.clone())
             }
             None => (provider.to_owned(), self.shared.known_commands(provider), self.shared.paths.project_root.clone()),
         };
@@ -2215,6 +2227,8 @@ impl AgentManager {
     pub fn archive(&self, id: &str) -> IdeResult<()> {
         let task = self.task(id)?;
         task.kill();
+        // Not kept while archived; see `AgentManager::new`.
+        task.state.lock().task.commands = Vec::new();
         task.set_status(AgentStatus::Archived, None);
         Ok(())
     }
