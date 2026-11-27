@@ -460,6 +460,7 @@ notebook_reload                              always             project_host bin
 notebook_restart                             trusted            project_host bindings async
 notebook_save                                always             project_host bindings async
 notebook_undo                                always             project_host bindings async
+notebook_variables                           trusted            project_host bindings async
 open_project                                 always             project_host bindings async
 path_completions                             always             project_host bindings async
 plugin_activation_event                      trusted            desktop      bindings async

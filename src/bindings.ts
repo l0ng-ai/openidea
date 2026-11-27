@@ -1239,6 +1239,7 @@ export const commands = {
 	notebookRestart: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_restart", { id })),
 	notebookSave: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_save", { id })),
 	notebookUndo: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_undo", { id })),
+	notebookVariables: (id: string) => typedError<NotebookVariable[] | null, IdeError>(__TAURI_INVOKE("notebook_variables", { id })),
 	openProject: (path: string) => typedError<ProjectInfo_Serialize, IdeError>(__TAURI_INVOKE("open_project", { path })),
 	/**  Files and folders that continue `prefix`, a path being typed in `from`. */
 	pathCompletions: (from: IpcPath, prefix: string) => typedError<PathCompletion[], IdeError>(__TAURI_INVOKE("path_completions", { from, prefix })),
@@ -10772,6 +10773,13 @@ export type NotebookSnapshot = {
 	nbformatMinor: number,
 	metadata: unknown,
 	cells: NotebookCell[],
+};
+
+/**  One row of the Jupyter Variables tool window. */
+export type NotebookVariable = {
+	name: string,
+	type: string,
+	value: string,
 };
 
 /**  A notification button that runs one of the publishing plugin's commands. */
