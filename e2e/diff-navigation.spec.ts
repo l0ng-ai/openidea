@@ -273,7 +273,6 @@ test("maximizes a diff preview tab and restores its previous layout", async ({ w
 test("continues between changed files from toolbar buttons and the keymap", async ({ workbench: page }) => {
   const toolbar = await openChain(page);
   const selected = page.getByRole("tablist", { name: "Editor tabs" }).locator('[aria-selected="true"]');
-  await toolbar.getByRole("button", { name: "Next Difference", exact: true }).click();
   await expect(toolbar).toContainText("1 of 1 differences");
   await toolbar.getByRole("button", { name: "Next Difference", exact: true }).click();
   await expect(page.getByRole("status").filter({ hasText: "Press again to go to the next file" })).toBeVisible();
@@ -359,6 +358,7 @@ for (const reducedMotion of ["reduce", "no-preference"] as const) {
             for (const i of [100, 400, 700]) right[i] = `const changed${i} = ${i};`;
             await openDiff({
               path: "/dev/acme-api/navigation.ts",
+              line: 0, // Start before the first difference to exercise every navigation step.
               left: { type: "text", text: lines.join("\n"), label: "Before" },
               right: { type: "text", text: right.join("\n"), label: "After" },
             });
