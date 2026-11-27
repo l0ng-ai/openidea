@@ -16,12 +16,13 @@ import { useProject } from "@/platform/project";
 import { restoreRemote } from "@/platform/remote";
 import { usePlatform } from "@/platform/platformInfo";
 import { Button, Spinner, T, isPopupOpen } from "@/ui";
-import { editorService, notifications } from "@/workbench/contributions";
+import { editorService, notifications, provideEditorService } from "@/workbench/contributions";
 import { EditorArea } from "@/workbench/EditorArea";
 import { OverlayHost } from "@/workbench/OverlayHost";
 import { TitleBar } from "@/workbench/TitleBar";
 import { useApplyTheme } from "@/workbench/theme";
 import { diffInput, type DiffData } from "./diffInput";
+import { openSource } from "./DiffWindow";
 import { ChangesBetweenDialog } from "./operations";
 import { refreshNow, useVcs } from "./store";
 import styles from "./common.module.css";
@@ -43,6 +44,16 @@ export function activateComparisonWindow(
 ): () => void {
   let projectName: string | null = null;
   const native = getCurrentWindow();
+  // Jump to Source opens the file in the project window's editor, as from a diff window (IDEA).
+  // That window only opens files inside the project, so others (repo above the project) stay here.
+  const local = editorService();
+  provideEditorService({
+    ...local,
+    openFile: (path, options) => {
+      const root = useVcs.getState().root;
+      return root && path.startsWith(`${root}/`) ? openSource(parent, path, options) : local.openFile(path, options);
+    },
+  });
   let disposed = false;
   let closing = false;
   let stopClose: (() => void) | undefined;
