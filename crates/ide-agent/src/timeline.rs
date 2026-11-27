@@ -478,6 +478,34 @@ mod tests {
     }
 
     #[test]
+    fn an_execute_call_keeps_the_command_from_its_structured_input() {
+        let mut t = Timeline::default();
+        let command = |t: &Timeline, i: usize| match &t.entries[i] {
+            AgentEntry::Tool { command, .. } => command.clone(),
+            _ => panic!(),
+        };
+        t.apply(&json!({"sessionUpdate": "tool_call", "toolCallId": "a", "title": "Run command", "kind": "execute",
+            "rawInput": {"command": "python hello_world.py"}}));
+        assert_eq!(command(&t, 0).as_deref(), Some("python hello_world.py"));
+        // An argv array whose shell wraps the script, sent with a later update.
+        t.apply(&json!({"sessionUpdate": "tool_call", "toolCallId": "b", "title": "Run command", "kind": "execute"}));
+        assert_eq!(command(&t, 1), None);
+        t.apply(&json!({"sessionUpdate": "tool_call_update", "toolCallId": "b",
+            "rawInput": {"cmd": ["bash", "-lc", "cargo test -p ide-agent"]}}));
+        assert_eq!(command(&t, 1).as_deref(), Some("cargo test -p ide-agent"));
+        // One shell line, unwrapped as the permission card does.
+        t.apply(&json!({"sessionUpdate": "tool_call", "toolCallId": "c", "kind": "execute",
+            "rawInput": {"command": "/bin/zsh -lc 'node hello.js'"}}));
+        assert_eq!(command(&t, 2).as_deref(), Some("node hello.js"));
+        // A later update without one keeps it; tasks saved before the field load without it.
+        t.apply(&json!({"sessionUpdate": "tool_call_update", "toolCallId": "c", "status": "completed"}));
+        assert_eq!(command(&t, 2).as_deref(), Some("node hello.js"));
+        let mut old = serde_json::to_value(&t.entries[2]).unwrap();
+        old.as_object_mut().unwrap().remove("command");
+        assert!(matches!(serde_json::from_value(old).unwrap(), AgentEntry::Tool { command: None, .. }));
+    }
+
+    #[test]
     fn tool_images_survive_updates_text_truncation_and_serialization() {
         use base64::Engine;
         let mut t = Timeline::default();
