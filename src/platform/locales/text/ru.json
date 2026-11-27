@@ -10179,5 +10179,7 @@
   "SQL INSERT": "SQL INSERT",
   "SQL UPDATE": "SQL UPDATE",
   "SQL DELETE": "SQL DELETE",
-  "Column comment": "Комментарий к столбцу"
+  "Column comment": "Комментарий к столбцу",
+  "Get from Version Control": "Получить из системы контроля версий",
+  "Cannot connect to the remote host": "Не удалось подключиться к удалённому хосту"
 }

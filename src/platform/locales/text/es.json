@@ -6182,5 +6182,7 @@
   "Blocked command pattern": "Patrón de comando bloqueado",
   "Mode applies to": "El modo se aplica a",
   "Context": "Contexto",
-  "Allow all optional permissions": "Permitir todos los permisos opcionales"
+  "Allow all optional permissions": "Permitir todos los permisos opcionales",
+  "Get from Version Control": "Obtener del control de versiones",
+  "Cannot connect to the remote host": "No se puede conectar al host remoto"
 }

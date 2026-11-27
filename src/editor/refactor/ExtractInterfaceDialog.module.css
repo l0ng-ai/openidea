@@ -44,7 +44,7 @@
 
 .table {
   flex: 1;
-  min-height: calc(var(--h-list-row) * 3);
+  min-height: calc(var(--h-list-row) * 2);
   overflow: auto;
   scrollbar-gutter: stable;
   scroll-padding-top: var(--h-list-row);

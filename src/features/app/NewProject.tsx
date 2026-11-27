@@ -3,9 +3,14 @@
  * left, the chosen one's form on the right, then a progress view while the backend
  * creates the project. The new project opens in a new window (this one when it has
  * no project).
+ *
+ * In the desktop app the wizard has its own native window (`new-project-<parent>`, see
+ * `newProjectWindow.tsx`), which hands the created folder back to its project window; remote
+ * windows and the browser build show it as a dialog in the page.
  */
 import { Channel } from "@tauri-apps/api/core";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { create } from "zustand";
 import {
   call,
@@ -22,9 +27,14 @@ import {
 } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useTx, useTxTemplate } from "@/platform/i18n";
+import { logError } from "@/platform/errorLog";
+import { isRemoteWindow } from "@/platform/remote";
+import { windowBackgroundHex } from "@/workbench/theme";
+import { WindowDialogFrame } from "@/workbench/WindowDialogFrame";
 import {
   Checkbox,
   Dialog,
+  type DialogButton,
   Icon,
   IconButton,
   Input,
@@ -48,10 +58,44 @@ import { defaultProjectDirectory, openProjectInWindow } from "./windows";
 import styles from "./newProject.module.css";
 
 const useNewProject = create<{ open: boolean }>(() => ({ open: false }));
-export const showNewProject = () => useNewProject.setState({ open: true });
+const showInPage = () => useNewProject.setState({ open: true });
+
+/** Sent by the New Project window to its project window with the created folder. */
+export const NEW_PROJECT_CREATED = "openidea://new-project/created";
+
+/** File › New Project…: its own window in the desktop app, else a dialog in this page. */
+export function showNewProject() {
+  if (!isTauri() || isRemoteWindow()) return showInPage();
+  void call(commands.windowOpenNewProject(windowBackgroundHex())).catch((e: unknown) => {
+    logError("cannot open the New Project window", e);
+    showInPage();
+  });
+}
+
+/** Opens a project the New Project window created, like the in-page dialog does. */
+export function openCreatedProject(dir: string) {
+  void getCurrentWebviewWindow()
+    .setFocus()
+    .catch(() => {});
+  return openProjectInWindow(dir, useProject.getState().project !== null);
+}
 
 export function NewProjectOverlay() {
   const open = useNewProject((s) => s.open);
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    let off: (() => void) | undefined;
+    void getCurrentWebviewWindow()
+      .listen<{ dir: string }>(NEW_PROJECT_CREATED, ({ payload }) => {
+        void openCreatedProject(payload.dir).catch((e: unknown) => logError("cannot open the new project", e));
+      })
+      .then((u) => (disposed ? u() : (off = u)));
+    return () => {
+      disposed = true;
+      off?.();
+    };
+  }, []);
   return open ? <NewProjectDialog onClose={() => useNewProject.setState({ open: false })} /> : null;
 }
 
@@ -139,7 +183,68 @@ function saveDialogSize(size: { w: number; h: number }) {
   }
 }
 
-function NewProjectDialog({ onClose }: { onClose: () => void }) {
+interface FrameProps {
+  standalone: boolean;
+  onClose: () => void;
+  buttons: readonly DialogButton[];
+  children: ReactNode;
+  /** The wizard form: resizable, its size remembered. */
+  form?: boolean;
+  /** In the window: the generator list, beside the content. */
+  sidebar?: ReactNode;
+}
+
+/** The wizard's own window, or a dialog in the page. */
+function Frame({ standalone, onClose, buttons, children, form = false, sidebar }: FrameProps) {
+  if (standalone)
+    return (
+      <WindowDialogFrame
+        title="New Project"
+        buttons={buttons}
+        onCancel={onClose}
+        sidebar={sidebar}
+        bodyClassName={styles.windowBody}
+      >
+        {children}
+      </WindowDialogFrame>
+    );
+  return form ? (
+    <Dialog
+      open
+      title="New Project"
+      onClose={onClose}
+      width={860}
+      resizable="both"
+      minWidth={720}
+      minHeight={480}
+      initialSize={loadDialogSize()}
+      onResized={saveDialogSize}
+      className={styles.dialog}
+      buttons={buttons}
+    >
+      {children}
+    </Dialog>
+  ) : (
+    <Dialog open title="New Project" onClose={onClose} width={860} buttons={buttons}>
+      {children}
+    </Dialog>
+  );
+}
+
+/**
+ * The wizard. `standalone`: it fills the New Project window, and the created project opens in
+ * `parent` (the window's project window) instead of here.
+ */
+export function NewProjectDialog({
+  onClose,
+  standalone = false,
+  onCreated,
+}: {
+  onClose: () => void;
+  standalone?: boolean;
+  /** Opens the created project; defaults to opening it from this window. */
+  onCreated?: (dir: string) => Promise<void>;
+}) {
   const tx = useTx();
   const txTemplate = useTxTemplate();
   const [catalog, setCatalog] = useState<GeneratorInfo[] | null>(null);
@@ -338,6 +443,10 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
         ),
       );
       saveLocation(location.trim());
+      if (onCreated) {
+        await onCreated(dir);
+        return;
+      }
       onClose();
       await openProjectInWindow(dir, useProject.getState().project !== null);
     } catch (e) {
@@ -346,25 +455,143 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
     }
   };
 
-  if (job) return <ProgressView job={job} onBack={() => setJob(null)} onClose={onClose} />;
+  if (job) return <ProgressView job={job} standalone={standalone} onBack={() => setJob(null)} onClose={onClose} />;
 
-  return (
-    <Dialog
-      open
-      title="New Project"
-      onClose={onClose}
-      width={860}
-      resizable="both"
-      minWidth={720}
-      minHeight={480}
-      initialSize={loadDialogSize()}
-      onResized={saveDialogSize}
-      className={styles.dialog}
-      buttons={[
-        { label: "Create", role: "default", disabled: invalid, onClick: () => void createProject() },
-        { label: "Cancel", role: "cancel" },
-      ]}
+  const buttons: DialogButton[] = [
+    { label: "Create", role: "default", disabled: invalid, onClick: () => void createProject() },
+    { label: "Cancel", role: "cancel" },
+  ];
+  const generators = (
+    <>
+      <Input
+        className={styles.search}
+        value={query}
+        placeholder="Search"
+        onChange={(e) => setQuery(e.target.value)}
+        aria-label="Search generators"
+      />
+      <div className={styles.list} role="listbox" aria-label={tx("Generators")}>
+        {catalogError && <div className={styles.error}>{txTemplate(catalogError)}</div>}
+        {groupedEntries(catalog ?? [], query).map(([group, entries]) => (
+          <div key={group} role="group" aria-label={tx(group)}>
+            <div className={styles.groupLabel}>{tx(group)}</div>
+            {entries.map((g) => (
+              <button
+                key={g.id}
+                type="button"
+                role="option"
+                aria-selected={g.id === selected}
+                className={styles.entry}
+                title={tx(g.name)}
+                onClick={() => setSelected(g.id)}
+              >
+                <Icon name={hasIcon(g.icon) ? g.icon : "folder"} />
+                <span>{tx(g.name)}</span>
+              </button>
+            ))}
+          </div>
+        ))}
+      </div>
+    </>
+  );
+  const formView = (
+    <form
+      className={styles.form}
+      onSubmit={(e) => {
+        e.preventDefault();
+        void createProject();
+      }}
     >
+      {generator?.description && <div className={styles.description}>{tx(generator.description)}</div>}
+      <div className={styles.grid}>
+        <label className={styles.label} htmlFor="np-name">
+          <T>Name:</T>
+        </label>
+        <Input
+          id="np-name"
+          data-autofocus
+          value={name}
+          invalid={!!nameError}
+          onChange={(e) => {
+            setNameEdited(true);
+            setName(e.target.value);
+          }}
+        />
+        <label className={styles.label} htmlFor="np-location">
+          <T>Location:</T>
+        </label>
+        <div className={styles.location}>
+          <Input
+            id="np-location"
+            variant="bare"
+            className={styles.locationInput}
+            value={location}
+            onChange={(e) => setLocation(e.target.value)}
+          />
+          <IconButton
+            icon="folder-open"
+            title="Browse…"
+            size="small"
+            onClick={() => void browse()}
+            disabled={!isTauri()}
+          />
+        </div>
+        <span />
+        <div className={nameError ? `${styles.hint} ${styles.hintError}` : styles.hint}>
+          {nameError ? txTemplate(nameError) : path && txTemplate(`Project will be created in: ${path}`)}
+        </div>
+        {generator?.git && (
+          <>
+            <span />
+            <Checkbox checked={git} onChange={setGit} label="Create Git repository" />
+          </>
+        )}
+        {visibleFields.map((f) => (
+          <FieldRow
+            key={f.id}
+            field={f}
+            value={values[f.id] ?? ""}
+            onChange={(v) => setValue(f.id, v)}
+            sdks={f.kind.type === "sdk" ? (sdks[f.kind.sdk] ?? null) : null}
+          />
+        ))}
+        {loadingDynamic && (
+          <>
+            <span />
+            <div className={styles.hint}>
+              <T>Loading options…</T>
+            </div>
+          </>
+        )}
+        {dynamicError && (
+          <>
+            <span />
+            <div className={styles.error}>{txTemplate(dynamicError)}</div>
+          </>
+        )}
+      </div>
+      {missing.map((r) => (
+        <div key={r.program} className={styles.missing}>
+          <Icon name="warning" />
+          <span>
+            {r.found
+              ? tx`${r.program} ${r.found} is installed, but this project needs ${r.min ?? ""} or later.`
+              : tx`${r.program} is not installed.`}{" "}
+            {r.hint && tx(r.hint)}
+          </span>
+        </div>
+      ))}
+    </form>
+  );
+
+  if (standalone)
+    return (
+      <Frame standalone onClose={onClose} buttons={buttons} sidebar={generators}>
+        {formView}
+      </Frame>
+    );
+  return (
+    <Frame standalone={false} form onClose={onClose} buttons={buttons}>
       <SplitGroup
         className={styles.layout}
         elementRef={layout}
@@ -378,128 +605,14 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
           maxSize="45%"
           className={styles.sidebar}
         >
-          <Input
-            className={styles.search}
-            value={query}
-            placeholder="Search"
-            onChange={(e) => setQuery(e.target.value)}
-            aria-label="Search generators"
-          />
-          <div className={styles.list} role="listbox" aria-label={tx("Generators")}>
-            {catalogError && <div className={styles.error}>{txTemplate(catalogError)}</div>}
-            {groupedEntries(catalog ?? [], query).map(([group, entries]) => (
-              <div key={group} role="group" aria-label={tx(group)}>
-                <div className={styles.groupLabel}>{tx(group)}</div>
-                {entries.map((g) => (
-                  <button
-                    key={g.id}
-                    type="button"
-                    role="option"
-                    aria-selected={g.id === selected}
-                    className={styles.entry}
-                    title={tx(g.name)}
-                    onClick={() => setSelected(g.id)}
-                  >
-                    <Icon name={hasIcon(g.icon) ? g.icon : "folder"} />
-                    <span>{tx(g.name)}</span>
-                  </button>
-                ))}
-              </div>
-            ))}
-          </div>
+          {generators}
         </SplitPanel>
         <SplitHandle aria-label={tx("Generators")} />
         <SplitPanel id="new-project-form" defaultSize="75%">
-          <form
-            className={styles.form}
-            onSubmit={(e) => {
-              e.preventDefault();
-              void createProject();
-            }}
-          >
-            {generator?.description && <div className={styles.description}>{tx(generator.description)}</div>}
-            <div className={styles.grid}>
-              <label className={styles.label} htmlFor="np-name">
-                <T>Name:</T>
-              </label>
-              <Input
-                id="np-name"
-                data-autofocus
-                value={name}
-                invalid={!!nameError}
-                onChange={(e) => {
-                  setNameEdited(true);
-                  setName(e.target.value);
-                }}
-              />
-              <label className={styles.label} htmlFor="np-location">
-                <T>Location:</T>
-              </label>
-              <div className={styles.location}>
-                <Input
-                  id="np-location"
-                  variant="bare"
-                  className={styles.locationInput}
-                  value={location}
-                  onChange={(e) => setLocation(e.target.value)}
-                />
-                <IconButton
-                  icon="folder-open"
-                  title="Browse…"
-                  size="small"
-                  onClick={() => void browse()}
-                  disabled={!isTauri()}
-                />
-              </div>
-              <span />
-              <div className={nameError ? `${styles.hint} ${styles.hintError}` : styles.hint}>
-                {nameError ? txTemplate(nameError) : path && txTemplate(`Project will be created in: ${path}`)}
-              </div>
-              {generator?.git && (
-                <>
-                  <span />
-                  <Checkbox checked={git} onChange={setGit} label="Create Git repository" />
-                </>
-              )}
-              {visibleFields.map((f) => (
-                <FieldRow
-                  key={f.id}
-                  field={f}
-                  value={values[f.id] ?? ""}
-                  onChange={(v) => setValue(f.id, v)}
-                  sdks={f.kind.type === "sdk" ? (sdks[f.kind.sdk] ?? null) : null}
-                />
-              ))}
-              {loadingDynamic && (
-                <>
-                  <span />
-                  <div className={styles.hint}>
-                    <T>Loading options…</T>
-                  </div>
-                </>
-              )}
-              {dynamicError && (
-                <>
-                  <span />
-                  <div className={styles.error}>{txTemplate(dynamicError)}</div>
-                </>
-              )}
-            </div>
-            {missing.map((r) => (
-              <div key={r.program} className={styles.missing}>
-                <Icon name="warning" />
-                <span>
-                  {r.found
-                    ? tx`${r.program} ${r.found} is installed, but this project needs ${r.min ?? ""} or later.`
-                    : tx`${r.program} is not installed.`}{" "}
-                  {r.hint && tx(r.hint)}
-                </span>
-              </div>
-            ))}
-          </form>
+          {formView}
         </SplitPanel>
       </SplitGroup>
-    </Dialog>
+    </Frame>
   );
 }
 
@@ -662,7 +775,17 @@ function DependencyPicker({
   );
 }
 
-function ProgressView({ job, onBack, onClose }: { job: Job; onBack: () => void; onClose: () => void }) {
+function ProgressView({
+  job,
+  standalone,
+  onBack,
+  onClose,
+}: {
+  job: Job;
+  standalone: boolean;
+  onBack: () => void;
+  onClose: () => void;
+}) {
   const txTemplate = useTxTemplate();
   const tx = useTx();
   const log = useRef<HTMLPreElement>(null);
@@ -671,12 +794,23 @@ function ProgressView({ job, onBack, onClose }: { job: Job; onBack: () => void; 
     if (el) el.scrollTop = el.scrollHeight;
   }, [job.lines.length]);
   const failed = job.error !== null;
+  useEffect(() => {
+    if (!standalone || failed || !isTauri()) return;
+    // Closing the window stops the generator instead of leaving it running unseen.
+    let disposed = false;
+    let off: (() => void) | undefined;
+    void getCurrentWebviewWindow()
+      .onCloseRequested(() => job.cancel())
+      .then((u) => (disposed ? u() : (off = u)));
+    return () => {
+      disposed = true;
+      off?.();
+    };
+  }, [standalone, failed, job]);
   return (
-    <Dialog
-      open
-      title="New Project"
+    <Frame
+      standalone={standalone}
       onClose={() => (failed ? onClose() : job.cancel())}
-      width={860}
       buttons={
         failed
           ? [
@@ -700,6 +834,6 @@ function ProgressView({ job, onBack, onClose }: { job: Job; onBack: () => void; 
         </pre>
         {failed && <div className={styles.error}>{txTemplate(job.error ?? "")}</div>}
       </div>
-    </Dialog>
+    </Frame>
   );
 }
