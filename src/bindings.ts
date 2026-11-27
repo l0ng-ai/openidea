@@ -10424,9 +10424,11 @@ export type McpTransport = "stdio" | "http" | "sse";
 /**
  *  What a built-in MCP tool asks the project window for. `AgentRun` runs `command` (a shell
  *  line) in the Run tool window's agent tab `name`, on pipes, answered once the process
- *  started or failed to.
+ *  started or failed to. `RunConfiguration` starts a run configuration (a serialized
+ *  `RunConfig`, its before launch tasks already done) in the Run tool window as the user's
+ *  Run would, answered the same way.
  */
-export type McpUiRequest = { type: "confirm"; client: string; tool: string; subject: string; project: string; detail: string | null } | { type: "openFile"; path: IpcPath; line: number | null; column: number | null } | { type: "agentRun"; name: string; command: string; cwd: IpcPath; env: { [key in string]: string } };
+export type McpUiRequest = { type: "confirm"; client: string; tool: string; subject: string; project: string; detail: string | null } | { type: "openFile"; path: IpcPath; line: number | null; column: number | null } | { type: "agentRun"; name: string; command: string; cwd: IpcPath; env: { [key in string]: string } } | { type: "runConfiguration"; config: unknown };
 
 export type MemoryCategory = 
 /**  The backend and its WebView processes. */
