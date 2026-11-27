@@ -824,6 +824,15 @@ export function activate(): () => void {
         run: () => testTree.toggleDurations?.(),
       },
       {
+        id: "run.toggleTrackRunningTest",
+        title: "Track Running Test",
+        category: "Run",
+        when: "projectOpen",
+        enabled: () => testTree.toggleTrackRunning !== null,
+        toggled: () => testTree.trackRunning === true,
+        run: () => testTree.toggleTrackRunning?.(),
+      },
+      {
         id: "run.toggleSelectFirstFailedTest",
         title: "Select First Failed Test When Finished",
         category: "Run",

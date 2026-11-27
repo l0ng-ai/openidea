@@ -110,8 +110,8 @@ pub(crate) fn search_project(
         _ => true,
     };
     let literals = |path: &Path, text: &str| literals_of(project, syntax, path, text);
-    let defaults = project.documents.file_defaults();
-    let fallback = |path: &Path| defaults.fallback_for(path).map(|f| f.encoding.to_owned());
+    // Search's UTF-8 fast path does not need to resolve the configured encoding.
+    let fallback = |path: &Path| project.documents.configured_encoding_for(path);
     let mut total = SearchSummary::default();
     for dir in std::iter::once(root).filter(|_| include_root).chain(&content_roots) {
         let mut remaining = query.clone();

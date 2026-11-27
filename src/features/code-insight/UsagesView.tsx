@@ -7,12 +7,14 @@ import { useCallback, useLayoutEffect, useMemo, useRef, useState, type KeyboardE
 import clsx from "clsx";
 import { create } from "zustand";
 import { previewColors, tokenSpans, useLineTokens } from "@/editor/lineTokens";
-import { formatMessage, useTx } from "@/platform/i18n";
+import { save } from "@/platform/dialog";
+import { writeDesktopText } from "@/platform/desktopFiles";
+import { formatMessage, tx, useTx } from "@/platform/i18n";
 import { useEditorPrefs } from "@/platform/editorSettings";
 import { BUNDLED_MONO_FAMILY, monoFontFamily } from "@/platform/fonts";
 import { shortcutLabel } from "@/platform/keymap";
 import { basename, relativeDir, useProject } from "@/platform/project";
-import { useOccurrenceNavigator } from "@/workbench/contributions";
+import { notifications, useOccurrenceNavigator } from "@/workbench/contributions";
 import {
   EmptyState,
   Icon,
@@ -41,10 +43,17 @@ import {
   useUsages,
   type Usage,
   type UsageGroup,
+  type UsageSearch,
 } from "./usages";
 import styles from "./UsagesView.module.css";
 
-import { UsageAccessFilter, filterUsageAccess, supportsUsageAccess, useUsageAccessOptions } from "./UsageAccessFilter";
+import {
+  UsageAccessFilter,
+  filterUsageAccess,
+  supportsUsageAccess,
+  useUsageAccessOptions,
+  type UsageAccessOptions,
+} from "./UsageAccessFilter";
 
 type Node =
   | { kind: "summary"; key: string }
@@ -63,22 +72,24 @@ export function UsagePreview({ usage }: { usage: Usage }) {
   );
 }
 
+function usageTabLabel(t: UsageSearch, tx: (text: string) => string): string {
+  if (!t.symbol) return tx("Usages");
+  const text =
+    t.scope === "project"
+      ? tx("Usages of '{symbol}' in Project Files")
+      : t.scope === "libraries"
+        ? tx("Usages of '{symbol}' in Project and Libraries")
+        : tx("Usages of '{symbol}'");
+  return formatMessage(text, { symbol: t.symbol });
+}
+
 /** Tool window header: one content tab per search (`Usages of 'foo'`). */
 export function UsagesTabs() {
   const tx = useTx();
   const tabs = useUsages((s) => s.tabs);
   const search = useUsages(activeUsageSearch);
   if (!search) return null;
-  const label = (t: (typeof tabs)[number]) => {
-    if (!t.symbol) return tx("Usages");
-    const text =
-      t.scope === "project"
-        ? tx("Usages of '{symbol}' in Project Files")
-        : t.scope === "libraries"
-          ? tx("Usages of '{symbol}' in Project and Libraries")
-          : tx("Usages of '{symbol}'");
-    return formatMessage(text, { symbol: t.symbol });
-  };
+  const label = (t: (typeof tabs)[number]) => usageTabLabel(t, tx);
   return (
     <Tabs
       variant="compact"
@@ -144,6 +155,84 @@ export function toggleExcludedUsages(excluded: ReadonlySet<string>, usages: read
   return next;
 }
 
+/** The search's file groups as the tree shows them (access filter applied, files left empty dropped). */
+function shownGroups(groups: readonly UsageGroup[], options: UsageAccessOptions): UsageGroup[] {
+  return groups.map((g) => ({ ...g, usages: filterUsageAccess(g.usages, options) })).filter((g) => g.usages.length > 0);
+}
+
+function exportedGroups(
+  groups: readonly UsageGroup[],
+  options: UsageAccessOptions,
+  excluded: ReadonlySet<string>,
+): UsageGroup[] {
+  return shownGroups(groups, options)
+    .map((g) => ({ ...g, usages: g.usages.filter((u) => !excluded.has(usageKey(u))) }))
+    .filter((g) => g.usages.length > 0);
+}
+
+/** Export to Text File: the tree as shown (access filter applied), indented four spaces a level, without excluded usages. */
+export function usagesReportText(
+  search: UsageSearch,
+  root: string,
+  options: UsageAccessOptions,
+  excluded: ReadonlySet<string>,
+): string {
+  const files = exportedGroups(search.groups, options, excluded);
+  const total = usageCount(files);
+  const note = search.note ? `  ${search.note}` : "";
+  const lines = [
+    usageTabLabel(search, tx),
+    `${tx("Found usages")}  (${total} ${tx(total === 1 ? "result" : "results")})${note}`,
+  ];
+  for (const g of files) {
+    const dir = relativeDir(root, g.path);
+    const n = g.usages.length;
+    lines.push(`    ${basename(g.path)}${dir ? `  ${dir}` : ""}  (${n} ${tx(n === 1 ? "usage" : "usages")})`);
+    for (const u of g.usages) lines.push(`        ${u.line + 1}  ${u.text.trim()}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+const excludedIn = (search: UsageSearch) => useExcluded.getState().byTab[search.id] ?? NONE;
+
+/** Whether the active search has usages to export (shown and not excluded). */
+export function canExportUsages(): boolean {
+  const search = activeUsageSearch(useUsages.getState());
+  return (
+    !!search &&
+    !search.loading &&
+    exportedGroups(search.groups, useUsageAccessOptions.getState(), excludedIn(search)).length > 0
+  );
+}
+
+/** Saves the active search's results as text, to a file picked in the save dialog. */
+export async function exportUsagesToTextFile(): Promise<void> {
+  const search = activeUsageSearch(useUsages.getState());
+  if (!search || !canExportUsages()) return;
+  const text = usagesReportText(
+    search,
+    useProject.getState().project?.root ?? "",
+    useUsageAccessOptions.getState(),
+    excludedIn(search),
+  );
+  const path = await save({
+    title: tx("Export to Text File"),
+    defaultPath: `${usageTabLabel(search, tx).replace(/[/\\:*?"<>|]/g, "_")}.txt`,
+    filters: [{ name: tx("Text file"), extensions: ["txt"] }],
+  });
+  if (!path) return;
+  try {
+    await writeDesktopText(path, text);
+  } catch (e) {
+    notifications().notify({
+      level: "error",
+      title: tx("Cannot export the usages"),
+      body: e instanceof Error ? e.message : String(e),
+      key: "usages.export",
+    });
+  }
+}
+
 function openUsage(u: Usage, focus: boolean) {
   void openCodeLocation(u.path, { line: u.line, col: u.col }, { focus });
 }
@@ -159,11 +248,7 @@ export function UsagesView() {
   const accessOptions = useUsageAccessOptions();
   const allUsages = useMemo(() => search?.groups.flatMap((g) => g.usages) ?? [], [search?.groups]);
   const files = useMemo<Node[]>(
-    () =>
-      (search?.groups ?? [])
-        .map((g) => ({ ...g, usages: filterUsageAccess(g.usages, accessOptions) }))
-        .filter((g) => g.usages.length > 0)
-        .map((g) => ({ kind: "file", key: g.path, group: g })),
+    () => shownGroups(search?.groups ?? [], accessOptions).map((g) => ({ kind: "file", key: g.path, group: g })),
     [search?.groups, accessOptions],
   );
   const roots = useMemo<Node[]>(() => (files.length ? [{ kind: "summary", key: SUMMARY_KEY }] : []), [files.length]);
@@ -288,6 +373,15 @@ export function UsagesView() {
         <UsageAccessFilter items={allUsages} vertical />
         <IconButton icon="expand-all" title="Expand All" size="small" iconSize={16} onClick={() => setAll(false)} />
         <IconButton icon="collapse-all" title="Collapse All" size="small" iconSize={16} onClick={() => setAll(true)} />
+        <span className={styles.toolbarSep} />
+        <IconButton
+          icon="export"
+          title="Export to Text File…"
+          action="usages.exportToTextFile"
+          size="small"
+          iconSize={16}
+          disabled={search.loading || files.every(isExcluded)}
+        />
       </div>
       <div className={styles.body} onKeyDown={onKeyDown}>
         {!search.loading && !search.error && search.scope === "project" && (

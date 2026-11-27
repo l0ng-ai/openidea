@@ -11,6 +11,7 @@ import type {
   HotSwapPolicy,
   StashDiffTarget,
 } from "@/bindings";
+import { call, commands } from "./ipc";
 import { useProject } from "./project";
 import { DEFAULT_REMOTE, validateRemote, type RemoteSettings } from "./remoteSettings";
 
@@ -777,6 +778,13 @@ export function workflowSettings(): WorkflowSettings {
     cached = validateWorkflow(raw);
   }
   return cached;
+}
+
+/** Settings › Console › Use soft wraps in console, written by the consoles' toolbar toggle. */
+export async function setConsoleSoftWrap(softWrap: boolean): Promise<void> {
+  useProject.setState({
+    settings: await call(commands.settingsSet("global", "console.softWrap", JSON.stringify(softWrap))),
+  });
 }
 
 /** React hook over one section, e.g. `useWorkflowSettings((s) => s.terminal)`. */

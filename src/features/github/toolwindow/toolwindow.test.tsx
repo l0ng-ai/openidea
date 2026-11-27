@@ -7,9 +7,15 @@ import { provideToolWindowService, useContributions, type ToolWindowService } fr
 import { activate } from "../index";
 import { setCurrentRepository } from "../api/client";
 import type { GHRepository, GHUser } from "../api/types";
+import { useGhProjectAccount } from "../data/account";
 import * as repositoryData from "../data/repository";
 import { useGhRepository } from "../data/repository";
-import { PullRequestsTabs, PullRequestsToolWindow } from "./PullRequestsToolWindow";
+import {
+  PullRequestsHeaderActions,
+  PullRequestsTabs,
+  PullRequestsToolWindow,
+  headerMenu,
+} from "./PullRequestsToolWindow";
 import {
   closeTab,
   contextPullRequest,
@@ -86,6 +92,7 @@ describe("tool window", () => {
     vi.restoreAllMocks();
     setCurrentRepository(null);
     useGhRepository.setState({ connection: null, availability: null, remotes: [] });
+    useGhProjectAccount.setState({ status: null, loading: false, saving: false, revision: 0 });
     resetTabs();
   });
 
@@ -192,5 +199,42 @@ describe("tool window", () => {
     expect(body.variables).toMatchObject({ query: "type:pr repo:org/app is:open", pageSize: 50 });
     await act(async () => openPullRequestTab(4));
     expect(screen.getByRole("tab", { name: /#4/ })).toBeTruthy();
+  });
+
+  it("suggests a matching GitHub account in the header menu and shows the active account badge", () => {
+    const connState = {
+      connection: {
+        coordinates: { owner: "org", name: "app" },
+        repository,
+        currentUser: { ...me, login: "alice" },
+        root: null,
+        remotes: [],
+      },
+      remotes: [{ owner: "org", name: "app", remote: "origin", url: "" }],
+    };
+    expect(headerMenu(connState, null)).toEqual([]);
+    const multiStatus = {
+      ghInstalled: true,
+      accounts: [
+        { login: "alice", active: true },
+        { login: "alice-work", active: false },
+      ],
+      configuredAccount: "",
+      effectiveAccount: "alice",
+      suggestedAccount: "alice-work",
+    };
+    expect(headerMenu(connState, multiStatus).map((i) => ("label" in i ? i.label : ""))).toEqual([
+      "Use alice-work for this project",
+      "Change Repository or Account…",
+    ]);
+
+    useGhRepository.setState({
+      availability: { kind: "ready", repo: {} as never, login: "alice" },
+      ...connState,
+    });
+    useGhProjectAccount.setState({ status: multiStatus });
+    render(<PullRequestsHeaderActions />);
+    const badge = screen.getByRole("button", { name: "@alice" });
+    expect(badge).toHaveAttribute("title", "Use alice-work for this project");
   });
 });

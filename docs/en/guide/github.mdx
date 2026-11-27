@@ -24,6 +24,14 @@ OpenIDEA works with GitHub through the [GitHub CLI](https://cli.github.com) (`gh
     The project needs a Git remote on `github.com`. With one GitHub remote, OpenIDEA connects to it automatically. With
     several, the tool window asks you to pick a **Repository**; the choice is remembered per project. To switch later,
     use **Change Repository or Account…** in the tool window's `⋮` menu.
+
+    When multiple `github.com` accounts are signed into `gh`, **Automatic** uses `gh`'s own active account without
+    setting `GH_TOKEN`. In **Settings › Version Control › GitHub** and in the **Pull Requests** header, OpenIDEA can
+    suggest a matching account for the repository (**Use `<login>` for this project**) or let you choose one
+    explicitly (saved in `.openidea/settings.toml`). Choosing an account passes its `GH_TOKEN` to processes started in
+    that project (terminals, agents, Git, Pull Requests, and run configurations) without changing your global
+    `gh auth switch` selection.
+
   </Step>
 </Steps>
 

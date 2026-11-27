@@ -4,13 +4,15 @@ import type { EditorStatus } from "../controller";
 import type { DocMeta } from "../model/document";
 
 const setEncoding = vi.fn();
+const rememberEncoding = vi.fn();
 const setMeta = vi.fn();
+const notify = vi.fn();
 
 vi.mock("../controller", async () => {
   const { create } = await import("zustand");
   return {
     editorController: () => ({
-      manager: { get: () => ({ setMeta }), backend: { setEncoding } },
+      manager: { get: () => ({ setMeta }), backend: { setEncoding, rememberEncoding } },
       slots: new Map(),
     }),
     useEditorStatus: create<{ status: EditorStatus | null }>(() => ({ status: null })),
@@ -19,6 +21,11 @@ vi.mock("../controller", async () => {
     isTextInput: () => true,
   };
 });
+
+vi.mock("@/workbench/contributions", async (original) => ({
+  ...(await original<typeof import("@/workbench/contributions")>()),
+  notifications: () => ({ notify }),
+}));
 
 vi.mock("@/platform/virtualDocs", () => ({
   isVirtualUri: (s: string) => s.startsWith("jdt:") || s.startsWith("jar:"),
@@ -63,6 +70,7 @@ const button = (name: string) => screen.getByRole<HTMLButtonElement>("button", {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  rememberEncoding.mockResolvedValue(undefined);
   useDocMeta.setState({}, true);
   useEditorStatus.setState({ status: null });
 });
@@ -141,4 +149,46 @@ it("offers ISO-8859-15, the Latin-9 encoding of legacy Western European projects
   fireEvent.click(button("Convert"));
   expect(setEncoding).toHaveBeenCalledWith(1, "iso-8859-15", false);
   view.unmount();
+});
+
+describe("remembering the chosen encoding", () => {
+  const pick = (action: "Reload" | "Convert") => {
+    const view = openPicker(meta({ path: "/p/Main.java", readOnly: false }));
+    choose("ISO-8859-15");
+    fireEvent.click(button(action));
+    return view;
+  };
+
+  it.each(["Reload", "Convert"] as const)("keeps the choice once %s has applied it", async (action) => {
+    setEncoding.mockResolvedValue({ encoding: "iso-8859-15", hasBom: false });
+    const view = pick(action);
+    expect(rememberEncoding).not.toHaveBeenCalled();
+    await waitFor(() => expect(rememberEncoding).toHaveBeenCalledWith(1));
+    expect(rememberEncoding).toHaveBeenCalledTimes(1);
+    expect(notify).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it("keeps nothing when the encoding could not be applied", async () => {
+    setEncoding.mockRejectedValue(new Error("unmappable character"));
+    const view = pick("Convert");
+    await waitFor(() => expect(notify).toHaveBeenCalledWith(expect.objectContaining({ level: "error" })));
+    expect(rememberEncoding).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it("keeps the new encoding and warns when the project settings cannot be written", async () => {
+    setEncoding.mockResolvedValue({ encoding: "iso-8859-15", hasBom: false });
+    rememberEncoding.mockRejectedValue(new Error("settings.toml is not valid TOML"));
+    const view = pick("Convert");
+    await waitFor(() =>
+      expect(notify).toHaveBeenCalledWith({
+        level: "warning",
+        title: "The encoding was not saved to the project settings",
+        body: "settings.toml is not valid TOML",
+      }),
+    );
+    expect(setMeta).toHaveBeenCalledWith({ encoding: "iso-8859-15", hasBom: false, dirty: true });
+    view.unmount();
+  });
 });

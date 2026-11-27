@@ -30,15 +30,15 @@ test("signs in to an agent in an IDE terminal dialog and refreshes its model cat
       agent_registry_list: () => ({ agents: [], warning: null }),
       agent_providers: () => {
         const provider: AgentProvider = {
-          id: "copilot",
-          name: "GitHub Copilot",
-          command: "copilot --headless --no-auto-update --stdio",
-          program: "/Users/alice/Library/Application Support/ai.l0ng.openidea/agents/tools/copilot/1.0.116/copilot",
-          args: ["--headless", "--no-auto-update", "--stdio"],
-          defaultProgram: "copilot",
-          defaultArgs: ["--headless", "--no-auto-update", "--stdio"],
+          id: "claude",
+          name: "Claude Code",
+          command: "claude",
+          program: "/Users/alice/Library/Application Support/ai.l0ng.openidea/agents/tools/claude/claude",
+          args: [],
+          defaultProgram: "claude",
+          defaultArgs: [],
           loginHint:
-            "Run `'/Users/alice/Library/Application Support/ai.l0ng.openidea/agents/tools/copilot/1.0.116/copilot' login` in a terminal.",
+            "Run `'/Users/alice/Library/Application Support/ai.l0ng.openidea/agents/tools/claude/claude'` in a terminal and sign in.",
           commandOverridden: false,
           commandEditable: false,
           commandReadOnlyReason: "registry",
@@ -49,12 +49,12 @@ test("signs in to an agent in an IDE terminal dialog and refreshes its model cat
           config: signedIn ? [model] : [],
           thoughtLevels: {},
           commands: [],
-          source: { kind: "registry", version: "1.0.116", update: null },
+          source: { kind: "registry", version: "1.0.0", update: null },
         };
         return [provider];
       },
       agent_refresh_models: () => ({
-        provider: "copilot",
+        provider: "claude",
         config: signedIn ? [model] : [],
         thoughtLevels: {},
         refreshing: false,
@@ -64,11 +64,11 @@ test("signs in to an agent in an IDE terminal dialog and refreshes its model cat
       }),
       agent_login_spawn: ({ onEvent }: { onEvent: unknown }) => {
         setTimeout(() => {
-          window.__ipc.send(onEvent, { type: "output", data: "Opening GitHub in browser...\r\n" });
+          window.__ipc.send(onEvent, { type: "output", data: "Opening Claude in browser...\r\n" });
           signedIn = true;
           window.__ipc.send(onEvent, { type: "exited", code: 0 });
         }, 40);
-        return { id: 1, pid: 1001, title: "copilot" };
+        return { id: 1, pid: 1001, title: "claude" };
       },
       term_resize: () => null,
       term_write: () => null,
@@ -82,7 +82,7 @@ test("signs in to an agent in an IDE terminal dialog and refreshes its model cat
   await expect(newTasks.getByRole("button", { name: "Model" })).toHaveCount(0);
 
   await signIn.getByRole("button", { name: "Sign In…" }).click();
-  await expect(page.getByRole("dialog", { name: "Sign In to GitHub Copilot" })).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: "Sign In to Claude Code" })).toHaveCount(0);
   await expect(newTasks.getByRole("button", { name: "Model" })).toContainText("Agent's default (Claude Sonnet 4.5)");
-  expect((await ipcCalls(page, "agent_login_spawn")).map((c) => c.id)).toEqual(["copilot"]);
+  expect((await ipcCalls(page, "agent_login_spawn")).map((c) => c.id)).toEqual(["claude"]);
 });

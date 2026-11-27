@@ -1,4 +1,7 @@
-/** Edit › Sort Lines / Reverse Lines / Convert Indents: the selected lines, or the whole file without a selection. */
+/**
+ * Edit › Sort Lines / Reverse Lines / Delete Duplicate Lines / Convert Indents: the selected lines, or the whole file
+ * without a selection.
+ */
 import {
   EditorSelection,
   type ChangeSpec,
@@ -69,6 +72,20 @@ export function reverseLinesSpec(state: EditorState): TransactionSpec | null {
   return rewrite(state, (lines) => [...lines].reverse(), "input.reverse");
 }
 
+/** Keeps the first of each repeated line (exact text) and deletes the later ones with their line break. */
+export function uniqueLinesSpec(state: EditorState): TransactionSpec | null {
+  const changes: ChangeSpec[] = [];
+  for (const b of blocks(state)) {
+    const seen = new Set<string>();
+    for (let n = state.doc.lineAt(b.from).number, last = state.doc.lineAt(b.to).number; n <= last; n++) {
+      const line = state.doc.line(n);
+      if (seen.has(line.text)) changes.push({ from: state.doc.line(n - 1).to, to: line.to });
+      else seen.add(line.text);
+    }
+  }
+  return changes.length ? { changes, scrollIntoView: true, userEvent: "input.dedupe" } : null;
+}
+
 /**
  * Edit › Convert Indents › To Spaces / To Tabs: rewrites the leading whitespace of each line, measured in columns
  * with the Code Style tab size (the editor's when there is none). A space indent detected in the file sets the
@@ -106,6 +123,13 @@ export function sortLines(view: Dispatch): boolean {
 export function reverseLines(view: Dispatch): boolean {
   if (view.state.readOnly) return false;
   const spec = reverseLinesSpec(view.state);
+  if (spec) view.dispatch(spec);
+  return !!spec;
+}
+
+export function uniqueLines(view: Dispatch): boolean {
+  if (view.state.readOnly) return false;
+  const spec = uniqueLinesSpec(view.state);
   if (spec) view.dispatch(spec);
   return !!spec;
 }

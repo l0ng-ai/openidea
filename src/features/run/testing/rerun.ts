@@ -14,6 +14,7 @@ import { goTestParts, withoutGoSelection } from "../goArguments";
 import { withMavenTests } from "../mavenTests";
 import { frameworkFor } from "./index";
 import { dotnetFilter } from "./dotnet";
+import { pytestNodeId } from "./pytest";
 import { cypressSelection } from "./cypress";
 import { playwrightProject, playwrightTitles } from "./playwright";
 import { withNodeTestNamePattern } from "./nodeTest";
@@ -113,7 +114,7 @@ function playwrightArgs(config: RunConfig, paths: string[][]): string[] | null {
 }
 
 function pytestArgs(base: string[], paths: string[][]): string[] | null {
-  const ids = unique(paths.map((p) => p.join("::")));
+  const ids = unique(paths.map(pytestNodeId));
   if (!ids.length) return null;
   // Drop explicit test paths / -k expressions of the original run; keep options and `-m pytest` prefixes.
   const kept = dropFlag(base, ["-k"]).filter((a) => !/\.py(::|$)/.test(a) && !/^tests?\/?$/.test(a));

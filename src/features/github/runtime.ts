@@ -8,7 +8,8 @@ import { getContext, setContext } from "@/platform/context";
 import { useProject } from "@/platform/project";
 import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
 import { activateReviewDiff, toggleReviewDiffViewed } from "./diff";
-import { reloadList } from "./data/list";
+import { loadProjectGithubAccount, useGhProjectAccount } from "./data/account";
+import { reloadList, useGhPrList } from "./data/list";
 import { checkoutPullRequest, clearDiffCache, copyUrl, openInBrowser, openInWorktree } from "./data/local";
 import { deleteMergedBranch } from "./data/operations";
 import { cachedDetails, loadPullRequestData, reloadPullRequest } from "./data/pullRequest";
@@ -99,9 +100,10 @@ export const timeline = {
 export function activate(): () => void {
   const sync = () => {
     const s = useGhRepository.getState();
+    const acct = useGhProjectAccount.getState().status;
     setContext("githubConnected", !!s.connection);
     setContext("githubTimelineActive", activeTimelinePullRequest() !== null);
-    useGithubShell.setState({ headerMenu: headerMenu(s) });
+    useGithubShell.setState({ headerMenu: headerMenu(s, acct) });
   };
   sync();
   const disposers = [
@@ -112,10 +114,27 @@ export function activate(): () => void {
       if (a?.owner !== b?.owner || a?.name !== b?.name) {
         resetTabs();
         clearDiffCache();
+      } else if (
+        s.connection &&
+        prev.connection &&
+        s.connection.currentUser.login !== prev.connection.currentUser.login &&
+        useGhPrList.getState().loaded
+      ) {
+        void reloadList();
+      }
+    }),
+    useGhProjectAccount.subscribe((s, prev) => {
+      sync();
+      if (s.revision !== prev.revision) {
+        void refreshConnection();
       }
     }),
     useProject.subscribe((s, prev) => {
-      if (s.project?.root !== prev.project?.root) resetConnection();
+      if (s.project?.root !== prev.project?.root) {
+        useGhProjectAccount.setState({ status: null, loading: false, saving: false });
+        resetConnection();
+        if (s.project) void loadProjectGithubAccount();
+      }
     }),
     activateReviewDiff(),
     activateReviewMode(),

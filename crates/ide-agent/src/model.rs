@@ -650,6 +650,26 @@ pub enum AgentCommandReadOnlyReason {
     CustomAgent,
 }
 
+/// An authenticated `github.com` account stored in GitHub CLI (`gh`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GhAuthAccount {
+    pub login: String,
+    pub active: bool,
+}
+
+/// GitHub Copilot's default sign-in status alongside the accounts available through `gh`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CopilotAuthStatus {
+    pub authenticated: bool,
+    pub login: Option<String>,
+    pub auth_type: Option<String>,
+    pub status_message: Option<String>,
+    pub gh_installed: bool,
+    pub gh_accounts: Vec<GhAuthAccount>,
+}
+
 /// Output and completion of an interactive sign-in PTY started by the IDE.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase")]

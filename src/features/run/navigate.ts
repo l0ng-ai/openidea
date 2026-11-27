@@ -5,7 +5,9 @@ import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
 import { editorService, notifications } from "@/workbench/contributions";
 import { streamSearch } from "@/platform/textSearch";
+import { useBuildModel } from "@/platform/buildModel";
 import { joinPath, type FileTarget } from "./links";
+import { scopeToRunModule } from "./moduleScope";
 import { findRubyTest } from "./rubyTests";
 import { tx } from "@/platform/i18n";
 
@@ -35,17 +37,21 @@ async function declaresPackage(path: string, pkg: string): Promise<boolean> {
   }
 }
 
-async function findByName(target: FileTarget): Promise<string | null> {
+async function findByName(target: FileTarget, module?: string | null): Promise<string | null> {
   const name = target.path.split("/").pop() ?? target.path;
   try {
     const remote = useRemote.getState().session;
     // Older remote servers only have fuzzy search: request the whole inventory before filtering.
-    const hits =
+    const found =
       remote && !remote.commands.includes("find_files_named")
         ? (await call(commands.findFiles(name, (await call(commands.indexStatus())).files)))
             .filter((h) => h.relPath.split("/").pop() === name)
             .map((h) => h.path)
         : await call(commands.findFilesNamed(name));
+    // A multi-module build compiles the same class in several modules; the run only has the
+    // one on its classpath, so its module's folder decides before the name does.
+    const build = useBuildModel.getState();
+    const hits = scopeToRunModule(found, build.root, module, build.model);
     const tail = target.path.replace(/^\.?\//, "");
     const exact = hits.find((path) => path === tail || path.endsWith(`/${tail}`));
     if (exact) return exact;
@@ -86,7 +92,11 @@ export function runDirectory(cwd: string | null | undefined): string {
   return cwd ? joinPath(root, cwd) : root;
 }
 
-export async function resolveTarget(target: FileTarget, cwd: string): Promise<string | null> {
+/**
+ * `cwd` resolves relative paths; `module` is the run configuration's owning module (RunConfig
+ * `module`), which picks between same-named files of a multi-module build.
+ */
+export async function resolveTarget(target: FileTarget, cwd: string, module?: string | null): Promise<string | null> {
   if (target.resolve === "path") {
     const candidate = joinPath(cwd, target.path);
     if (await exists(candidate)) return candidate;
@@ -97,7 +107,7 @@ export async function resolveTarget(target: FileTarget, cwd: string): Promise<st
       if (fromRoot !== candidate && (await exists(fromRoot))) return fromRoot;
     }
   }
-  return (await findByName(target)) ?? (target.className ? findLibraryClass(target.className) : null);
+  return (await findByName(target, module)) ?? (target.className ? findLibraryClass(target.className) : null);
 }
 
 /** Regular-expression search over the project's Ruby files (or the given ones). */
@@ -132,7 +142,7 @@ export async function declarationLine(path: string, test: string[]): Promise<num
   }
 }
 
-export async function openTarget(target: FileTarget, cwd: string, focus = true): Promise<void> {
+export async function openTarget(target: FileTarget, cwd: string, focus = true, module?: string | null): Promise<void> {
   if (!isTauri()) return;
   if (target.resolve === "rubyTest") {
     const site = target.className
@@ -151,7 +161,7 @@ export async function openTarget(target: FileTarget, cwd: string, focus = true):
     await editorService().openFile(site.path, { selection: { line: site.line - 1, col: 0 }, focus });
     return;
   }
-  const path = await resolveTarget(target, cwd);
+  const path = await resolveTarget(target, cwd, module);
   if (!path && target.className) {
     // A library or JDK frame without sources: nothing to open, which is no error.
     notifications().notify({

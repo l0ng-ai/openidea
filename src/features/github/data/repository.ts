@@ -224,7 +224,12 @@ export async function connect(
     if (seq !== connectSeq) return false;
     if (!repository) throw new Error(`Repository ${nameWithOwner(coordinates)} not found`);
     const previous = useGhRepository.getState().connection;
-    if (!sameRepository(previous?.coordinates, coordinates) || previous?.root !== root) resetRepositoryData();
+    if (
+      !sameRepository(previous?.coordinates, coordinates) ||
+      previous?.root !== root ||
+      previous?.currentUser.login !== currentUser.login
+    )
+      resetRepositoryData();
     setCurrentRepository({ ...coordinates, id: repository.id, root });
     useGhRepository.setState((s) => ({
       connection: { coordinates, repository, currentUser, root, remotes },
