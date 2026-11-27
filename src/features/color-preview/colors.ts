@@ -7,7 +7,8 @@ export { fromHex, toHex6, toHex8, type Rgba } from "@/ui/colorPickerValues";
  * names are checked by the caller (the browser knows them).
  */
 
-export type ColorFormat = "hex" | "rgb" | "hsl" | "name";
+/** `int`: a `0xRRGGBB` argument of Java's `new Color(…)`. */
+export type ColorFormat = "hex" | "rgb" | "hsl" | "name" | "int";
 
 export interface ColorMatch {
   /** UTF-16 offsets in the line. */
@@ -29,6 +30,8 @@ const ALPHA_FIRST = new Set(["axaml"]);
 
 /** The literal as CSS reads it: an alpha-first hex with its alpha moved to the end. */
 export function cssColor(color: ColorMatch): string {
+  if (color.format === "int")
+    return `#${(Number.parseInt(color.text.slice(2), 16) & 0xffffff).toString(16).padStart(6, "0")}`;
   if (!color.argb) return color.text;
   const digits = color.text.slice(1);
   const alpha = digits.length === 8 ? 2 : 1;
@@ -44,6 +47,10 @@ const FUNCTION = String.raw`\b(?:rgba?|hsla?)\(\s*${NUMBER}(?:deg|%)?(?:\s*[,\s]
 const COLOR_RE = new RegExp(`${FUNCTION}|${HEX}|[a-zA-Z]{3,20}(?![\\w(-])`, "g");
 /** Before a name, these make it part of a selector, variable or longer word (`.red`, `$white`, `off-white`). */
 const NAME_PREFIX = /[\w.#$@-]/;
+
+/** java.awt.Color's (and ColorUIResource's) `int rgb` constructor, the literal as its whole argument list. */
+const JAVA_INT =
+  /\bnew\s+(?:(?:java\.awt|javax\.swing\.plaf)\.)?(?:Color|ColorUIResource)\s*\(\s*(0[xX][0-9a-fA-F]{1,8})\s*\)/g;
 
 /** Global keywords and words that are valid colors but say nothing about one. */
 const NOT_COLORS = new Set(["inherit", "initial", "unset", "revert", "currentcolor", "transparent"]);
@@ -83,6 +90,14 @@ export function findColors(line: string, language: string, isColorName: (word: s
       argb ? { from, to: from + text.length, text, format, argb } : { from, to: from + text.length, text, format },
     );
   }
+  if (language === "java") {
+    for (const m of line.matchAll(JAVA_INT)) {
+      const text = m[1]!;
+      const from = m.index + m[0].lastIndexOf(text);
+      out.push({ from, to: from + text.length, text, format: "int" });
+    }
+    out.sort((a, b) => a.from - b.from);
+  }
   return out;
 }
 
@@ -114,6 +129,12 @@ function toHsl([r, g, b]: Rgba): [number, number, number] {
  * keeps its name and separators; a named color becomes hex.
  */
 export function formatColor(rgba: Rgba, original: ColorMatch): string {
+  if (original.format === "int") {
+    // Color(int) has no alpha and reads only the low 24 bits; digits above them stay as written.
+    const digits = toHex6(rgba).slice(1);
+    const head = original.text.slice(0, Math.max(2, original.text.length - 6));
+    return head + (/[A-F]/.test(original.text.slice(2)) ? digits.toUpperCase() : digits);
+  }
   const alpha = rgba[3];
   const hasAlpha = alpha < 1;
   if (original.format === "hex" || original.format === "name") {
