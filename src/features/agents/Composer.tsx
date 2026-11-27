@@ -2,7 +2,8 @@
  * The message box of the New Task page and of sessions: `@` file and folder references
  * (project index search) shown as chips, `/` agent commands, `>` quotes as blocks, ↑ / ↓
  * history, pasted or dropped images, files dropped from outside the project as attachments,
- * pasted project paths as references, Shift+Tab to cycle the agent's mode. Its draft lives
+ * pasted project paths as references, pasted links (over selected text as `[text](url)`, a GitHub
+ * link to a file of this repository as a reference to it), Shift+Tab to cycle the agent's mode. Its draft lives
  * in the store under `id`; the text there is what's sent (see `composerEditor`).
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -23,6 +24,7 @@ import { isRemoteWindow } from "@/platform/remote";
 import { registerKeyClaim } from "@/platform/keymap";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { copySourceOf } from "@/platform/clipboardSource";
+import { blobLink, blobPathCandidates, isRemoteOf, markdownLink, pastedUrl } from "./composerLinks";
 import {
   EDITOR_TAB_MIME,
   getAgentContextSources,
@@ -791,6 +793,60 @@ export function Composer(props: ComposerProps) {
     return true;
   };
 
+  /**
+   * A pasted URL: over selected text (one line), a `[text](url)` link; a GitHub link to a file
+   * or folder of this repository, a reference to it once found (else the URL). Any other URL
+   * is pasted as text, and drawn as a link chip.
+   */
+  const pasteLink = (pasted: string, view: EditorView): boolean => {
+    const url = pastedUrl(pasted);
+    if (!url) return false;
+    const { from, to } = view.state.selection.main;
+    const selected = view.state.sliceDoc(from, to);
+    if (selected.trim() && !selected.includes("\n") && !pastedUrl(selected)) {
+      replace(from, to, markdownLink(selected.trim(), url));
+      return true;
+    }
+    const link = blobLink(url);
+    if (!link) return false;
+    void (async () => {
+      const remotes = await call(commands.vcsRemotes(root)).catch(() => []);
+      if (
+        !isRemoteOf(
+          remotes.flatMap((r) => (r.resolvedUrl ? [r.url, r.resolvedUrl] : [r.url])),
+          link,
+        )
+      )
+        return null;
+      // The ref may hold `/`: each split is tried, the shortest ref first.
+      const found = await Promise.all(
+        blobPathCandidates(link).map(async (rel) => {
+          const ref = refOf(resolveTyped(root, rel));
+          if (!ref || ref.rel === "." || /\s/.test(ref.rel)) return null;
+          const kind = await call(commands.fsEntryKind(ref.path)).catch(() => null);
+          if (kind === "dir") return { ...ref, rel: `${ref.rel}/`, lines: undefined };
+          return kind === "file" ? { ...ref, lines: link.lines } : null;
+        }),
+      );
+      return found.find((f) => f !== null) ?? null;
+    })().then(
+      (found) => {
+        if (!found) {
+          replace(from, to, url);
+          return;
+        }
+        const known = new Set(composerDraft(id).files.map((f) => f.path));
+        if (!known.has(found.path))
+          updateComposer(id, { files: [...composerDraft(id).files, { path: found.path, rel: found.rel }] });
+        const before = view.state.sliceDoc(Math.max(0, from - 1), from);
+        const glue = before && !/\s/.test(before) ? " " : "";
+        replace(from, to, `${glue}${mentionOf(found.rel, found.lines)} `);
+      },
+      () => replace(from, to, url),
+    );
+    return true;
+  };
+
   /** The project files `text` names at a line, as `@rel:line` (existing files only). */
   const projectPlaces = async (text: string): Promise<string[]> => {
     const found = await Promise.all(
@@ -897,7 +953,7 @@ export function Composer(props: ComposerProps) {
       e.preventDefault();
       return true;
     }
-    if (plain && (pastePath(plain, view) || pasteLong(plain, view))) {
+    if (plain && (pasteLink(plain, view) || pastePath(plain, view) || pasteLong(plain, view))) {
       e.preventDefault();
       return true;
     }

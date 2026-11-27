@@ -209,7 +209,10 @@ pub fn collect(spec: &ProfileSpec) -> IdeResult<Profile> {
                 path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
             let bytes = std::fs::read(path).map_err(|e| IdeError::invalid(format!("Cannot read {name}: {e}")))?;
             let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
-            if pstats::looks_like_pstats(&bytes) || ext == "pstats" || ext == "prof" {
+            // The content decides (`node --cpu-prof-name=cpu.prof` writes JSON); the extension only
+            // names what a file that is neither failed to be.
+            let json = bytes.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'{');
+            if pstats::looks_like_pstats(&bytes) || (!json && matches!(ext.as_str(), "pstats" | "pstat" | "prof")) {
                 let bases: Vec<&Path> = root.iter().map(|r| r.as_ref()).chain(path.parent()).collect();
                 let profile = pstats::read(&bytes, &bases, "cProfile")
                     .map_err(|e| IdeError::invalid(format!("{name} is not a cProfile snapshot ({e}).")))?;
@@ -367,10 +370,19 @@ mod tests {
         let fib = p.frames.iter().find(|f| f.name == "fib").unwrap();
         assert_eq!(fib.file.as_deref(), Some(dir.path().join("work.py").as_path()), "relative to the snapshot");
 
+        // A Go pprof profile (gzip) named `.prof`.
         let bad = dir.path().join("bad.prof");
-        std::fs::write(&bad, "not marshal").unwrap();
+        std::fs::write(&bad, b"\x1f\x8b\x08\x00").unwrap();
         let err = collect(&ProfileSpec::SnapshotFile { path: bad.into(), root: None }).unwrap_err();
         assert!(err.message.starts_with("bad.prof is not a cProfile snapshot"), "{}", err.message);
+
+        // `node --cpu-prof --cpu-prof-name=cpu.prof`.
+        let v8 = dir.path().join("cpu.prof");
+        let json = r#"{"nodes":[{"id":1,"callFrame":{"functionName":"(root)","url":"","lineNumber":-1},"children":[2]},
+            {"id":2,"callFrame":{"functionName":"work","url":"","lineNumber":0}}],"samples":[2,2],"timeDeltas":[0,1000]}"#;
+        std::fs::write(&v8, json).unwrap();
+        let p = collect(&ProfileSpec::SnapshotFile { path: v8.into(), root: None }).unwrap();
+        assert_eq!(p.profiler, "V8 CPU profile");
     }
 
     #[test]

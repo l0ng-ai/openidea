@@ -4329,5 +4329,9 @@
   "Table view of the file": "Table view of the file",
   "Data": "Data",
   "CSV editor view": "CSV editor view",
+  "Pull request link {text}": "Pull request link {text}",
+  "Issue link {text}": "Issue link {text}",
+  "Commit link {text}": "Commit link {text}",
+  "Link {text}": "Link {text}",
   "Transpose": "Transpose"
 }

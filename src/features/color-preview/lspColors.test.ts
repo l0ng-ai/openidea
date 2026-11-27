@@ -15,6 +15,7 @@ const menu = vi.hoisted(() => vi.fn());
 vi.mock("@/ui", async (original) => ({ ...(await original<typeof import("@/ui")>()), showContextMenu: menu }));
 const { lspColorPreview, serverOnlyColors } = await import("./lspColors");
 const { disposeColorPicker } = await import("./ColorPicker");
+const { mapColors } = await import("./providerSwatch");
 const { useProject } = await import("@/platform/project");
 const views: EditorView[] = [];
 afterEach(() => {
@@ -161,4 +162,44 @@ it("asks nothing while color gutter icons are off and drops stale answers", asyn
   expect(swatches(view)).toHaveLength(0);
   await vi.advanceTimersByTimeAsync(300);
   expect(swatches(view)).toHaveLength(1);
+});
+
+it("keeps swatches while typing elsewhere so the gutter doesn't collapse until the server answers", async () => {
+  vi.useFakeTimers();
+  ipc.lspDocumentColors.mockResolvedValue({ status: "ok", data: [tailwind] });
+  const view = open(CSS, "css");
+  await vi.advanceTimersByTimeAsync(300);
+  expect(swatches(view)).toHaveLength(1);
+  ipc.lspDocumentColors.mockReturnValue(new Promise(() => {}));
+
+  view.dispatch({ changes: { from: 2, insert: "x" } });
+  expect(swatches(view)).toHaveLength(1);
+  view.dispatch({ changes: { from: 0, insert: "\n" } });
+  expect(swatches(view)).toHaveLength(1);
+});
+
+it("drops only the swatch whose color text is edited", async () => {
+  vi.useFakeTimers();
+  ipc.lspDocumentColors.mockResolvedValue({ status: "ok", data: [tailwind, color(0, 0, 1, [0, 0, 1])] });
+  const view = open(CSS, "css");
+  await vi.advanceTimersByTimeAsync(300);
+  expect(swatches(view)).toHaveLength(2);
+  ipc.lspDocumentColors.mockReturnValue(new Promise(() => {}));
+  const at = view.state.doc.line(2).from + 20;
+  view.dispatch({ changes: { from: at, insert: "0" } });
+  expect(swatches(view).map((s) => s.title)).toEqual(["rgba(0, 0, 255, 1)"]);
+});
+
+it("moves colors through edits and drops the ones an edit touches", () => {
+  const state = EditorState.create({ doc: CSS });
+  const below = state.update({ changes: { from: 0, insert: "\n" } });
+  expect(mapColors([tailwind], below)).toEqual([
+    { ...tailwind, range: { start: { line: 2, col: 12 }, end: { line: 2, col: 22 } } },
+  ]);
+  const same = state.update({ changes: { from: state.doc.line(2).from, insert: "ab" } });
+  expect(mapColors([tailwind], same)[0]!.range).toEqual({ start: { line: 1, col: 14 }, end: { line: 1, col: 24 } });
+  const inside = state.update({ changes: { from: state.doc.line(2).from + 15, insert: "x" } });
+  expect(mapColors([tailwind], inside)).toEqual([]);
+  const after = state.update({ changes: { from: state.doc.line(2).from + 22, insert: "0" } });
+  expect(mapColors([tailwind], after)).toEqual([]);
 });
