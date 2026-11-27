@@ -172,7 +172,7 @@ describe("Commit dialog diff window (#1863)", () => {
           ? "[data-testid='diff-view']"
           : location === "footer"
             ? "[data-dialog-footer] button"
-            : "[data-dialog-titlebar] button",
+            : "[data-dialog-titlebar]",
       )!;
       fireEvent.keyDown(target, { key: "w", code: "KeyW", metaKey: true });
       expect(closeTab).not.toHaveBeenCalled();

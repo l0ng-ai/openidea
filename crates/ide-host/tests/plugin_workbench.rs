@@ -6,7 +6,6 @@ use ide_host::{Host, HostConfig};
 use ide_plugin::TextQuery;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 struct Harness {
     host: Arc<Host>,
@@ -510,6 +509,7 @@ async fn plugin_run_output_mode_executes_pty_and_pipes_with_input_exit_and_stop(
     use ide_host::plugins::{Consent, PluginEvent, PluginHost, WindowRequest};
     use ide_plugin::{Invocation, Limits};
     use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
 
     let f = Harness::new();
     f.host.set_project_trust(&f.root, true, false).await.unwrap();

@@ -4,7 +4,7 @@
 //! without network.
 
 use crate::platform::{Arch, Os, Platform};
-use crate::process::{Emit, Http};
+use crate::process::Emit;
 use crate::sources::Download;
 use crate::{InstallEvent, InstallGuard, Tools, archive, clear_quarantine, fetch_verified};
 use ide_core::error::ErrorKind;
@@ -240,10 +240,6 @@ fn unpacked_root(pkg: &Path, home: &Path) -> PathBuf {
 }
 
 impl Tools {
-    fn http(&self) -> IdeResult<Http> {
-        Http::new(&self.system_path)
-    }
-
     /// Java versions `vendor` publishes.
     pub fn jdk_releases(&self, vendor: &str, cancel: &CancellationToken) -> IdeResult<JdkReleases> {
         vendor_or_err(vendor)?;

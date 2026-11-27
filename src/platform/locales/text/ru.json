@@ -927,7 +927,6 @@
   "Run `auggie login` in a terminal.": "Выполните `auggie login` в терминале.",
   "Run `claude` in a terminal and sign in.": "Запустите `claude` в терминале и выполните вход.",
   "Run `codex login` in a terminal.": "Выполните `codex login` в терминале.",
-  "Run `copilot` in a terminal and sign in.": "Запустите `copilot` в терминале и выполните вход.",
   "Run `cursor-agent login` in a terminal.": "Выполните `cursor-agent login` в терминале.",
   "Run `gemini` in a terminal and sign in.": "Запустите `gemini` в терминале и выполните вход.",
   "Run `goose configure` in a terminal.": "Выполните `goose configure` в терминале.",
@@ -2144,7 +2143,6 @@
   "Install a plugin folder with": "Установить папку плагина с",
   "Install and Debug": "Установить и отладить",
   "Reinstall and Debug": "Переустановить и отладить",
-  "Install gh…": "Установить gh…",
   "Installed": "Установлено",
   "Installed packages": "Установленные пакеты",
   "Installed plugins": "Установленные плагины",
@@ -9043,6 +9041,7 @@
   "Next Failed Test": "Следующий непройденный тест",
   "Show Test Durations": "Показать длительность тестов",
   "Select First Failed Test When Finished": "Выбирать первый непройденный тест по завершении",
+  "Track Running Test": "Отслеживать выполняемый тест",
   "Test Runner Options": "Параметры запуска тестов",
   "Run '{name}' with Fuzzing": "Запустить '{name}' с фаззингом",
   "Reading…": "Чтение…",
@@ -9794,8 +9793,6 @@
   "Unshelve Silently": "Восстановить без подтверждения",
   "Remove All Watches": "Удалить все контрольные выражения",
   "GitHub account": "Аккаунт GitHub",
-  "Leave empty to use the active GitHub CLI account. OpenIDEA resolves the token at launch and never stores it.": "Оставьте пустым, чтобы использовать активный аккаунт GitHub CLI. OpenIDEA определяет токен при запуске и никогда не сохраняет его.",
-  "github-username": "имя-пользователя-github",
   "Change File Encoding": "Изменить кодировку файла",
   "Convert": "Преобразовать",
   "Use {label} for this file?": "Использовать {label} для этого файла?",
@@ -10182,5 +10179,7 @@
   "SQL INSERT": "SQL INSERT",
   "SQL UPDATE": "SQL UPDATE",
   "SQL DELETE": "SQL DELETE",
-  "Column comment": "Комментарий к столбцу"
+  "Column comment": "Комментарий к столбцу",
+  "Get from Version Control": "Получить из системы контроля версий",
+  "Cannot connect to the remote host": "Не удалось подключиться к удалённому хосту"
 }

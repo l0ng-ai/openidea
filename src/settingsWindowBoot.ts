@@ -13,6 +13,17 @@ import { activateSettingsPages as toolsPages } from "./features/tools/settingsPa
 import { activateSettingsPages as vcsPages } from "./features/vcs/settingsPages";
 import { activateSettingsPages as vimPages } from "./features/vim/settingsPages";
 import { activateList } from "./windowBoot";
+import { provideEmbeddedTerminal } from "./workbench/contributions";
+
+/** The embedded terminal of the agents' Sign In dialog, loaded on first use. */
+function embeddedTerminal(): () => void {
+  provideEmbeddedTerminal(async (host, options) =>
+    (await import("./features/terminal/loader"))
+      .loadTerminalRuntime()
+      .then((rt) => rt.createEmbeddedTerminal(host, options)),
+  );
+  return () => provideEmbeddedTerminal(undefined);
+}
 
 /**
  * Native Settings window of project window `parent`: only the settings pages
@@ -28,6 +39,7 @@ export function bootSettingsWindow(parent: string): ComponentType {
     ["plugins", pluginsPages],
     ["tools", toolsPages],
     ["agents", agentsPages],
+    ["terminal", embeddedTerminal],
     ["vim", vimPages],
     ["vcs", vcsPages],
     ["github", githubPages],

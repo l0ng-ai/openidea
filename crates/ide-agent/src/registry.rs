@@ -1212,7 +1212,7 @@ esac
         write_atomic(&p.cache_file, index.as_bytes()).unwrap();
         let spec = provider::load(Some(&p.agents_dir), None).into_iter().find(|s| s.id == "copilot").unwrap();
         assert_eq!(spec.name, "GitHub Copilot");
-        assert_eq!(spec.login_hint, "Run `copilot` in a terminal and sign in.");
+        assert_eq!(spec.login_hint, "Run `copilot login` in a terminal.");
         assert_eq!(spec.source, AgentSource::Registry { version: "1.0.104".into(), update: None });
 
         let mut providers = vec![provider::describe(&spec)];

@@ -67,7 +67,12 @@ pub async fn doc_edit(host: &Host, window: &str, doc: DocId, base_version: u32, 
 #[command(trust = always)]
 pub async fn doc_save(host: &Host, window: &str, doc: DocId) -> IdeResult<()> {
     let project = host.project(window)?;
-    host.blocking(move || project.documents.save(doc)).await?;
+    host.blocking(move || {
+        project.documents.save(doc)?;
+        remember_saved_encodings(&project);
+        Ok(())
+    })
+    .await?;
     host.debugger.refresh_source_mirrors(host.owner_window(window)).await
 }
 
@@ -83,7 +88,13 @@ pub async fn doc_reload_from_disk(host: &Host, window: &str, doc: DocId) -> IdeR
 #[command(trust = always)]
 pub async fn doc_autosave(host: &Host, window: &str, doc: DocId) -> IdeResult<bool> {
     let project = host.project(window)?;
-    let saved = host.blocking(move || project.documents.autosave(doc)).await?;
+    let saved = host
+        .blocking(move || {
+            let saved = project.documents.autosave(doc)?;
+            remember_saved_encodings(&project);
+            Ok(saved)
+        })
+        .await?;
     if saved {
         host.debugger.refresh_source_mirrors(host.owner_window(window)).await?;
     }
@@ -93,7 +104,12 @@ pub async fn doc_autosave(host: &Host, window: &str, doc: DocId) -> IdeResult<bo
 #[command(trust = always)]
 pub async fn doc_save_all(host: &Host, window: &str) -> IdeResult<()> {
     let project = host.project(window)?;
-    host.blocking(move || project.documents.save_all()).await?;
+    host.blocking(move || {
+        let saved = project.documents.save_all();
+        remember_saved_encodings(&project);
+        saved
+    })
+    .await?;
     host.debugger.refresh_source_mirrors(host.owner_window(window)).await
 }
 

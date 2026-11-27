@@ -58,6 +58,11 @@ with tempfile.TemporaryDirectory() as scratch:
         missing = [e for e in expected if e not in out]
         assert not missing, missing
         assert run.returncode == 1, run.returncode
+        # Each line once: a test's output only in its messages, a thread outside any test's as is.
+        assert "##teamcity[testStdErr name='passes' className='sample.SampleTest' out='to stderr|n']" in out, out
+        assert "##teamcity[testStdOut className='sample.SampleTest' out='class set-up|n']" in out, out
+        assert all(out.count(text) == 1 for text in ("hello", "to stderr", "loaded", "class set-up")), out
+        assert "\nfrom a thread\n" in out and out.count("from a thread") == 1, out
         method = subprocess.run([tool("java"), "-cp", os.pathsep.join([str(classes), str(sample), cp]),
                                  "ai.openidea.junit.Runner", "sample.SampleTest#parameterized"], capture_output=True)
         assert method.stdout.decode().count("testStarted") == 2, method.stdout

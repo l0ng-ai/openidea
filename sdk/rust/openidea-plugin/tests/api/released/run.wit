@@ -1,11 +1,29 @@
-package openidea:plugin@1.17.0;
+package openidea:plugin@1.18.0;
 
 /// Launches this plugin's configurations in the invoking window's Run tool window.
 interface run {
     use types.{error};
+    /// Output stream transport for a plugin-owned run configuration (API 1.18).
+    /// Ordinary pseudo-terminals combine stdout and stderr and can change
+    /// buffering, input handling, and terminal behavior.
+    enum output-mode {
+        /// Separate stdout and stderr pipes in the Run console (default).
+        pipes,
+        /// Pseudo-terminal ("Emulate terminal in output console").
+        pty,
+    }
+    /// Per-launch options for `start-with-options` (API 1.18).
+    record start-options {
+        debug: bool,
+        /// Optional per-invocation override. A user-saved override wins over
+        /// this value, which wins over the plugin configuration default.
+        output-mode: option<output-mode>,
+    }
     /// Starts an owned configuration, appending args. Debug requires a debugger.
     /// Only from a window command/event. The returned id receives run-exited.
     start: func(config: string, args: list<string>, debug: bool) -> result<string, error>;
+    /// Starts an owned configuration with launch options, appending args (API 1.18).
+    start-with-options: func(config: string, args: list<string>, options: start-options) -> result<string, error>;
 }
 
 /// Optional dynamic configurations, refreshed alongside run detectors.
@@ -62,6 +80,32 @@ interface launch-configurations {
     }
     /// Returns the complete set for this project root.
     configurations: func(project-root: string) -> list<launch-configuration>;
+}
+
+/// Optional dynamic configurations with environment, debugger, and output mode (API 1.18).
+/// When exported, the IDE uses this instead of `launch-configurations` and `run-configurations`.
+interface execution-configurations {
+    use launch-configurations.{debugger};
+    use run.{output-mode};
+    /// `launch-configuration` with a default output transport mode.
+    record execution-configuration {
+        id: string,
+        name: string,
+        program: string,
+        args: list<string>,
+        cwd: option<string>,
+        test: bool,
+        framework: option<string>,
+        /// Variables added to the run's environment (at most 64). A name the IDE's own
+        /// environment already has, such as `PATH`, is refused like in `process`.
+        env: list<tuple<string, string>>,
+        /// None: Debug infers the debugger from a source file in `args`, as before.
+        debugger: option<debugger>,
+        /// Default output stream mode (`pipes` or `pty`).
+        output-mode: output-mode,
+    }
+    /// Returns the complete set for this project root.
+    configurations: func(project-root: string) -> list<execution-configuration>;
 }
 
 /// Optional parser for test configurations whose framework is plugin.

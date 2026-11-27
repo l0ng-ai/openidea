@@ -25,7 +25,6 @@
   "Run `auggie login` in a terminal.": "Execute `auggie login` em um terminal.",
   "Run `claude` in a terminal and sign in.": "Execute `claude` em um terminal e entre.",
   "Run `codex login` in a terminal.": "Execute `codex login` em um terminal.",
-  "Run `copilot` in a terminal and sign in.": "Execute `copilot` em um terminal e entre.",
   "Run `cursor-agent login` in a terminal.": "Execute `cursor-agent login` em um terminal.",
   "Run `gemini` in a terminal and sign in.": "Execute `gemini` em um terminal e entre.",
   "Run `goose configure` in a terminal.": "Execute `goose configure` em um terminal.",
@@ -1073,7 +1072,6 @@
   "Install a plugin folder with": "Instalar uma pasta de plugin com",
   "Install and Debug": "Instalar e depurar",
   "Reinstall and Debug": "Reinstalar e depurar",
-  "Install gh…": "Instalar gh…",
   "Installed": "Instalados",
   "Installed packages": "Pacotes instalados",
   "Installed plugins": "Plugins instalados",
@@ -6007,5 +6005,7 @@
   "Blocked command pattern": "Padrão de comando bloqueado",
   "Mode applies to": "O modo se aplica a",
   "Context": "Contexto",
-  "Allow all optional permissions": "Permitir todas as permissões opcionais"
+  "Allow all optional permissions": "Permitir todas as permissões opcionais",
+  "Get from Version Control": "Obter do controle de versão",
+  "Cannot connect to the remote host": "Não é possível conectar ao host remoto"
 }

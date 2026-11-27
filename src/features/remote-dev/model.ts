@@ -2,7 +2,8 @@
 import { create } from "zustand";
 import type { RemoteEntry, RemoteStage } from "@/platform/ipc";
 
-export const useConnectDialog = create<{ open: boolean }>(() => ({ open: false }));
+/** `open`: the dialog in this page. `inWindow`: connecting for the Remote Development window. */
+export const useConnectDialog = create<{ open: boolean; inWindow: boolean }>(() => ({ open: false, inWindow: false }));
 
 export function openConnectDialog() {
   useConnectDialog.setState({ open: true });

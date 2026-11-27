@@ -75,7 +75,10 @@ describe("node:test reporter records", () => {
 
   it("are hidden from the console", () => {
     const fed: string[] = [];
-    const console = new RecordsOutput((line) => fed.push(line)).feed(OUTPUT + "\n");
+    const console = new RecordsOutput((line) => fed.push(line))
+      .feed(OUTPUT + "\n")
+      .map((c) => c.text)
+      .join("");
     expect(console).not.toContain("@@openidea");
     expect(console).toContain("  ✔ adds items (0.4259ms)\n");
     expect(fed.filter((l) => l.startsWith("@@openidea"))).toHaveLength(8);

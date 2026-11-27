@@ -339,109 +339,120 @@ function TaskChanges({ task, tabKey }: { task: AgentTask; tabKey: string }) {
       });
     }
   };
-  const items = useDiffItems(task, rows, grouped, scope);
+  // Running, the task is published again with every token count: its diffs only need these fields.
+  const { id: taskId, base, isolation, branch, cwd } = task;
+  const diffTask = useMemo(
+    () => ({ id: taskId, base, isolation, branch, cwd }),
+    [taskId, base, isolation, branch, cwd],
+  );
+  const items = useDiffItems(diffTask, rows, grouped, scope);
   const diff = useRef<CombinedDiffHandle>(null);
   const busy = task.status === "starting" || task.status === "running";
-  const fileTree =
-    changes === null ? (
-      <Spinner />
-    ) : (
-      <Tree<ChangeRow>
-        key={view}
-        aria-label="Changed files"
-        roots={rows}
-        getKey={(n) => n.key}
-        getLabel={(n) =>
-          n.type === "file"
-            ? basename(n.change.path)
-            : n.type === "commit"
-              ? n.commit.summary
-              : n.type === "repo"
-                ? basename(n.root)
-                : n.label
-        }
-        getChildren={(n) => (n.type === "file" ? undefined : n.children)}
-        isExpandable={(n) => n.type !== "file" && n.children.length > 0}
-        defaultExpanded={[...(grouped ? ["group:uncommitted", "group:committed"] : []), ...repositoryKeys(rows)]}
-        activateExpandable={(n) => n.type === "commit"}
-        selected={selected}
-        onSelectionChange={(sel, lead) => {
-          if (lead?.type === "file" && !lead.commit) setSelected(sel);
-          // The diff follows the tree: a row shows its first file.
-          const first = lead && firstFile(lead);
-          if (first) diff.current?.reveal(first);
-        }}
-        onActivate={(n) => {
-          const first = firstFile(n);
-          if (first) diff.current?.reveal(first);
-        }}
-        renderNode={(n) => {
-          if (n.type === "group") {
+  // Memoized like the diffs: a task update (every token count while it runs) mustn't render every row again.
+  const loading = changes === null;
+  const fileTree = useMemo(
+    () =>
+      loading ? (
+        <Spinner />
+      ) : (
+        <Tree<ChangeRow>
+          key={view}
+          aria-label="Changed files"
+          roots={rows}
+          getKey={(n) => n.key}
+          getLabel={(n) =>
+            n.type === "file"
+              ? basename(n.change.path)
+              : n.type === "commit"
+                ? n.commit.summary
+                : n.type === "repo"
+                  ? basename(n.root)
+                  : n.label
+          }
+          getChildren={(n) => (n.type === "file" ? undefined : n.children)}
+          isExpandable={(n) => n.type !== "file" && n.children.length > 0}
+          defaultExpanded={[...(grouped ? ["group:uncommitted", "group:committed"] : []), ...repositoryKeys(rows)]}
+          activateExpandable={(n) => n.type === "commit"}
+          selected={selected}
+          onSelectionChange={(sel, lead) => {
+            if (lead?.type === "file" && !lead.commit) setSelection({ view, keys: sel });
+            // The diff follows the tree: a row shows its first file.
+            const first = lead && firstFile(lead);
+            if (first) diff.current?.reveal(first);
+          }}
+          onActivate={(n) => {
+            const first = firstFile(n);
+            if (first) diff.current?.reveal(first);
+          }}
+          renderNode={(n) => {
+            if (n.type === "group") {
+              return (
+                <span className={styles.changeGroup}>
+                  <span className={styles.changeGroupName}>
+                    {n.label === "Uncommitted" ? <T>Uncommitted</T> : <T>Committed</T>}
+                  </span>
+                  <span className={styles.muted}>
+                    {n.label === "Committed"
+                      ? tx(n.count === 1 ? "1 commit" : "{count} commits").replace("{count}", String(n.count))
+                      : `${n.count} ${tx(n.count === 1 ? "file" : "files")}`}
+                  </span>
+                  <span className={styles.changeStat}>
+                    {n.added > 0 && <span className={styles.added}>+{n.added}</span>}{" "}
+                    {n.removed > 0 && <span className={styles.removed}>−{n.removed}</span>}
+                  </span>
+                </span>
+              );
+            }
+            if (n.type === "repo") {
+              const files = n.children.flatMap((c) => (c.type === "file" ? [c.change] : []));
+              const stats = statsOf(files);
+              return (
+                <span className={styles.changeGroup} title={n.root}>
+                  <Icon name="folder" size={14} />
+                  <span className={styles.changeGroupName}>{basename(n.root)}</span>
+                  <span className={styles.muted}>{`${files.length} ${tx(files.length === 1 ? "file" : "files")}`}</span>
+                  <span className={styles.changeStat}>
+                    {stats.added > 0 && <span className={styles.added}>+{stats.added}</span>}{" "}
+                    {stats.removed > 0 && <span className={styles.removed}>−{stats.removed}</span>}
+                  </span>
+                </span>
+              );
+            }
+            if (n.type === "commit") {
+              const stats = statsOf(n.commit.files);
+              return (
+                <span className={styles.changeCommit} title={n.commit.message}>
+                  <Icon name="commit" size={14} />
+                  <span className={styles.changeCommitHash}>{n.commit.shortId}</span>
+                  <span className={styles.changeCommitSummary}>{n.commit.summary}</span>
+                  {n.commit.timeMs != null && (
+                    <span className={styles.changeCommitTime}>{formatSentAt(n.commit.timeMs)}</span>
+                  )}
+                  <span className={styles.changeStat}>
+                    {stats.added > 0 && <span className={styles.added}>+{stats.added}</span>}{" "}
+                    {stats.removed > 0 && <span className={styles.removed}>−{stats.removed}</span>}
+                  </span>
+                </span>
+              );
+            }
             return (
-              <span className={styles.changeGroup}>
-                <span className={styles.changeGroupName}>
-                  {n.label === "Uncommitted" ? <T>Uncommitted</T> : <T>Committed</T>}
+              <span className={styles.change} title={n.change.relPath}>
+                <Icon name={fileIconName(basename(n.change.path), n.change.path)} size={16} />
+                <span className={styles.changeName} style={{ color: KIND_COLOR[n.change.kind] }}>
+                  {basename(n.change.path)}
                 </span>
-                <span className={styles.muted}>
-                  {n.label === "Committed"
-                    ? tx(n.count === 1 ? "1 commit" : "{count} commits").replace("{count}", String(n.count))
-                    : `${n.count} ${tx(n.count === 1 ? "file" : "files")}`}
-                </span>
+                <span className={styles.changeDir}>{changeDir(diffTask, n.change)}</span>
                 <span className={styles.changeStat}>
-                  {n.added > 0 && <span className={styles.added}>+{n.added}</span>}{" "}
-                  {n.removed > 0 && <span className={styles.removed}>−{n.removed}</span>}
+                  {n.change.added > 0 && <span className={styles.added}>+{n.change.added}</span>}{" "}
+                  {n.change.removed > 0 && <span className={styles.removed}>−{n.change.removed}</span>}
                 </span>
               </span>
             );
-          }
-          if (n.type === "repo") {
-            const files = n.children.flatMap((c) => (c.type === "file" ? [c.change] : []));
-            const stats = statsOf(files);
-            return (
-              <span className={styles.changeGroup} title={n.root}>
-                <Icon name="folder" size={14} />
-                <span className={styles.changeGroupName}>{basename(n.root)}</span>
-                <span className={styles.muted}>{`${files.length} ${tx(files.length === 1 ? "file" : "files")}`}</span>
-                <span className={styles.changeStat}>
-                  {stats.added > 0 && <span className={styles.added}>+{stats.added}</span>}{" "}
-                  {stats.removed > 0 && <span className={styles.removed}>−{stats.removed}</span>}
-                </span>
-              </span>
-            );
-          }
-          if (n.type === "commit") {
-            const stats = statsOf(n.commit.files);
-            return (
-              <span className={styles.changeCommit} title={n.commit.message}>
-                <Icon name="commit" size={14} />
-                <span className={styles.changeCommitHash}>{n.commit.shortId}</span>
-                <span className={styles.changeCommitSummary}>{n.commit.summary}</span>
-                {n.commit.timeMs != null && (
-                  <span className={styles.changeCommitTime}>{formatSentAt(n.commit.timeMs)}</span>
-                )}
-                <span className={styles.changeStat}>
-                  {stats.added > 0 && <span className={styles.added}>+{stats.added}</span>}{" "}
-                  {stats.removed > 0 && <span className={styles.removed}>−{stats.removed}</span>}
-                </span>
-              </span>
-            );
-          }
-          return (
-            <span className={styles.change} title={n.change.relPath}>
-              <Icon name={fileIconName(basename(n.change.path), n.change.path)} size={16} />
-              <span className={styles.changeName} style={{ color: KIND_COLOR[n.change.kind] }}>
-                {basename(n.change.path)}
-              </span>
-              <span className={styles.changeDir}>{changeDir(task, n.change)}</span>
-              <span className={styles.changeStat}>
-                {n.change.added > 0 && <span className={styles.added}>+{n.change.added}</span>}{" "}
-                {n.change.removed > 0 && <span className={styles.removed}>−{n.change.removed}</span>}
-              </span>
-            </span>
-          );
-        }}
-      />
-    );
+          }}
+        />
+      ),
+    [loading, view, rows, grouped, selected, diffTask],
+  );
   return (
     <section className={styles.changes} aria-label={tx("Changes")}>
       <CombinedDiffView
@@ -542,6 +553,9 @@ function TaskChanges({ task, tabKey }: { task: AgentTask; tabKey: string }) {
   );
 }
 
+/** What a task's diffs are built from. */
+type DiffTask = Pick<AgentTask, "id" | "base" | "isolation" | "branch" | "cwd">;
+
 /** Key of the first file row at or under `row`: what the diff scrolls to for it. */
 function firstFile(row: ChangeRow): string | null {
   if (row.type === "file") return row.key;
@@ -563,7 +577,7 @@ function fileRows(rows: readonly ChangeRow[]): Extract<ChangeRow, { type: "file"
  * whose diff is unchanged keeps its object, so its block doesn't load again as the task works.
  */
 function useDiffItems(
-  task: AgentTask,
+  task: DiffTask,
   rows: readonly ChangeRow[],
   grouped: boolean,
   scope: ChangesScope,
@@ -598,8 +612,11 @@ function useDiffItems(
           ? before
           : item;
       });
+      // Unchanged, the list keeps its array too: a new one renders every block again.
+      setItems((before) =>
+        before && before.length === kept.length && kept.every((item, i) => item === before[i]) ? before : kept,
+      );
       previous.current = new Map(kept.map((item) => [item.key, item]));
-      setItems(kept);
     });
     return () => {
       live = false;
@@ -609,14 +626,14 @@ function useDiffItems(
 }
 
 /** The folder of a changed file, as the tree names it. */
-function changeDir(task: AgentTask, change: AgentChange): string {
+function changeDir(task: Pick<AgentTask, "cwd">, change: AgentChange): string {
   if (!change.repo) return relativeDir(task.cwd, change.path);
   return change.relPath.includes("/") ? dirname(change.relPath) : "";
 }
 
 /** Diff of `path` between the task's start (or its last turn's) and now. */
 async function changeDiffData(
-  task: AgentTask,
+  task: DiffTask,
   path: string,
   scope: ChangesScope,
   kind?: AgentChange["kind"],
@@ -653,7 +670,7 @@ export async function openChangeDiff(task: AgentTask, path: string, scope: Chang
 }
 
 /** Diff of `path` in the grouped view: `HEAD` ↔ the working file. */
-function uncommittedDiffData(task: AgentTask, change: AgentChange): DiffData {
+function uncommittedDiffData(task: DiffTask, change: AgentChange): DiffData {
   const left: DiffData["left"] =
     change.kind === "added" || change.kind === "untracked"
       ? { type: "text", text: "", label: "(does not exist)", absent: true }
@@ -674,14 +691,14 @@ function uncommittedDiffData(task: AgentTask, change: AgentChange): DiffData {
 }
 
 /** Registration needed before a diff reads revisions inside the task's own worktree. */
-async function ensureTaskRepo(task: AgentTask) {
+async function ensureTaskRepo(task: DiffTask) {
   // A worktree is its own repository, outside the project's: `vcs_file_at` reads it only once
   // it is registered as an external log for this window.
   if (task.isolation === "worktree") await call(commands.vcsOpenExternalLog(task.cwd)).catch(() => undefined);
 }
 
 /** Diff of a file of one of the task's commits: `parent ↔ commit`. */
-function commitFileDiff(task: AgentTask, commit: AgentCommit, file: AgentChange): DiffData {
+function commitFileDiff(task: DiffTask, commit: AgentCommit, file: AgentChange): DiffData {
   return commitFileDiffData(
     {
       id: commit.id,

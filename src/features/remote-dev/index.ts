@@ -11,10 +11,11 @@ import { confirm } from "@/workbench/messages";
 import { tx } from "@/platform/i18n";
 import { confirmLeaveProject } from "@/platform/project";
 import { ConnectHost } from "./ConnectDialog";
+import { installConnectHandoff, showConnect } from "./connectWindow";
 import { reopenInContainer } from "./container";
 import { installDirenvNotifications, reloadEnvironment } from "./environment";
 import { RemoteStatus } from "./RemoteStatus";
-import { closeConnectDialog, openConnectDialog } from "./model";
+import { closeConnectDialog } from "./model";
 import { restorePorts, usePorts } from "./ports";
 import { installReconnect, reconnectNow } from "./reconnect";
 
@@ -71,6 +72,7 @@ export function activate(): () => void {
     installReconnect(),
     installDirenvNotifications(),
     registerOverlay({ id: "remote.connect", component: ConnectHost }),
+    installConnectHandoff(),
     registerStatusItem({
       id: "remote.location",
       title: "Remote Host",
@@ -86,7 +88,7 @@ export function activate(): () => void {
         category: "File",
         icon: "remote",
         keywords: ["ssh", "remote", "server", "gateway", "connect", "host"],
-        run: () => openConnectDialog(),
+        run: () => showConnect(),
       },
       {
         id: "remote.reconnect",

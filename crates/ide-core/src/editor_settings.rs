@@ -562,6 +562,25 @@ pub struct EncodingSettings {
     pub native_to_ascii: bool,
     /// Create UTF-8 files: `never` (no BOM) | `always` (with BOM) | `windows` (with BOM on Windows).
     pub utf8_bom: String,
+    /// Encoding (WHATWG label) of a file or of the files in a folder, by its path
+    /// relative to the project with `/` separators. The status bar's choice is kept here.
+    #[serde(deserialize_with = "labels")]
+    #[specta(type = BTreeMap<String, String>)]
+    pub mappings: BTreeMap<String, String>,
+}
+
+/// A hand-edited entry that is not a label is left out, rather than failing the whole settings file.
+fn labels<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BTreeMap<String, String>, D::Error> {
+    let serde_json::Value::Object(entries) = serde_json::Value::deserialize(d)? else {
+        return Ok(BTreeMap::new());
+    };
+    Ok(entries
+        .into_iter()
+        .filter_map(|(path, label)| match label {
+            serde_json::Value::String(label) => Some((path, label)),
+            _ => None,
+        })
+        .collect())
 }
 
 impl Default for EncodingSettings {
@@ -572,7 +591,27 @@ impl Default for EncodingSettings {
             properties: "iso-8859-1".into(),
             native_to_ascii: false,
             utf8_bom: "never".into(),
+            mappings: BTreeMap::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod encoding_mappings_tests {
+    use super::EncodingSettings;
+
+    #[test]
+    fn encoding_mappings_keep_the_entries_that_are_labels() {
+        let json = serde_json::json!({
+            "project": "gbk",
+            "mappings": { "src/main/java": "iso-8859-15", "count": 5, "nested": { "a": "utf-8" } },
+        });
+        let settings: EncodingSettings = serde_json::from_value(json).unwrap();
+        assert_eq!(settings.project, "gbk");
+        assert_eq!(settings.mappings.into_iter().collect::<Vec<_>>(), [("src/main/java".into(), "iso-8859-15".into())]);
+        let not_a_table: EncodingSettings = serde_json::from_value(serde_json::json!({ "mappings": 5 })).unwrap();
+        assert!(not_a_table.mappings.is_empty());
+        assert!(EncodingSettings::default().mappings.is_empty());
     }
 }
 
