@@ -68,3 +68,32 @@ it.each(["Apply", "Escape"])(
     );
   },
 );
+
+it("keeps plugin swatches while typing outside their range", async () => {
+  vi.useFakeTimers();
+  ipc.pluginLanguageVisuals.mockResolvedValue({
+    status: "ok",
+    data: {
+      version: 1,
+      injections: [],
+      gutterActions: [],
+      colors: [
+        ["p", { range: { start: { line: 1, col: 1 }, end: { line: 1, col: 2 } }, red: 1, green: 0, blue: 0, alpha: 1 }],
+      ],
+    },
+  });
+  const view = new EditorView({
+    state: EditorState.create({
+      doc: "abc\nxyz",
+      extensions: pluginColorPreview({ doc: 1, path: "/p/a", language: "text", uiMode: null, readOnly: false }),
+    }),
+    parent: document.body,
+  });
+  views.push(view);
+  await vi.advanceTimersByTimeAsync(300);
+  ipc.pluginLanguageVisuals.mockReturnValue(new Promise(() => {}));
+  view.dispatch({ changes: { from: 0, insert: "q" } });
+  expect(view.dom.querySelectorAll(".cm-plugin-color-preview button")).toHaveLength(1);
+  view.dispatch({ changes: { from: 5, to: 6, insert: "Y" } });
+  expect(view.dom.querySelectorAll(".cm-plugin-color-preview button")).toHaveLength(0);
+});
