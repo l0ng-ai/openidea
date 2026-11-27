@@ -335,6 +335,7 @@ describe("catalogs", () => {
     // Python unittest: the runner's name and a dotted module placeholder.
     "unittest",
     "tests.test_models",
+    "calc.py",
     "Pinia",
     "Vitest",
     "ESLint",

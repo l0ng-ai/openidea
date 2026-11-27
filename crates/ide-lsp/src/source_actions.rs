@@ -1,6 +1,7 @@
 use crate::convert::Conv;
 use crate::text::DocText;
-use crate::{DEFAULT_TIMEOUT, LspManager, Outcome, Target, scope};
+use crate::types::CompletionItem;
+use crate::{COMPLETION_TIMEOUT, DEFAULT_TIMEOUT, LspManager, Outcome, Target, convert, scope};
 use ide_core::{CancellationToken, IdeError, IdeResult, LanguageId, Pos, TextEdit};
 use lsp_types as lsp;
 use serde_json::json;
@@ -8,6 +9,49 @@ use std::path::Path;
 use std::sync::Arc;
 
 impl LspManager {
+    /// Completion at `pos` in an isolated text snapshot of `path`, such as a breakpoint condition
+    /// spliced into its line; the open document and its diagnostics stay untouched.
+    pub async fn snapshot_completion(
+        &self,
+        path: &Path,
+        language: &LanguageId,
+        text: &str,
+        pos: Pos,
+        cancel: &CancellationToken,
+    ) -> IdeResult<Vec<CompletionItem>> {
+        let targets =
+            self.snapshot_targets(path, language, "snapshot completion", |c| c.has("completionProvider")).await?;
+        let snapshot = scope::snapshot_path(path, "completion")?;
+        let doc = Arc::new(DocText::new(text));
+        let requests = targets.iter().map(|t| {
+            let (snapshot, doc) = (&snapshot, &doc);
+            async move {
+                let mut opened = scope::TransientFiles::empty(self, t);
+                opened.hold(snapshot, language, text);
+                let params = json!({
+                    "textDocument": { "uri": opened.files[0].1 },
+                    "position": doc.ide_to_lsp(t.enc(), pos),
+                    "context": { "triggerKind": 1 },
+                });
+                let r = self.call(t, "textDocument/completion", params, Some(cancel), COMPLETION_TIMEOUT).await;
+                r.map(|v| {
+                    let conv = Conv::new(t.enc(), |_| Some(doc.clone()));
+                    let items = convert::parse_completion_response(v).1.into_iter();
+                    items.map(|i| convert::completion_item(&conv, path, i, t.server.id)).collect::<Vec<_>>()
+                })
+            }
+        });
+        let mut out = Outcome::<Vec<_>>::new();
+        for result in futures::future::join_all(requests).await {
+            match result {
+                Ok(items) => out.value.get_or_insert_with(Vec::new).extend(items),
+                Err(error) if cancel.is_cancelled() => return Err(error),
+                Err(error) => out.fail(error),
+            }
+        }
+        out.finish(Vec::new())
+    }
+
     /// Reads a source action for an isolated text snapshot. The caller owns the text and applies the edits.
     pub async fn source_action_text(
         &self,

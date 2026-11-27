@@ -21,7 +21,9 @@ import {
   canPaste,
   copyPaths,
   copySelection,
+  copyReferences,
   pathsFor,
+  referencesFor,
   delegate,
   deleteSelection,
   findFileUsages,
@@ -517,16 +519,15 @@ export function revealLabel() {
  * content or source root.
  */
 function copyPathItem(nodes: ProjectNode[], at: MenuPoint, library: boolean): Entry {
-  const row = (kind: PathKind, id: string, label: string) => {
-    const paths = pathsFor(kind, nodes);
-    return {
-      id,
-      label,
-      // A selection only partly under a source root has no source-root path.
-      preview: paths.length && paths.length === nodes.length ? paths.join("\n") : null,
-      run: () => void copyPaths(kind, nodes),
-    };
-  };
+  const show = (id: string, label: string, values: string[], run: () => void) => ({
+    id,
+    label,
+    // A selection only partly under a source root has no source-root path.
+    preview: values.length && values.length === nodes.length ? values.join("\n") : null,
+    run,
+  });
+  const row = (kind: PathKind, id: string, label: string) =>
+    show(id, label, pathsFor(kind, nodes), () => void copyPaths(kind, nodes));
   return {
     id: "copyPath",
     label: "Copy Path/Reference…",
@@ -541,6 +542,7 @@ function copyPathItem(nodes: ProjectNode[], at: MenuPoint, library: boolean): En
             : [
                 row("relative", "project.copyRelativePath", "Path From Content Root"),
                 row("source", "project.copySourceRootPath", "Path From Source Root"),
+                show("project.copyReference", "Reference", referencesFor(nodes), () => void copyReferences(nodes)),
               ]),
         ],
         menuGroupContext(nodes),

@@ -21,7 +21,7 @@ basedpyright starts in its `standard` type-checking mode instead of its own stri
 
 Ruff starts only for files below a Ruff configuration: a `ruff.toml`, a `.ruff.toml`, or a `pyproject.toml` that contains a `[tool.ruff]` table. basedpyright has no formatter, so formatting comes from Ruff.
 
-Moving or renaming a module or package in the Project view with **Search for references** on updates the `import` and `from … import` statements that refer to it, relative imports included, in the same preview as the move. basedpyright has no file-move support, so the IDE finds these imports itself from the syntax tree. When a rename changes the name an import binds, the import keeps it as an alias: `from pkg import models` becomes `from pkg import domain as models`.
+Moving or renaming a module or package in the Project view with **Search for references** on updates the `import` and `from … import` statements that refer to it, relative imports included, in the same preview as the move. basedpyright has no file-move support, so the IDE finds these imports itself from the syntax tree. When a rename changes the name an import binds, the import keeps it as an alias: `from pkg import models` becomes `from pkg import domain as models`. Module names in strings (`importlib.import_module("pkg.models")`, `mock.patch("pkg.models.Task")`) are not updated.
 
 To pick the type checker yourself, open **Settings › Languages & Frameworks › Language Servers**, select any of the four servers and change **Language server for Python**. **Automatic** uses the first installed one in the order above; you can also choose one server or **None**.
 
@@ -142,6 +142,7 @@ Python debugging uses debugpy. If it is missing when you start a debug session, 
 - Debugging `manage.py` enables Django support in debugpy.
 - **Attach to Process…** (`⌥⇧F5` / `Ctrl+Alt+F5`) lists local Python processes under **Python (debugpy)**.
 - The **Python Remote Debug (debugpy)** configuration attaches to a process started with `python -m debugpy --listen`, locally or on another machine, with local and remote root mapping.
+- The **Python Debug Server** configuration works the other way round: the IDE listens and the program connects with `import debugpy; debugpy.connect(("localhost", 5678)); debugpy.wait_for_client()`, from a container or another machine too. Install the IDE debugger's debugpy version where the program runs; the Debug console warns when they differ. A VS Code `attach` with `"listen"` imports as this configuration; its `listen.host` `0.0.0.0` is where VS Code binds, so it imports as `localhost`. For a program in a container or on another machine, set the IDE host name to an address it can reach, such as `host.docker.internal`.
 
 Options:
 

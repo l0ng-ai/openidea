@@ -28,9 +28,15 @@ it("retargets one animation, settles exactly, and yields to manual scrolling", (
     now += dt;
     cb?.(now);
   };
-  const move = (topLine: number, sourceAtEnd = false) =>
+  const move = (topLine: number, sourceAtEnd = false, navigate = false) =>
     useLiveMarkdown.setState((s) => ({
-      doc: { ...s.doc!, topLine, sourceAtEnd, scrollSeq: (s.doc?.scrollSeq ?? 0) + 1 },
+      doc: {
+        ...s.doc!,
+        topLine,
+        sourceAtEnd,
+        scrollSeq: (s.doc?.scrollSeq ?? 0) + 1,
+        caretSeq: (s.doc?.caretSeq ?? 0) + Number(navigate),
+      },
     }));
   const follow = followMarkdownSource("doc", root, (line) => line * 10);
   try {
@@ -52,6 +58,17 @@ it("retargets one animation, settles exactly, and yields to manual scrolling", (
     move(20);
     root.dispatchEvent(new Event("wheel"));
     expect(callback).toBeUndefined();
+
+    follow.pause();
+    move(30);
+    expect(callback).toBeUndefined();
+    follow.resume();
+    expect(root.scrollTop).toBe(350);
+    follow.pause();
+    move(15, false, true);
+    expect(root.scrollTop).toBe(350);
+    follow.resume();
+    expect(root.scrollTop).toBe(150);
   } finally {
     follow.dispose();
   }

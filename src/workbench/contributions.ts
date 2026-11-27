@@ -1896,6 +1896,12 @@ export interface RunConfigTypeContribution {
   /** Adjusts what is launched right before it starts (e.g. the environment selecting a Docker daemon). */
   prepareLaunch?(config: RunConfig): Promise<RunConfig>;
   /**
+   * Completes a configuration imported from another IDE's files (e.g. a server name resolved
+   * to this machine's connection); `unmapped`: what it could not carry over, reported with the
+   * import's ignored settings.
+   */
+  prepareImport?(config: RunConfig): Promise<{ config: RunConfig; unmapped?: string[] }>;
+  /**
    * Only Debug applies: the configuration attaches a debugger and launches no process
    * (Remote JVM Debug, Go Remote). `commandLine` returns null.
    */
