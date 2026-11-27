@@ -16,6 +16,7 @@ pub mod project_discovery;
 pub mod recent;
 pub mod roots;
 pub mod settings;
+pub mod system;
 pub mod text_refs;
 pub mod unity;
 pub mod unreal;
