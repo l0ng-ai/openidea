@@ -58,7 +58,7 @@ import {
   splitTarget,
   targetOf,
 } from "./model";
-import { tableFolder, type DbNode } from "./nodes";
+import { nodeTarget, tableFolder, type DbNode } from "./nodes";
 import { SQL_LANGUAGE } from "./sqlLanguage";
 import { TABLE_KIND, type TableRef } from "./tableInput";
 import type { DiagramData } from "./erDiagram";
@@ -734,17 +734,61 @@ export async function renameSource(id: string, name: string): Promise<void> {
   await saveSource({ ...src, name: name.trim() }, undefined);
 }
 
-/** Removes the data source after asking (Database tree › Drop on a source). */
-export async function removeSource(source: DataSource): Promise<void> {
+/** Removes data sources after one confirmation (Database tree › Drop on a source). */
+export async function removeSources(sources: readonly DataSource[]): Promise<void> {
+  const unique = [...new Map(sources.flatMap((source) => (source.id ? [[source.id, source] as const] : []))).values()];
+  if (!unique.length) return;
+  const one = unique.length === 1;
+  const count = unique.length;
+  const names = unique
+    .slice(0, 8)
+    .map((source) => source.name)
+    .join("\n");
+  const n = count - 8;
+  const more = n > 0 ? `\n${tx`and ${n} more`}` : "";
   const ok = await confirm({
-    title: "Remove Data Source",
-    message: tx`Remove data source '${source.name}'? Its query console file stays on disk.`,
+    title: one ? "Remove Data Source" : "Remove Data Sources",
+    message: one
+      ? tx`Remove data source '${unique[0]!.name}'? Its query console file stays on disk.`
+      : tx`Remove ${count} data sources? Their query console files stay on disk.\n\n${names}${more}`,
     ok: "Remove",
   });
   if (!ok) return;
-  const id = source.id ?? "";
-  if (connectedTargets(id).length) await disconnect(id);
-  await deleteSource(id);
+  const ids = new Set(unique.map((source) => source.id!));
+  const current = projectRequest();
+  const mutations = unique.map((source) => sourceMutation(source.id!));
+  try {
+    await Promise.all([...ids].filter((id) => connectedTargets(id).length).map((id) => disconnect(id)));
+    await call(commands.dbSaveSources(useDatabase.getState().sources.filter((source) => !ids.has(source.id ?? ""))));
+    if (!current() || mutations.some((unchanged) => !unchanged())) return;
+    for (const id of ids) forget(id);
+    await loadSources();
+    if (!current()) return;
+    useDatabase.setState((s) => {
+      const removed = (node: DbNode) => {
+        const target = nodeTarget(node);
+        return !!target && ids.has(splitTarget(target).id);
+      };
+      const selectedNodes = s.selectedNodes.filter((node) => !removed(node));
+      const selectedNode = s.selectedNode && !removed(s.selectedNode) ? s.selectedNode : null;
+      return {
+        selectedNode,
+        selectedSource: selectedNode ? nodeTarget(selectedNode) : null,
+        selectedNodes,
+      };
+    });
+  } catch (e) {
+    notifications().notify({
+      level: "error",
+      title: one ? "Cannot remove the data source" : "Cannot remove the data sources",
+      body: message(e),
+    });
+  }
+}
+
+/** Removes one data source after asking. */
+export async function removeSource(source: DataSource): Promise<void> {
+  await removeSources([source]);
 }
 
 export async function deleteSource(id: string): Promise<void> {

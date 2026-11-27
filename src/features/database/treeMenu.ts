@@ -148,9 +148,30 @@ function moveSourcesMenu(sources: Extract<DbNode, { kind: "source" }>[]): MenuIt
   };
 }
 
+/** The short menu of several selected data sources: only the operations with batch semantics. */
+function batchSourceMenu(sources: Extract<DbNode, { kind: "source" }>[]): MenuItem[] {
+  const count = sources.length;
+  const connected = sources.some((source) => connectedTargets(source.source.id ?? "").length > 0);
+  return [
+    act("db.refresh", sources[0]!, { label: tx`Refresh ${count} Data Sources` }),
+    act("db.disconnect", sources[0]!, {
+      label: tx`Deactivate ${count} Data Sources`,
+      disabled: !connected,
+    }),
+    sep,
+    moveSourcesMenu(sources),
+    sep,
+    act("db.drop", sources[0]!, { label: tx`Remove ${count} Data Sources…` }),
+  ];
+}
+
 /** Context menu of a tree node (`null`: the empty area). */
 export function nodeMenu(n: DbNode | null, selection: readonly DbNode[] = []): MenuItem[] {
   if (!n) return [{ label: "New", icon: "plus", submenu: newMenu() }];
+  if (n.kind === "source") {
+    const sources = selection.filter((node): node is Extract<DbNode, { kind: "source" }> => node.kind === "source");
+    if (sources.length > 1) return batchSourceMenu(sources);
+  }
   const id = nodeTarget(n) ?? "";
   const driver = sourceById(id)?.driver ?? "sqlite";
   const o = objectOf(n);
