@@ -16,6 +16,8 @@ const pathCompletions = vi.fn();
 const fsProbe = vi.fn();
 const fsEntryKind = vi.fn();
 const findSymbols = vi.fn();
+const vcsRemotes = vi.fn();
+const openExternalUrl = vi.fn();
 const agentPrompt = vi.fn((..._args: unknown[]) => Promise.resolve({ status: "ok", data: null }));
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
@@ -32,11 +34,17 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       fsEntryKind: (path: string) => fsEntryKind(path),
       findSymbols: (query: string, filter: string, limit: number) => findSymbols(query, filter, limit),
       agentPrompt: (...args: unknown[]) => agentPrompt(...args),
+      vcsRemotes: (repo: string | null) => vcsRemotes(repo),
     },
   };
 });
+vi.mock("@/platform/openUrl", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/platform/openUrl")>()),
+  openExternalUrl: (url: string) => openExternalUrl(url),
+}));
 
 import { Composer } from "./Composer";
+import { ReferencedText } from "./ReferenceChip";
 import { provideNotificationService, registerAgentContextSource } from "@/workbench/contributions";
 import { useEditorRegistry, type TextEditorHandle } from "@/editor/api";
 import { composerDraft, sendMessage, setIdeContext, updateComposer, useAgents } from "./store";
@@ -79,6 +87,8 @@ beforeEach(() => {
         ? ok(path.endsWith(".ts") ? "file" : "dir")
         : Promise.resolve({ status: "error", error: { kind: "notFound", message: "" } }),
     );
+  vcsRemotes.mockReset().mockReturnValue(ok([{ name: "origin", url: "git@github.com:o/r.git" }]));
+  openExternalUrl.mockReset();
   fsProbe.mockReset().mockReturnValue(
     Promise.resolve({
       status: "error",
@@ -389,6 +399,90 @@ describe("Composer editing", () => {
     fsEntryKind.mockReturnValue(Promise.resolve({ status: "error", error: { kind: "notFound", message: "" } }));
     await user.paste(" /p/gone.ts");
     await vi.waitFor(() => expect(textOf(box)).toBe("/p/my dir/a.ts /p/gone.ts"));
+  });
+});
+
+describe("Composer links", () => {
+  const links = () => [...document.querySelectorAll<HTMLElement>("[data-link-url]")];
+  const notFound = () => Promise.resolve({ status: "error", error: { kind: "notFound", message: "" } });
+
+  it("shows a link as a chip once the caret leaves it, and keeps the text as written", () => {
+    const box = renderComposer();
+    typeIn(box, "fix https://github.com/o/r/issues/7");
+    // Still being typed.
+    expect(links()).toHaveLength(0);
+    typeChars(box, " and see [the spec](https://a.dev/spec) ");
+    expect(links().map((l) => [l.dataset.linkUrl, l.textContent])).toEqual([
+      ["https://github.com/o/r/issues/7", "r#7"],
+      ["https://a.dev/spec", "the spec"],
+    ]);
+    expect(links()[0]).toHaveAccessibleName("Issue link r#7");
+    expect(textOf(box)).toBe("fix https://github.com/o/r/issues/7 and see [the spec](https://a.dev/spec) ");
+    fireEvent.click(links()[1]!);
+    expect(openExternalUrl).toHaveBeenCalledWith("https://a.dev/spec");
+    fireEvent.click(within(links()[0]!).getByRole("button", { name: "Remove" }));
+    expect(textOf(box)).toBe("fix and see [the spec](https://a.dev/spec) ");
+  });
+
+  it("edits a link as text while the caret is at its end", () => {
+    const box = renderComposer();
+    typeIn(box, "see https://a.dev/x ");
+    expect(links()).toHaveLength(1);
+    fireEvent.keyDown(box, { key: "Backspace" });
+    expect(links()).toHaveLength(0);
+    fireEvent.keyDown(box, { key: "Backspace" });
+    expect(textOf(box)).toBe("see https://a.dev/");
+    setCaret(box, 0);
+    expect(links()).toHaveLength(1);
+  });
+
+  it("links the selected text to a pasted URL", async () => {
+    const box = renderComposer();
+    const user = userEvent.setup();
+    typeIn(box, "read the spec first");
+    setCaret(box, 5, 13);
+    await user.paste("https://a.dev/spec");
+    expect(textOf(box)).toBe("read [the spec](https://a.dev/spec) first");
+  });
+
+  it("references the project file a pasted GitHub link names, with its lines", async () => {
+    const box = renderComposer();
+    const user = userEvent.setup();
+    act(() => box.focus());
+    // `feat/x` is the branch: `x/src/a.ts` is not a file here.
+    fsEntryKind.mockImplementation((path: string) =>
+      path === "/p/src/a.ts" ? ok("file") : path === "/p/src" ? ok("dir") : notFound(),
+    );
+    await user.paste("https://github.com/o/r/blob/feat/x/src/a.ts#L3-L5");
+    await vi.waitFor(() => expect(textOf(box)).toBe("@src/a.ts:3-5 "));
+    expect(vcsRemotes).toHaveBeenCalledWith("/p");
+    expect(fsEntryKind).toHaveBeenCalledWith("/p/x/src/a.ts");
+    expect(toPrompt(composerDraft(ID)).files).toEqual(["/p/src/a.ts"]);
+    await user.paste("https://github.com/o/r/tree/main/src");
+    await vi.waitFor(() => expect(textOf(box)).toBe("@src/a.ts:3-5 @src/ "));
+  });
+
+  it("pastes a GitHub link into another repository, or to a file not here, as the URL", async () => {
+    const box = renderComposer();
+    const user = userEvent.setup();
+    act(() => box.focus());
+    await user.paste("https://github.com/other/r/blob/main/src/a.ts");
+    await vi.waitFor(() => expect(textOf(box)).toBe("https://github.com/other/r/blob/main/src/a.ts"));
+    expect(fsEntryKind).not.toHaveBeenCalled();
+    act(() => updateComposer(ID, emptyDraft()));
+    fsEntryKind.mockReturnValue(notFound());
+    await user.paste("https://github.com/o/r/blob/main/gone.ts");
+    await vi.waitFor(() => expect(textOf(box)).toBe("https://github.com/o/r/blob/main/gone.ts"));
+    expect(composerDraft(ID).files).toEqual([]);
+  });
+
+  it("shows links in a sent message as chips that open them", () => {
+    render(<ReferencedText text="see https://github.com/o/r/pull/12 and @src/a.ts" cwd="/p" />);
+    const chip = screen.getByRole("button", { name: "Pull request link r#12" });
+    expect(chip).toHaveTextContent("r#12");
+    expect(document.querySelector("[data-ref-path]")).toHaveAttribute("data-ref-path", "/p/src/a.ts");
+    fireEvent.click(chip);
+    expect(openExternalUrl).toHaveBeenCalledWith("https://github.com/o/r/pull/12");
   });
 });
 

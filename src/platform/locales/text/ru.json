@@ -10190,5 +10190,9 @@
   "SQL DELETE": "SQL DELETE",
   "Column comment": "Комментарий к столбцу",
   "Get from Version Control": "Получить из системы контроля версий",
-  "Cannot connect to the remote host": "Не удалось подключиться к удалённому хосту"
+  "Cannot connect to the remote host": "Не удалось подключиться к удалённому хосту",
+  "Pull request link {text}": "Ссылка на pull request {text}",
+  "Issue link {text}": "Ссылка на issue {text}",
+  "Commit link {text}": "Ссылка на коммит {text}",
+  "Link {text}": "Ссылка {text}"
 }
