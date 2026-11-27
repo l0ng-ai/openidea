@@ -542,6 +542,21 @@ impl Smoke {
         self.restore(doc, &before).await;
     }
 
+    /// Completion at the end of the typed line, once it has items, has none labelled `label`.
+    async fn not_offered(&self, typed: Typed, label: &str) {
+        let (doc, pos, before) = self.type_line(typed).await;
+        self.retry("completion without the item", self.warm_up, || async {
+            let list = ops::lsp::lsp_completion(&self.host, WINDOW, RequestId(7), doc, pos, None).await;
+            let labels: Vec<String> = match list {
+                Ok(l) => l.items.into_iter().map(|i| i.label).collect(),
+                Err(e) => vec![e.to_string()],
+            };
+            if labels.is_empty() || labels.iter().any(|l| l == label) { Err(labels) } else { Ok(()) }
+        })
+        .await;
+        self.restore(doc, &before).await;
+    }
+
     async fn organize_imports(&self, import: Typed, expect: Imports) {
         let (doc, _, before) = self.type_line(import).await;
         let typed = import.text.trim();
@@ -694,6 +709,57 @@ const TYPESCRIPT: Checks = Checks {
 #[ignore = "language smoke: needs vtsls"]
 async fn typescript() {
     smoke("typescript", TYPESCRIPT).await;
+}
+
+/// Code Style › TypeScript › Imports (#6072): each change reaches the running vtsls, and its
+/// auto-imports follow it: relative or path alias, `/index` or not, and excluded files and
+/// specifiers left out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "language smoke: needs vtsls"]
+async fn typescript_import_style() {
+    let checks = Checks {
+        files: &[
+            (
+                "tsconfig.json",
+                r#"{"compilerOptions": {"module": "ESNext", "moduleResolution": "Bundler", "strict": true,
+                    "noEmit": true, "allowImportingTsExtensions": true, "paths": {"@/*": ["./src/*"]}},
+                    "include": ["src"]}"#,
+            ),
+            ("src/lib/alpha.ts", "export function alphaHelper(): number {\n  return 1;\n}\n"),
+            ("src/app/components/index.ts", "export function betaWidget(): number {\n  return 2;\n}\n"),
+            ("src/app/main.ts", "export const ready = true;\n"),
+            ("src/app/other.ts", "export const other = true;\n"),
+            ("src/app/third.ts", "export const third = true;\n"),
+        ],
+        ..TYPESCRIPT
+    };
+    let smoke = Smoke::start("typescript", &checks).await;
+    let set = |key: &str, value: &str| {
+        let scope = ide_workspace::settings::SettingsScope::Project;
+        let key = format!("editor.codeStyle.languages.typescript.{key}");
+        ops::project::settings_set(&smoke.host, WINDOW, scope, key, value.into()).unwrap();
+    };
+    let alpha = typed("src/app/main.ts", "export const ready", "alphaH");
+    let beta = typed("src/app/main.ts", "export const ready", "betaW");
+    let import = |typed, label, result| AutoImport { typed, label, result };
+
+    set("importModuleSpecifier", r#""relative""#);
+    smoke.auto_import(import(alpha, "alphaHelper", r#"from "../lib/alpha""#)).await;
+    set("importModuleSpecifier", r#""non-relative""#);
+    smoke.auto_import(import(alpha, "alphaHelper", r#"from "@/lib/alpha""#)).await;
+
+    set("importModuleSpecifier", r#""relative""#);
+    set("importModuleSpecifierEnding", r#""index""#);
+    smoke.auto_import(import(beta, "betaWidget", r#"from "./components/index""#)).await;
+    set("importModuleSpecifierEnding", r#""minimal""#);
+    smoke.auto_import(import(beta, "betaWidget", r#"from "./components""#)).await;
+
+    // tsserver keeps the auto-import candidates of the file it last completed in until the
+    // program changes; other files see an exclusion at once.
+    set("autoImportFileExcludePatterns", r#"["**/index.ts"]"#);
+    smoke.not_offered(typed("src/app/other.ts", "export const other", "betaW"), "betaWidget").await;
+    set("autoImportSpecifierExcludeRegexes", r#"["lib/alpha$"]"#);
+    smoke.not_offered(typed("src/app/third.ts", "export const third", "alphaH"), "alphaHelper").await;
 }
 
 /// The latest `tsc` diagnostics of `path` (Problems › TypeScript Project Errors), `None` before any.

@@ -1,5 +1,5 @@
 import { useMemo, type ComponentType } from "react";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useProject } from "@/platform/project";
 import { PageContext } from "../components/context";
@@ -68,6 +68,35 @@ describe("JavaScript / TypeScript code style", () => {
         semicolons: "remove",
         quotes: "single",
         spaces: { insertSpaceAfterOpeningAndBeforeClosingNonemptyBraces: false },
+      },
+    });
+  });
+
+  it("stages the import style", async () => {
+    const spec = await page("javascript");
+    expect(spec.keywords).toEqual(expect.arrayContaining(["Imports", "Import paths", "Do not auto-import from"]));
+    fireEvent.click(screen.getByRole("tab", { name: "Imports" }));
+    expect(screen.getByRole("button", { name: "Import paths" }).textContent).toContain("Shortest");
+    expect(screen.getByRole("button", { name: "Import path ending" }).textContent).toContain("Automatic");
+    fireEvent.click(screen.getByRole("button", { name: "Import paths" }));
+    fireEvent.click(screen.getByRole("option", { name: "Relative" }));
+    fireEvent.click(screen.getByRole("button", { name: "Import path ending" }));
+    fireEvent.click(screen.getByRole("option", { name: "Index file (./components/index)" }));
+    const [globs, regexes] = screen.getAllByRole("toolbar");
+    fireEvent.click(within(globs!).getByRole("button", { name: "Add" }));
+    const glob = screen.getByRole("textbox", { name: "Pattern" });
+    fireEvent.change(glob, { target: { value: "**/index.ts" } });
+    fireEvent.keyDown(glob, { key: "Enter" });
+    fireEvent.click(within(regexes!).getByRole("button", { name: "Add" }));
+    const regex = screen.getByRole("textbox", { name: "Expression" });
+    fireEvent.change(regex, { target: { value: "^node:" } });
+    fireEvent.keyDown(regex, { key: "Enter" });
+    expect(value()).toEqual({
+      javascript: {
+        importModuleSpecifier: "relative",
+        importModuleSpecifierEnding: "index",
+        autoImportFileExcludePatterns: ["**/index.ts"],
+        autoImportSpecifierExcludeRegexes: ["^node:"],
       },
     });
   });

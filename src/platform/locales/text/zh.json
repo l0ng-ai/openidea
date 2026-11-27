@@ -10673,5 +10673,19 @@
   "Uses GitHub CLI's active account without setting GH_TOKEN in the project environment.": "使用 GitHub CLI 当前活动账户，不在项目环境中设置 GH_TOKEN。",
   "Passes this account's GH_TOKEN to processes started in this project (terminals, agents, Git, and run configurations).": "将此账户的 GH_TOKEN 传递给此项目中启动的进程（终端、智能体、Git 和运行配置）。",
   "Get from Version Control": "从版本控制获取",
-  "Cannot connect to the remote host": "无法连接到远程主机"
+  "Cannot connect to the remote host": "无法连接到远程主机",
+  "Import paths": "导入路径",
+  "Import path ending": "导入路径结尾",
+  "Do not auto-import from": "不从以下位置自动导入",
+  "Do not auto-import specifiers matching": "不自动导入匹配以下表达式的路径",
+  "Shortest": "最短",
+  "Non-relative (paths, baseUrl)": "非相对路径（paths、baseUrl）",
+  "Relative within the project": "项目内使用相对路径",
+  "Minimal (./components)": "最简（./components）",
+  "Index file (./components/index)": "index 文件（./components/index）",
+  "Extension (./components/index.js)": "带扩展名（./components/index.js）",
+  "For the imports the TypeScript server adds.": "用于 TypeScript 服务器添加的导入。",
+  "Files matching these globs, e.g. **/index.ts.": "匹配这些 glob 的文件，例如 **/index.ts。",
+  "Regular expressions for the import path, e.g. ^node: or /index$.": "匹配导入路径的正则表达式，例如 ^node: 或 /index$。",
+  "No expressions": "没有表达式"
 }

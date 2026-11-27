@@ -1,4 +1,4 @@
-//! Editor › Code Style › JavaScript / TypeScript (Spaces, Punctuation) as the TypeScript
+//! Editor › Code Style › JavaScript / TypeScript (Spaces, Punctuation, Imports) as the TypeScript
 //! servers' `typescript.format.*` / `typescript.preferences.*` settings (`javascript.*` for
 //! JavaScript and JSX). tsserver applies them to Reformat Code and to the code it writes:
 //! quick fixes, auto-imports, refactorings and organize imports.
@@ -96,9 +96,34 @@ fn section(
     if !format.is_empty() {
         section.insert("format".into(), Value::Object(format));
     }
-    // vtsls reads `quoteStyle` (VS Code's name), typescript-language-server tsserver's `quotePreference`.
+    // vtsls reads VS Code's names (`quoteStyle`, `importModuleSpecifier`), typescript-language-server
+    // tsserver's (`quotePreference`, `importModuleSpecifierPreference`).
+    let mut preferences = Map::new();
     if let Some(quotes) = quotes {
-        section.insert("preferences".into(), json!({ "quoteStyle": quotes, "quotePreference": quotes }));
+        preferences.insert("quoteStyle".into(), json!(quotes));
+        preferences.insert("quotePreference".into(), json!(quotes));
+    }
+    let paths = ["shortest", "relative", "non-relative", "project-relative"];
+    if let Some(paths) = pick(style.and_then(|s| s.import_module_specifier.as_ref()), &paths) {
+        preferences.insert("importModuleSpecifier".into(), json!(paths));
+        preferences.insert("importModuleSpecifierPreference".into(), json!(paths));
+    }
+    let endings = ["auto", "minimal", "index", "js"];
+    if let Some(ending) = pick(style.and_then(|s| s.import_module_specifier_ending.as_ref()), &endings) {
+        preferences.insert("importModuleSpecifierEnding".into(), json!(ending));
+    }
+    if let Some(s) = style {
+        for (key, list) in [
+            ("autoImportFileExcludePatterns", &s.auto_import_file_exclude_patterns),
+            ("autoImportSpecifierExcludeRegexes", &s.auto_import_specifier_exclude_regexes),
+        ] {
+            if !list.is_empty() {
+                preferences.insert(key.into(), json!(list));
+            }
+        }
+    }
+    if !preferences.is_empty() {
+        section.insert("preferences".into(), Value::Object(preferences));
     }
     section
 }
@@ -145,6 +170,45 @@ mod tests {
         let mut untouched = server("vtsls");
         configure(&mut untouched, dir.path(), &Settings::default());
         assert_eq!(untouched.settings, None, "nothing set: the server's defaults");
+    }
+
+    #[test]
+    fn import_style_reaches_the_preferences_of_each_language() {
+        let mut settings = Settings::default();
+        let ts = LanguageCodeStyle {
+            import_module_specifier: Some("relative".into()),
+            import_module_specifier_ending: Some("index".into()),
+            auto_import_file_exclude_patterns: vec!["**/index.ts".into()],
+            auto_import_specifier_exclude_regexes: vec!["^node:".into()],
+            ..Default::default()
+        };
+        settings.editor.code_style.languages.insert("typescript".into(), ts);
+        let js = LanguageCodeStyle {
+            import_module_specifier: Some("non-relative".into()),
+            // Not a tsserver value: left out.
+            import_module_specifier_ending: Some("ts".into()),
+            ..Default::default()
+        };
+        settings.editor.code_style.languages.insert("javascript".into(), js);
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = server("vtsls");
+        configure(&mut cfg, dir.path(), &settings);
+        assert_eq!(
+            cfg.settings.unwrap(),
+            json!({
+                "typescript": { "preferences": {
+                    "importModuleSpecifier": "relative",
+                    "importModuleSpecifierPreference": "relative",
+                    "importModuleSpecifierEnding": "index",
+                    "autoImportFileExcludePatterns": ["**/index.ts"],
+                    "autoImportSpecifierExcludeRegexes": ["^node:"],
+                } },
+                "javascript": { "preferences": {
+                    "importModuleSpecifier": "non-relative",
+                    "importModuleSpecifierPreference": "non-relative",
+                } },
+            })
+        );
     }
 
     #[test]
