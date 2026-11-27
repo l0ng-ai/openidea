@@ -3896,6 +3896,7 @@
   "Use original line's indent for wrapped parts": "换行部分使用原始行的缩进",
   "Use pretty formatting": "使用友好格式",
   "Use project colors in main toolbar": "在主工具栏中使用项目颜色",
+  "Project color strength": "项目颜色强度",
   "Use smaller indents in trees": "使用较小的树缩进",
   "Use smooth caret blinking": "使用平滑光标闪烁",
   "Use smooth caret movement": "使用平滑光标移动",
