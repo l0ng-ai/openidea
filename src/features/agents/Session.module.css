@@ -216,8 +216,8 @@
   min-width: 0;
   contain-intrinsic-size: auto 120px;
 }
-/* Laid out once, an off-screen row skips rendering at its remembered size (`useOffscreenRows`). */
-.conversationRow[data-measured] {
+/* Laid out once, a row away from the view skips rendering at its remembered size (`useOffscreenRows`). */
+.conversationRow[data-measured]:not([data-near]) {
   content-visibility: auto;
 }
 /* WebKit leaves a stale selection highlight on rows that skipped rendering (`useOffscreenRows`). */

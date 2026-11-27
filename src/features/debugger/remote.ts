@@ -13,6 +13,7 @@ import type { RunConfigTypeContribution, RunConfigTypeField } from "@/workbench/
 export const REMOTE_JVM = "remote-jvm";
 export const GO_REMOTE = "go-remote";
 export const PYTHON_REMOTE = "python-remote";
+export const PYTHON_DEBUG_SERVER = "python-debug-server";
 export const NODE_REMOTE = "node-remote";
 export const GODOT_ATTACH = "godot-attach";
 export const PHP_REMOTE = "php-remote";
@@ -194,6 +195,76 @@ export const pythonRemoteType: RunConfigTypeContribution = {
 };
 
 // ---------------------------------------------------------------------------
+// Python Debug Server: the IDE's debugpy adapter listens, the program connects with debugpy.connect
+
+/** The line the program runs to connect, in place of PyCharm's `pydevd_pycharm.settrace(...)`. */
+export function debugpyConnectLine(p: Params): string {
+  const host = connectHost(hostOf(p)).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return `import debugpy; debugpy.connect(("${host}", ${portOf(p, 5678)})); debugpy.wait_for_client()`;
+}
+
+/** The host as the URL parser normalises it (`127.1`, `0:0:0:0:0:0:0:1`), IPv6 in brackets; null when not a host. */
+function canonicalHost(host: string): string | null {
+  try {
+    return new URL(`http://${host.includes(":") && !host.startsWith("[") ? `[${host}]` : host}`).hostname;
+  } catch {
+    return null;
+  }
+}
+
+/** IPv6 loopback, plain or IPv4-mapped. */
+const IPV6_LOOPBACK = /^\[(::1|::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4})\]$/;
+
+/** Where the adapter listens: loopback for a local program, every interface (IPv4 or IPv6) otherwise.
+ *  IPv6 loopback listens on 127.0.0.1: debugpy's adapter before 1.8 listens on IPv4 only, and leaves an
+ *  `attach` it cannot listen for unanswered. */
+function listenAddress(host: string): string {
+  const h = canonicalHost(host);
+  if (h == null) return host; // Not a host: the port check reports it.
+  if (h === "localhost" || IPV6_LOOPBACK.test(h)) return "127.0.0.1";
+  if (/^127\./.test(h)) return h;
+  return h.startsWith("[") ? "::" : "0.0.0.0";
+}
+
+/** The host the program connects to: where the adapter listens for IPv6 loopback, as given otherwise. */
+function connectHost(host: string): string {
+  const h = canonicalHost(host);
+  return h != null && IPV6_LOOPBACK.test(h) ? "127.0.0.1" : host.replace(/^\[(.*)\]$/, "$1");
+}
+
+export const pythonDebugServerType: RunConfigTypeContribution = {
+  id: PYTHON_DEBUG_SERVER,
+  label: "Python Debug Server",
+  icon: "file-python",
+  description: "Listen for a Python program that connects to the debugger with debugpy.connect",
+  defaults: { host: "localhost", port: "5678" },
+  debugOnly: true,
+  debugAdapter: "debugpy",
+  fields: [
+    {
+      ...hostField,
+      label: "IDE host name",
+      hint: "The address the program connects to. For any host but localhost the IDE listens on all network interfaces, where anyone who reaches the port can connect",
+    },
+    portField,
+    {
+      key: "hint",
+      label: "Add to the program",
+      control: "output",
+      mono: true,
+      value: debugpyConnectLine,
+      hint: "pip install debugpy where the program runs, the same version as the IDE's debugger",
+    },
+    localRootField,
+    remoteRootField("e.g. /app"),
+  ],
+  commandLine: () => null,
+};
+
+/** The Python Debug Server listens again when the program it debugged ends, for the next one to connect. */
+export const listensAgain = (rc: Pick<RunConfig, "kind"> | undefined) => rc?.kind === PYTHON_DEBUG_SERVER;
+
+// ---------------------------------------------------------------------------
 // Attach to Node.js (inspector)
 
 /** How to start the remote side; with Reconnect automatically, under nodemon, which restarts it on save. */
@@ -291,6 +362,7 @@ export const REMOTE_TYPES: readonly RunConfigTypeContribution[] = [
   remoteJvmType,
   goRemoteType,
   pythonRemoteType,
+  pythonDebugServerType,
   nodeRemoteType,
   phpRemoteType,
   godotAttachType,
@@ -402,6 +474,14 @@ export function remoteAttachConfig(rc: RunConfig, root: string): LaunchConfig | 
       });
     case PYTHON_REMOTE:
       return debugpyAttach(rc.name, root, host, portOf(p, 5678), map);
+    case PYTHON_DEBUG_SERVER:
+      // debugpy's listen mode has no authentication: other machines only when the program runs on one.
+      return requestBase(rc, "debugpy", root, "attach", {
+        listen: { host: listenAddress(host), port: portOf(p, 5678) },
+        redirectOutput: true,
+        justMyCode: skip,
+        ...(map ? { pathMappings: [{ localRoot: map.local, remoteRoot: map.remote }] } : {}),
+      });
     case GODOT_ATTACH:
       return requestBase(rc, "godot", root, "attach", {
         debugServer: serverAddress(host, portOf(p, 6006)),
@@ -437,8 +517,15 @@ export const reconnects = (rc: Pick<RunConfig, "kind" | "params"> | undefined) =
 export function remoteWaitingNote(
   rc: Pick<RunConfig, "kind" | "params"> | undefined,
   reconnecting = false,
+  connecting = false,
 ): string | null {
   const p = rc?.params ?? {};
+  if (listensAgain(rc)) {
+    if (!connecting) return null;
+    const address = serverAddress(connectHost(hostOf(p)), portOf(p, 5678));
+    const line = debugpyConnectLine(p);
+    return tx`Waiting for process connection on ${address}…` + "\n" + tx`Add to the program: ${line}`;
+  }
   if (reconnects(rc))
     return reconnecting ? tx`Waiting to reconnect to Node.js on ${serverAddress(hostOf(p), portOf(p, 9229))}` : null;
   if (rc?.kind !== PHP_REMOTE) return null;

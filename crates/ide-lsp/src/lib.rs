@@ -2232,7 +2232,19 @@ impl LspManager {
                     // A library method has thousands of usages in the dependencies and the JDK,
                     // which take seconds to search: those in the sources (where scope widening
                     // searches again) are shown first, then the rest are searched once.
-                    let sources = self.widened(snap, t, pos, cancel, || query(true), files).await?;
+                    let shown = |first: &Vec<ClassifiedReference>| {
+                        if let Some(partial) = partial
+                            && !first.is_empty()
+                        {
+                            partial(References {
+                                locations: first.iter().map(|r| r.location.clone()).collect(),
+                                classified: first.clone(),
+                                incomplete: None,
+                                libraries_skipped: false,
+                            });
+                        }
+                    };
+                    let sources = self.widened(snap, t, pos, cancel, || query(true), files, shown).await?;
                     if let Some(e) = extension_error.lock().take() {
                         return Err(e);
                     }
@@ -2307,6 +2319,7 @@ impl LspManager {
                 }
             }
         }
+        let single = targets.len() == 1;
         let requests = targets.iter().map(|t| {
             let (snap, cancel) = (&snap, &cancel);
             async move {
@@ -2323,8 +2336,20 @@ impl LspManager {
                 };
                 let files =
                     |v: &Vec<Location>| v.iter().filter(|l| l.uri.is_none()).map(|l| l.path.to_path_buf()).collect();
+                // With one server, what it finds in its own scope is shown while the files beyond
+                // it are searched. The CSS server's answer still loses the rule's own selector.
+                let shown = |first: &Vec<Location>| {
+                    if let Some(partial) = partial
+                        && single
+                        && t.server.name != CSS_SERVER
+                        && !first.is_empty()
+                    {
+                        self.note_virtual(&t.server, first.iter().map(|l| l.uri.as_deref()));
+                        partial(References { locations: first.clone(), ..Default::default() });
+                    }
+                };
                 let result = if project_wide && !angular {
-                    self.widened(snap, t, pos, cancel, query, files).await
+                    self.widened(snap, t, pos, cancel, query, files, shown).await
                 } else {
                     query().await.map(|first| {
                         let empty = first.is_empty();
@@ -2997,7 +3022,7 @@ impl LspManager {
                 })
                 .collect()
         };
-        let w = self.widened(snap, t, pos, cancel, query, files).await?;
+        let w = self.widened(snap, t, pos, cancel, query, files, |_| {}).await?;
         // The second edit covers the first: its files stay analysed.
         let mut edit = w.second.unwrap_or(w.first);
         let mut more: BTreeMap<PathBuf, Vec<TextEdit>> = BTreeMap::new();
@@ -3636,7 +3661,7 @@ impl LspManager {
                 let files = |v: &Vec<HierarchyItem>| {
                     v.iter().filter(|i| i.uri.is_none()).map(|i| i.path.to_path_buf()).collect()
                 };
-                let w = self.widened(&snap, t, pos, cancel, query, files).await?;
+                let w = self.widened(&snap, t, pos, cancel, query, files, |_| {}).await?;
                 (w.second.unwrap_or(w.first), w.incomplete)
             }
             HierarchyDirection::Outgoing => (query().await?, None),

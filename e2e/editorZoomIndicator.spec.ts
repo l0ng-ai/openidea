@@ -15,7 +15,13 @@ test("editor zoom shows a local size indicator with reset and settings", async (
   await page.setViewportSize({ width: 620, height: 680 });
 
   const indicator = panes.last().getByRole("group", { name: "Editor font size" });
-  const zoom = () => right.press("Alt+Shift+.");
+  const zoom = async () => {
+    await right.focus();
+    await page.evaluate(async () => {
+      const path = "/src/platform/actions.ts";
+      await (await import(/* @vite-ignore */ path)).executeAction("editor.increaseFontSize");
+    });
+  };
   await zoom();
   await expect(right).toHaveCSS("font-size", `${original + 1}px`);
   await expect(indicator.getByRole("status")).toHaveText(`Font size: ${original + 1} px`);

@@ -116,7 +116,8 @@ impl LspManager {
     /// Runs `query` on `t`; then again with the project files that mention the
     /// symbol at `pos` outside `covered(first)` and the server's analysis scope opened.
     /// A first answer that is empty while the server indexes is retried once
-    /// indexing ends.
+    /// indexing ends. `first_found` gets the first answer before the other files are searched.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn widened<R, F, Fut>(
         &self,
         snap: &DocSnap,
@@ -125,6 +126,7 @@ impl LspManager {
         cancel: &CancellationToken,
         query: F,
         covered: impl Fn(&R) -> Vec<PathBuf>,
+        first_found: impl Fn(&R),
     ) -> IdeResult<Widened<R>>
     where
         F: Fn() -> Fut,
@@ -156,6 +158,9 @@ impl LspManager {
         if candidates.limit_hit {
             incomplete = incomplete.or(Some(ReferencesIncomplete::TooManyFiles));
         }
+        // Opening the other candidate files and asking again takes the server a while: what it
+        // found in its own scope can be shown meanwhile.
+        first_found(&first);
         let known: HashSet<PathBuf> = covered(&first).into_iter().chain([snap.path.clone()]).collect();
         let files: Vec<PathBuf> = candidates.files.into_iter().filter(|f| !known.contains(f)).collect();
         let mut files = self.files_beyond_scope(t, files, cancel).await;

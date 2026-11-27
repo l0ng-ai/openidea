@@ -1,6 +1,6 @@
 /**
  * Coverage reports collected elsewhere: "Import a report collected in CI from
- * disk" (lcov, JaCoCo or Cobertura XML, Go cover profile, SimpleCov) and "Manage Coverage Reports"
+ * disk" (lcov, JaCoCo or Cobertura XML, Go cover profile, SimpleCov, coverage.py data) and "Manage Coverage Reports"
  * (choose the shown suite, delete suites and remembered imports).
  */
 import { useMemo, useState } from "react";
@@ -43,6 +43,18 @@ async function pickReport(): Promise<string | null> {
   });
 }
 
+/** Says how many files of an import are not in the project; coverage.py data maps them with `[paths]`. */
+function outsideText(outside: number, runner: string): string | undefined {
+  if (!outside) return undefined;
+  if (runner === "coverage.py")
+    return outside === 1
+      ? "1 file of the data has no source in this project. Map it with [paths] in the coverage.py configuration."
+      : tx`${outside} files of the data have no source in this project. Map them with [paths] in the coverage.py configuration.`;
+  return outside === 1
+    ? "1 file of the report is not in this project."
+    : tx`${outside} files of the report are not in this project.`;
+}
+
 /** Imports `path` (asks for a file without one) and shows it like a run's suite. */
 export async function importReport(path?: string): Promise<Suite | null> {
   if (!isTauri()) {
@@ -73,13 +85,7 @@ export async function importReport(path?: string): Promise<Suite | null> {
       level: outside ? "warning" : "info",
       key: "coverage-import",
       title: `Imported coverage '${suite.name}': ${formatPercent(covered!, total!)} lines`,
-      body: !data.files.length
-        ? "The report covers no files of this project."
-        : outside === 1
-          ? "1 file of the report is not in this project."
-          : outside
-            ? tx`${outside} files of the report are not in this project.`
-            : undefined,
+      body: !data.files.length ? "The report covers no files of this project." : outsideText(outside, data.runner),
     });
     return suite;
   } catch (e) {

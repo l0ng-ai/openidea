@@ -18,6 +18,7 @@ import { pytestNodeId } from "./pytest";
 import { cypressSelection } from "./cypress";
 import { playwrightProject, playwrightTitles } from "./playwright";
 import { withNodeTestNamePattern } from "./nodeTest";
+import { doctestRerunArgs } from "./pythonDoctest";
 import { unittestRerunArgs } from "./pythonUnittest";
 import { nodeStatus, type TestNode, type TestResults } from "./results";
 
@@ -322,6 +323,9 @@ function builtinTestsConfig(config: RunConfig, paths: string[][], name: string):
     }
     case "python-unittest":
       args = unittestRerunArgs(config.args, paths);
+      break;
+    case "python-doctest":
+      args = doctestRerunArgs(config.args, paths);
       break;
     case "phpunit":
       args = phpunitArgs(config.args, { filter: phpunitFilter(paths) });
