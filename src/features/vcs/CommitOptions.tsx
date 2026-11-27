@@ -21,7 +21,14 @@ import { useStagingArea } from "./staging";
 import { setCommitTestSelection, useCommitTestSelection } from "./commitTests";
 import styles from "./CommitView.module.css";
 
-type CommitCheck = "reformat" | "optimizeImports" | "cleanup" | "analyzeCode" | "checkTodo" | "postponeSlowChecks";
+type CommitCheck =
+  | "reformat"
+  | "optimizeImports"
+  | "cleanup"
+  | "fixOnCommit"
+  | "analyzeCode"
+  | "checkTodo"
+  | "postponeSlowChecks";
 
 async function setCheck(key: CommitCheck, value: boolean) {
   if (!isTauri()) return;
@@ -184,6 +191,7 @@ export function CommitOptionsBody({
         {check("reformat", "Reformat code")}
         {check("optimizeImports", "Optimize imports")}
         {check("cleanup", "Cleanup")}
+        {check("fixOnCommit", "Fix Ruff safe lint issues")}
         <Checkbox checked={runHooks} onChange={(v) => useCommit.setState({ runHooks: v })} label="Run Git hooks" />
       </Section>
       <Section title="Advanced Commit Checks">

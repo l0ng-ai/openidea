@@ -7,7 +7,7 @@
 //! | runtime | profiler | output |
 //! |---|---|---|
 //! | Node.js (scripts, npm scripts) | `node --cpu-prof` (via `NODE_OPTIONS`) | `.cpuprofile` JSON |
-//! | Python | `py-spy record --format raw` | collapsed stacks |
+//! | Python | `python -m cProfile -o …`, or `py-spy record --format raw` | pstats, or collapsed stacks |
 //! | JVM applications | async-profiler agent (`JAVA_TOOL_OPTIONS`) | collapsed stacks |
 //! | native / `cargo run` (Linux) | `perf record -g`, then `perf script` | perf script text |
 //!
@@ -207,7 +207,11 @@ pub fn collect(spec: &ProfileSpec) -> IdeResult<Profile> {
             let path: &Path = path.as_ref();
             let name =
                 path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
-            let bytes = std::fs::read(path).map_err(|e| IdeError::invalid(format!("Cannot read {name}: {e}")))?;
+            let bytes = std::fs::read(path).map_err(|e| match e.kind() {
+                // A profiled run that was killed (a second Stop) or left through `os._exit`.
+                std::io::ErrorKind::NotFound => nothing_recorded(&format!("{name} was not written")),
+                _ => IdeError::invalid(format!("Cannot read {name}: {e}")),
+            })?;
             let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
             // The content decides (`node --cpu-prof-name=cpu.prof` writes JSON); the extension only
             // names what a file that is neither failed to be.
@@ -355,7 +359,7 @@ mod tests {
         }
         let missing =
             collect(&ProfileSpec::SnapshotFile { path: dir.path().join("gone.cpuprofile").into(), root: None });
-        assert!(missing.unwrap_err().message.starts_with("Cannot read gone.cpuprofile"));
+        assert_eq!(missing.unwrap_err().message, "The run produced no profile (gone.cpuprofile was not written).");
     }
 
     #[test]
