@@ -1,6 +1,7 @@
 /** The Python Console's process: the project interpreter running console.py on the Run process host. */
 import { Channel } from "@tauri-apps/api/core";
 import { create } from "zustand";
+import { pickManage } from "@/features/django/manage";
 import { call, commands, onIdeEvent, type OutputChunk, type RunConfig, type RunId } from "@/platform/ipc";
 import { windowLabel } from "@/platform/auxWindow";
 import { dirname, useProject } from "@/platform/project";
@@ -86,12 +87,6 @@ function onMessage(message: ConsoleMessage) {
 
 /** Run ids of this window's consoles: a reloaded page finds the ones its previous load left running. */
 const PREFIX = `python-console:${windowLabel()}:`;
-
-/** The project's `manage.py`: the shallowest one outside installed packages. */
-export function pickManage(paths: readonly string[]): string | null {
-  const own = paths.filter((p) => !/\/(?:site-packages|node_modules|\.venv|venv)\//.test(p));
-  return own.sort((a, b) => a.split("/").length - b.split("/").length || a.localeCompare(b))[0] ?? null;
-}
 
 /** The settings module `manage.py` sets as DJANGO_SETTINGS_MODULE. */
 export const settingsModule = (manage: string) =>
