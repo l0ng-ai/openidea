@@ -11,6 +11,7 @@ import {
 } from "@/workbench/contributions";
 import { isTauri } from "@/platform/ipc";
 import { ProviderAcquisitions } from "@/workbench/providerAcquisition";
+import { registerConversions } from "./convert";
 import { closeNotebook, existingNotebookSession, notebookBackend, notebookSession, notebookSessions } from "./session";
 
 const acquisitions = new ProviderAcquisitions<NotebookSnapshot>(
@@ -49,6 +50,7 @@ const document: EditorDocumentLifecycle = {
 
 export function activate(): () => void {
   const disposers = [
+    registerConversions(),
     registerEditorKind({
       kind: "notebook",
       restorable: true,

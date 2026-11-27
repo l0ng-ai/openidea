@@ -11,17 +11,18 @@ import {
   registerToolWindow,
   type EditorBanner,
 } from "@/workbench/contributions";
-import { isCpuProfilePath, openCpuProfileFiles, showCpuProfiles } from "./cpuProfiles";
+import { isSnapshotPath, openSnapshotFiles, showCpuProfiles } from "./cpuProfiles";
 import { profilerExecutor } from "./executor";
 import { ProfilerHeaderActions, ProfilerTabs, ProfilerView } from "./ProfilerView";
 import { resetProfiler } from "./store";
 
+// cProfile snapshots are binary: they open in the hex viewer, which shows no banners.
 function useCpuProfileBanner(path: string): EditorBanner | null {
-  if (!isCpuProfilePath(path)) return null;
+  if (!path.toLowerCase().endsWith(".cpuprofile")) return null;
   return {
     text: "This file is a V8 CPU profile",
     icon: "profile",
-    actions: [{ label: "Open in Profiler", run: () => void openCpuProfileFiles(path) }],
+    actions: [{ label: "Open in Profiler", run: () => void openSnapshotFiles(path) }],
   };
 }
 
@@ -47,7 +48,7 @@ export function activate(): () => void {
       menus: ["projectView", "editor", "editorTab"],
       order: 45,
       items: (_menu, { paths, dirs }) =>
-        paths.length && paths.every((p, i) => !dirs?.[i] && isCpuProfilePath(p))
+        paths.length && paths.every((p, i) => !dirs?.[i] && isSnapshotPath(p))
           ? [{ kind: "action", action: "profiler.openInProfiler", arg: paths }]
           : [],
     }),
@@ -75,22 +76,23 @@ export function activate(): () => void {
       {
         id: "profiler.openSnapshot",
         title: "Open Snapshot…",
-        description: "Open V8 .cpuprofile files saved by node --cpu-prof or Chrome DevTools in the Profiler",
+        description:
+          "Open V8 .cpuprofile files (node --cpu-prof, Chrome DevTools) or cProfile .pstats / .prof files in the Profiler",
         category: "Profiler",
         icon: "profile",
         when: "projectOpen",
-        keywords: ["cpuprofile", "profiler", "snapshot", "flame graph"],
-        run: () => openCpuProfileFiles(undefined),
+        keywords: ["cpuprofile", "pstats", "cprofile", "profiler", "snapshot", "flame graph"],
+        run: () => openSnapshotFiles(undefined),
       },
       {
         id: "profiler.openInProfiler",
         title: "Open in Profiler",
-        description: "Open the selected .cpuprofile files as Profiler snapshots",
+        description: "Open the selected .cpuprofile, .pstats or .prof files as Profiler snapshots",
         category: "Profiler",
         icon: "profile",
         hidden: true,
         when: "projectOpen",
-        run: ({ arg }) => (arg === undefined ? undefined : openCpuProfileFiles(arg)),
+        run: ({ arg }) => (arg === undefined ? undefined : openSnapshotFiles(arg)),
       },
       {
         id: "run.profileAllocations",

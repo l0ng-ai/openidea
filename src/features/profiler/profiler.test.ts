@@ -9,6 +9,8 @@ import {
   frameLocation,
   matchingFrames,
   profilerSupports,
+  callSites,
+  formatCalls,
   share,
 } from "./model";
 
@@ -31,6 +33,7 @@ const profile: Profile = {
     { frame: 3, total: 2, selfWeight: 2, children: [] },
   ],
   methods: [],
+  calls: [],
 };
 
 function cfg(command: string, args: string[], kind = "shell"): RunConfig {
@@ -126,5 +129,66 @@ describe("flameStep", () => {
     expect(flameStep(rects, 2, "deeper")).toBe(2);
     expect(flameStep(rects, 3, "shallower")).toBe(1);
     expect(flameStep(rects, 2, "shallower")).toBe(0);
+  });
+});
+
+describe("callers and callees", () => {
+  const names = (sites: Array<{ frame: number; total: number }>) =>
+    sites.map((x) => [recursive.frames[x.frame]!.name, x.total]);
+  // all(10) → main(10) → f(8) → f(5) → g(5); main → g(2)
+  const recursive: Profile = {
+    ...profile,
+    frames: [
+      ...profile.frames.slice(0, 2),
+      { name: "f", file: null, line: null, kind: "code" },
+      { name: "g", file: null, line: null, kind: "code" },
+    ],
+    nodes: [
+      { frame: 0, total: 10, selfWeight: 0, children: [1] },
+      { frame: 1, total: 10, selfWeight: 0, children: [2, 5] },
+      { frame: 2, total: 8, selfWeight: 3, children: [3] },
+      { frame: 2, total: 5, selfWeight: 0, children: [4] },
+      { frame: 3, total: 5, selfWeight: 5, children: [] },
+      { frame: 3, total: 2, selfWeight: 2, children: [] },
+    ],
+  };
+
+  it("come from the call tree, a recursive function counted at its outermost call", () => {
+    const f = callSites(recursive, 2);
+    expect(names(f.callers)).toEqual([["main", 8]]);
+    expect(names(f.callees)).toEqual([["f", 5]]);
+    expect(f.callers[0]!.calls).toBeNull();
+    const g = callSites(recursive, 3);
+    expect(names(g.callers)).toEqual([
+      ["f", 5],
+      ["main", 2],
+    ]);
+    expect(callSites(recursive, 1).callers).toEqual([]);
+  });
+
+  it("are the recorded edges of a call-graph profile", () => {
+    const graph: Profile = {
+      ...recursive,
+      calls: [
+        { caller: 1, callee: 2, selfWeight: 1, total: 4, calls: 1, primitiveCalls: 1 },
+        { caller: 2, callee: 2, selfWeight: 3, total: 4, calls: 99, primitiveCalls: 0 },
+        { caller: 2, callee: 3, selfWeight: 6, total: 6, calls: 7, primitiveCalls: 7 },
+      ],
+    };
+    const f = callSites(graph, 2);
+    expect(f.callers.map((x) => [x.frame, x.calls])).toEqual([
+      [1, 1],
+      [2, 99],
+    ]);
+    expect(f.callees.map((x) => [x.frame, x.total, x.calls])).toEqual([
+      [3, 6, 7],
+      [2, 4, 99],
+    ]);
+  });
+
+  it("show recursive call counts as total/primitive", () => {
+    expect(formatCalls(8361, 1)).toBe("8,361/1");
+    expect(formatCalls(3, 3)).toBe("3");
+    expect(formatCalls(3, null)).toBe("3");
   });
 });

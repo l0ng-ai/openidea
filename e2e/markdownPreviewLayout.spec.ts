@@ -1,6 +1,6 @@
 import type { EditorView } from "@codemirror/view";
 import type { Locator, Page } from "@playwright/test";
-import { expect, openFromTree, test } from "./fixtures";
+import { expect, openFromTree, stubDesktop, test } from "./fixtures";
 
 async function choosePreviewLayout(page: Page, layout: "Side by side" | "Stacked") {
   await page.keyboard.press("Meta+,");
@@ -213,3 +213,173 @@ test("applies the Markdown sticky-lines setting to an open editor", async ({ wor
   await checkbox.check();
   await settings.getByRole("button", { name: "OK", exact: true }).click();
 });
+
+async function openSections(page: Page, mode: "Preview Only" | "Editor Only" | "Editor and Preview") {
+  const target = "Section 30";
+  await page.setViewportSize({ width: 1100, height: 760 });
+  const line = await page.evaluate(async (title) => {
+    const backendPath = "/src/editor/core/backend.ts";
+    const servicePath = "/src/workbench/contributions.ts";
+    const { docBackend } = await import(backendPath);
+    const { editorService } = await import(servicePath);
+    const path = "/dev/acme-api/sections.md";
+    const paragraph = "Wrapping changes the height of this paragraph when the docked pane closes. ".repeat(11);
+    const sections = Array.from({ length: 65 }, (_, i) => `## Section ${i}\n\n${paragraph}\n\n`);
+    const source = sections.join("");
+    docBackend().files.set(path, source);
+    await editorService().openFile(path);
+    return source.split("\n").indexOf(`## ${title}`);
+  }, target);
+  await page.getByRole("button", { name: mode, exact: true }).click();
+  await stubDesktop(page);
+  await page.evaluate(
+    async ({ name, line }) => {
+      const pos = { line, col: 3 };
+      window.__ipc.handlers.doc_outline = () => [
+        {
+          name,
+          kind: "key",
+          range: { start: { line, col: 0 }, end: { line: line + 2, col: 0 } },
+          selection_range: { start: pos, end: pos },
+          children: [],
+        },
+      ];
+      const path = "/src/workbench/toolwindows/store.ts";
+      const { moveToolWindow, setToolWindowSize, showToolWindow } = await import(path);
+      moveToolWindow("structure", "right");
+      setToolWindowSize("right", 330);
+      showToolWindow("structure", true);
+    },
+    { name: target, line },
+  );
+  const panel = page.getByRole("region", { name: "Structure", exact: true });
+  const stripe = page.locator('[data-stripe-button="structure"]');
+  return { target, line, panel, stripe };
+}
+
+const position = (heading: Locator) =>
+  heading.evaluate((el) => {
+    const preview = el.closest('[aria-label="Markdown preview"]')!;
+    return { y: el.getBoundingClientRect().top - preview.getBoundingClientRect().top, width: preview.clientWidth };
+  });
+
+const settled = (preview: Locator) =>
+  preview.evaluate((el) => {
+    const style = getComputedStyle(el);
+    const width = el.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    return Math.abs(width - parseFloat(style.getPropertyValue("--markdown-block-width")));
+  });
+
+test("keeps the Markdown reading position when toggling the right Structure stripe", async ({ workbench: page }) => {
+  const { target, panel, stripe } = await openSections(page, "Preview Only");
+  const preview = page.getByRole("document", { name: "Markdown preview" });
+  const heading = preview.getByRole("heading", { name: target, exact: true });
+  await expect.poll(() => settled(preview)).toBeLessThanOrEqual(1);
+  const starting = await position(heading);
+  await panel.getByRole("treeitem", { name: target, exact: true }).click();
+  await expect.poll(async () => (await position(heading)).y).toBeGreaterThanOrEqual(-1);
+  await expect.poll(async () => (await position(heading)).y).toBeLessThan(45);
+  const before = await position(heading);
+  expect(starting.y).toBeGreaterThan(before.y + 1000);
+  await stripe.click();
+  await expect(panel).toBeHidden();
+  await expect.poll(async () => (await position(heading)).width).toBeGreaterThan(before.width + 200);
+  await expect.poll(() => settled(preview)).toBeLessThanOrEqual(1);
+  expect(Math.abs((await position(heading)).y - before.y)).toBeLessThanOrEqual(2);
+
+  const readingHeading = preview.getByRole("heading", { name: "Section 35", exact: true });
+  await readingHeading.evaluate((el) => {
+    const preview = el.closest('[aria-label="Markdown preview"]')!;
+    preview.scrollTop += el.getBoundingClientRect().top - preview.getBoundingClientRect().top + 12;
+  });
+  await expect.poll(async () => Math.abs((await position(readingHeading)).y + 12)).toBeLessThanOrEqual(1);
+  await expect.poll(async () => (await position(heading)).y).toBeLessThan(-500);
+  const reading = await position(readingHeading);
+  await stripe.click();
+  await expect(panel).toBeVisible();
+  await expect.poll(async () => (await position(readingHeading)).width).toBeLessThan(reading.width - 200);
+  await expect.poll(() => settled(preview)).toBeLessThanOrEqual(1);
+  expect(Math.abs((await position(readingHeading)).y - reading.y)).toBeLessThanOrEqual(2);
+});
+
+for (const mode of ["Editor Only", "Editor and Preview"] as const) {
+  test(`keeps wrapped Markdown in place when toggling Structure in ${mode}`, async ({ workbench: page }) => {
+    const { target, line, panel, stripe } = await openSections(page, mode);
+    const source = page.locator(".cm-content:visible");
+    const preview = page.getByRole("document", { name: "Markdown preview" });
+    const previewHeading = preview.getByRole("heading", { name: "Section 49", exact: true });
+    const readSource = (pos: number | null = null) =>
+      source.evaluate((el, pos) => {
+        const view = (el as HTMLElement & { cmTile: { view: EditorView } }).cmTile.view;
+        const viewport = view.scrollDOM.getBoundingClientRect();
+        const marker =
+          pos ?? view.posAtCoords({ x: view.contentDOM.getBoundingClientRect().left + 1, y: viewport.top + 2 });
+        const coords = marker !== null ? view.coordsAtPos(marker) : null;
+        const markerLine = marker !== null ? view.state.doc.lineAt(marker) : null;
+        const caret = view.state.selection.main.head;
+        return {
+          marker,
+          caret: view.state.doc.lineAt(caret).number,
+          markerLine: markerLine?.number,
+          markerColumn: markerLine && marker !== null ? marker - markerLine.from : 0,
+          y: coords ? coords.top - viewport.top : null,
+          width: view.scrollDOM.clientWidth,
+        };
+      }, pos);
+    const browseSource = (section: number, column: number) =>
+      source.evaluate(
+        (el, { section, column }) => {
+          const view = (el as HTMLElement & { cmTile: { view: EditorView } }).cmTile.view;
+          const line = view.state.doc.line(section * 4 + (column ? 3 : 1));
+          view.dispatch({
+            effects: (view.constructor as typeof EditorView).scrollIntoView(line.from + column, {
+              y: "start",
+              yMargin: 0,
+            }),
+          });
+        },
+        { section, column },
+      );
+    await expect(source).toHaveClass(/cm-lineWrapping/);
+    await panel.getByRole("treeitem", { name: target, exact: true }).click();
+    await expect.poll(async () => (await readSource()).caret).toBe(line + 1);
+    await browseSource(35, 500);
+    await expect.poll(async () => (await readSource()).markerLine).toBe(35 * 4 + 3);
+    if (mode === "Editor and Preview") {
+      await expect.poll(() => settled(preview)).toBeLessThanOrEqual(1);
+      await expect.poll(async () => (await position(previewHeading)).y).toBeGreaterThan(800);
+      await previewHeading.evaluate((el) => {
+        const preview = el.closest('[aria-label="Markdown preview"]')!;
+        preview.scrollTop += el.getBoundingClientRect().top - preview.getBoundingClientRect().top + 12;
+      });
+      await expect.poll(async () => Math.abs((await position(previewHeading)).y + 12)).toBeLessThanOrEqual(1);
+    }
+    const before = await readSource();
+    const reading = mode === "Editor and Preview" ? await position(previewHeading) : null;
+    expect(before.markerColumn).toBeGreaterThan(200);
+    expect(before.marker).not.toBeNull();
+    expect(before.y).not.toBeNull();
+    for (const open of [false, true, false, true]) {
+      await stripe.click();
+      await expect(stripe).toHaveAttribute("aria-pressed", String(open));
+      if (!open) await expect.poll(async () => (await readSource()).width).toBeGreaterThan(before.width + 100);
+      else await expect.poll(async () => (await readSource()).width).toBe(before.width);
+      await expect
+        .poll(async () => {
+          const after = await readSource(before.marker);
+          return after.y === null ? Infinity : Math.abs(after.y - before.y!);
+        })
+        .toBeLessThanOrEqual(2);
+      expect((await readSource()).caret).toBe(line + 1);
+      if (reading) {
+        await expect.poll(() => settled(preview)).toBeLessThanOrEqual(1);
+        expect(Math.abs((await position(previewHeading)).y - reading.y)).toBeLessThanOrEqual(2);
+      }
+    }
+    if (mode === "Editor and Preview") {
+      const followerHeading = preview.getByRole("heading", { name: "Section 52", exact: true });
+      await browseSource(52, 0);
+      await expect.poll(async () => Math.abs((await position(followerHeading)).y)).toBeLessThanOrEqual(45);
+    }
+  });
+}

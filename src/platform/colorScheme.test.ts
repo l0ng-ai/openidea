@@ -150,6 +150,19 @@ describe("color schemes", () => {
     expect(css).not.toMatch(/:root \{[^}]*--syn-javascript-interface/);
   });
 
+  it("offers Java's interface, abstract class, enum and type parameter, in the class name's style until set (#6415)", () => {
+    const ids = ["java.interface", "java.abstractClass", "java.enum", "java.typeParameter"];
+    const page = ATTRIBUTES.filter((a) => a.path[0] === "Java").map((a) => a.id);
+    expect(page).toEqual(expect.arrayContaining(ids));
+    const customs = {
+      "custom-j": { name: "J", parent: "dark" as const, attributes: { "java.className": { foreground: "#123456" } } },
+    };
+    for (const id of ids) expect(resolvedAttribute("custom-j", id, customs)?.foreground).toBe("#123456");
+    const css = schemeCss("dark", { dark: { "java.enum": { foreground: "#4ec9b0" } } });
+    expect(css).toContain("--syn-java-enum: #4ec9b0 !important");
+    expect(css).not.toMatch(/:root \{[^}]*--syn-java-enum/);
+  });
+
   it("shows an unset Global function in the function declaration style, then its own (#4059)", () => {
     const fn = resolvedAttribute("dark", "functionDeclaration");
     expect(resolvedAttribute("dark", "javascript.globalFunction")).toEqual(fn);
