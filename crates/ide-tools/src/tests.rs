@@ -181,6 +181,9 @@ fn everything_missing_on_an_empty_system() {
     assert!(find(&list, "solargraph").unavailable_reason.as_deref().unwrap().contains("Ruby"));
     // Shared npm package: each server is its own row.
     assert_eq!(find(&list, "vscode-css-language-server").install_method.as_deref(), Some("npm"));
+    let sass = find(&list, "some-sass-language-server");
+    assert_eq!(sass.install_method.as_deref(), Some("npm"));
+    assert_eq!(sass.languages, ["Sass"]);
     assert!(find(&list, "delve").kind == ToolKind::Debugger);
 }
 

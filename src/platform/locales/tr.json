@@ -143,6 +143,7 @@
   "menu.code.overrideMethods": "Metotları Geçersiz Kıl…",
   "menu.code.implementMethods": "Metotları Uygula…",
   "menu.code.insertLiveTemplate": "Canlı Şablon Ekle…",
+  "menu.code.saveAsLiveTemplate": "Canlı Şablon Olarak Kaydet…",
   "menu.code.moveLineDown": "Satırı Aşağı Taşı",
   "menu.code.moveLineUp": "Satırı Yukarı Taşı",
   "menu.code.optimizeImports": "İçe Aktarmaları İyileştir",

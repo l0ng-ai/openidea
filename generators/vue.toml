@@ -1,0 +1,83 @@
+id = "vue"
+name = "Vue (create-vue)"
+group = "JavaScript"
+icon = "project-vue"
+order = 9
+description = "A Vue app from create-vue, with optional router, Pinia, Vitest and ESLint."
+
+[[requires]]
+program = "node"
+min = "20.19"
+hint = "Install Node.js 20.19 or later: https://nodejs.org"
+
+[[requires]]
+program = "{{pm}}"
+when = { pm = ["pnpm", "yarn", "bun"] }
+hint = "Install it, or choose npm."
+
+[[fields]]
+id = "ts"
+label = "TypeScript"
+type = "checkbox"
+default = "true"
+
+[[fields]]
+id = "router"
+label = "Vue Router"
+type = "checkbox"
+default = "false"
+
+[[fields]]
+id = "pinia"
+label = "Pinia"
+type = "checkbox"
+default = "false"
+
+[[fields]]
+id = "vitest"
+label = "Vitest"
+type = "checkbox"
+default = "false"
+
+[[fields]]
+id = "eslint"
+label = "ESLint"
+type = "checkbox"
+default = "false"
+
+[[fields]]
+id = "pm"
+label = "Package manager:"
+type = "choice"
+segmented = true
+options = ["npm", "pnpm", "yarn", "bun"]
+default = "npm"
+
+[[fields]]
+id = "install"
+label = "Install dependencies"
+type = "checkbox"
+default = "true"
+
+# create-vue prompts unless a feature flag is given and the folder is a valid package name.
+[[steps]]
+label = "Running create-vue"
+package = "create-vue@latest"
+cwd = "parent"
+creates = "{{name|kebab}}"
+args = [
+    "{{name|kebab}}",
+    { when = { ts = "true" }, args = ["--ts"] },
+    { when = { router = "true" }, args = ["--router"] },
+    { when = { pinia = "true" }, args = ["--pinia"] },
+    { when = { vitest = "true" }, args = ["--vitest"] },
+    { when = { eslint = "true" }, args = ["--eslint"] },
+    # No flag means "nothing extra" without prompting; `--default` would add TypeScript.
+    { when = { ts = "false", router = "false", pinia = "false", vitest = "false", eslint = "false" }, args = ["--oxlint"] },
+]
+
+[[after]]
+label = "Installing dependencies"
+program = "{{pm}}"
+args = ["install"]
+when = { install = "true" }

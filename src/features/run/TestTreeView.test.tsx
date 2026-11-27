@@ -85,6 +85,7 @@ describe("TestTreeView", () => {
       expect.objectContaining({ path: "MathTest.java", line: 9 }),
       "/p",
       true,
+      undefined,
     );
   });
 
@@ -276,6 +277,7 @@ describe("Previous / Next Failed Test", () => {
       expect.objectContaining({ path: "DbTest.java", line: 20 }),
       "/p",
       false,
+      undefined,
     );
     go(-1, true);
     // reads() has no location: nothing to open.

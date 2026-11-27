@@ -1365,6 +1365,22 @@ mod tests {
     }
 
     #[test]
+    fn indented_sass_has_its_own_server() {
+        let reg = reg();
+        let names = |lang: &str| -> Vec<String> {
+            reg.get(&LanguageId::new(lang)).unwrap().language_servers.iter().map(|s| s.name.clone()).collect()
+        };
+        assert_eq!(names("sass"), ["some-sass-language-server"]);
+        let sass = &reg.get(&LanguageId::new("sass")).unwrap().language_servers[0];
+        assert_eq!(sass.settings.as_ref().and_then(|s| s.get("somesass")), Some(&serde_json::json!({})));
+        for lang in ["scss", "css", "less"] {
+            let names = names(lang);
+            assert_eq!(names[0], "vscode-css-language-server", "{lang}");
+            assert!(!names.iter().any(|n| n == "some-sass-language-server"), "{lang}");
+        }
+    }
+
+    #[test]
     fn astro_server_leaves_typescript_sdk_resolution_to_the_launcher() {
         let reg = reg();
         let ls = &reg.get(&LanguageId::new("astro")).unwrap().language_servers[0];

@@ -2,7 +2,7 @@ id = "html"
 name = "Static Website"
 group = "JavaScript"
 icon = "project-html"
-order = 9
+order = 12
 description = "An HTML page with a stylesheet and a script."
 
 [[files]]

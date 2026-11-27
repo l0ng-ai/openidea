@@ -1,0 +1,53 @@
+id = "expo"
+name = "Expo (React Native)"
+group = "JavaScript"
+icon = "project-expo"
+order = 10
+description = "A React Native app on Expo from create-expo-app."
+
+[[requires]]
+program = "node"
+min = "20.19"
+hint = "Install Node.js 20.19 or later: https://nodejs.org"
+
+[[requires]]
+program = "{{pm}}"
+when = { pm = ["pnpm", "yarn", "bun"] }
+hint = "Install it, or choose npm."
+
+[[fields]]
+id = "template"
+label = "Template:"
+type = "choice"
+options = [
+    { value = "blank-typescript", label = "Blank (TypeScript)" },
+    { value = "blank", label = "Blank" },
+    { value = "tabs", label = "Tabs (Expo Router)" },
+]
+default = "blank-typescript"
+
+[[fields]]
+id = "pm"
+label = "Package manager:"
+type = "choice"
+segmented = true
+options = ["npm", "pnpm", "yarn", "bun"]
+default = "npm"
+
+[[fields]]
+id = "install"
+label = "Install dependencies"
+type = "checkbox"
+default = "true"
+
+[[steps]]
+label = "Running create-expo-app"
+package = "create-expo-app@latest"
+cwd = "parent"
+args = ["{{name}}", "--template", "{{template}}", "--no-install", "--yes"]
+
+[[after]]
+label = "Installing dependencies"
+program = "{{pm}}"
+args = ["install"]
+when = { install = "true" }

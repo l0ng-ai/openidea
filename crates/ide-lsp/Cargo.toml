@@ -28,6 +28,7 @@ percent-encoding = "2"
 zip.workspace = true
 
 [dev-dependencies]
+ide-sdk.workspace = true
 tempfile.workspace = true
 encoding_rs.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }

@@ -29,6 +29,7 @@ pub mod php;
 pub mod pinned;
 pub mod python;
 pub mod ruby;
+mod tsconfig_plugins;
 mod vue;
 mod zig;
 
