@@ -973,9 +973,10 @@ async fn bundler_path_aliases_resolve_below_tsconfig_paths() {
 const DIAGNOSTIC_PLUGIN: &str = "module.exports = () => ({ create(info) {\n  const ls = info.languageService;\n  const proxy = Object.create(null);\n  for (const k of Object.keys(ls)) proxy[k] = (...a) => ls[k](...a);\n  proxy.getSemanticDiagnostics = (f) => [...ls.getSemanticDiagnostics(f), { file: ls.getProgram().getSourceFile(f), start: 0, length: 1, messageText: 'from ' + NAME, category: 1, code: 99001 }];\n  return proxy;\n} });\n";
 
 /// tsconfig `compilerOptions.plugins` load from the project's `node_modules` with vtsls' own
-/// TypeScript once the project folder is a plugin probe location (`pluginPaths`, #6336); one
-/// that isn't installed is skipped, and the IDE's global plugins keep loading. Set
-/// `OPENIDEA_TEST_NPM_TOOLS` to a dir with `npm i @vtsls/language-server typescript@5`.
+/// TypeScript through the probe location `configure_tsconfig_plugins` writes (#6336); one that
+/// isn't installed is skipped, and the IDE's global plugins keep loading their own copies,
+/// also when the project has a package of the same name. Set `OPENIDEA_TEST_NPM_TOOLS` to a
+/// dir with `npm i @vtsls/language-server typescript@5`.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires @vtsls/language-server (OPENIDEA_TEST_NPM_TOOLS)"]
 async fn tsconfig_plugins_load_from_the_project_with_the_bundled_typescript() {
@@ -985,11 +986,14 @@ async fn tsconfig_plugins_load_from_the_project_with_the_bundled_typescript() {
     // Outside the project: a probe location resolves plugins from its ancestors' node_modules too.
     let ide = tempfile::tempdir().unwrap();
     let ide = dunce::canonicalize(ide.path()).unwrap();
-    for (dir, name) in [(&root, "project-plugin"), (&ide, "global-plugin")] {
+    let plugin = |dir: &Path, name: &str, says: &str| {
         let dir = dir.join("node_modules").join(name);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("index.js"), DIAGNOSTIC_PLUGIN.replace("NAME", &format!("'{name}'"))).unwrap();
-    }
+        std::fs::write(dir.join("index.js"), DIAGNOSTIC_PLUGIN.replace("NAME", &format!("'{says}'"))).unwrap();
+    };
+    plugin(&root, "project-plugin", "project-plugin");
+    plugin(&root, "global-plugin", "the project's global-plugin");
+    plugin(&ide, "global-plugin", "global-plugin");
     std::fs::write(root.join("package.json"), "{\"name\":\"app\",\"private\":true}").unwrap();
     let plugins = r#"[{"name":"not-installed"},{"name":"project-plugin"}]"#;
     std::fs::write(root.join("tsconfig.json"), format!("{{\"compilerOptions\":{{\"plugins\":{plugins}}}}}")).unwrap();
@@ -1001,26 +1005,30 @@ async fn tsconfig_plugins_load_from_the_project_with_the_bundled_typescript() {
         "location": ide.to_string_lossy(),
         "enableForWorkspaceTypeScriptVersions": true,
     }] } } });
-    let mut probing = global.clone();
-    probing["typescript"] = serde_json::json!({ "tsserver": { "pluginPaths": [root.to_string_lossy()] } });
 
-    for (init, project_plugin) in [(global, false), (probing, true)] {
-        let ts = lang("typescript", "ts", npm_server(&tools, "vtsls", "vtsls", Some(init)));
-        let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![ts]));
+    for configured in [false, true] {
+        let mut server = npm_server(&tools, "vtsls", "vtsls", Some(global.clone()));
+        server.tsserver_project = true;
+        if configured {
+            assert!(ide_sdk::apply::configure_tsconfig_plugins(&mut server, &root, &ide.join("data")));
+        }
+        let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![lang("typescript", "ts", server)]));
         let doc = DocId::next();
         mgr.did_open(doc, &main, &LanguageId::new("typescript"), 1, text);
-        let messages = retry("the global plugin's diagnostic", Duration::from_secs(90), || {
+        let mut messages = retry("the plugins' diagnostics", Duration::from_secs(90), || {
             let found = events.lock().iter().rev().find_map(|e| match e {
-                IdeEvent::Diagnostics { path, items, .. } if path == &main => {
-                    let messages: Vec<String> = items.iter().map(|d| d.message.clone()).collect();
-                    messages.iter().any(|m| m == "from global-plugin").then_some(messages)
+                IdeEvent::Diagnostics { path, items, .. } if path == &main && !items.is_empty() => {
+                    Some(items.iter().map(|d| d.message.clone()).collect::<Vec<_>>())
                 }
                 _ => None,
             });
             async move { found }
         })
         .await;
-        assert_eq!(messages.iter().any(|m| m == "from project-plugin"), project_plugin, "{messages:?}");
+        messages.sort();
+        let expected: &[&str] =
+            if configured { &["from global-plugin", "from project-plugin"] } else { &["from global-plugin"] };
+        assert_eq!(messages, expected);
         let crashed = matches!(last_status(&events, "vtsls"), Some((ServerStatus::Crashed, _)));
         assert!(!crashed, "{:?}", last_status(&events, "vtsls"));
         tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();

@@ -5,15 +5,17 @@
 //! Language servers run in trusted projects only, so untrusted ones never load them.
 
 use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 const CONFIGS: [&str; 2] = ["tsconfig.json", "jsconfig.json"];
 
-/// The directories of the tsconfig.json / jsconfig.json files under `server_root` that
-/// declare plugins, for vtsls `typescript.tsserver.pluginPaths` (tsserver resolves a plugin
-/// from `<dir>/node_modules` upwards, as `allowLocalPluginLoads` would). Logs the plugins
-/// that are not installed; tsserver skips them.
-pub(crate) fn probe_dirs(server_root: &Path) -> Vec<PathBuf> {
+/// The packages of the plugins that the tsconfig.json / jsconfig.json files under `server_root`
+/// declare, by plugin name, resolved as tsserver resolves a plugin from a probe location:
+/// `node_modules` in the configuration's folder or above. Logs the declared plugins that are
+/// not installed; tsserver skips them.
+pub(crate) fn declared(server_root: &Path) -> BTreeMap<String, PathBuf> {
     // ponytail: bounded walk, as the path aliases'; deeper workspace members keep the old behaviour.
     const MAX_DEPTH: usize = 4;
     const MAX_ENTRIES: usize = 50_000;
@@ -23,26 +25,81 @@ pub(crate) fn probe_dirs(server_root: &Path) -> Vec<PathBuf> {
         .require_git(ide_core::ignored::inside_git_repo(server_root))
         .follow_links(false)
         .filter_entry(|e| e.file_name() != "node_modules");
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    for entry in walker.build().take(MAX_ENTRIES).flatten() {
-        if !CONFIGS.iter().any(|c| entry.file_name() == *c) {
-            continue;
-        }
-        let config = entry.path();
+    let mut configs: Vec<PathBuf> = walker
+        .build()
+        .take(MAX_ENTRIES)
+        .flatten()
+        .filter(|e| CONFIGS.iter().any(|c| e.file_name() == *c))
+        .map(|e| e.into_path())
+        .collect();
+    configs.sort();
+    // ponytail: one package per name; a monorepo with two versions of a plugin gets the first one's.
+    let mut packages = BTreeMap::new();
+    for config in configs {
         let Some(dir) = config.parent() else { continue };
-        let names = plugins(config, 0);
-        if names.is_empty() {
-            continue;
-        }
-        for name in names.iter().filter(|n| !installed(dir, n)) {
-            tracing::warn!("vtsls: tsserver plugin `{name}` from {} is not installed", config.display());
-        }
-        if !dirs.iter().any(|d| d == dir) {
-            dirs.push(dir.to_path_buf());
+        for name in plugins(&config, 0).into_iter().filter(|n| package_name(n)) {
+            match dir.ancestors().map(|d| d.join("node_modules").join(&name)).find(|p| p.is_dir()) {
+                Some(package) => {
+                    packages.entry(name).or_insert(package);
+                }
+                None => tracing::warn!("vtsls: tsserver plugin `{name}` from {} is not installed", config.display()),
+            }
         }
     }
-    dirs.sort();
-    dirs
+    packages
+}
+
+/// A plugin probe location under `data_dir` holding a package for each of `plugins` that
+/// loads the project's one, and nothing else: packages the project has under the names of the
+/// IDE's global plugins never shadow those, as the project folder itself would (vtsls puts
+/// `pluginPaths` before the global plugins' locations). Named after its contents, so a change
+/// is a new location (and a configuration change that restarts vtsls). `None` without plugins
+/// or when it cannot be written.
+pub(crate) fn probe_location(
+    data_dir: &Path,
+    server_root: &Path,
+    plugins: &BTreeMap<String, PathBuf>,
+) -> Option<PathBuf> {
+    if plugins.is_empty() {
+        return None;
+    }
+    let parent = data_dir.join("tsplugins").join("project").join(key(&server_root.to_string_lossy()));
+    let location = parent.join(key(&serde_json::to_string(plugins).ok()?));
+    for (name, package) in plugins {
+        let dir = location.join("node_modules").join(name);
+        std::fs::create_dir_all(&dir).ok()?;
+        let index = format!("module.exports = require({});\n", Value::from(package.to_string_lossy()));
+        let manifest = serde_json::json!({ "name": name, "main": "index.js" }).to_string();
+        for (file, content) in [("index.js", index), ("package.json", manifest)] {
+            if std::fs::read(dir.join(file)).ok().as_deref() != Some(content.as_bytes()) {
+                std::fs::write(dir.join(file), content).ok()?;
+            }
+        }
+    }
+    // The previous contents: a running tsserver loaded its plugins already.
+    for old in std::fs::read_dir(&parent).into_iter().flatten().flatten() {
+        if old.path() != location {
+            let _ = std::fs::remove_dir_all(old.path());
+        }
+    }
+    Some(location)
+}
+
+fn key(text: &str) -> String {
+    Sha256::digest(text.as_bytes()).iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
+/// An npm package name (`next`, `@scope/name`): it becomes a path under the data dir.
+fn package_name(name: &str) -> bool {
+    let parts: Vec<&str> = name.split('/').collect();
+    let part = |p: &str| {
+        !p.is_empty() && p != "." && p != ".." && p.chars().all(|c| c.is_ascii_alphanumeric() || "-._~".contains(c))
+    };
+    match parts.as_slice() {
+        [name] => part(name),
+        [scope, name] => scope.strip_prefix('@').is_some_and(part) && part(name),
+        _ => false,
+    }
 }
 
 /// `compilerOptions.plugins` names of `config`, else of the configurations it `extends`
@@ -85,12 +142,6 @@ fn extended(dir: &Path, spec: &str) -> Option<PathBuf> {
     dir.ancestors().flat_map(|d| candidates(d.join("node_modules").join(spec))).find(|p| p.is_file())
 }
 
-/// Whether `name` resolves from `dir` the way tsserver resolves a plugin: `node_modules/<name>`
-/// in `dir` or one of its ancestors.
-fn installed(dir: &Path, name: &str) -> bool {
-    dir.ancestors().any(|d| d.join("node_modules").join(name).exists())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn folders_declaring_plugins_become_probe_locations() {
+    fn declared_plugins_resolve_to_the_project_packages() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         write(root, "package.json", "{}");
@@ -114,15 +165,20 @@ mod tests {
             "{\n // Next.js\n \"compilerOptions\": { \"plugins\": [{ \"name\": \"next\" },] } }",
         );
         write(root, "apps/web/node_modules/next/package.json", "{}");
-        // Inherited from a shared configuration, in a relative file and in a package.
+        // Inherited from a shared configuration, in a package and in a relative file; resolved upwards.
         write(root, "apps/docs/tsconfig.json", r#"{ "extends": ["../../tsconfig.json", "@acme/tsconfig/next.json"] }"#);
         write(
             root,
             "node_modules/@acme/tsconfig/next.json",
-            r#"{ "compilerOptions": { "plugins": [{ "name": "next" }] } }"#,
+            r#"{ "compilerOptions": { "plugins": [{ "name": "@acme/plugin" }] } }"#,
         );
+        write(root, "node_modules/@acme/plugin/package.json", "{}");
         write(root, "apps/api/jsconfig.json", r#"{ "extends": "./base" }"#);
-        write(root, "apps/api/base.json", r#"{ "compilerOptions": { "plugins": [{ "name": "missing-plugin" }] } }"#);
+        write(
+            root,
+            "apps/api/base.json",
+            r#"{ "compilerOptions": { "plugins": [{ "name": "missing-plugin" }, { "name": "../../escape" }] } }"#,
+        );
         // An empty list overrides the inherited one; node_modules is never searched for configurations.
         write(
             root,
@@ -131,15 +187,36 @@ mod tests {
         );
         write(root, "node_modules/x/tsconfig.json", r#"{ "compilerOptions": { "plugins": [{ "name": "x" }] } }"#);
 
-        assert_eq!(probe_dirs(root), ["apps/api", "apps/docs", "apps/web"].map(|d| root.join(d)));
-        assert!(installed(&root.join("apps/docs"), "@acme/tsconfig"));
-        assert!(!installed(&root.join("apps/api"), "missing-plugin"));
+        let declared = declared(root);
+        let expected = [("@acme/plugin", "node_modules/@acme/plugin"), ("next", "apps/web/node_modules/next")];
+        assert_eq!(declared, expected.map(|(n, p)| (n.to_owned(), root.join(p))).into_iter().collect());
+
+        // Forwarding packages, replaced when the plugins change.
+        let data = tempfile::tempdir().unwrap();
+        let location = probe_location(data.path(), root, &declared).unwrap();
+        let index = std::fs::read_to_string(location.join("node_modules/@acme/plugin/index.js")).unwrap();
+        assert!(index.contains(&serde_json::to_string(&root.join("node_modules/@acme/plugin")).unwrap()), "{index}");
+        let next_only: BTreeMap<_, _> = declared.into_iter().filter(|(n, _)| n == "next").collect();
+        let changed = probe_location(data.path(), root, &next_only).unwrap();
+        assert_ne!(changed, location);
+        assert!(!location.exists() && changed.join("node_modules/next/index.js").is_file());
+        assert_eq!(probe_location(data.path(), root, &BTreeMap::new()), None);
     }
 
     #[test]
-    fn projects_without_plugins_get_no_probe_locations() {
+    fn plugin_names_are_package_names() {
+        for ok in ["next", "@scope/name", "gql.tada", "@styled/typescript-styled-plugin"] {
+            assert!(package_name(ok), "{ok}");
+        }
+        for bad in ["", "..", "../x", "a/b", "@scope", "@/x", "@scope/..", "a\\b", "/abs"] {
+            assert!(!package_name(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn projects_without_plugins_declare_none() {
         let tmp = tempfile::tempdir().unwrap();
         write(tmp.path(), "tsconfig.json", r#"{ "extends": "./missing.json", "compilerOptions": {} }"#);
-        assert!(probe_dirs(tmp.path()).is_empty());
+        assert!(declared(tmp.path()).is_empty());
     }
 }

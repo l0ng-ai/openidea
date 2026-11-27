@@ -1508,13 +1508,6 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     if name == "vtsls" && memory > 0 {
         merge_init_options(cfg, json!({ "typescript": { "tsserver": { "maxTsServerMemory": memory } } }));
     }
-    // The plugins the project's tsconfig declares (Next.js), for any TypeScript version (#6336).
-    if name == "vtsls" {
-        let dirs = crate::tsconfig_plugins::probe_dirs(server_root);
-        if !dirs.is_empty() {
-            merge_init_options(cfg, json!({ "typescript": { "tsserver": { "pluginPaths": dirs } } }));
-        }
-    }
     if name == "vtsls"
         && cfg.tsserver_project
         && !server_root.ancestors().any(|d| d.join("tsconfig.json").is_file() || d.join("jsconfig.json").is_file())
@@ -1653,6 +1646,32 @@ pub fn configure_path_aliases(cfg: &mut LanguageServerConfig, server_root: &Path
         Ok(v) => cfg.initialization_options = Some(v),
         Err(e) => tracing::warn!("{}: cannot apply settings to initialization options: {e}", cfg.name),
     }
+    true
+}
+
+/// Lets vtsls load the tsserver plugins that the project's tsconfig.json / jsconfig.json
+/// declare (Next.js) with any TypeScript version, from a plugin probe location under
+/// `data_dir` that loads the project's packages (#6336). A plugin the IDE registers globally
+/// keeps the IDE's copy, also when a tsconfig names it, so call this after those are
+/// registered. No-op without declared plugins, and for TypeScript 7's native server.
+pub fn configure_tsconfig_plugins(cfg: &mut LanguageServerConfig, server_root: &Path, data_dir: &Path) -> bool {
+    if cfg.name != "vtsls" || !cfg.tsserver_project {
+        return false;
+    }
+    let options = cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok());
+    let global: Vec<String> = options
+        .as_ref()
+        .and_then(|v| v.pointer("/vtsls/tsserver/globalPlugins")?.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|p| p.get("name")?.as_str().map(str::to_owned))
+        .collect();
+    let mut plugins = crate::tsconfig_plugins::declared(server_root);
+    plugins.retain(|name, _| !global.contains(name));
+    let Some(location) = crate::tsconfig_plugins::probe_location(data_dir, server_root, &plugins) else {
+        return false;
+    };
+    merge_init_options(cfg, json!({ "typescript": { "tsserver": { "pluginPaths": [location] } } }));
     true
 }
 
@@ -2697,21 +2716,44 @@ mod maven_linkage_tests {
     }
 
     #[test]
-    fn vtsls_probes_the_folders_whose_tsconfig_declares_plugins() {
+    fn vtsls_probes_the_tsconfig_plugins_but_not_its_global_ones() {
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        let plugin_paths = |root: &Path| {
+        let (root, data) = (tmp.path().join("app"), tmp.path().join("data"));
+        std::fs::create_dir_all(root.join("node_modules/next")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/@vue/typescript-plugin")).unwrap();
+        let vtsls = || {
             let mut cfg = custom_server("vtsls", &LanguageServerSettings::default());
-            configure_server(&mut cfg, root, root, &Settings::default());
-            serde_json::to_value(cfg.initialization_options)
+            cfg.tsserver_project = true;
+            merge_init_options(
+                &mut cfg,
+                json!({ "vtsls": { "tsserver": { "globalPlugins": [{ "name": vue::PLUGIN }] } } }),
+            );
+            cfg
+        };
+        let probed = |cfg: &LanguageServerConfig| {
+            serde_json::to_value(&cfg.initialization_options)
                 .unwrap()
                 .pointer("/typescript/tsserver/pluginPaths")
                 .cloned()
         };
         std::fs::write(root.join("tsconfig.json"), r#"{"compilerOptions":{"strict":true}}"#).unwrap();
-        assert_eq!(plugin_paths(root), None);
-        std::fs::write(root.join("tsconfig.json"), r#"{"compilerOptions":{"plugins":[{"name":"next"}]}}"#).unwrap();
-        assert_eq!(plugin_paths(root), Some(json!([root])));
+        let mut cfg = vtsls();
+        assert!(!configure_tsconfig_plugins(&mut cfg, &root, &data));
+        assert_eq!(probed(&cfg), None);
+
+        let plugins = format!(r#"[{{"name":"next"}},{{"name":"{}"}}]"#, vue::PLUGIN);
+        std::fs::write(root.join("tsconfig.json"), format!(r#"{{"compilerOptions":{{"plugins":{plugins}}}}}"#))
+            .unwrap();
+        let mut cfg = vtsls();
+        assert!(configure_tsconfig_plugins(&mut cfg, &root, &data));
+        let location = PathBuf::from(probed(&cfg).unwrap()[0].as_str().unwrap());
+        assert!(location.starts_with(&data) && location.join("node_modules/next/index.js").is_file());
+        // The IDE's Vue plugin is not replaced by the project's.
+        assert!(!location.join("node_modules").join(vue::PLUGIN).exists());
+        // TypeScript 7's native server hosts no plugins.
+        let mut native = vtsls();
+        native.tsserver_project = false;
+        assert!(!configure_tsconfig_plugins(&mut native, &root, &data));
     }
 
     #[test]
