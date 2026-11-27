@@ -58,6 +58,11 @@ impl ProcessTable {
         self.entries.get(&pid)
     }
 
+    /// Every process in the snapshot, in arbitrary order.
+    pub fn entries(&self) -> impl Iterator<Item = &ProcEntry> {
+        self.entries.values()
+    }
+
     /// Direct children of `pid`, ascending.
     pub fn children(&self, pid: u32) -> &[u32] {
         self.children.get(&pid).map(Vec::as_slice).unwrap_or_default()
@@ -274,6 +279,12 @@ pub fn footprint_bytes(pid: u32) -> Option<u64> {
     imp::footprint_bytes(pid)
 }
 
+/// Fast O(1) resident memory estimate for scanning many external processes
+/// without walking every mapping (`/proc/<pid>/statm` on Linux).
+pub fn fast_resident_bytes(pid: u32) -> Option<u64> {
+    imp::fast_resident_bytes(pid)
+}
+
 /// Processes serving one `WKWebView` (0 = none / unknown).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WebKitPids {
@@ -414,6 +425,10 @@ mod imp {
         (rc == 0).then_some(info[PHYS_FOOTPRINT_WORD])
     }
 
+    pub fn fast_resident_bytes(pid: u32) -> Option<u64> {
+        footprint_bytes(pid)
+    }
+
     /// `ri_user_time + ri_system_time` (words 2 and 3), in Mach absolute time units.
     pub fn cpu_time(pid: u32) -> Option<std::time::Duration> {
         static TIMEBASE: std::sync::OnceLock<(u64, u64)> = std::sync::OnceLock::new();
@@ -517,6 +532,10 @@ mod imp {
         {
             return Some(pss);
         }
+        kb_field(&std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?, "VmRSS:")
+    }
+
+    pub fn fast_resident_bytes(pid: u32) -> Option<u64> {
         kb_field(&std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?, "VmRSS:")
     }
 
@@ -668,6 +687,10 @@ mod imp {
         (ok != 0).then_some(c.PrivateUsage as u64)
     }
 
+    pub fn fast_resident_bytes(pid: u32) -> Option<u64> {
+        footprint_bytes(pid)
+    }
+
     /// Kernel + user time from `GetProcessTimes` (100 ns units).
     pub fn cpu_time(pid: u32) -> Option<std::time::Duration> {
         // SAFETY: plain Win32 call; the handle is closed below.
@@ -709,6 +732,9 @@ mod imp {
         Vec::new()
     }
     pub fn footprint_bytes(_pid: u32) -> Option<u64> {
+        None
+    }
+    pub fn fast_resident_bytes(_pid: u32) -> Option<u64> {
         None
     }
     pub fn cpu_time(_pid: u32) -> Option<std::time::Duration> {

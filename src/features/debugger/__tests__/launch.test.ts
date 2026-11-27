@@ -3,8 +3,6 @@ import type { RunConfig } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
 import { useFlutterDevices } from "@/workbench/flutterDevices";
 import { isJinjaTemplate } from "../breakpoints/languages";
-import { makeBreakpoint } from "../breakpoints/model";
-import { useBreakpoints } from "../breakpoints/store";
 import { debugUnsupportedReason, launchConfigFor, withEnvFiles } from "../launch";
 
 const ipc = vi.hoisted(() => {
@@ -234,23 +232,21 @@ describe("run config → launch config", () => {
   });
 
   it("debugpy: Jinja2 templates for Flask, or when a template has a breakpoint (#6371)", () => {
-    const debug = (command: string, args: string[]) =>
-      extra(launchConfigFor(rc({ kind: "python", command, args, debugAdapter: "debugpy" }), "/p"));
+    const debug = (command: string, args: string[], templates = { django: false, jinja: false }) =>
+      extra(launchConfigFor(rc({ kind: "python", command, args, debugAdapter: "debugpy" }), "/p", null, templates));
     expect(debug("uv", ["run", "flask", "--app", "app", "run"])).toMatchObject({ module: "flask", jinja: true });
     expect(debug("python3", ["-m", "flask", "run"]).jinja).toBe(true);
     expect(debug("python3", ["app.py"]).jinja).toBeUndefined();
-    try {
-      useBreakpoints.setState({ byFile: { "/p/static/app.js": [makeBreakpoint(3)] } });
-      expect(debug("python3", ["app.py"]).jinja).toBeUndefined();
-      useBreakpoints.setState({ byFile: { "/p/templates/index.html": [makeBreakpoint(3)] } });
-      expect(debug("python3", ["app.py"]).jinja).toBe(true);
-      // Django renders its own templates: `jinja` would make debugpy read them as Jinja2.
-      expect(debug("python3", ["manage.py", "runserver"])).toMatchObject({ django: true });
-      expect(debug("python3", ["manage.py", "runserver"]).jinja).toBeUndefined();
-      expect(debug("uv", ["run", "django-admin", "runserver"]).jinja).toBeUndefined();
-    } finally {
-      useBreakpoints.setState({ byFile: {} });
-    }
+    const jinja = { django: false, jinja: true };
+    expect(debug("python3", ["app.py"], jinja).jinja).toBe(true);
+    // Django renders its own templates: `jinja` would make debugpy read them as Jinja2.
+    expect(debug("python3", ["manage.py", "runserver"], jinja)).toMatchObject({ django: true });
+    expect(debug("python3", ["manage.py", "runserver"], jinja).jinja).toBeUndefined();
+    expect(debug("uv", ["run", "django-admin", "runserver"], jinja).jinja).toBeUndefined();
+    // A Django Template's breakpoint: `django` however the server starts.
+    const asgi = debug("uv", ["run", "uvicorn", "mysite.asgi:application"], { django: true, jinja: false });
+    expect(asgi).toMatchObject({ module: "uvicorn", django: true });
+    expect(asgi.jinja).toBeUndefined();
   });
 
   it("Jinja2 templates: their extensions anywhere, markup or text in a templates folder", () => {

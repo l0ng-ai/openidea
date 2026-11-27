@@ -12,7 +12,7 @@ mod gradle;
 mod java;
 mod maven;
 
-pub use detect::{affects_roots, detect};
+pub use detect::{PYTHON_FILES, affects_roots, detect};
 pub use java::unmanaged_java_source_paths;
 
 use ide_core::settings::ProjectStructureSettings;

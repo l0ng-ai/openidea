@@ -1,7 +1,8 @@
 /** Swatches for colors a provider (a plugin or a language server) reports, and its picker flow. */
+import type { Transaction } from "@codemirror/state";
 import { GutterMarker, type EditorView } from "@codemirror/view";
 import { isolateHistory } from "@codemirror/commands";
-import { rangeToOffsets } from "@/editor/api";
+import { offsetsToRange, rangeToOffsets } from "@/editor/api";
 import { showHint } from "@/editor/lsp/hint";
 import type { Range } from "@/platform/ipc";
 import { showContextMenu } from "@/ui";
@@ -110,4 +111,18 @@ export function pickProviderColor<C extends ProviderColor>(
 export function replaceRange(view: EditorView, range: Range, labels: string[]): ColorChoice[] {
   const { from, to } = rangeToOffsets(view.state.doc, range);
   return labels.map((label) => ({ label, changes: [{ from, to, insert: label }] }));
+}
+
+/**
+ * Colors moved through a document change, so their gutter keeps its swatches (and its width)
+ * until the provider answers again. A color whose text the change touches is dropped.
+ */
+export function mapColors<C extends { range: Range }>(list: readonly C[], tr: Transaction): C[] {
+  const out: C[] = [];
+  for (const color of list) {
+    const { from, to } = rangeToOffsets(tr.startState.doc, color.range);
+    if (tr.changes.touchesRange(from, to)) continue;
+    out.push({ ...color, range: offsetsToRange(tr.newDoc, tr.changes.mapPos(from, 1), tr.changes.mapPos(to, -1)) });
+  }
+  return out;
 }

@@ -177,6 +177,30 @@ describe("Menu", () => {
   });
 });
 
+describe("Context menu selection", () => {
+  it("leaves the caret in a field the chosen row focused instead of restoring the page selection", async () => {
+    render(
+      <>
+        <p>quoted text</p>
+        <textarea aria-label="composer" />
+        <ContextMenuHost />
+      </>,
+    );
+    const field = screen.getByRole("textbox", { name: "composer" });
+    const range = document.createRange();
+    range.selectNodeContents(screen.getByText("quoted text"));
+    document.getSelection()!.removeAllRanges();
+    document.getSelection()!.addRange(range);
+    act(() => showContextMenu({ x: 0, y: 0 }, [{ label: "Quote", run: () => field.focus() }]));
+    await act(async () => {
+      fireEvent.keyDown(screen.getByRole("menuitem", { name: "Quote" }), { key: "Enter" });
+      await Promise.resolve();
+    });
+    expect(field).toHaveFocus();
+    expect(document.getSelection()!.toString()).toBe("");
+  });
+});
+
 describe("Dialog deactivation", () => {
   it("closes popups but not modal dialogs when the app window loses focus", () => {
     vi.useFakeTimers();

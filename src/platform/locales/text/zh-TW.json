@@ -977,6 +977,7 @@
   "Cannot commit": "無法提交",
   "Cannot connect to {target}": "無法連線到 {target}",
   "Cannot convert encoding": "無法轉換編碼",
+  "Cannot create scratch buffer": "無法建立臨時緩衝區",
   "Cannot create scratch file": "無法建立臨時檔案",
   "Cannot create the HTTP request file": "無法建立 HTTP 請求檔案",
   "Cannot generate the HTTP request": "無法產生 HTTP 請求",
@@ -1988,6 +1989,7 @@
   "New Empty File…": "新增空檔案…",
   "New File": "新增檔案",
   "New HTTP Request": "新增 HTTP 請求",
+  "New Scratch Buffer": "新增臨時緩衝區",
   "New Scratch File": "新增臨時檔案",
   "New Scratch File…": "新增臨時檔案…",
   "New Tab": "新增分頁",
@@ -9404,5 +9406,9 @@
   "SQL DELETE": "SQL DELETE 陳述式",
   "Column comment": "欄位註解",
   "Get from Version Control": "從版本控制取得",
-  "Cannot connect to the remote host": "無法連線到遠端主機"
+  "Cannot connect to the remote host": "無法連線到遠端主機",
+  "Pull request link {text}": "拉取請求連結 {text}",
+  "Issue link {text}": "Issue 連結 {text}",
+  "Commit link {text}": "提交連結 {text}",
+  "Link {text}": "連結 {text}"
 }

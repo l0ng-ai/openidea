@@ -29,6 +29,9 @@ something to show.
 | `stylelint-app/` | Node 22+, `stylelint` (`npm install`)                           | —                                   | —                    | —                                     | long hex colour, unknown property, empty block, duplicate selector (Stylelint) |
 | `polyglot/`      | Go, TS, Python, C, shell, SQL, TOML/YAML/JSON, proto, Terraform | `make`                              | `make test`          | —                                     | unused variable in `native/hash.c`                       |
 
+`python-app/notebooks/summary.ipynb` is a Jupyter notebook for the notebook editor (running it needs
+`ipykernel` in the selected interpreter).
+
 The fixtures are standalone: `rust-app` declares its own `[workspace]` and
 `fixtures/eslint.config.js` keeps them out of the IDE's own lint run.
 
@@ -50,7 +53,8 @@ git init -q && git add -A && git commit -qm "initial"   # for the VCS checks
 
 Then open the folder with **File › Open…** (`⌘⇧⌥O`) or from the Welcome screen.
 For `ts-app` / `playwright-app` / `mocha-app` / `polyglot/web` run `pnpm install` first (`npm install` for `biome-app`, `cypress-app`, `dprint-app` and `stylelint-app`); for `python-app` create a
-venv (`python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'`); for
+venv (`python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'`; add `ipykernel` to run
+`notebooks/variables.ipynb`, which exercises the Jupyter Variables tool window); for
 `php-app` run `composer install` (debugging it needs Xdebug in the PHP on `PATH`).
 
 Missing language servers / debuggers can be installed from the IDE:

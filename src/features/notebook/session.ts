@@ -618,11 +618,20 @@ export class NotebookSession {
 }
 
 const sessions = new Map<string, NotebookSession>();
+const sessionListeners = new Set<() => void>();
+// Deferred: a session is often created while a notebook editor renders.
+const sessionsChanged = () => queueMicrotask(() => sessionListeners.forEach((fn) => fn()));
+/** Calls `fn` after a notebook session opens or closes. */
+export function onNotebookSessionsChange(fn: () => void): () => void {
+  sessionListeners.add(fn);
+  return () => void sessionListeners.delete(fn);
+}
 export function notebookSession(path: string): NotebookSession {
   let session = sessions.get(path);
   if (!session) {
     session = new NotebookSession(path);
     sessions.set(path, session);
+    sessionsChanged();
   }
   return session;
 }
@@ -638,6 +647,9 @@ export async function closeNotebook(path: string) {
   try {
     await session.close();
   } finally {
-    if (sessions.get(path) === session) sessions.delete(path);
+    if (sessions.get(path) === session) {
+      sessions.delete(path);
+      sessionsChanged();
+    }
   }
 }

@@ -19,7 +19,7 @@ import { editorPrefs } from "@/platform/editorSettings";
 import { call, commands, type DocumentColor } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { lineColor } from "./gutter";
-import { ProviderSwatch } from "./providerSwatch";
+import { ProviderSwatch, mapColors } from "./providerSwatch";
 import styles from "./ColorPreview.module.css";
 
 const setColors = StateEffect.define<DocumentColor[]>();
@@ -27,7 +27,7 @@ const colors = StateField.define<DocumentColor[]>({
   create: () => [],
   update(v, tr) {
     for (const e of tr.effects) if (e.is(setColors)) return e.value;
-    return tr.docChanged ? [] : v;
+    return tr.docChanged ? mapColors(v, tr) : v;
   },
 });
 

@@ -89,6 +89,29 @@ function executor(e: PluginExecutor, debug: boolean): RunExecutorContribution {
   };
 }
 
+/**
+ * What the Run/Debug with <title> actions launch. A plugin command passes text: a configuration
+ * id, or the argument of a `services.context` / `services.toolbar` command as it came (the first
+ * selected service's configuration); with no such configuration the chooser opens. Objects are
+ * `run.withExecutor`'s own `{ config?, context? }`.
+ */
+export function executorTarget(arg: unknown): { config?: unknown; context?: unknown } {
+  if (arg && typeof arg === "object") return arg;
+  if (typeof arg !== "string" || !arg) return {};
+  if (arg.trimStart().startsWith("{")) {
+    try {
+      const services = (JSON.parse(arg) as { services?: unknown }).services;
+      const id = Array.isArray(services)
+        ? services.find((s) => typeof s?.runConfigurationId === "string")?.runConfigurationId
+        : undefined;
+      return { config: typeof id === "string" ? id : "" };
+    } catch {
+      return { config: "" };
+    }
+  }
+  return { config: arg };
+}
+
 function register(e: PluginExecutor): () => void {
   const disposers = [false, true].flatMap((debug) => [
     registerRunExecutor(executor(e, debug)),
@@ -103,7 +126,7 @@ function register(e: PluginExecutor): () => void {
         run: ({ arg }) =>
           executeAction("run.withExecutor", {
             executor: pluginExecutorId(e.pluginId, debug),
-            ...(arg && typeof arg === "object" ? arg : {}),
+            ...executorTarget(arg),
           }).then(() => undefined),
       },
     ]),
