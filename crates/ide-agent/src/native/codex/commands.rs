@@ -8,43 +8,69 @@ pub(crate) struct BuiltinCommandSpec {
     pub name: &'static str,
     pub description: &'static str,
     pub hint: Option<&'static str>,
+    pub choices: &'static [(&'static str, &'static str)],
 }
 
 pub(crate) const BUILTIN_COMMANDS: &[BuiltinCommandSpec] = &[
-    BuiltinCommandSpec { name: "plan", description: "Turn plan mode on or off.", hint: None },
+    BuiltinCommandSpec { name: "plan", description: "Turn plan mode on or off.", hint: None, choices: &[] },
     BuiltinCommandSpec {
         name: "mcp",
         description: "Show the status of the MCP servers, or reconnect them.",
         hint: Some("[reconnect]"),
+        choices: &[("reconnect", "Reload and reconnect MCP servers.")],
     },
-    BuiltinCommandSpec { name: "skills", description: "List available skills.", hint: None },
-    BuiltinCommandSpec { name: "status", description: "Display session configuration and token usage.", hint: None },
+    BuiltinCommandSpec { name: "skills", description: "List available skills.", hint: None, choices: &[] },
+    BuiltinCommandSpec {
+        name: "status",
+        description: "Display session configuration and token usage.",
+        hint: None,
+        choices: &[],
+    },
     BuiltinCommandSpec {
         name: "review",
         description: "Review uncommitted changes, or review with custom instructions.",
         hint: Some("optional review instructions"),
+        choices: &[],
     },
     BuiltinCommandSpec {
         name: "review-branch",
         description: "Review changes relative to a base branch.",
         hint: Some("branch name"),
+        choices: &[],
     },
-    BuiltinCommandSpec { name: "review-commit", description: "Review a specific commit.", hint: Some("commit sha") },
+    BuiltinCommandSpec {
+        name: "review-commit",
+        description: "Review a specific commit.",
+        hint: Some("commit sha"),
+        choices: &[],
+    },
     BuiltinCommandSpec {
         name: "compact",
         description: "Summarize conversation to avoid hitting the context limit.",
         hint: None,
+        choices: &[],
     },
     BuiltinCommandSpec {
         name: "goal",
         description: "Set a goal to keep pursuing.",
         hint: Some("[<objective>|clear|pause|resume]"),
+        choices: &[
+            ("clear", "Clear the current goal."),
+            ("pause", "Pause the current goal."),
+            ("resume", "Resume a paused goal."),
+        ],
     },
-    BuiltinCommandSpec { name: "rename", description: "Rename the current session.", hint: Some("new name") },
+    BuiltinCommandSpec {
+        name: "rename",
+        description: "Rename the current session.",
+        hint: Some("new name"),
+        choices: &[],
+    },
     BuiltinCommandSpec {
         name: "logout",
         description: "Sign out of Codex. This option is available when you are logged in via ChatGPT.",
         hint: None,
+        choices: &[],
     },
 ];
 

@@ -5067,6 +5067,7 @@ fn builtin_commands(provider: &str) -> Vec<AgentCommand> {
             description: "compact the conversation".into(),
             hint: None,
             source: AgentCommandSource::Command,
+            choices: Vec::new(),
         }],
         _ => Vec::new(),
     }
