@@ -13,7 +13,7 @@ import { notifications } from "@/workbench/contributions";
 import { closeBlamePopup, scheduleCloseBlamePopup, scheduleOpenBlamePopup } from "./BlamePopup";
 import { formatPrettyDay } from "@/platform/dateFormat";
 import { saveVcsSetting } from "./settingsUi";
-import { useVcs } from "./store";
+import { repoOf, useVcs } from "./store";
 
 const ZERO = /^0+$/;
 
@@ -72,6 +72,7 @@ class BlameMarker extends GutterMarker {
     readonly line: BlameLine,
     readonly labels: BlameLabels | undefined,
     readonly bg = "",
+    readonly current = false,
   ) {
     super();
   }
@@ -79,6 +80,7 @@ class BlameMarker extends GutterMarker {
     return (
       o.line.commit === this.line.commit &&
       o.bg === this.bg &&
+      o.current === this.current &&
       COLUMNS.every((column) => o.labels?.[column] === this.labels?.[column])
     );
   }
@@ -100,6 +102,7 @@ class BlameMarker extends GutterMarker {
       el.style.backgroundColor = this.bg;
     }
     el.dataset.commit = this.line.commit;
+    if (this.current) el.classList.add("cm-vcs-blame-current");
     return el;
   }
 }
@@ -279,7 +282,9 @@ const annotateColumns = ViewPlugin.define(
     view.requestMeasure(measureBlameColumns);
     return {
       update(update: ViewUpdate) {
-        if (update.startState.field(blameField, false)?.labels !== update.state.field(blameField).labels)
+        const before = update.startState.field(blameField, false);
+        const after = update.state.field(blameField);
+        if (before?.labels !== after.labels || before.current !== after.current)
           view.requestMeasure(measureBlameColumns);
       },
       destroy: useAnnotateColumns.subscribe(() => view.dispatch({})),
@@ -361,11 +366,14 @@ function optionsMenu(): MenuItem {
 }
 
 const setBlame = StateEffect.define<BlameLine[]>();
+/** The file's current revision (IDEA's FileAnnotation.getCurrentRevision): the last commit to it. */
+const setCurrentRevision = StateEffect.define<string | null>();
 
 interface BlameState {
   lines: BlameLine[];
   markers: RangeSet<GutterMarker>;
   labels: Map<string, BlameLabels>;
+  current?: string | null;
 }
 
 function build(lines: BlameLine[], doc: Text): BlameState {
@@ -390,10 +398,24 @@ function build(lines: BlameLine[], doc: Text): BlameState {
   return { lines, markers: RangeSet.of(out), labels };
 }
 
+/** Marks the lines last changed by `current`; the doc may have changed since `st` was built. */
+function markCurrent(st: BlameState, current: string | null | undefined): BlameState {
+  if (current === undefined) return st;
+  const out = [];
+  for (const it = st.markers.iter(); it.value; it.next()) {
+    const m = it.value as BlameMarker;
+    out.push(new BlameMarker(m.line, m.labels, m.bg, m.line.commit === current).range(it.from));
+  }
+  return { ...st, markers: RangeSet.of(out), current };
+}
+
 const blameField = StateField.define<BlameState>({
   create: () => ({ lines: [], markers: RangeSet.empty, labels: new Map() }),
   update(value, tr) {
-    for (const e of tr.effects) if (e.is(setBlame)) return build(e.value, tr.state.doc);
+    for (const e of tr.effects) {
+      if (e.is(setBlame)) return markCurrent(build(e.value, tr.state.doc), value.current);
+      if (e.is(setCurrentRevision)) return markCurrent(value, e.value);
+    }
     return tr.docChanged ? { ...value, markers: value.markers.map(tr.changes) } : value;
   },
 });
@@ -404,7 +426,8 @@ type BlameWidthMeasurement = { gutter: HTMLElement; widths: Record<AnnotateColum
 const measureBlameColumns = {
   read(view: EditorView): BlameWidthMeasurement | null {
     const gutter = view.dom.querySelector<HTMLElement>(".cm-vcs-blame");
-    const labels = view.state.field(blameField, false)?.labels;
+    const st = view.state.field(blameField, false);
+    const labels = st?.labels;
     if (!gutter || !labels?.size || typeof CanvasRenderingContext2D === "undefined") return null;
     const context = view.dom.ownerDocument.createElement("canvas").getContext("2d");
     if (!context) return null;
@@ -415,6 +438,13 @@ const measureBlameColumns = {
       for (const label of new Set(Array.from(labels.values(), (entry) => entry[column]))) {
         widths[column] = Math.max(widths[column], context.measureText(label).width);
       }
+    }
+    // The current revision's labels are bold, so wider.
+    const current = st?.current && labels.get(st.current);
+    if (current) {
+      context.font = `bold ${context.font}`;
+      for (const column of COLUMNS)
+        widths[column] = Math.max(widths[column], context.measureText(current[column]).width);
     }
     return { gutter, widths };
   },
@@ -435,6 +465,7 @@ interface BlameSource {
 class BlameRefresher implements PluginValue {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private generation = 0;
+  private currentGeneration = 0;
   private readonly off: (() => void)[];
   private readonly live: boolean;
 
@@ -454,10 +485,14 @@ class BlameRefresher implements PluginValue {
     if (this.live) {
       this.off.push(
         useVcs.subscribe((s, p) => {
-          if (s.branch?.headCommit !== p.branch?.headCommit) this.schedule(100);
+          if (s.branch?.headCommit !== p.branch?.headCommit) {
+            this.schedule(100);
+            void this.loadCurrentRevision();
+          }
         }),
       );
     }
+    void this.loadCurrentRevision();
   }
 
   update(u: ViewUpdate) {
@@ -478,8 +513,20 @@ class BlameRefresher implements PluginValue {
     this.view.dispatch({ effects: setBlame.of(lines) });
   }
 
+  /** Loaded after the gutter paints: `git log -1 -- <path>` can take a while in a long history. */
+  private async loadCurrentRevision() {
+    const generation = ++this.currentGeneration;
+    const { path, revision } = this.source;
+    // An unset branch would walk every branch, not just HEAD.
+    const query = { branch: revision ?? "HEAD", path, author: null, text: null, skip: 0, limit: 1 };
+    const [last] = (await call(commands.vcsLog(repoOf(path), query)).catch(() => null)) ?? [];
+    if (generation !== this.currentGeneration || !annotationsShown(this.view)) return;
+    this.view.dispatch({ effects: setCurrentRevision.of(last?.id ?? null) });
+  }
+
   destroy() {
     ++this.generation;
+    ++this.currentGeneration;
     clearTimeout(this.timer);
     for (const off of this.off) off();
   }
@@ -502,6 +549,8 @@ const blameTheme = EditorView.baseTheme({
     color: "var(--fg-secondary)",
     whiteSpace: "nowrap",
   },
+  // IDEA's Annotations › Last commit colour: bold, brighter than the other annotations.
+  ".cm-vcs-blame-line.cm-vcs-blame-current": { color: "var(--git-annotations-last-commit)", fontWeight: "bold" },
   ".cm-vcs-blame-line > span": { flex: "none", overflow: "hidden", textOverflow: "ellipsis" },
   ".cm-vcs-blame-date": { width: "min(var(--blame-date-width, 9ch), 14em)" },
   ".cm-vcs-blame-author": { width: "min(var(--blame-author-width, 12ch), 18em)" },

@@ -219,6 +219,7 @@ describe("git blame gutter and commit popup", () => {
     )!;
     fireEvent.contextMenu(firstLine);
     const items = mocks.menu.mock.calls[0]![1] as { label?: string; run?: () => void }[];
+    mocks.log.mockClear();
     items.find((i) => i.label === "Annotate Revision")!.run!();
     await vi.waitFor(() => expect(mocks.openDiff).toHaveBeenCalled());
     expect(mocks.log).not.toHaveBeenCalled();
@@ -231,6 +232,56 @@ describe("git blame gutter and commit popup", () => {
       },
       { preview: false },
     );
+  });
+
+  it("draws the lines of the file's current revision bold, as IDEA does", async () => {
+    let resolveLog!: (r: unknown) => void;
+    const log = new Promise((r) => (resolveLog = r));
+    mocks.log.mockReturnValueOnce(log);
+    view = new EditorView({
+      parent: document.body,
+      state: EditorState.create({ doc: "first\nsecond\nthird", extensions: [blameSlot()] }),
+    });
+    const current = (v: EditorView) =>
+      [...v.dom.querySelectorAll<HTMLElement>(".cm-vcs-blame [data-commit].cm-vcs-blame-current")].map(
+        (el) => el.dataset.commit,
+      );
+    await toggleAnnotations(view, "/repo/src/main.py");
+    // The gutter shows before the file's last commit is known.
+    expect(view.dom.querySelectorAll(`.cm-vcs-blame [data-commit="${sha}"]`).length).toBe(2);
+    expect(current(view)).toEqual([]);
+    await act(async () => resolveLog({ status: "ok", data: [fullCommit] }));
+    expect(current(view)).toEqual([sha, sha]);
+    expect(mocks.log).toHaveBeenCalledWith(
+      "/repo",
+      expect.objectContaining({ branch: "HEAD", path: "/repo/src/main.py", limit: 1 }),
+    );
+
+    // A new HEAD commit to the file moves the bold lines.
+    mocks.log.mockResolvedValue({ status: "ok", data: [{ ...fullCommit, id: otherSha }] });
+    await act(async () => {
+      useVcs.setState({ branch: { head: "main", headCommit: "next" } as never });
+      await vi.advanceTimersByTimeAsync(200);
+    });
+    expect(current(view)).toEqual([otherSha]);
+
+    // A historical annotation marks the last commit to the file at that revision, not at HEAD.
+    const historical = new EditorView({
+      parent: document.body,
+      state: EditorState.create({ doc: "one\ntwo\nthree", extensions: [blameSlot()] }),
+    });
+    try {
+      mocks.log.mockClear();
+      await toggleAnnotations(historical, "/repo/src/old.py", "one\ntwo\nthree", sha);
+      await act(async () => {});
+      expect(mocks.log).toHaveBeenCalledWith(
+        "/repo",
+        expect.objectContaining({ branch: sha, path: "/repo/src/old.py", limit: 1 }),
+      );
+      expect(current(historical)).toEqual([otherSha]);
+    } finally {
+      historical.destroy();
+    }
   });
 
   it("offers no Show Diff on a line that is not committed yet", async () => {

@@ -6000,5 +6000,19 @@
   "Context": "Kontekst",
   "Allow all optional permissions": "Zezwól na wszystkie opcjonalne uprawnienia",
   "Get from Version Control": "Pobierz z systemu kontroli wersji",
-  "Cannot connect to the remote host": "Nie można połączyć się z hostem zdalnym"
+  "Cannot connect to the remote host": "Nie można połączyć się z hostem zdalnym",
+  "{formatted} credits": "{formatted} kredytów",
+  "Session Info": "Informacje o sesji",
+  "Session Cost": "Koszt sesji",
+  "Context Window": "Okno kontekstu",
+  "Reserved for response": "Zarezerwowane na odpowiedź",
+  "System": "System",
+  "User Context": "Kontekst użytkownika",
+  "Tool Definitions": "Definicje narzędzi",
+  "Tool Results": "Wyniki narzędzi",
+  "Custom instructions": "Instrukcje niestandardowe",
+  "Sub-agents": "Podagenci",
+  "Last turn": "Ostatnia tura",
+  "Compact Conversation": "Skompresuj rozmowę",
+  "Premium requests": "Żądania premium"
 }

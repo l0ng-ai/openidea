@@ -2084,6 +2084,11 @@ fn skills_become_commands_with_their_invocation_names() {
     let commands = crate::config::commands_of(&update, "codex");
     assert!(commands.iter().all(|c| c.source == crate::AgentCommandSource::Skill));
     assert_eq!(commands[0].name, "$review");
+    let builtins = builtin_commands();
+    let goal = builtins.iter().find(|c| c.name == "goal").unwrap();
+    assert_eq!(goal.choices.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["clear", "pause", "resume"]);
+    let mcp = builtins.iter().find(|c| c.name == "mcp").unwrap();
+    assert_eq!(mcp.choices.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["reconnect"]);
     assert!(skill_commands(&json!({"data": []})).unwrap()["availableCommands"].as_array().unwrap().is_empty());
     assert!(skill_commands(&json!({})).is_none());
 }

@@ -1168,29 +1168,6 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.meterSegment {
-  display: inline-flex;
-  flex: 0 1 auto;
-  align-items: center;
-  min-width: 0;
-  height: 22px;
-  gap: var(--space-1-5);
-}
-.meterGroup {
-  display: inline-flex;
-  flex: 0 1 auto;
-  align-items: center;
-  min-width: 0;
-  height: 22px;
-  gap: var(--space-1-5);
-}
-.meterDivider {
-  flex: none;
-  width: 1px;
-  height: 11px;
-  background: var(--border-strong);
-  opacity: 0.5;
-}
 .meter {
   display: inline-flex;
   flex: 0 1 auto;
@@ -1199,6 +1176,35 @@
   height: 20px;
   gap: 5px;
   overflow: hidden;
+}
+.meterContext {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.meterInlineDivider {
+  flex: none;
+  width: 1px;
+  height: 11px;
+  margin: 0 2px;
+  background: var(--border-strong);
+  opacity: 0.5;
+}
+.meterLimitAlerts {
+  display: inline-flex;
+  align-items: baseline;
+}
+.meterLimitAlert {
+  display: inline-flex;
+  align-items: baseline;
+  font-weight: 500;
+  line-height: 1;
+}
+.meterAlertDot {
+  flex: none;
+  margin: 0 4px;
+  color: var(--fg-faint);
+  opacity: 0.65;
 }
 .meterValue {
   line-height: 1;
@@ -1222,26 +1228,6 @@
   transition:
     stroke-dashoffset 200ms var(--ease),
     stroke var(--dur-fast) var(--ease);
-}
-.limitsButton {
-  gap: 0;
-}
-.limitItem {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 3px;
-}
-.limitWindow {
-  color: var(--fg-faint);
-}
-.limitPercent {
-  color: inherit;
-}
-.meterDot {
-  flex: none;
-  margin: 0 5px;
-  color: var(--fg-faint);
-  opacity: 0.65;
 }
 
 .images {
@@ -2007,10 +1993,6 @@
 .meterButton[aria-expanded="true"] .usageRingArc {
   stroke: currentColor;
 }
-.limitsButton:hover .limitWindow,
-.limitsButton[aria-expanded="true"] .limitWindow {
-  color: var(--fg-subtle);
-}
 .meterButton:focus-visible {
   outline: 1px solid var(--focus-ring);
   outline-offset: -1px;
@@ -2030,23 +2012,12 @@
   stroke: currentColor;
 }
 .meterWarning .meterValue,
-.meterDanger .meterValue,
-.meterWarning .limitPercent,
-.meterDanger .limitPercent {
+.meterDanger .meterValue {
   font-weight: 500;
-}
-.limitsDetails {
-  display: grid;
-  gap: var(--space-2);
-  width: min(272px, 80vw);
-  padding: var(--space-3);
-  color: var(--fg-secondary);
-  font-size: var(--fs-ui);
-  font-variant-numeric: tabular-nums;
 }
 .limitsList {
   display: grid;
-  gap: var(--space-3);
+  gap: var(--space-2-5, 10px);
 }
 .limitsRow {
   display: grid;
@@ -2123,54 +2094,140 @@
 }
 .contextDetails {
   display: grid;
-  gap: var(--space-2);
-  width: min(330px, 80vw);
+  gap: var(--space-2-5, 10px);
+  width: min(296px, 82vw);
   padding: var(--space-3);
   color: var(--fg-secondary);
   font-size: var(--fs-ui);
   font-variant-numeric: tabular-nums;
 }
-.contextHeading,
-.contextDetails li {
+.sessionInfoHeader {
   display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-.contextHeading {
+  align-items: baseline;
   justify-content: space-between;
+  gap: var(--space-2);
   color: var(--fg);
 }
-.contextBar {
+.sessionInfoModel {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sessionInfoRow {
   display: flex;
-  height: 6px;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.sessionInfoStrong {
+  color: var(--fg);
+  font-weight: 600;
+}
+.sessionInfoValue {
+  color: var(--fg);
+  font-size: var(--fs-small);
+}
+.sessionInfoPercent {
+  color: var(--fg);
+  font-weight: 500;
+}
+.meterWarning .sessionInfoPercent {
+  color: var(--warning);
+}
+.meterDanger .sessionInfoPercent {
+  color: var(--danger);
+}
+.sessionInfoSection {
+  display: grid;
+  gap: var(--space-2);
+}
+.sessionInfoDivided {
+  padding-top: var(--space-2-5, 10px);
+  border-top: 1px solid var(--border);
+}
+.sessionInfoSectionTitle {
+  color: var(--fg);
+  font-weight: 600;
+  font-size: var(--fs-small);
+}
+.contextProgressTrack {
+  display: flex;
+  height: 5px;
   border-radius: 3px;
   overflow: hidden;
   background: var(--border);
 }
-.contextBar span {
-  flex-basis: 0;
+.contextProgressFill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
 }
-.contextDetails summary {
-  cursor: default;
-  color: var(--fg);
+.contextProgressFill.meterWarning {
+  background: var(--warning);
 }
-.contextDetails ul {
-  margin: var(--space-2) 0 0;
-  padding: 0;
-  max-height: 220px;
-  overflow: auto;
+.contextProgressFill.meterDanger {
+  background: var(--danger);
 }
-.contextDetails li {
-  padding: var(--space-1) 0;
+.contextReservedFill {
+  display: block;
+  height: 100%;
+  background: repeating-linear-gradient(-45deg, var(--accent), var(--accent) 2px, transparent 2px, transparent 4px);
+  opacity: 0.75;
 }
-.contextDetails li i {
-  width: 8px;
+.contextReservedLegend {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  justify-self: start;
+}
+.contextReservedSwatch {
+  width: 10px;
   height: 8px;
   border-radius: 2px;
+  background: repeating-linear-gradient(-45deg, var(--accent), var(--accent) 2px, transparent 2px, transparent 4px);
 }
-.contextDetails li span:last-child {
-  margin-left: auto;
+.contextBreakdownGroup {
+  display: grid;
+  gap: var(--space-1);
+  margin-top: 2px;
+}
+.contextBreakdownTitle {
+  color: var(--fg);
+  font-weight: 600;
+  font-size: var(--fs-small);
+}
+.contextBreakdownList {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.contextBreakdownRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+}
+.contextBreakdownShare {
+  color: var(--fg);
+}
+.sessionInfoMuted {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.sessionInfoError {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--fs-small);
 }
 .contextCompact {
-  justify-self: end;
+  width: 100%;
+  justify-content: center;
 }
