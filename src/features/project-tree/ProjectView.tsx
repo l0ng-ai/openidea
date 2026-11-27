@@ -73,7 +73,15 @@ import { relativePath } from "@/platform/project";
 import { folderKind } from "./folderKind";
 import { PROJECT_TYPES } from "@/ui/projectType";
 import { useHomeDir } from "./home";
-import { compareNames, keyLike, memberNodes, nodeKeyFor, visibleInfo, type ProjectNode } from "./model";
+import {
+  compareNames,
+  keyLike,
+  memberNodes,
+  nodeKeyFor,
+  PLACEHOLDER_SUFFIX,
+  visibleInfo,
+  type ProjectNode,
+} from "./model";
 import {
   cancelEditing,
   checkEditingName,
@@ -556,6 +564,12 @@ export function ProjectView() {
     const shown = model.byKey.get(key)?.path;
     if (explain && !exact && shown) explainHiddenPath(path, shown);
   }, [revealRequest, model, info]);
+
+  // Rows outside the virtual window are not mounted: scroll the inline editor's row in so its input exists.
+  useEffect(() => {
+    if (editing)
+      handle.current?.scrollIntoView(editing.kind === "new" ? editing.parent + PLACEHOLDER_SUFFIX : editing.key);
+  }, [editing]);
 
   // Autoscroll from source: follow the active editor.
   const activePath = useEditorRegistry((s) => s.active?.ctx.path ?? null);

@@ -134,3 +134,77 @@ export function inBundle(file: string, base: string): boolean {
   const name = base.slice(base.lastIndexOf("/") + 1);
   return file === `${name}.properties` || (file.startsWith(`${name}_`) && file.endsWith(".properties"));
 }
+
+/** Extensions Thymeleaf's resolver adds no `.html` suffix to (`ContentTypeUtils.hasRecognizedFileExtension`). */
+const RECOGNIZED_EXTENSION = /\.(?:html?|xhtml|xml|rss|atom|js|json|css|txt)$/i;
+
+/** The file a template name resolves to under the templates `root`. */
+export function templatePath(root: string, template: string): string {
+  return `${root}/${template}${RECOGNIZED_EXTENSION.test(template) ? "" : ".html"}`;
+}
+
+const SPRING_TEMPLATES = "/src/main/resources/templates/";
+const COMMENT = /<!--[\s\S]*?-->/g;
+/** The rest of a `~{…}` followed by `?:`: Thymeleaf's fallback when the fragment does not exist. */
+const FALLBACK = /[^}]*\}\s*\?:/y;
+
+/** Whether `application.properties` / `.yml` text sets `spring.thymeleaf.prefix` or `suffix`. */
+function customTemplateLocation(application: string): boolean {
+  return (
+    /spring\.thymeleaf\.(?:prefix|suffix)\b/.test(application) ||
+    /thymeleaf:[ \t]*\n(?:[ \t]+.*\n)*?[ \t]+(?:prefix|suffix)[ \t]*:/m.test(application)
+  );
+}
+
+/** Whether `text` has a fragment `name` selects: `th:fragment`, `th:ref`, `id` or an element named so. */
+function definesFragment(text: string, name: string): boolean {
+  return (
+    fragmentDefinition(text, name) >= 0 ||
+    new RegExp(`\\b(?:th:|data-th-)ref\\s*=\\s*["']\\s*${escape(name)}\\s*["']`).test(text) ||
+    new RegExp(`<${escape(name)}[\\s>/]`, "i").test(text)
+  );
+}
+
+/**
+ * The template and fragment references in the template `text` at `path` that name no template, or
+ * a fragment the named template lacks; `read` gives a file's text, `null` when it does not exist.
+ * Only where names resolve as Spring Boot's defaults resolve them (`templates/<name>.html`, no
+ * `spring.thymeleaf.prefix` / `suffix` in `application`): elsewhere nothing is reported. A missing
+ * template is reported only in the project's own `src/main/resources/templates`: a nested module
+ * may get templates from another module or a jar.
+ */
+export async function unresolvedThymeleafReferences(
+  path: string,
+  text: string,
+  application: string,
+  projectRoot: string | null,
+  read: (path: string) => Promise<string | null>,
+): Promise<Array<Exclude<ThymeleafReference, { kind: "message" }>>> {
+  const spring = path.lastIndexOf(SPRING_TEMPLATES);
+  if (spring < 0 || customTemplateLocation(application)) return [];
+  const root = path.slice(0, spring + SPRING_TEMPLATES.length - 1);
+  const ownModule =
+    projectRoot !== null && root === `${projectRoot.replace(/\/$/, "")}${SPRING_TEMPLATES.slice(0, -1)}`;
+  const comments = [...text.matchAll(COMMENT)].map((m) => [m.index, m.index + m[0].length] as const);
+  const refs = thymeleafReferences(text).filter(
+    (ref): ref is Exclude<ThymeleafReference, { kind: "message" }> =>
+      ref.kind !== "message" &&
+      ref.template !== "_" &&
+      !ref.template.split("/").some((s) => s === "." || s === "..") &&
+      !comments.some(([from, to]) => from <= ref.from && ref.from < to) &&
+      !((FALLBACK.lastIndex = ref.to), FALLBACK.test(text)),
+  );
+  const names = [...new Set(refs.map((ref) => ref.template).filter(Boolean))];
+  // The edited template itself is checked against its unsaved text.
+  const texts = await Promise.all(
+    names.map((name) => (templatePath(root, name) === path ? text : read(templatePath(root, name)))),
+  );
+  const target = new Map<string, string | null>(names.map((name, i) => [name, texts[i] ?? null]));
+  target.set("", text);
+  return refs.filter((ref) => {
+    const body = target.get(ref.template) ?? null;
+    return body === null
+      ? ref.kind === "template" && ownModule
+      : ref.kind === "fragment" && !definesFragment(body, ref.fragment);
+  });
+}
