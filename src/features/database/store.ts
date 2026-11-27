@@ -63,7 +63,8 @@ import type { DiagramData } from "./erDiagram";
 import type { ExportData, ExportFormat } from "./export";
 import type { DbObjectRef } from "./objects";
 import { formatted } from "./sql/format";
-import { bindParams, findParams } from "./sql/params";
+import { unsafeStatement, type UnsafeStatement } from "./sql/unsafe";
+import { bindParams, findParams, unbindRange } from "./sql/params";
 import { isReadOnlyQuery } from "./sql/readOnly";
 import { pageFetch } from "./resultView";
 import type { TableSnapshot } from "./schemaCompare";
@@ -1492,15 +1493,15 @@ export async function openDdl(id: string, schema: string, name: string): Promise
   }
 }
 
-/**
- * Runs the statement at `from` (or the selection `from..to`, UTF-16 offsets)
- * of console `path` on its data source. Result sets open as `Result N` tabs
- * of the Services view, replacing the console's unpinned ones; everything is
- * logged to its Output tab; returns the outcomes (errors included) for the
- * editor's marks.
- */
-/** Asks for the values of the statements' query parameters and binds them; `[]` when cancelled. */
-async function withParams(statements: SqlStatement[], driver: DbDriver): Promise<SqlStatement[]> {
+interface BoundStatements {
+  /** The statements with their parameters' values in their text; `[]` when cancelled. */
+  statements: SqlStatement[];
+  /** A range of statement `i`'s bound text in its unbound text; `null` when it overlaps a value. */
+  unbind: (i: number, from: number, to: number) => { from: number; to: number } | null;
+}
+
+/** Asks for the values of the statements' query parameters and binds them. */
+async function withParams(statements: SqlStatement[], driver: DbDriver): Promise<BoundStatements> {
   let numbered = 0;
   const found = statements.map((st) => {
     const params = findParams(st.text, driver, numbered);
@@ -1508,15 +1509,29 @@ async function withParams(statements: SqlStatement[], driver: DbDriver): Promise
     return params;
   });
   const names = [...new Set(found.flat().map((p) => p.name))];
-  if (!names.length) return statements;
+  const same: BoundStatements["unbind"] = (_i, from, to) => ({ from, to });
+  if (!names.length) return { statements, unbind: same };
   const values = await new Promise<Record<string, string> | null>((resolve) =>
     useDatabase.setState({ dialog: { kind: "params", names, resolve } }),
   );
-  if (!values) return [];
+  if (!values) return { statements: [], unbind: same };
   useDatabase.setState((s) => ({ paramValues: { ...s.paramValues, ...values } }));
-  return statements.map((st, i) => ({ ...st, text: bindParams(st.text, found[i]!, values) }));
+  return {
+    statements: statements.map((st, i) => ({ ...st, text: bindParams(st.text, found[i]!, values) })),
+    unbind: (i, from, to) => unbindRange(found[i]!, values, from, to),
+  };
 }
 
+/** Asks whether to run an unsafe statement (see `sql/unsafe`); false cancels the run. */
+export type ConfirmUnsafe = (statement: SqlStatement, unsafe: UnsafeStatement) => Promise<boolean>;
+
+/**
+ * Runs the statement at `from` (or the selection `from..to`, UTF-16 offsets)
+ * of console `path` on its data source. Result sets open as `Result N` tabs
+ * of the Services view, replacing the console's unpinned ones; everything is
+ * logged to its Output tab; returns the outcomes (errors included) for the
+ * editor's marks.
+ */
 export async function executeConsole(
   path: string,
   text: string,
@@ -1525,6 +1540,7 @@ export async function executeConsole(
   /** Called once the statements are submitted, with what was submitted. */
   onStart?: (statements: readonly SqlStatement[]) => void,
   onProgress?: (events: readonly StatementProgress[]) => ReadonlyMap<number, DbStatementOutcome> | void,
+  confirmUnsafe?: ConfirmUnsafe,
 ): Promise<DbStatementOutcome[]> {
   const id = consoleSource(path);
   if (!id) {
@@ -1549,7 +1565,7 @@ export async function executeConsole(
   let statementCancelled = false;
   let deliveryIncomplete = false;
   try {
-    const statements = await consoleStatements(id, text, from, to);
+    const statements = await consoleStatements(id, text, from, to, confirmUnsafe);
     if (!current() || preparingConsoles.get(path) !== request || !statements.length) return [];
     preparingConsoles.delete(path);
     const prev = useDatabase.getState().running[path];
@@ -1706,10 +1722,29 @@ function capResults(results: ResultTab[], fresh: ReadonlySet<number>): ResultTab
 }
 
 /** The statements of console `path` to run or explain: the selection's, else the one at `from`, parameters bound. */
-async function consoleStatements(id: string, text: string, from: number, to: number): Promise<SqlStatement[]> {
+async function consoleStatements(
+  id: string,
+  text: string,
+  from: number,
+  to: number,
+  confirmUnsafe?: ConfirmUnsafe,
+): Promise<SqlStatement[]> {
   const statements: SqlStatement[] = await call(commands.dbStatements(id, text, from, to));
   if (!statements.length) return [];
-  return withParams(statements, sourceById(id)?.driver ?? "sqlite");
+  const driver = sourceById(id)?.driver ?? "sqlite";
+  const bound = await withParams(statements, driver);
+  // The bound text is what runs: a parameter's value can make it unsafe (`where :cond`, `1=1`).
+  if (confirmUnsafe)
+    for (const [i, st] of bound.statements.entries()) {
+      const unsafe = unsafeStatement(st.text, driver);
+      if (!unsafe) continue;
+      const original = statements[i]!;
+      // A mark inside a parameter's value marks the whole statement.
+      const at = bound.unbind(i, unsafe.from, unsafe.to) ?? { from: 0, to: original.text.length };
+      // oxlint-disable-next-line no-await-in-loop -- each warning must be answered before asking the next
+      if (!(await confirmUnsafe(original, { ...unsafe, ...at }))) return [];
+    }
+  return bound.statements;
 }
 
 const PLAN_TITLE = "Query Plan";

@@ -201,6 +201,12 @@ describe("statements in flight", () => {
     try {
       await act(async () => {
         pending = mode === "selection" ? executeInView(view, PATH) : executeScriptInView(view, PATH);
+        await vi.waitFor(() => expect(view.dom.querySelector(".cm-openidea-db-banner-warning")).not.toBeNull());
+        expect(backend.stream).not.toHaveBeenCalled();
+        const execute = [...view.dom.querySelectorAll<HTMLButtonElement>(".cm-openidea-db-banner-action")].find(
+          (button) => button.textContent === "Execute",
+        );
+        execute!.click();
         await vi.waitFor(() => expect(cells()).toEqual(["first"]));
       });
       expect(highlighted()).toEqual(["UPDATE t SET n = 2"]);
@@ -217,6 +223,7 @@ describe("statements in flight", () => {
       expect(view.dom.querySelectorAll(".cm-openidea-db-run-ok")).toHaveLength(3);
       expect(view.state.selection.main.head).toBe(mode === "selection" ? doc.length : 0);
     } finally {
+      view.dom.querySelector<HTMLButtonElement>(".cm-openidea-db-banner-warning .cm-openidea-db-banner-close")?.click();
       finish();
       if (pending)
         await act(async () => {
