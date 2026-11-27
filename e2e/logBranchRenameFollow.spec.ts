@@ -45,7 +45,7 @@ async function openLogOnSd(page: Page) {
         ahead: 0,
         behind: 0,
         lastCommitMs: 20,
-        commit: commits[0].id,
+        commit: commits[0]!.id,
       },
       {
         name: "main",
@@ -55,7 +55,7 @@ async function openLogOnSd(page: Page) {
         ahead: 0,
         behind: 0,
         lastCommitMs: 20,
-        commit: commits[5].id,
+        commit: commits[5]!.id,
       },
     ];
     h.vcs_log = ({ query }) => {
@@ -64,10 +64,10 @@ async function openLogOnSd(page: Page) {
     };
     h.vcs_log_refs = () => ({});
     h.vcs_log_users = () => ["Author <author@example.com>"];
-    h.vcs_roots = () => [{ root, operation: null, head, headCommit: commits[0].id, hasRemotes: false }];
+    h.vcs_roots = () => [{ root, operation: null, head, headCommit: commits[0]!.id, hasRemotes: false }];
     h.vcs_branch_info = () => ({
       head,
-      headCommit: commits[0].id,
+      headCommit: commits[0]!.id,
       upstream: null,
       ahead: 0,
       behind: 0,
