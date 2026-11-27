@@ -141,7 +141,7 @@ describe("files dropped from the OS", () => {
 
   it("opens native Windows drop paths with the editor's POSIX spelling", async () => {
     const { d, calls } = deps();
-    await handleFileDrop(["E:\\code\\test.txt"], 1, 1, d);
-    expect(calls).toEqual(["file E:/code/test.txt (focus)"]);
+    await handleFileDrop(["E:\\code\\test.txt", "\\\\?\\E:\\code\\long.txt"], 1, 1, d);
+    expect(calls).toEqual(["file E:/code/test.txt", "file E:/code/long.txt (focus)"]);
   });
 });

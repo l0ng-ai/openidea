@@ -10,6 +10,7 @@ import { isDraggingOut } from "@/platform/dragOut";
 import { useProject } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
 import { nativeDropPoint } from "@/platform/nativeDrop";
+import { ipcPath } from "@/platform/paths";
 import { editorService, OWNS_FILE_DROP } from "./contributions";
 
 const OWNER_ATTR = Object.keys(OWNS_FILE_DROP)[0]!;
@@ -35,16 +36,12 @@ export function dropOwnedAt(x: number, y: number): boolean {
   return !!document.elementFromPoint(x, y)?.closest(`[${OWNER_ATTR}]`);
 }
 
-/**
- * Tauri hands out native paths (`E:\code\a.sql`); the editor keys documents and tabs by the
- * POSIX-style spelling the project tree, Ctrl+P and the restored session use, so opening the
- * native spelling would create a second model (and a second tab) for an already open file.
- */
-const editorPath = (path: string) => (/^[A-Za-z]:\\/.test(path) ? path.replace(/\\/g, "/") : path);
-
 /** Opens the dropped files (the last one focused), then the first dropped folder as a project. */
 export async function openDropped(paths: readonly string[], deps: FileDropDeps): Promise<void> {
-  const editorPaths = paths.map(editorPath);
+  // Tauri hands out native paths (`E:\code\a.sql`); the editor keys documents and tabs by the
+  // `/`-separated spelling the project tree, Ctrl+P and the restored session use, so the native
+  // spelling would open a second model (and a second tab) for an already open file.
+  const editorPaths = paths.map(ipcPath);
   const kinds = await Promise.all(editorPaths.map((p) => deps.isDir(p).catch(() => false)));
   const files = editorPaths.filter((_, i) => !kinds[i]);
   const dir = editorPaths.find((_, i) => kinds[i]);
