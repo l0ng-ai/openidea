@@ -120,7 +120,8 @@ test("shows compact remote CPU+RAM pill beside SSH status and opens detailed das
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText("SSH: deng@deng-thinkpad.local")).toBeVisible();
   await expect(dialog.getByText("16 cores · load 1.42 · 1.18 · 0.95")).toBeVisible();
-  await expect(dialog.getByText("84 GB free")).toBeVisible();
+  await expect(dialog.getByText("116G / 200G")).toBeVisible();
+  await expect(dialog.getByText(/84G free · R/)).toBeVisible();
   await expect(dialog.getByRole("group", { name: "Language servers" })).toContainText("rust-analyzer");
   await expect(dialog.getByRole("group", { name: "Other host processes" })).toContainText("dockerd");
 
