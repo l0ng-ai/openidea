@@ -58,8 +58,9 @@ export const commands = {
 	agentCustomSave: (input: CustomAgentInput) => typedError<null, IdeError>(__TAURI_INVOKE("agent_custom_save", { input })),
 	agentDelete: (task: string, removeWorktree: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("agent_delete", { task, removeWorktree })),
 	/**
-	 *  Entries of `task`'s conversation, or of its subagent `subagent`'s. Async so a long
-	 *  conversation is cloned and serialised off the main thread.
+	 *  Entries of `task`'s conversation, or of its subagent `subagent`'s. On the blocking pool:
+	 *  the first read of a saved conversation parses its task file, and a long one is cloned
+	 *  and serialised.
 	 */
 	agentEntries: (task: string, subagent: string | null) => typedError<AgentEntry[], IdeError>(__TAURI_INVOKE("agent_entries", { task, subagent })),
 	/**  Sessions of the project on this machine that no task holds yet, newest first. */
