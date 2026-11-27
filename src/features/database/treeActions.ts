@@ -16,6 +16,7 @@ import {
   DB_TOOL_WINDOW,
   OUTPUT_TAB,
   connect,
+  connectedTargets,
   createsDatabases,
   RESULTS_VIEW,
   detailsKey,
@@ -46,7 +47,7 @@ import {
   toggleShowTableComments,
   useDatabase,
   withConnection,
-  removeSource,
+  removeSources,
 } from "./store";
 import { tableInput } from "./tableInput";
 import { DIAGRAM_TABLE_LIMIT, diagramInput, type DiagramData, type DiagramTable } from "./erDiagram";
@@ -112,6 +113,69 @@ function nodesFrom(arg: unknown): DbNode[] {
   const { selectedNodes } = useDatabase.getState();
   if (!isNode(arg)) return selectedNodes;
   return selectedNodes.some((n) => n.key === arg.key) ? selectedNodes : [arg];
+}
+
+/** Selected data source roots; nested schema/table rows in a range selection are ignored. */
+function sourcesFrom(arg: unknown): Extract<DbNode, { kind: "source" }>[] {
+  const seen = new Set<string>();
+  return nodesFrom(arg).flatMap((node) => {
+    if (node.kind !== "source") return [];
+    const id = node.source.id ?? "";
+    if (!id || seen.has(id)) return [];
+    seen.add(id);
+    return [node];
+  });
+}
+
+function failureText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+/** Refreshes selected data sources, at most four at a time, and reports failures once. */
+async function refreshSources(sources: Extract<DbNode, { kind: "source" }>[]): Promise<void> {
+  const failures: string[] = [];
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const source = sources[next++];
+      if (!source) return;
+      try {
+        // oxlint-disable-next-line no-await-in-loop -- each worker keeps one data source refresh in flight
+        await refresh(source.source.id ?? "");
+      } catch (e) {
+        failures.push(`${source.source.name}: ${failureText(e)}`);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, sources.length) }, worker));
+  if (failures.length) {
+    const failed = failures.length;
+    const total = sources.length;
+    notifications().notify({
+      level: "error",
+      title: tx`Failed to refresh ${failed} of ${total} data sources`,
+      body: failures.slice(0, 6).join("\n"),
+    });
+  }
+}
+
+/** Disconnects the connected data sources among `sources`, keeping successful deactivations. */
+async function deactivateSources(sources: Extract<DbNode, { kind: "source" }>[]): Promise<void> {
+  const connected = sources.filter((source) => connectedTargets(source.source.id ?? "").length > 0);
+  if (!connected.length) return;
+  const results = await Promise.allSettled(connected.map((source) => disconnect(source.source.id ?? "")));
+  const failures = results.flatMap((result, i) =>
+    result.status === "rejected" ? [`${connected[i]!.source.name}: ${failureText(result.reason)}`] : [],
+  );
+  if (failures.length) {
+    const failed = failures.length;
+    const total = connected.length;
+    notifications().notify({
+      level: "error",
+      title: tx`Failed to deactivate ${failed} of ${total} data sources`,
+      body: failures.slice(0, 6).join("\n"),
+    });
+  }
 }
 
 /**
@@ -319,7 +383,11 @@ export function registerDatabaseTreeActions(): () => void {
       title: "Refresh",
       icon: "refresh",
       keywords: ["synchronize", "introspect"],
-      run: ({ arg }) => refreshNode(nodeFrom(arg)),
+      run: ({ arg }) => {
+        const sources = sourcesFrom(arg);
+        if (sources.length > 1) return void refreshSources(sources);
+        refreshNode(nodeFrom(arg));
+      },
     }),
     tree({
       id: "db.introspect",
@@ -338,6 +406,8 @@ export function registerDatabaseTreeActions(): () => void {
       icon: "db-disconnect",
       keywords: ["disconnect", "close connection"],
       run: ({ arg }) => {
+        const sources = sourcesFrom(arg);
+        if (sources.length > 1) return void deactivateSources(sources);
         const n = nodeFrom(arg);
         const id = n ? nodeTarget(n) : null;
         if (!id) {
@@ -416,10 +486,12 @@ export function registerDatabaseTreeActions(): () => void {
       icon: "trash",
       keywords: ["delete", "remove data source"],
       run: ({ arg }) => {
+        const sources = sourcesFrom(arg);
+        if (sources.length > 1) return void removeSources(sources.map((source) => source.source));
         const n = nodeFrom(arg);
         if (!n) return;
         const id = nodeTarget(n);
-        if (n.kind === "source") return void removeSource(n.source);
+        if (n.kind === "source") return void removeSources([n.source]);
         const source = sourceById(id);
         if (n.kind === "database" && !n.current && !source?.readOnly && createsDatabases(source))
           return openDialog({ kind: "dropDatabase", id: splitTarget(n.id).id, database: n.name });

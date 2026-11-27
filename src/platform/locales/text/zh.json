@@ -10752,5 +10752,14 @@
   "unittest": "unittest",
   "1 file of the report is not in this project.": "报告中有 1 个文件不在此项目中。",
   "{count} files of the report are not in this project.": "报告中有 {count} 个文件不在此项目中。",
-  "Show Table Comments": "显示表注释"
+  "Show Table Comments": "显示表注释",
+  "Remove Data Sources": "移除数据源",
+  "Remove {length} data sources? Their query console files stay on disk.\n\n{n}{more}": "移除 {length} 个数据源？其查询控制台文件会保留在磁盘上。\n\n{n}{more}",
+  "Cannot remove the data source": "无法移除数据源",
+  "Cannot remove the data sources": "无法移除数据源",
+  "Failed to refresh {failed} of {total} data sources": "{total} 个数据源中有 {failed} 个刷新失败",
+  "Failed to deactivate {failed} of {total} data sources": "{total} 个数据源中有 {failed} 个停用失败",
+  "Refresh {count} Data Sources": "刷新 {count} 个数据源",
+  "Deactivate {count} Data Sources": "停用 {count} 个数据源",
+  "Remove {count} Data Sources…": "移除 {count} 个数据源…"
 }
