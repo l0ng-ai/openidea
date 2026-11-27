@@ -33,7 +33,11 @@ test("line numbers stay smaller than the code and leave room for a breakpoint", 
     )
     .toBeCloseTo(4, 0);
 
-  await content.press("Alt+Shift+.");
+  await content.focus();
+  await page.evaluate(async () => {
+    const path = "/src/platform/actions.ts";
+    await (await import(/* @vite-ignore */ path)).executeAction("editor.increaseFontSize");
+  });
   await expect(content).toHaveCSS("font-size", `${size + 1}px`);
   await expect(number).toHaveCSS("font-size", `${size}px`);
   await expect(number).toHaveCSS(

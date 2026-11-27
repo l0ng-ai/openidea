@@ -9,6 +9,7 @@ import {
   commands,
   type DbColumnInfo,
   type DbDriver,
+  type DbSourceFolder,
   type DbTableDetails,
   type DbTableGrant,
 } from "@/platform/ipc";
@@ -55,6 +56,7 @@ import {
 } from "./objects";
 import {
   closeDialog,
+  createSourceFolder,
   detailsKey,
   connectedTargets,
   createDatabase,
@@ -66,6 +68,7 @@ import {
   openSourceDialog,
   readableDdl,
   refresh,
+  renameSourceFolder,
   renameSource,
   runSql,
   sourceById,
@@ -1196,6 +1199,53 @@ function QuickDoc({ node, anchor }: { node: DbNode; anchor: { x: number; y: numb
   );
 }
 
+function SourceFolderDialog({ folder, sources = [] }: { folder: DbSourceFolder | null; sources?: string[] }) {
+  const [name, setName] = useState(folder?.name ?? "");
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    if (!name.trim() || busy) return;
+    setBusy(true);
+    const saved = folder ? await renameSourceFolder(folder.id, name) : await createSourceFolder(name, sources);
+    if (saved) closeDialog();
+    else setBusy(false);
+  };
+  return (
+    <Dialog
+      open
+      onClose={closeDialog}
+      title={folder ? tx("Rename Data Source Folder") : tx("New Data Source Folder")}
+      width={480}
+      buttons={[
+        { label: "Cancel", role: "cancel" },
+        {
+          label: folder ? "Rename" : "Create",
+          role: "default",
+          disabled: busy || !name.trim(),
+          onClick: () => void submit(),
+        },
+      ]}
+    >
+      <div className={styles.dialogBody}>
+        <label className={styles.formLabelLeft} htmlFor="db-source-folder-name">
+          <T>Folder name:</T>
+        </label>
+        <Input
+          id="db-source-folder-name"
+          autoFocus
+          value={name}
+          onFocus={(e) => e.currentTarget.select()}
+          onChange={(e) => setName(e.target.value)}
+        />
+        {!folder && sources.length > 0 && (
+          <span
+            className={styles.formHint}
+          >{tx`The ${sources.length} selected data sources will be moved into this folder.`}</span>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
 export function ObjectDialogs() {
   const dialog = useDatabase((s) => s.dialog) as DialogState | null;
   if (!dialog) return null;
@@ -1206,6 +1256,8 @@ export function ObjectDialogs() {
       return (
         <RenameDialog key={`${dialog.id}:${dialog.database}`} id={dialog.id} object={null} database={dialog.database} />
       );
+    case "sourceFolder":
+      return <SourceFolderDialog key={dialog.folder?.id ?? "new"} folder={dialog.folder} sources={dialog.sources} />;
     case "drop":
       return <DropDialog id={dialog.id} object={dialog.object} />;
     case "truncate":

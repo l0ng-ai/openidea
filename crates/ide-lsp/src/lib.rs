@@ -352,6 +352,9 @@ fn user_did_open(server: &Server, run: &Running, path: &Path, uri: &lsp::Uri, pa
 /// No target for `feature`: names the running servers that lack it, so the UI can
 /// tell "the server can't do this" from "no server is running" (the UI's
 /// `unavailableText` matches the "… doesn't support …" wording).
+/// vscode-css-language-server, which lists a selector's own rule among its references.
+const CSS_SERVER: &str = "vscode-css-language-server";
+
 fn unsupported(servers: &[Arc<Server>], feature: &str) -> IdeError {
     let running: Vec<&str> = servers.iter().filter(|s| s.running().is_some()).map(|s| s.name.as_str()).collect();
     if running.is_empty() {
@@ -2229,7 +2232,19 @@ impl LspManager {
                     // A library method has thousands of usages in the dependencies and the JDK,
                     // which take seconds to search: those in the sources (where scope widening
                     // searches again) are shown first, then the rest are searched once.
-                    let sources = self.widened(snap, t, pos, cancel, || query(true), files).await?;
+                    let shown = |first: &Vec<ClassifiedReference>| {
+                        if let Some(partial) = partial
+                            && !first.is_empty()
+                        {
+                            partial(References {
+                                locations: first.iter().map(|r| r.location.clone()).collect(),
+                                classified: first.clone(),
+                                incomplete: None,
+                                libraries_skipped: false,
+                            });
+                        }
+                    };
+                    let sources = self.widened(snap, t, pos, cancel, || query(true), files, shown).await?;
                     if let Some(e) = extension_error.lock().take() {
                         return Err(e);
                     }
@@ -2304,6 +2319,7 @@ impl LspManager {
                 }
             }
         }
+        let single = targets.len() == 1;
         let requests = targets.iter().map(|t| {
             let (snap, cancel) = (&snap, &cancel);
             async move {
@@ -2320,8 +2336,20 @@ impl LspManager {
                 };
                 let files =
                     |v: &Vec<Location>| v.iter().filter(|l| l.uri.is_none()).map(|l| l.path.to_path_buf()).collect();
+                // With one server, what it finds in its own scope is shown while the files beyond
+                // it are searched. The CSS server's answer still loses the rule's own selector.
+                let shown = |first: &Vec<Location>| {
+                    if let Some(partial) = partial
+                        && single
+                        && t.server.name != CSS_SERVER
+                        && !first.is_empty()
+                    {
+                        self.note_virtual(&t.server, first.iter().map(|l| l.uri.as_deref()));
+                        partial(References { locations: first.clone(), ..Default::default() });
+                    }
+                };
                 let result = if project_wide && !angular {
-                    self.widened(snap, t, pos, cancel, query, files).await
+                    self.widened(snap, t, pos, cancel, query, files, shown).await
                 } else {
                     query().await.map(|first| {
                         let empty = first.is_empty();
@@ -2332,9 +2360,13 @@ impl LspManager {
             }
         });
         // The Angular server lists the declaration even when not asked to: the one
-        // the definition at `pos` points to is taken out of its answer.
+        // the definition at `pos` points to is taken out of its answer. So does the CSS server
+        // with a selector's own rule (`.button`), always: where CSS Modules Kit defines the class
+        // name (`button`), vtsls lists the declaration itself when asked.
         let declarations = async {
-            if include_declaration || !targets.iter().any(|t| t.server.name == angular::SERVER) {
+            let listed =
+                |t: &Target| (t.server.name == angular::SERVER && !include_declaration) || t.server.name == CSS_SERVER;
+            if !targets.iter().any(listed) {
                 return Vec::new();
             }
             let defining = self.ready_targets(&snap.servers, |c| c.has("definitionProvider")).await;
@@ -2351,6 +2383,14 @@ impl LspManager {
                     let mut locs: Vec<Location> = w.first.into_iter().chain(w.second.into_iter().flatten()).collect();
                     if t.server.name == angular::SERVER {
                         locs.retain(|l| !declarations.contains(l));
+                    } else if t.server.name == CSS_SERVER {
+                        let overlaps = |a: &Location, b: &Location| {
+                            a.path == b.path
+                                && a.uri == b.uri
+                                && a.range.start <= b.range.end
+                                && b.range.start <= a.range.end
+                        };
+                        locs.retain(|l| !declarations.iter().any(|d| overlaps(d, l)));
                     }
                     self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
                     self.note_arduino_sources(&t.server, &locs);
@@ -2922,6 +2962,11 @@ impl LspManager {
             let prepared = join_all(targets.iter().map(|t| self.prepare_rename_on(snap, t, pos))).await;
             let able: Vec<&Target> =
                 targets.iter().zip(prepared).filter(|(_, r)| matches!(r, Ok(Some(_)))).map(|(t, _)| t).collect();
+            // CSS Modules Kit (vtsls) renames a class in the stylesheet and its scripts; the CSS
+            // server's own edit replaces the whole selector (`.button`) and would drop the dot.
+            if able.iter().any(|t| t.server.name == "vtsls") {
+                return able.into_iter().filter(|t| t.server.name != CSS_SERVER).collect();
+            }
             if !able.is_empty() {
                 return able;
             }
@@ -2977,7 +3022,7 @@ impl LspManager {
                 })
                 .collect()
         };
-        let w = self.widened(snap, t, pos, cancel, query, files).await?;
+        let w = self.widened(snap, t, pos, cancel, query, files, |_| {}).await?;
         // The second edit covers the first: its files stay analysed.
         let mut edit = w.second.unwrap_or(w.first);
         let mut more: BTreeMap<PathBuf, Vec<TextEdit>> = BTreeMap::new();
@@ -3616,7 +3661,7 @@ impl LspManager {
                 let files = |v: &Vec<HierarchyItem>| {
                     v.iter().filter(|i| i.uri.is_none()).map(|i| i.path.to_path_buf()).collect()
                 };
-                let w = self.widened(&snap, t, pos, cancel, query, files).await?;
+                let w = self.widened(&snap, t, pos, cancel, query, files, |_| {}).await?;
                 (w.second.unwrap_or(w.first), w.incomplete)
             }
             HierarchyDirection::Outgoing => (query().await?, None),

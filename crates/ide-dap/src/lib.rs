@@ -12,6 +12,7 @@ pub mod adapter;
 pub mod attach;
 mod cargo;
 pub mod connection;
+mod debugpy;
 mod exception_classes;
 pub mod jdwp;
 mod js_cdp;
@@ -901,6 +902,9 @@ impl DebugManager {
         exception_classes: Option<Arc<dyn ide_jvm_inspect::ExceptionClassBreakpoints>>,
     ) -> IdeResult<DebugSessionId> {
         let mut arguments = launch_arguments(&config)?;
+        if debugpy::listens(&config.adapter, &config.request, &arguments) {
+            debugpy::require_free_port(&arguments).await?;
+        }
         // An IDE-side marker (never sent to the adapter): the session is a Flutter
         // one regardless of what the working directory holds.
         let force_flutter =
@@ -1149,6 +1153,9 @@ impl DebugManager {
         });
         tokio::spawn(session::event_loop(self.me.clone(), session.clone(), incoming));
 
+        if debugpy::listens(&session.adapter, &session.request, &arguments) {
+            session.debugpy_version_unchecked.store(true, Ordering::Release);
+        }
         let configured = tokio::select! {
             biased;
             _ = session.startup_cancel.cancelled() => return Err(IdeError::cancelled()),
