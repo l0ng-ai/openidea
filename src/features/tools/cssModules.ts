@@ -69,6 +69,54 @@ export function cmkState(text: string): CmkState | null {
   }
 }
 
+const dirOf = (path: string) => path.slice(0, path.lastIndexOf("/"));
+/** `path` with its `.` and `..` segments resolved. */
+const normalize = (path: string) =>
+  path
+    .split("/")
+    .reduce<string[]>((out, part) => {
+      if (part === "..") out.pop();
+      else if (part !== ".") out.push(part);
+      return out;
+    }, [])
+    .join("/");
+
+/** The local files the tsconfig.json `text` at `path` extends (`./base`, `../tsconfig.base.json`). */
+export function localExtends(path: string, text: string): string[] {
+  let extended: unknown;
+  try {
+    extended = (JSON.parse(stripJsonc(text)) as { extends?: unknown } | null)?.extends;
+  } catch {
+    return [];
+  }
+  const list = typeof extended === "string" ? [extended] : Array.isArray(extended) ? extended : [];
+  // ponytail: package `extends` (`@tsconfig/node20`) are not resolved; only local files.
+  return list
+    .filter((e): e is string => typeof e === "string" && (e.startsWith("./") || e.startsWith("../")))
+    .map((e) => normalize(`${dirOf(path)}/${e}`));
+}
+
+/**
+ * [`cmkState`] of the tsconfig.json at `path`, inheriting `cmkOptions` through local `extends`
+ * as CSS Modules Kit does: the file's own option wins, then the first base that sets one.
+ */
+export async function effectiveCmkState(
+  path: string,
+  read: (path: string) => Promise<string | null>,
+  depth = 0,
+): Promise<CmkState | null> {
+  const text = (await read(path)) ?? (path.endsWith(".json") ? null : await read(`${path}.json`));
+  if (text === null) return null;
+  const own = cmkState(text);
+  if (own !== "absent" || depth >= 8) return own;
+  for (const base of localExtends(path, text)) {
+    // oxlint-disable-next-line no-await-in-loop -- in order: the first base that sets the option wins
+    const inherited = await effectiveCmkState(base, read, depth + 1);
+    if (inherited === "enabled" || inherited === "set") return inherited;
+  }
+  return "absent";
+}
+
 /** The insertion adding `cmkOptions` as the first property of the tsconfig.json `text` (comments kept). */
 export function cmkOptionsInsertion(text: string): { at: number; text: string } | null {
   const open = skipTrivia(text, 0);
@@ -84,7 +132,6 @@ export function usesCssModules(path: string, text: string | null): boolean {
   return /\.[cm]?[jt]sx?$/.test(path) && !!text?.includes(".module.css");
 }
 
-const dirOf = (path: string) => path.slice(0, path.lastIndexOf("/"));
 const readText = (path: string) => call(commands.fsReadText(path)).catch(() => null);
 
 /** The nearest tsconfig.json above `path`, inside `projectRoot`. */
@@ -119,6 +166,36 @@ async function pluginMissing(): Promise<boolean> {
   return toolByName(TOOL)?.status === "missing";
 }
 
+/**
+ * Adds `cmkOptions` to the tsconfig.json as the editor has it (an open one may hold unsaved
+ * changes), then saves it: vtsls and the CSS route read the file on disk. True once it is on disk.
+ */
+async function insertOption(tsconfig: string): Promise<boolean> {
+  const doc = await call(commands.docOpen(tsconfig)).catch(() => null);
+  if (!doc) return false;
+  try {
+    const state = cmkState(doc.text);
+    const insertion = state === "absent" ? cmkOptionsInsertion(doc.text) : null;
+    if (insertion) {
+      const before = doc.text.slice(0, insertion.at).split("\n");
+      const at = { line: before.length - 1, col: before[before.length - 1]!.length };
+      await call(
+        commands.applyWorkspaceEdit({
+          files: [
+            { kind: "edit", path: tsconfig, edits: [{ range: { start: at, end: at }, new_text: insertion.text }] },
+          ],
+        }),
+      );
+    } else if (state !== "enabled") return false;
+    await call(commands.docSave(doc.id));
+    return true;
+  } catch {
+    return false;
+  } finally {
+    void call(commands.docClose(doc.id)).catch(() => {});
+  }
+}
+
 /** Adds `cmkOptions` to `tsconfig` once the user confirms, then has vtsls load the plugin. */
 async function enable(tsconfig: string, rel: string) {
   notifications().expire?.(hintKey(tsconfig));
@@ -128,17 +205,7 @@ async function enable(tsconfig: string, rel: string) {
     ok: "Enable",
   });
   if (!ok) return;
-  const text = await readText(tsconfig);
-  const insertion = text === null || cmkState(text) !== "absent" ? null : cmkOptionsInsertion(text);
-  if (text !== null && insertion) {
-    const before = text.slice(0, insertion.at).split("\n");
-    const at = { line: before.length - 1, col: before[before.length - 1]!.length };
-    await call(
-      commands.applyWorkspaceEdit({
-        files: [{ kind: "edit", path: tsconfig, edits: [{ range: { start: at, end: at }, new_text: insertion.text }] }],
-      }),
-    );
-  } else if (text === null || cmkState(text) !== "enabled") {
+  if (!(await insertOption(tsconfig))) {
     notifications().notify({
       group: "tools",
       level: "error",
@@ -159,12 +226,15 @@ const checked = new Set<string>();
 async function check(path: string | undefined) {
   const project = useProject.getState().project;
   if (!path || !isTauri() || !project?.trusted || !path.startsWith(`${project.root}/`)) return;
-  if (!path.endsWith(".css") && !/\.[cm]?[jt]sx?$/.test(path)) return;
-  if (!usesCssModules(path, path.endsWith(".css") ? null : await readText(path))) return;
+  const stylesheet = path.endsWith(".module.css");
+  if (!stylesheet && !/\.[cm]?[jt]sx?$/.test(path)) return;
   const tsconfig = await nearestTsconfig(path, project.root);
   if (!tsconfig || checked.has(tsconfig)) return;
+  // A script is read only while its tsconfig.json has not met a CSS Module yet.
+  if (!stylesheet && !usesCssModules(path, await readText(path))) return;
+  if (checked.has(tsconfig)) return;
   checked.add(tsconfig);
-  const state = cmkState((await readText(tsconfig)) ?? "");
+  const state = await effectiveCmkState(tsconfig, readText);
   if (state === "enabled") {
     if (await pluginMissing()) await promptInstall(TOOL);
     return;

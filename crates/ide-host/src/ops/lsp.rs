@@ -2058,19 +2058,20 @@ pub async fn lsp_restart(host: &Host, window: &str, server: ServerId) -> IdeResu
 }
 
 /// Restarts the language servers named `name` in every open project, so a tool installed or
-/// updated from one window is what all of them run (not only that window's project).
+/// updated from one window is what all of them run (not only that window's project). Open files
+/// that a server now serves join it, starting it when none runs yet (a stylesheet whose
+/// tsconfig.json just got `cmkOptions`).
 pub async fn lsp_restart_named(host: &Host, name: &str) -> IdeResult<()> {
     for project in host.projects() {
         let ids: Vec<ServerId> = project.lsp.servers().into_iter().filter(|s| s.name == name).map(|s| s.id).collect();
-        if ids.is_empty() {
-            continue;
-        }
-        for id in ids {
-            if let Err(e) = project.lsp.restart(id).await {
+        for id in &ids {
+            if let Err(e) = project.lsp.restart(*id).await {
                 tracing::warn!(server = name, root = %project.root.display(), "restart after a tool update: {e}");
             }
         }
-        if name == "jdtls"
+        project.lsp.reconfigure().await;
+        if !ids.is_empty()
+            && name == "jdtls"
             && let Some(bridge) = &project.kotlin_bridge
         {
             bridge.schedule();
