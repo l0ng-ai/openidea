@@ -127,8 +127,8 @@ impl Reader<'_> {
                     let v = self.read(depth + 1)?;
                     items.push((k, v));
                 }
-                // ponytail: pstats never refers back to a dict, so its slot stays empty
-                // instead of holding a copy of the whole table.
+                // pstats never refers back to a dict, so its slot stays empty instead of
+                // holding a copy of the whole table.
                 return Ok(Value::Dict(items));
             }
             b'r' => {
@@ -334,10 +334,12 @@ const MAX_DEPTH_TREE: u32 = 256;
 pub(crate) fn read(bytes: &[u8], bases: &[&Path], profiler: &str) -> Result<Profile, String> {
     let (funcs, stats, edges) = parse(bytes)?;
     let mut b = TreeBuilder::new();
+    // Functions share files: look each one up once.
+    let mut sources: HashMap<Rc<str>, Option<PathBuf>> = HashMap::new();
     let frames: Vec<u32> = funcs
         .iter()
         .map(|f| {
-            let file = source(&f.file, bases);
+            let file = sources.entry(f.file.clone()).or_insert_with(|| source(&f.file, bases)).clone();
             let name = if &*f.file == "~" || file.is_some() {
                 f.name.to_string()
             } else {
