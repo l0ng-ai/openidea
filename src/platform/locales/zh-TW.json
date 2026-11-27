@@ -232,6 +232,7 @@
   "menu.window.previousTab": "上一個專案分頁",
   "menu.project.attach": "附加專案…",
   "menu.file.openProject": "開啟…",
+  "menu.file.saveAs": "另存為…",
   "menu.file.save": "全部儲存",
   "menu.file.projectStructure": "專案結構…",
   "menu.file.settings": "設定…",

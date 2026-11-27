@@ -236,6 +236,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
         act("remote.stopBackend", "Stop Remote Backend"),
         act("remote.reloadEnvironment", "Reload Environment"),
         SEP,
+        act("file.saveAs", "Save As…"),
         act("file.save", "Save All"),
         act("file.reloadAllFromDisk", "Reload All from Disk"),
         sub("fileProperties", "File Properties", vec![act("file.toggleReadOnly", "Make File Read-only / Writable")]),

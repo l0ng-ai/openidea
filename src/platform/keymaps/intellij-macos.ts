@@ -229,6 +229,7 @@ export const intellijMacos: Record<string, string[]> = {
   "refactor.pushMembersDown": [],
 
   // File / editor tabs
+  "file.saveAs": ["Meta+Shift+S"],
   "file.save": ["Meta+S"],
   "file.settings": ["Meta+,"],
   "file.projectStructure": ["Meta+;"],

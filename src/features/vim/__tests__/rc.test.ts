@@ -191,6 +191,7 @@ describe(":action ids", () => {
     expect(resolveActionId("GotoDeclaration")).toBe("navigate.declaration");
     expect(resolveActionId("ReformatCode")).toBe("code.reformat");
     expect(resolveActionId("FindInPath")).toBe("find.inPath");
+    expect(resolveActionId("SaveAs")).toBe("file.saveAs");
     expect(resolveActionId("code.commentLine")).toBe("code.commentLine");
   });
 

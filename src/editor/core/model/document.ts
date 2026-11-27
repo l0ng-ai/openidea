@@ -1089,11 +1089,11 @@ export class DocumentManager {
   }
 
   /** Saves dirty documents; failures are notified, and an explicit Save All also rejects with them. */
-  async saveAll(reason: "explicit" | "auto", skipUntitled = false) {
+  async saveAll(reason: "explicit" | "auto", skipUntitled = false, skipDocuments?: ReadonlySet<DocId>) {
     const errors: unknown[] = [];
     await Promise.all(
       [...this.byPath.values()]
-        .filter((m) => !(skipUntitled && isUntitledUri(m.path)))
+        .filter((m) => !(skipUntitled && isUntitledUri(m.path)) && !skipDocuments?.has(m.doc))
         .map((m) =>
           m.save(reason).catch((e) => {
             // The notification shows the message only; the log keeps the stack for reports.

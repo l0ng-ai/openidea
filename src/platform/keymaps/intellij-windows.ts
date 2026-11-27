@@ -230,6 +230,7 @@ export const intellijWindows: Record<string, string[]> = {
   "refactor.pushMembersDown": [],
 
   // File / editor tabs
+  "file.saveAs": ["Ctrl+Shift+S"],
   "file.save": ["Ctrl+S"],
   "file.settings": ["Ctrl+Alt+S"],
   "file.projectStructure": ["Ctrl+Alt+Shift+S"],

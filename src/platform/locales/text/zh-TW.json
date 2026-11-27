@@ -2787,6 +2787,7 @@
   "Save": "儲存",
   "Save All": "全部儲存",
   "Save As": "另存為",
+  "Save As…": "另存為…",
   "Save Files": "儲存檔案",
   "Save files if the IDE is idle for": "IDE 空閒以下時長時儲存檔案",
   "Save files when switching to a different application or a built-in terminal": "切換到其他應用程式或內建終端機時儲存檔案",

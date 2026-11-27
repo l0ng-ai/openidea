@@ -1286,6 +1286,66 @@ fn untitled_buffers_are_editable_and_saved_to_a_chosen_path() {
 }
 
 #[test]
+fn save_as_copies_dirty_file_without_saving_or_retargeting_source() {
+    let f = fixture();
+    let source = f.root.join("source.txt");
+    fs::write(&source, "saved\n").unwrap();
+    let info = f.docs.open(&source).unwrap();
+    let version = f.docs.edit(info.id, info.version, change(0, 0, "dirty ")).unwrap();
+    assert!(f.docs.is_dirty(info.id).unwrap());
+    f.rec.log.lock().clear();
+
+    let target = f.root.join("nested/copy.txt");
+    f.docs.copy_as(info.id, &target).unwrap();
+
+    assert_eq!(fs::read_to_string(&source).unwrap(), "saved\n");
+    assert_eq!(fs::read_to_string(&target).unwrap(), "dirty saved\n");
+    let after = f.docs.snapshot(info.id).unwrap();
+    assert_eq!(after.id, info.id);
+    assert_eq!(after.path, source);
+    assert_eq!(after.version, version);
+    assert_eq!(after.text, "dirty saved\n");
+    assert!(after.dirty);
+    assert_eq!(f.docs.by_path(&source), Some(info.id));
+    assert_eq!(f.docs.by_path(&target), None, "the copy is opened through the normal document service");
+    assert!(!f.rec.log.lock().iter().any(|entry| entry.starts_with("save ")));
+
+    let copy = f.docs.open(&target).unwrap();
+    assert_ne!(copy.id, info.id);
+    assert_eq!(copy.text, "dirty saved\n");
+    assert!(!copy.dirty);
+    assert!(f.docs.is_dirty(info.id).unwrap());
+}
+
+#[test]
+fn save_as_same_path_is_a_noop_and_copy_failures_leave_the_source_unchanged() {
+    let f = fixture();
+    let source = f.root.join("source.txt");
+    fs::write(&source, "saved\n").unwrap();
+    let info = f.docs.open(&source).unwrap();
+    f.docs.edit(info.id, info.version, change(0, 0, "dirty ")).unwrap();
+    fs::create_dir(f.root.join("sub")).unwrap();
+
+    // A different spelling of the source must not write its dirty buffer to disk.
+    assert!(!f.docs.copy_as(info.id, &f.root.join("sub/../source.txt")).unwrap());
+    assert_eq!(fs::read_to_string(&source).unwrap(), "saved\n");
+    assert!(f.docs.is_dirty(info.id).unwrap());
+
+    let blocked = f.root.join("blocked");
+    fs::write(&blocked, "not a directory").unwrap();
+    assert!(f.docs.copy_as(info.id, &blocked.join("copy.txt")).is_err());
+    assert_eq!(fs::read_to_string(&source).unwrap(), "saved\n");
+    assert!(f.docs.is_dirty(info.id).unwrap());
+
+    let taken = f.root.join("taken.txt");
+    fs::write(&taken, "taken\n").unwrap();
+    let other = f.docs.open(&taken).unwrap();
+    assert!(f.docs.copy_as(info.id, &taken).is_err());
+    assert_eq!(fs::read_to_string(&taken).unwrap(), "taken\n");
+    assert_eq!(f.docs.snapshot(other.id).unwrap().text, "taken\n");
+}
+
+#[test]
 fn save_as_rejects_paths_opened_elsewhere_and_reuses_free_names() {
     let f = fixture();
     let first = f.root.join("taken.txt");

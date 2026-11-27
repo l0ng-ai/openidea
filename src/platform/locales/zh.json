@@ -236,6 +236,7 @@
   "menu.window.previousTab": "上一个项目标签页",
   "menu.project.attach": "附加项目…",
   "menu.file.openProject": "打开…",
+  "menu.file.saveAs": "另存为…",
   "menu.file.save": "全部保存",
   "menu.file.projectStructure": "项目结构…",
   "menu.file.settings": "设置…",

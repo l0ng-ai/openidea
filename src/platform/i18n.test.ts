@@ -259,6 +259,7 @@ describe("t / locales", () => {
   it("lists keys by prefix", () => {
     const keys = keysWithPrefix("menu.");
     expect(keys).toContain("menu.file.save");
+    expect(keys).toContain("menu.file.saveAs");
     expect(keys.every((k) => k.startsWith("menu."))).toBe(true);
   });
 });

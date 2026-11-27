@@ -810,6 +810,8 @@ export interface OpenOptions {
   focus?: boolean;
   /** Open in the text editor even when a file editor provider claims the file (SVG as text). */
   asText?: boolean;
+  /** Keep this path's existing tab, including a preview, when the new regular tab opens (Save As). */
+  keepOpen?: string;
   /** False: leave files that go to another application unopened (autoscroll must not launch apps). */
   external?: boolean;
 }

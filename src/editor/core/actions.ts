@@ -1726,6 +1726,17 @@ export function registerEditorActions(): () => void {
       },
     },
     {
+      id: "file.saveAs",
+      title: "Save As…",
+      category: "File",
+      keywords: ["save", "copy file"],
+      when: "textEditorActive",
+      enabled: () => ctrl.canSaveAs(),
+      run: async () => {
+        await ctrl.saveAs();
+      },
+    },
+    {
       id: "file.save",
       title: "Save All",
       category: "File",
