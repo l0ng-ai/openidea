@@ -1481,14 +1481,13 @@ fn stop_reason(turn: &Value, last_error: Option<Value>, rate_limits: Option<&Val
             let e = turn.get("error").filter(|e| !e.is_null()).cloned().or(last_error).unwrap_or(json!({}));
             let message = translate::error_message(&e);
             return match translate::classify(&e, rate_limits) {
-                Failure::Refusal => Ok(json!({ "stopReason": "refusal" })),
                 Failure::UsageLimit(resets) => Err(ResponseError {
                     code: codes::INTERNAL_ERROR,
                     message,
                     data: Some(json!({ "openidea": { "usageLimit": { "resetsAtMs": resets } } })),
                 }),
                 Failure::Auth => Err(error(AUTH_REQUIRED, format!("Codex authentication failed: {message}"))),
-                Failure::Other => Err(error(codes::INTERNAL_ERROR, message)),
+                Failure::Refusal | Failure::Other => Err(error(codes::INTERNAL_ERROR, message)),
             };
         }
         _ => "end_turn",
