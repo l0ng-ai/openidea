@@ -31,7 +31,7 @@ pub use history::HistoryEntry;
 pub use plan::{PlanNode, PlanProperty};
 pub use source::{
     DataSource, DbColor, DbDriver, DbDuckLake, DbDuckLakeKind, DbExternalTunnel, DbIntrospection, DbOptions,
-    DbProperty, DbSchemaSelection, DbSnowflake, DbSnowflakeAuth, DbSsh, DbSshAuth, DbSslMode, DbTxMode,
+    DbProperty, DbSchemaSelection, DbSnowflake, DbSnowflakeAuth, DbSourceFolder, DbSsh, DbSshAuth, DbSslMode, DbTxMode,
     DbVisibilityChange,
 };
 pub use sql::{CellValue, DbRowEdit, SortKey};
@@ -587,6 +587,18 @@ impl DbManager {
                 None => {}
             }
             source::save(&self.root, &project)?;
+            if let Ok(mut folders) = source::load_folders(&self.root) {
+                let known: std::collections::HashSet<&str> = sources.iter().map(|source| source.id.as_str()).collect();
+                let mut changed = false;
+                for folder in &mut folders {
+                    let before = folder.sources.len();
+                    folder.sources.retain(|id| known.contains(id.as_str()));
+                    changed |= folder.sources.len() != before;
+                }
+                if changed {
+                    source::save_folders(&self.root, &folders)?;
+                }
+            }
             old
         };
         for o in old {

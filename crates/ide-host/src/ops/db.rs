@@ -8,8 +8,8 @@ use ide_command::command;
 use ide_core::{IdeError, IdeResult, IpcPath, RequestId};
 use ide_db::split::SqlStatement;
 use ide_db::{
-    CompletionModel, DataSource, Databases, DbObjectKind, DbRowEdit, DbVisibilityChange, HistoryEntry, PlanNode,
-    QueryResult, SchemaObjects, SortKey, TableDetails, TableGrant, TableInfo, TablePage,
+    CompletionModel, DataSource, Databases, DbObjectKind, DbRowEdit, DbSourceFolder, DbVisibilityChange, HistoryEntry,
+    PlanNode, QueryResult, SchemaObjects, SortKey, TableDetails, TableGrant, TableInfo, TablePage,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -84,6 +84,20 @@ pub async fn db_save_sources(host: &Host, window: &str, sources: Vec<DataSource>
 pub async fn db_create_ducklake(host: &Host, window: &str, jdbc_driver: String, directory: String) -> IdeResult<()> {
     let db = host.project(window)?.db.clone();
     db.create_ducklake(&jdbc_driver, &directory).await
+}
+
+#[command(trust = trusted)]
+pub fn db_source_folders(host: &Host, window: &str) -> IdeResult<Vec<DbSourceFolder>> {
+    // The project's user-created folders and their data source members.
+    ide_db::source::load_folders(&host.project(window)?.root)
+}
+
+#[command(trust = trusted)]
+pub fn db_save_source_folders(host: &Host, window: &str, folders: Vec<DbSourceFolder>) -> IdeResult<()> {
+    // Replaces the project's data source folders; only grouping changes, never a source.
+    let root = host.project(window)?.root.clone();
+    ide_db::source::save_folders(&root, &folders)?;
+    sources_changed(host, window)
 }
 
 #[command(trust = trusted)]
@@ -715,6 +729,7 @@ ide_command::domain!(
     db_result_row,
     db_remove_history,
     db_retain_catalog,
+    db_save_source_folders,
     db_save_source_visibility,
     db_save_sources,
     db_saved_catalog,
@@ -724,6 +739,7 @@ ide_command::domain!(
     db_set_manual_commit,
     db_set_password,
     db_set_ssh_secret,
+    db_source_folders,
     db_sources,
     db_statements,
     db_table_details,

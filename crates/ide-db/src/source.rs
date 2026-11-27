@@ -1,16 +1,18 @@
 //! Data sources: per-project connection settings in `.openidea/data-sources.toml`, and
 //! global ones (IDEA's Make Global: listed in every project) in `data-sources.toml` of the
-//! app data directory. Passwords never go there: saved ones live in [`crate::secrets`],
+//! app data directory. Project folder grouping is in `.openidea/data-source-folders.toml`.
+//! Passwords never go there: saved ones live in [`crate::secrets`],
 //! the others only in memory for the session.
 
 use ide_core::{IdeError, IdeResult, IpcPath, project_dir};
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 pub(crate) const FILE: &str = "data-sources.toml";
 pub(crate) const DUCKDB_URL: &str = "jdbc:duckdb:";
+pub(crate) const FOLDERS_FILE: &str = "data-source-folders.toml";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -783,6 +785,108 @@ fn write(path: &Path, sources: &[DataSource]) -> IdeResult<()> {
     Ok(())
 }
 
+/// A user folder grouping data sources in one project's Database tree.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DbSourceFolder {
+    pub id: String,
+    pub name: String,
+    /// Reserved for nested folders; the first UI version only creates root folders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    pub order: i32,
+    pub sources: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SourceFoldersFile {
+    #[serde(default = "folders_version")]
+    version: u32,
+    #[serde(default, rename = "folder")]
+    folders: Vec<DbSourceFolder>,
+}
+
+fn folders_version() -> u32 {
+    1
+}
+
+/// The project's data source folders and their members.
+pub fn load_folders(root: &Path) -> IdeResult<Vec<DbSourceFolder>> {
+    let path = project_dir::path(root, FOLDERS_FILE);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+    let file: SourceFoldersFile =
+        toml::from_str(&text).map_err(|e| IdeError::invalid(format!("{}: {e}", path.display())))?;
+    if file.version > 1 {
+        return Err(IdeError::invalid(format!(
+            "{}: folder format version {} is newer than this OpenIDEA",
+            path.display(),
+            file.version
+        )));
+    }
+    Ok(file.folders)
+}
+
+/// Replaces the project's data source folders after validating ids, parents and memberships.
+pub fn save_folders(root: &Path, folders: &[DbSourceFolder]) -> IdeResult<()> {
+    validate_folders(folders)?;
+    let path = project_dir::path(root, FOLDERS_FILE);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let file = SourceFoldersFile { version: folders_version(), folders: folders.to_vec() };
+    let text = toml::to_string_pretty(&file).map_err(|e| IdeError::internal(e.to_string()))?;
+    let tmp = path.with_file_name(format!(".{FOLDERS_FILE}.{}.tmp", uuid::Uuid::new_v4()));
+    std::fs::write(&tmp, text)?;
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
+    Ok(())
+}
+
+fn validate_folders(folders: &[DbSourceFolder]) -> IdeResult<()> {
+    let mut ids = HashSet::new();
+    let mut members = HashSet::new();
+    for folder in folders {
+        if folder.id.trim().is_empty() || folder.name.trim().is_empty() {
+            return Err(IdeError::invalid("every data source folder needs an id and a name"));
+        }
+        if !ids.insert(folder.id.as_str()) {
+            return Err(IdeError::invalid(format!("duplicate data source folder id '{}'", folder.id)));
+        }
+        for source in &folder.sources {
+            if source.is_empty() {
+                return Err(IdeError::invalid(format!("folder '{}' has an empty data source id", folder.name)));
+            }
+            if !members.insert(source.as_str()) {
+                return Err(IdeError::invalid(format!("data source '{source}' belongs to more than one folder")));
+            }
+        }
+    }
+    for folder in folders {
+        let mut seen = HashSet::new();
+        let mut parent = folder.parent.as_deref();
+        while let Some(id) = parent {
+            if id == folder.id || !seen.insert(id) {
+                return Err(IdeError::invalid(format!("data source folder '{}' has a parent cycle", folder.name)));
+            }
+            parent =
+                folders.iter().find(|candidate| candidate.id == id).and_then(|candidate| candidate.parent.as_deref());
+            if parent.is_none() && !folders.iter().any(|candidate| candidate.id == id) {
+                return Err(IdeError::invalid(format!(
+                    "data source folder '{}' has an unknown parent '{id}'",
+                    folder.name
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Credential store access. Blocking (may show an OS prompt): call off the async runtime.
 /// Keys are data source ids; [`secrets::ssh_key`] names the SSH password / passphrase.
 #[cfg(test)]
@@ -808,6 +912,38 @@ mod tests {
         assert!(!text.contains("password ="), "{text}");
         assert_eq!(load(tmp.path()).unwrap(), vec![s]);
         assert!(save(tmp.path(), &[DataSource::default()]).is_err());
+    }
+
+    #[test]
+    fn source_folders_round_trip_and_reject_invalid_memberships() {
+        let tmp = tempfile::tempdir().unwrap();
+        let folders = vec![
+            DbSourceFolder {
+                id: "prod".into(),
+                name: "Production".into(),
+                parent: None,
+                order: 0,
+                sources: vec!["pg".into(), "mysql".into()],
+            },
+            DbSourceFolder { id: "empty".into(), name: "Empty".into(), parent: None, order: 1, sources: vec![] },
+        ];
+        save_folders(tmp.path(), &folders).unwrap();
+        assert_eq!(load_folders(tmp.path()).unwrap(), folders);
+
+        let duplicate = vec![
+            DbSourceFolder { sources: vec!["pg".into()], ..folders[0].clone() },
+            DbSourceFolder { id: "other".into(), sources: vec!["pg".into()], ..folders[1].clone() },
+        ];
+        assert!(save_folders(tmp.path(), &duplicate).is_err());
+
+        let cycle = vec![
+            DbSourceFolder { parent: Some("b".into()), ..folders[0].clone() },
+            DbSourceFolder { id: "b".into(), parent: Some("prod".into()), ..folders[1].clone() },
+        ];
+        assert!(save_folders(tmp.path(), &cycle).is_err());
+
+        let missing = vec![DbSourceFolder { parent: Some("missing".into()), ..folders[0].clone() }];
+        assert!(save_folders(tmp.path(), &missing).is_err());
     }
 
     #[test]
