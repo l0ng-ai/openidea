@@ -10654,5 +10654,9 @@
   "Use {suggested} for this project": "对此项目使用 {suggested}",
   "GitHub account: @{activeLogin}": "GitHub 账户：@{activeLogin}",
   "Uses GitHub CLI's active account without setting GH_TOKEN in the project environment.": "使用 GitHub CLI 当前活动账户，不在项目环境中设置 GH_TOKEN。",
-  "Passes this account's GH_TOKEN to processes started in this project (terminals, agents, Git, and run configurations).": "将此账户的 GH_TOKEN 传递给此项目中启动的进程（终端、智能体、Git 和运行配置）。"
+  "Passes this account's GH_TOKEN to processes started in this project (terminals, agents, Git, and run configurations).": "将此账户的 GH_TOKEN 传递给此项目中启动的进程（终端、智能体、Git 和运行配置）。",
+  "Export to Text File…": "导出到文本文件…",
+  "Export to Text File": "导出到文本文件",
+  "Save the Find Usages results as a text file": "将查找用法的结果保存为文本文件",
+  "Cannot export the usages": "无法导出用法"
 }
