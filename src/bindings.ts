@@ -5334,6 +5334,8 @@ export type DbCompletionColumn = {
 	primaryKey: boolean,
 	/**  Has a default (or is generated): optional in INSERT. */
 	hasDefault: boolean,
+	/**  The column's comment; `None` when it has none, or the engine keeps no comments. */
+	comment?: string | null,
 };
 
 export type DbCompletionTable = {
