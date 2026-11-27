@@ -13,14 +13,24 @@ pub(crate) fn listens(adapter: &str, request: &str, arguments: &Value) -> bool {
 }
 
 /// debugpy's adapter leaves an `attach` whose port is taken unanswered (it only logs the error),
-/// which would wait for the program forever: find out before starting it.
-pub(crate) fn require_free_port(arguments: &Value) -> Result<(), IdeError> {
+/// which would wait for the program forever: find out before starting it. Listening again right
+/// after a program ended races the previous adapter, which still listens until its shutdown ends.
+pub(crate) async fn require_free_port(arguments: &Value) -> Result<(), IdeError> {
+    // ponytail: polls; waiting on the previous session's shutdown would report a taken port sooner.
+    const RELEASE: Duration = Duration::from_secs(5);
     let listen = &arguments["listen"];
     let host = listen["host"].as_str().unwrap_or("127.0.0.1");
     let Some(port) = listen["port"].as_u64().and_then(|p| u16::try_from(p).ok()) else { return Ok(()) };
-    std::net::TcpListener::bind((host, port))
-        .map(drop)
-        .map_err(|e| IdeError::unavailable(format!("Cannot listen on {host}:{port}: {e}")))
+    let deadline = tokio::time::Instant::now() + RELEASE;
+    loop {
+        match std::net::TcpListener::bind((host, port)) {
+            Ok(_) => return Ok(()),
+            Err(e) if tokio::time::Instant::now() >= deadline => {
+                return Err(IdeError::unavailable(format!("Cannot listen on {host}:{port}: {e}")));
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    }
 }
 
 /// On the program's first stop: warns in the Debug console when its debugpy is not the adapter's.
@@ -63,15 +73,27 @@ mod tests {
         assert!(w.contains("debugpy 1.8.0") && w.ends_with("pip install debugpy==1.8.22\n"), "{w}");
     }
 
-    #[test]
-    fn a_taken_port_is_reported_before_the_adapter_starts() {
+    #[tokio::test(start_paused = true)]
+    async fn a_taken_port_is_reported_before_the_adapter_starts() {
         let taken = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = taken.local_addr().unwrap().port();
         let listen = json!({"listen": {"host": "127.0.0.1", "port": port}});
-        let e = require_free_port(&listen).unwrap_err();
+        let e = require_free_port(&listen).await.unwrap_err();
         assert!(e.to_string().contains(&format!("Cannot listen on 127.0.0.1:{port}")), "{e}");
         drop(taken);
-        assert!(require_free_port(&listen).is_ok());
+        assert!(require_free_port(&listen).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn waits_for_the_previous_adapter_to_release_the_port() {
+        let previous = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = previous.local_addr().unwrap().port();
+        let released = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            drop(previous);
+        });
+        require_free_port(&json!({"listen": {"host": "127.0.0.1", "port": port}})).await.unwrap();
+        released.await.unwrap();
     }
 
     #[test]

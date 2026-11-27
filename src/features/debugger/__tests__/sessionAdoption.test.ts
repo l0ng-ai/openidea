@@ -174,6 +174,30 @@ describe("Python Debug Server", () => {
     }
   });
 
+  it("lends its configuration to no other start while it waits", async () => {
+    const connect = waitForProgram();
+    void startSession(listen, { runConfig: rc });
+    await vi.waitFor(() => expect(ipc.debugStart).toHaveBeenCalledOnce());
+    announce(1);
+    // Another debug session starts while the server still waits for its program.
+    const otherStarted = waitForProgram();
+    const other = startSession(
+      { ...launch, name: "tests" },
+      { runConfig: { name: "tests", kind: "python" } as RunConfig },
+    );
+    await vi.waitFor(() => expect(ipc.debugStart).toHaveBeenCalledTimes(2));
+    handleDebugEvent(2, { kind: "started", name: "tests", adapter: "debugpy", parent: null });
+    // Announced before its start returns: nothing of the waiting server's.
+    expect(useDebug.getState().sessions[2]?.status).toBe("running");
+    expect(useDebug.getState().console[2] ?? []).toEqual([]);
+    otherStarted(2);
+    expect(await other).toBe(2);
+    const { sessions } = useDebug.getState();
+    expect(sessions[2]).toMatchObject({ status: "running", runConfig: { kind: "python" } });
+    expect(sessions[1]).toMatchObject({ status: "starting", runConfig: rc });
+    connect(1);
+  });
+
   it("does not listen again when a wait is cancelled", async () => {
     const rerun = vi.fn();
     const dispose = registerAction({ id: "run.debugConfig", title: "Debug", run: rerun });

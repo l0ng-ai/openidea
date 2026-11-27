@@ -319,7 +319,12 @@ impl Cx<'_> {
             Some(listen) => ("python-debug-server", listen),
             None => ("python-remote", obj.get("connect").and_then(Value::as_object).unwrap_or(obj)),
         };
-        let host = self.string(connect, "host")?.unwrap_or_else(|| "localhost".into());
+        let mut host = self.string(connect, "host")?.unwrap_or_else(|| "localhost".into());
+        // VS Code's `listen.host` is where the adapter binds; the configuration names the address the
+        // program connects to, which a wildcard is not: left at localhost for the user to change.
+        if kind == "python-debug-server" && matches!(host.as_str(), "0.0.0.0" | "::" | "[::]") {
+            host = "localhost".into();
+        }
         let Some(port) = self.string(connect, "port")? else {
             return Err(SkipReason::UnsupportedAttach);
         };
