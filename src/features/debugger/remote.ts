@@ -199,11 +199,19 @@ export const pythonRemoteType: RunConfigTypeContribution = {
 
 /** The line the program runs to connect, in place of PyCharm's `pydevd_pycharm.settrace(...)`. */
 export function debugpyConnectLine(p: Params): string {
-  const host = hostOf(p).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const host = hostOf(p)
+    .replace(/^\[(.*)\]$/, "$1")
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"');
   return `import debugpy; debugpy.connect(("${host}", ${portOf(p, 5678)})); debugpy.wait_for_client()`;
 }
 
-const isLoopback = (host: string) => /^(localhost|127(\.\d+){3}|::1|\[::1\])$/i.test(host);
+/** Where the adapter listens: loopback for a local program, every interface (IPv4 or IPv6) otherwise. */
+function listenAddress(host: string): string {
+  if (/^(::1|\[::1\])$/.test(host)) return "::1";
+  if (/^(localhost|127(\.\d+){3})$/i.test(host)) return "127.0.0.1";
+  return host.includes(":") ? "::" : "0.0.0.0";
+}
 
 export const pythonDebugServerType: RunConfigTypeContribution = {
   id: PYTHON_DEBUG_SERVER,
@@ -450,7 +458,7 @@ export function remoteAttachConfig(rc: RunConfig, root: string): LaunchConfig | 
     case PYTHON_DEBUG_SERVER:
       // debugpy's listen mode has no authentication: other machines only when the program runs on one.
       return requestBase(rc, "debugpy", root, "attach", {
-        listen: { host: isLoopback(host) ? "127.0.0.1" : "0.0.0.0", port: portOf(p, 5678) },
+        listen: { host: listenAddress(host), port: portOf(p, 5678) },
         redirectOutput: true,
         justMyCode: skip,
         ...(map ? { pathMappings: [{ localRoot: map.local, remoteRoot: map.remote }] } : {}),

@@ -297,6 +297,29 @@ describe(".icls schemes", () => {
     expect(explicit["javascript.interface"]?.foreground).toBe("#4ec9b0");
   });
 
+  it("maps IntelliJ's Java interface, abstract class, enum and type parameter keys (#6415)", () => {
+    const opt = (name: string, value: string) =>
+      `<option name="${name}"><value><option name="FOREGROUND" value="${value}"/></value></option>`;
+    const parse = (...options: string[]) =>
+      parseIcls(`<scheme name="J"><attributes>${options.join("")}</attributes></scheme>`).scheme.attributes;
+    const all = parse(
+      opt("CLASS_NAME_ATTRIBUTES", "000000"),
+      opt("INTERFACE_NAME_ATTRIBUTES", "111111"),
+      opt("ABSTRACT_CLASS_NAME_ATTRIBUTES", "222222"),
+      opt("ENUM_NAME_ATTRIBUTES", "333333"),
+      opt("TYPE_PARAMETER_NAME_ATTRIBUTES", "20999d"),
+    );
+    expect(all["java.interface"]?.foreground).toBe("#111111");
+    expect(all["java.abstractClass"]?.foreground).toBe("#222222");
+    expect(all["java.enum"]?.foreground).toBe("#333333");
+    expect(all["java.typeParameter"]?.foreground).toBe("#20999d");
+    // The default Interface name colours Java's interface until INTERFACE_NAME_ATTRIBUTES does, listed first or not.
+    expect(parse(opt("DEFAULT_INTERFACE_NAME", "ebcb8b"))["java.interface"]?.foreground).toBe("#ebcb8b");
+    const explicit = parse(opt("INTERFACE_NAME_ATTRIBUTES", "111111"), opt("DEFAULT_INTERFACE_NAME", "ebcb8b"));
+    expect(explicit["java.interface"]?.foreground).toBe("#111111");
+    expect(explicit.className?.foreground).toBe("#ebcb8b");
+  });
+
   it("maps punctuation only from keys that do not spread one colour to other punctuation", () => {
     const opt = (name: string, c: string) =>
       `<option name="${name}"><value><option name="FOREGROUND" value="${c}"/></value></option>`;

@@ -903,7 +903,7 @@ impl DebugManager {
     ) -> IdeResult<DebugSessionId> {
         let mut arguments = launch_arguments(&config)?;
         if debugpy::listens(&config.adapter, &config.request, &arguments) {
-            debugpy::require_free_port(&arguments)?;
+            debugpy::require_free_port(&arguments).await?;
         }
         // An IDE-side marker (never sent to the adapter): the session is a Flutter
         // one regardless of what the working directory holds.
