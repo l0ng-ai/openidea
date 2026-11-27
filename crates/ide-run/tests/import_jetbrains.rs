@@ -60,6 +60,56 @@ fn cwd(c: &RunConfig) -> Option<PathBuf> {
     c.cwd.as_ref().map(|p| p.as_ref().to_path_buf())
 }
 
+const DOCKERFILE: &str = r#"<configuration name="NAME" type="docker-deploy" factoryName="dockerfile" server-name="Remote Docker">
+  <deployment type="dockerfile"><settings>
+    <option name="imageTag" value="sample/app:latest" />
+    <option name="containerName" value="sample-container" />
+    <option name="sourceFilePath" value="$PROJECT_DIR$/docker files/Dockerfile" />
+  </settings></deployment>
+  <method v="2" />
+</configuration>"#;
+
+#[test]
+fn imports_dockerfile_parameters_from_every_configuration_location() {
+    for location in [".run/Docker.run.xml", ".idea/runConfigurations/Docker.xml", ".idea/workspace.xml"] {
+        let dir = tempfile::tempdir().unwrap();
+        let xml = if location.ends_with("workspace.xml") {
+            workspace(&DOCKERFILE.replace("NAME", "Docker"))
+        } else {
+            run_file("Docker", DOCKERFILE)
+        };
+        write(dir.path(), location, &xml);
+        let r = import_from(dir.path(), &[]);
+        let c = get(&r, "Docker");
+        assert_eq!(c.kind, "docker-dockerfile");
+        assert_eq!(c.extras.params["dockerfile"], "docker files/Dockerfile");
+        assert_eq!(c.extras.params["tag"], "sample/app:latest");
+        assert_eq!(c.extras.params["containerName"], "sample-container");
+        assert_eq!(c.extras.params["serverName"], "Remote Docker");
+        assert_eq!(c.extras.params["runImage"], "true");
+        assert!(c.extras.local);
+        assert!(ignored(&r, "Docker").is_empty());
+        let again = import_from(dir.path(), std::slice::from_ref(c));
+        assert_eq!(reason(&again, "Docker"), &SkipReason::NameTaken);
+    }
+}
+
+#[test]
+fn dockerfile_import_reports_unmapped_settings_and_rejects_other_deployments() {
+    let dir = tempfile::tempdir().unwrap();
+    let extra = DOCKERFILE.replace("</settings>", r#"<option name="unknownOption" value="keep-me" /></settings>"#);
+    let image = DOCKERFILE.replace("dockerfile", "image");
+    let missing =
+        DOCKERFILE.replace(r#"<option name="sourceFilePath" value="$PROJECT_DIR$/docker files/Dockerfile" />"#, "");
+    write(dir.path(), ".run/Extra.run.xml", &run_file("Extra", &extra));
+    write(dir.path(), ".run/Image.run.xml", &run_file("Image", &image));
+    write(dir.path(), ".run/Missing.run.xml", &run_file("Missing", &missing));
+    let r = import_from(dir.path(), &[]);
+    assert_eq!(ignored(&r, "Extra"), ["unknownOption"]);
+    assert!(matches!(reason(&r, "Image"), SkipReason::UnsupportedType { .. }));
+    assert_eq!(reason(&r, "Missing"), &SkipReason::NothingToRun);
+}
+
 // JarApplicationConfiguration.writeExternal serializes its bean as options and its environment as envs:
 // https://github.com/JetBrains/intellij-community/blob/master/java/execution/impl/src/com/intellij/execution/jar/JarApplicationConfiguration.java
 const JAR: &str = r#"<configuration default="false" name="NAME" type="JarApplication">

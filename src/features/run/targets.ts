@@ -266,6 +266,33 @@ function docstringHasExamples(lines: readonly string[], from: number): boolean {
   return false;
 }
 
+/** Whether each line starts inside a triple-quoted string. */
+function inTripleQuotes(lines: readonly string[]): boolean[] {
+  let open: string | null = null;
+  return lines.map((line) => {
+    const inside = open !== null;
+    // Only triple quotes are tracked; one in a one-line string or a comment throws it off.
+    for (const [quote] of line.matchAll(/"""|'''/g)) open = open === null ? quote : open === quote ? null : open;
+    return inside;
+  });
+}
+
+/** The line after a `def` / `class` header at `from` (which may span lines), or -1 when its body is on the header's line. */
+function bodyLine(lines: readonly string[], from: number): number {
+  let depth = 0;
+  for (let i = from; i < lines.length; i++) {
+    // A `#` in a string of the header is taken as a comment.
+    const code = lines[i]!.replace(/#.*$/, "");
+    for (let k = 0; k < code.length; k++) {
+      const c = code[k]!;
+      if ("([{".includes(c)) depth++;
+      else if (")]}".includes(c)) depth--;
+      else if (c === ":" && depth === 0) return code.slice(k + 1).trim() ? -1 : i + 1;
+    }
+  }
+  return -1;
+}
+
 /**
  * Docstrings with `>>>` examples, as doctest finds them: the module's, and those of classes and
  * functions at module level or in classes (not in functions). The path is the qualified name.
@@ -275,10 +302,12 @@ function pythonDoctestTargets(lines: string[]): RunTarget[] {
   const first = lines.findIndex((l) => l.trim() && !/^\s*#/.test(l));
   if (first >= 0 && docstringHasExamples(lines, first))
     out.push({ line: first, kind: "suite", name: "module", path: [], doctest: true });
+  const strings = inTripleQuotes(lines);
   const scopes: Array<{ indent: number; name: string; cls: boolean }> = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
-    if (!line.trim() || /^\s*#/.test(line)) continue;
+    // Lines of a string (a docstring, SQL…) are neither headers nor the end of a scope.
+    if (strings[i] || !line.trim() || /^\s*#/.test(line)) continue;
     const indent = indentOf(line);
     while (scopes.length && scopes[scopes.length - 1]!.indent >= indent) scopes.pop();
     const m = /^\s*(?:async\s+)?(def|class)\s+(\w+)/.exec(line);
@@ -286,10 +315,8 @@ function pythonDoctestTargets(lines: string[]): RunTarget[] {
     const cls = m[1] === "class";
     const reachable = scopes.every((s) => s.cls);
     scopes.push({ indent, name: m[2]!, cls });
-    // The docstring follows the header, which may span lines (`def f(\n  a,\n):`).
-    let end = i;
-    while (end < lines.length - 1 && !/:\s*(#.*)?$/.test(lines[end]!)) end++;
-    if (reachable && docstringHasExamples(lines, end + 1)) {
+    const body = bodyLine(lines, i);
+    if (reachable && body >= 0 && docstringHasExamples(lines, body)) {
       // One segment, as the results name the object (`[file, "Stock.take", example]`), so the icon shows its state.
       const name = scopes.map((s) => s.name).join(".");
       out.push({ line: i, kind: cls ? "suite" : "test", name, path: [name], doctest: true });
@@ -297,6 +324,9 @@ function pythonDoctestTargets(lines: string[]): RunTarget[] {
   }
   return out;
 }
+
+/** Whether a Python module has docstrings with examples that doctest runs. */
+export const hasDoctests = (content: string) => pythonDoctestTargets(content.split("\n")).length > 0;
 
 /** A class that holds Minitest / Test::Unit tests: by its superclass or its name. */
 const isRubyTestClass = (name: string, superclass: string | undefined) =>

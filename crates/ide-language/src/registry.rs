@@ -1074,9 +1074,8 @@ mod tests {
         assert_eq!(detect("shop/templates/shop/product_list.html"), "django-html");
         assert_eq!(detect("shop/templates/shop/email/order.txt"), "django-html");
         assert_eq!(detect("pages/promo.html"), "html");
-        // Breakpoints in templates go to debugpy without "Allow placing breakpoints in any file".
-        let template = reg.get(&LanguageId::new("django-html")).unwrap();
-        assert_eq!(template.debugger.unwrap().adapter, "debugpy");
+        // No `[debugger]` of its own: `find_config` would take it for debugpy instead of Python's.
+        assert!(reg.get(&LanguageId::new("django-html")).unwrap().debugger.is_none());
     }
 
     /// #4061: the project root is canonical; a template reached under another

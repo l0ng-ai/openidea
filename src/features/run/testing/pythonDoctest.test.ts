@@ -77,6 +77,28 @@ describe("doctest targets", () => {
     expect(detectRunTargets(src, "tests/test_t.py").filter((t) => t.doctest)).toEqual([]);
   });
 
+  it("doesn't take the lines of a string or a one-line def for code", () => {
+    const src = [
+      "class A:",
+      "    def f(self):",
+      '        q = """',
+      "select 1", // flush left, in a string: A stays open
+      '"""',
+      "    def g(self):", // 5
+      '        """',
+      "        class of the docs, not a class", // prose
+      "        >>> A().g()",
+      '        """',
+      "def one(): return 1", // 10: its body is on this line
+      "class B:",
+      '    """>>> B()"""',
+    ].join("\n");
+    expect(detectRunTargets(src, "a.py").map((t) => [t.line, t.name])).toEqual([
+      [5, "A.g"],
+      [11, "B"],
+    ]);
+  });
+
   it("runs the doctests of a module, class or function on the project interpreter", () => {
     const [module, fn, method] = detectRunTargets(MODULE, "shop/prices.py");
     expect(targetConfig(module!, "shop/prices.py", [python])).toMatchObject({
@@ -98,6 +120,9 @@ describe("doctest targets", () => {
     expect(produceFile(input as never, {} as never)?.config?.args).toEqual(["-m", "doctest", "shop/prices.py"]);
     const program = { ...input, content: `${MODULE}\n\nif __name__ == "__main__":\n    total([])\n` };
     expect(produceFile(program as never, {} as never)?.config?.kind).not.toBe("doctest");
+    // `>>>` in a string that isn't a docstring: a script, run as one.
+    const script = { ...input, content: 'USAGE = """\n>>> import tool\n"""\nprint(USAGE)\n' };
+    expect(produceFile(script as never, {} as never)?.config?.kind).not.toBe("doctest");
   });
 });
 
@@ -164,6 +189,10 @@ describe("python -m doctest", () => {
         ],
       ),
     ).toEqual(["-m", "doctest", "shop/prices.py"]);
+    // Imported from a source root: `src/shop/money.py` is `shop.money`.
+    expect(
+      doctestRerunArgs(["-m", "doctest", "src/shop/money.py"], [["src/shop/money.py", "shop.money", "x"]]),
+    ).toEqual(["-m", "doctest", "src/shop/money.py"]);
   });
 
   it("has a run configuration type", () => {

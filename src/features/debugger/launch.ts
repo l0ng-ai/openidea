@@ -4,8 +4,7 @@ import { workflowSettings } from "@/platform/workflowSettings";
 import { call, commands, type LaunchConfig, type RunConfig } from "@/platform/ipc";
 import { hostOs } from "@/platform/remote";
 import { flutterDeviceFor, parseFlutterRun } from "@/workbench/flutterDevices";
-import { isJinjaTemplate } from "./breakpoints/languages";
-import { useBreakpoints } from "./breakpoints/store";
+import { NO_TEMPLATE_BREAKPOINTS, type TemplateBreakpoints } from "./breakpoints/languages";
 
 function isAbsolute(p: string) {
   return p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
@@ -123,7 +122,7 @@ function runnerOptionsEnd(args: readonly string[]): number {
   return Math.min(i, args.length);
 }
 
-function debugpyLaunch(rc: RunConfig, cwd: string): LaunchConfig {
+function debugpyLaunch(rc: RunConfig, cwd: string, templates: TemplateBreakpoints): LaunchConfig {
   const out = base(rc, "debugpy", cwd);
   const dbg = workflowSettings().debugger;
   const extra: Record<string, unknown> = {
@@ -164,11 +163,11 @@ function debugpyLaunch(rc: RunConfig, cwd: string): LaunchConfig {
     out.args = args.slice(1);
     if (args[0].endsWith("manage.py")) extra.django = true;
   }
-  if (extra.module === "django") extra.django = true;
+  // A Django Template's breakpoint needs `django` however Django starts (uvicorn, gunicorn, pytest-django).
+  if (extra.module === "django" || templates.django) extra.django = true;
   // Jinja2 templates' breakpoints: Flask, or one already in a template (`python app.py`). Not on for every
   // run: debugpy would take any non-`.py` breakpoint (a page's script) for a template one and trace every frame.
-  const templates = Object.entries(useBreakpoints.getState().byFile).some(([p, l]) => l.length && isJinjaTemplate(p));
-  if (!extra.django && (extra.module === "flask" || templates)) extra.jinja = true;
+  if (!extra.django && (extra.module === "flask" || templates.jinja)) extra.jinja = true;
   out.extraJson = JSON.stringify(extra);
   return out;
 }
@@ -495,9 +494,14 @@ function phpDebugLaunch(rc: RunConfig, cwd: string, php: string | null): LaunchC
 
 /**
  * The launch configuration that debugs `rc`, or `null` when it has no adapter.
- * `root` is the project root (default working directory).
+ * `root` is the project root (default working directory); `templates` are debugpy's (`templateBreakpoints`).
  */
-export function launchConfigFor(rc: RunConfig, root: string, php: string | null = null): LaunchConfig | null {
+export function launchConfigFor(
+  rc: RunConfig,
+  root: string,
+  php: string | null = null,
+  templates = NO_TEMPLATE_BREAKPOINTS,
+): LaunchConfig | null {
   const adapter = rc.debugAdapter;
   if (!adapter || debugUnsupportedReason(rc)) return null;
   const cwd = rc.cwd ? join(root, rc.cwd) : root;
@@ -507,7 +511,7 @@ export function launchConfigFor(rc: RunConfig, root: string, php: string | null 
   if (adapter === "codelldb" || adapter === "lldb-dap" || adapter === "gdb") {
     return rc.kind === "cargo" ? cargoLaunch(rc, cwd, adapter) : nativeLaunch(rc, cwd, adapter);
   }
-  if (adapter === "debugpy") return debugpyLaunch(rc, cwd);
+  if (adapter === "debugpy") return debugpyLaunch(rc, cwd, templates);
   if (adapter === "js-debug") return jsDebugLaunch(rc, cwd);
   if (adapter === "bun-dap") return bunDapLaunch(rc, cwd);
   if (adapter === "delve") return delveLaunch(rc, cwd, root);

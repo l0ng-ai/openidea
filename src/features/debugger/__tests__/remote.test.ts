@@ -167,9 +167,14 @@ describe("remote attach requests", () => {
       redirectOutput: true,
       justMyCode: expect.any(Boolean),
     });
-    expect(listen({ host: "::1", port: "5679" }).listen).toEqual({ host: "::1", port: 5679 });
-    expect(listen({ host: "127.0.0.2" }).listen.host).toBe("127.0.0.1");
+    // Every loopback form stays on loopback; IPv6 loopback on 127.0.0.1, which every debugpy listens on.
+    expect(listen({ host: "::1", port: "5679" }).listen).toEqual({ host: "127.0.0.1", port: 5679 });
+    for (const host of ["[::1]", "0:0:0:0:0:0:0:1", "::ffff:127.0.0.1", "LOCALHOST"])
+      expect(listen({ host }).listen.host, host).toBe("127.0.0.1");
+    expect(listen({ host: "127.0.0.2" }).listen.host).toBe("127.0.0.2");
+    expect(listen({ host: "127.1" }).listen.host).toBe("127.0.0.1");
     expect(listen({ host: "fd00::5" }).listen.host).toBe("::");
+    expect(listen({ host: "a b" }).listen.host).toBe("a b");
     expect(listen({ host: "host.docker.internal", remoteRoot: "/app" })).toMatchObject({
       listen: { host: "0.0.0.0", port: 5678 },
       pathMappings: [{ localRoot: "/p", remoteRoot: "/app" }],
@@ -183,8 +188,12 @@ describe("remote attach requests", () => {
       'import debugpy; debugpy.connect(("host.docker.internal", 5679)); debugpy.wait_for_client()',
     );
     expect(remote.debugpyConnectLine({ host: 'a"b' })).toContain('connect(("a\\"b", 5678))');
-    // Python's connect takes an IPv6 address without brackets.
-    expect(remote.debugpyConnectLine({ host: "[::1]" })).toContain('connect(("::1", 5678))');
+    // Python's connect takes an IPv6 address without brackets; IPv6 loopback connects where the IDE listens.
+    expect(remote.debugpyConnectLine({ host: "[fd00::5]" })).toContain('connect(("fd00::5", 5678))');
+    expect(remote.debugpyConnectLine({ host: "[::1]" })).toContain('connect(("127.0.0.1", 5678))');
+    expect(remoteWaitingNote(configOf(remote.pythonDebugServerType, { host: "::1" }), false, true)).toContain(
+      "connection on 127.0.0.1:5678…",
+    );
   });
 
   it("Python Debug Server says it waits for a connection until the program connects, and listens again", () => {

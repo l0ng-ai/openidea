@@ -199,18 +199,37 @@ export const pythonRemoteType: RunConfigTypeContribution = {
 
 /** The line the program runs to connect, in place of PyCharm's `pydevd_pycharm.settrace(...)`. */
 export function debugpyConnectLine(p: Params): string {
-  const host = hostOf(p)
-    .replace(/^\[(.*)\]$/, "$1")
-    .replace(/\\/g, "\\\\")
-    .replace(/"/g, '\\"');
+  const host = connectHost(hostOf(p)).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   return `import debugpy; debugpy.connect(("${host}", ${portOf(p, 5678)})); debugpy.wait_for_client()`;
 }
 
-/** Where the adapter listens: loopback for a local program, every interface (IPv4 or IPv6) otherwise. */
+/** The host as the URL parser normalises it (`127.1`, `0:0:0:0:0:0:0:1`), IPv6 in brackets; null when not a host. */
+function canonicalHost(host: string): string | null {
+  try {
+    return new URL(`http://${host.includes(":") && !host.startsWith("[") ? `[${host}]` : host}`).hostname;
+  } catch {
+    return null;
+  }
+}
+
+/** IPv6 loopback, plain or IPv4-mapped. */
+const IPV6_LOOPBACK = /^\[(::1|::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4})\]$/;
+
+/** Where the adapter listens: loopback for a local program, every interface (IPv4 or IPv6) otherwise.
+ *  IPv6 loopback listens on 127.0.0.1: debugpy's adapter before 1.8 listens on IPv4 only, and leaves an
+ *  `attach` it cannot listen for unanswered. */
 function listenAddress(host: string): string {
-  if (/^(::1|\[::1\])$/.test(host)) return "::1";
-  if (/^(localhost|127(\.\d+){3})$/i.test(host)) return "127.0.0.1";
-  return host.includes(":") ? "::" : "0.0.0.0";
+  const h = canonicalHost(host);
+  if (h == null) return host; // Not a host: the port check reports it.
+  if (h === "localhost" || IPV6_LOOPBACK.test(h)) return "127.0.0.1";
+  if (/^127\./.test(h)) return h;
+  return h.startsWith("[") ? "::" : "0.0.0.0";
+}
+
+/** The host the program connects to: where the adapter listens for IPv6 loopback, as given otherwise. */
+function connectHost(host: string): string {
+  const h = canonicalHost(host);
+  return h != null && IPV6_LOOPBACK.test(h) ? "127.0.0.1" : host.replace(/^\[(.*)\]$/, "$1");
 }
 
 export const pythonDebugServerType: RunConfigTypeContribution = {
@@ -503,7 +522,7 @@ export function remoteWaitingNote(
   const p = rc?.params ?? {};
   if (listensAgain(rc)) {
     if (!connecting) return null;
-    const address = serverAddress(hostOf(p), portOf(p, 5678));
+    const address = serverAddress(connectHost(hostOf(p)), portOf(p, 5678));
     const line = debugpyConnectLine(p);
     return tx`Waiting for process connection on ${address}…` + "\n" + tx`Add to the program: ${line}`;
   }

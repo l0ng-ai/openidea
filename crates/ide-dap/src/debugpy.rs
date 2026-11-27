@@ -25,10 +25,10 @@ pub(crate) async fn require_free_port(arguments: &Value) -> Result<(), IdeError>
     loop {
         match std::net::TcpListener::bind((host, port)) {
             Ok(_) => return Ok(()),
-            Err(e) if tokio::time::Instant::now() >= deadline => {
-                return Err(IdeError::unavailable(format!("Cannot listen on {host}:{port}: {e}")));
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
             }
-            Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+            Err(e) => return Err(IdeError::unavailable(format!("Cannot listen on {host}:{port}: {e}"))),
         }
     }
 }
@@ -82,6 +82,15 @@ mod tests {
         assert!(e.to_string().contains(&format!("Cannot listen on 127.0.0.1:{port}")), "{e}");
         drop(taken);
         assert!(require_free_port(&listen).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn an_address_the_machine_lacks_is_reported_at_once() {
+        // 192.0.2.0/24 is reserved for documentation, never a local address.
+        let started = std::time::Instant::now();
+        let e = require_free_port(&json!({"listen": {"host": "192.0.2.1", "port": 5678}})).await.unwrap_err();
+        assert!(e.to_string().contains("Cannot listen on 192.0.2.1:5678"), "{e}");
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[tokio::test]

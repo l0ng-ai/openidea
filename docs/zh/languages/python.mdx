@@ -21,7 +21,7 @@ basedpyright 以 `standard` 类型检查模式启动，而不是它自带的更�
 
 Ruff 只为位于 Ruff 配置之下的文件启动：`ruff.toml`、`.ruff.toml`，或包含 `[tool.ruff]` 表的 `pyproject.toml`。basedpyright 本身不提供格式化，格式化由 Ruff 负责。
 
-移动或重命名模块、包时（项目视图中，勾选 **搜索引用**），引用它的 `import` 和 `from … import` 语句（包括相对导入）会一起更新，和移动操作显示在同一个预览里。basedpyright 不支持文件移动，所以这些导入由 IDE 根据语法树自己查找。如果重命名改变了导入绑定的名字，导入会用别名保留原名：`from pkg import models` 变成 `from pkg import domain as models`。
+移动或重命名模块、包时（项目视图中，勾选 **搜索引用**），引用它的 `import` 和 `from … import` 语句（包括相对导入）会一起更新，和移动操作显示在同一个预览里。basedpyright 不支持文件移动，所以这些导入由 IDE 根据语法树自己查找。如果重命名改变了导入绑定的名字，导入会用别名保留原名：`from pkg import models` 变成 `from pkg import domain as models`。字符串里的模块名（`importlib.import_module("pkg.models")`、`mock.patch("pkg.models.Task")`）不会更新。
 
 想手动指定类型检查器，打开 **设置 › 语言和框架 › 语言服务器**，选中这四个服务器中的任意一个，修改 **Python 语言服务器**。**自动** 会按上表顺序使用第一个已安装的服务器；也可以固定选一个，或选 **无**。
 
@@ -142,7 +142,7 @@ Python 调试使用 debugpy。开始调试时如果缺少 debugpy，OpenIDEA 会
 - 调试 `manage.py` 时会开启 debugpy 的 Django 支持。
 - **附加到进程…**（`⌥⇧F5` / `Ctrl+Alt+F5`）会在 **Python (debugpy)** 分组下列出本机的 Python 进程。
 - **Python 远程调试 (debugpy)** 配置可以附加到用 `python -m debugpy --listen` 启动的进程，本机或远程机器都可以，并支持本地与远程根目录映射。
-- **Python 调试服务器** 配置方向相反：由 IDE 监听，程序用 `import debugpy; debugpy.connect(("localhost", 5678)); debugpy.wait_for_client()` 连接进来，也可以从容器或其他机器连接。程序所在环境要安装与 IDE 调试器相同版本的 debugpy，版本不同时调试控制台会给出警告。
+- **Python 调试服务器** 配置方向相反：由 IDE 监听，程序用 `import debugpy; debugpy.connect(("localhost", 5678)); debugpy.wait_for_client()` 连接进来，也可以从容器或其他机器连接。程序所在环境要安装与 IDE 调试器相同版本的 debugpy，版本不同时调试控制台会给出警告。VS Code 里带 `"listen"` 的 `attach` 会导入成这种配置；其中 `listen.host` 的 `0.0.0.0` 是 VS Code 的绑定地址，所以导入成 `localhost`。程序在容器或其他机器上时，要把 IDE 主机名改成程序能访问到的地址，例如 `host.docker.internal`。
 
 相关选项：
 
