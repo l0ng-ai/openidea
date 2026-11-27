@@ -1,23 +1,22 @@
 import { beforeEach, expect, it, vi } from "vitest";
 
-const backend = vi.hoisted(() => ({ runImportConfigs: vi.fn(), dockerRunEnv: vi.fn() }));
+const backend = vi.hoisted(() => ({ dockerRunEnv: vi.fn() }));
 const docker = vi.hoisted(() => ({ loadSettings: vi.fn(), connections: vi.fn(), endpointOf: vi.fn() }));
 const host = vi.hoisted(() => ({ os: vi.fn(() => "linux") }));
 vi.mock("@/platform/ipc", async (original) => ({
   ...(await original<typeof import("@/platform/ipc")>()),
   commands: backend,
 }));
-vi.mock("../services/store", () => docker);
+vi.mock("./store", () => docker);
 vi.mock("@/platform/remote", async (original) => ({
   ...(await original<typeof import("@/platform/remote")>()),
   hostOs: host.os,
 }));
 
-import type { RunConfig, RunImport } from "@/platform/ipc";
-import { provideNotificationService } from "@/workbench/contributions";
-import { dockerfileType } from "../services/runTypes";
-import { importConfigs } from "./importConfigs";
-import { missingParams } from "./types";
+import type { RunConfig } from "@/platform/ipc";
+import { dockerfileType } from "./runTypes";
+
+const imported = async () => (await dockerfileType.prepareImport!(parsed())).config;
 
 const parsed = (): RunConfig => ({
   id: "user:docker",
@@ -40,27 +39,19 @@ const parsed = (): RunConfig => ({
   },
 });
 
+const required = (key: string) => dockerfileType.fields.find((f) => f.key === key)?.required;
+
 beforeEach(() => {
   vi.clearAllMocks();
-  provideNotificationService({ notify: vi.fn() });
   docker.loadSettings.mockResolvedValue(undefined);
   docker.connections.mockReturnValue([{ id: "remote-id", name: "Remote Docker" }]);
   host.os.mockReturnValue("linux");
-  backend.runImportConfigs.mockImplementation(async () => ({
-    status: "ok",
-    data: {
-      source: "jetbrains",
-      file: ".run, .idea",
-      imported: [{ config: parsed(), ignored: [] }],
-      skipped: [],
-    } satisfies RunImport,
-  }));
 });
 
 it.each(["windows", "linux"])("imports a native Dockerfile configuration on %s", async (os) => {
   host.os.mockReturnValue(os);
-  const configs = await importConfigs("jetbrains", []);
-  const c = configs![0]!;
+  const { config: c, unmapped } = await dockerfileType.prepareImport!(parsed());
+  expect(unmapped).toBeUndefined();
   expect(c.params?.connection).toBe("remote-id");
   expect(c.params?.tag).toBe("sample/app:latest");
   const native = dockerfileType.commandLine(c.params!)!;
@@ -74,6 +65,13 @@ it.each(["windows", "linux"])("imports a native Dockerfile configuration on %s",
   expect(backend.dockerRunEnv).not.toHaveBeenCalled();
 });
 
+it("maps the default server name to the default daemon when no connection is saved", async () => {
+  docker.connections.mockReturnValue([]);
+  const c = (await dockerfileType.prepareImport!({ ...parsed(), params: { ...parsed().params, serverName: "Docker" } }))
+    .config;
+  expect(c.params?.connection).toBe("default");
+});
+
 it.each([
   { connections: [] },
   { connections: [{ id: "other", name: "Other server" }] },
@@ -85,15 +83,16 @@ it.each([
   },
 ])("requires choosing a server when its name is missing or ambiguous: $connections", async ({ connections }) => {
   docker.connections.mockReturnValue(connections);
-  const c = (await importConfigs("jetbrains", []))![0]!;
+  const { config: c, unmapped } = await dockerfileType.prepareImport!(parsed());
   expect(c.params?.connection).toBe("");
-  expect(missingParams(c, dockerfileType)).toEqual({ connection: "Server is required" });
+  expect(unmapped).toEqual(["server-name (Remote Docker)"]);
+  expect(required("connection")).toBe(true);
   await expect(dockerfileType.prepareLaunch!(c)).rejects.toThrow("Select a Docker server");
   expect(backend.dockerRunEnv).not.toHaveBeenCalled();
 });
 
 it("rejects a connection removed after import instead of falling back to the default daemon", async () => {
-  const c = (await importConfigs("jetbrains", []))![0]!;
+  const c = await imported();
   docker.connections.mockReturnValue([]);
   await expect(dockerfileType.prepareLaunch!(c)).rejects.toThrow("Select a Docker server");
   expect(backend.dockerRunEnv).not.toHaveBeenCalled();
@@ -101,21 +100,10 @@ it("rejects a connection removed after import instead of falling back to the def
 
 it("allows an explicitly selected default server after an unresolved import", async () => {
   docker.connections.mockReturnValue([]);
-  const c = (await importConfigs("jetbrains", []))![0]!;
+  const c = await imported();
   c.params!.connection = "default";
   docker.endpointOf.mockReturnValue({ kind: "default" });
   backend.dockerRunEnv.mockResolvedValue({ status: "ok", data: { DOCKER_HOST: "unix:///example.sock" } });
-  expect(missingParams(c, dockerfileType)).toEqual({});
   const prepared = await dockerfileType.prepareLaunch!(c);
   expect(prepared.env.DOCKER_HOST).toBe("unix:///example.sock");
-});
-
-it("does not resolve Docker settings for unrelated imports", async () => {
-  const c = { ...parsed(), kind: "python", params: {}, command: "python" };
-  backend.runImportConfigs.mockResolvedValue({
-    status: "ok",
-    data: { source: "jetbrains", file: ".run, .idea", imported: [{ config: c, ignored: [] }], skipped: [] },
-  });
-  expect(await importConfigs("jetbrains", [])).toEqual([c]);
-  expect(docker.loadSettings).not.toHaveBeenCalled();
 });
