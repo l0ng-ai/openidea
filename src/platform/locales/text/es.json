@@ -2740,6 +2740,8 @@
   "Import…": "Importar…",
   "Reload All from Disk": "Recargar todo desde el disco",
   "Reset Font Size in All Editors": "Restablecer tamaño de fuente en todos los editores",
+  "Increase Font Size in All Editors": "Aumentar tamaño de fuente en todos los editores",
+  "Decrease Font Size in All Editors": "Disminuir tamaño de fuente en todos los editores",
   "Library source (read-only).": "Código fuente de biblioteca (solo lectura).",
   "Search In Selection": "Buscar en la selección",
   "Search Scope": "Ámbito de búsqueda",

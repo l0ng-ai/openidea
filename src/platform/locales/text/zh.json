@@ -4225,6 +4225,8 @@
   "Import…": "导入…",
   "Reload All from Disk": "从磁盘全部重新加载",
   "Reset Font Size in All Editors": "重置所有编辑器中的字体大小",
+  "Increase Font Size in All Editors": "增大所有编辑器中的字体",
+  "Decrease Font Size in All Editors": "减小所有编辑器中的字体",
   "Library source (read-only).": "库源代码（只读）。",
   "Search In Selection": "在所选内容中搜索",
   "Search Scope": "搜索范围",

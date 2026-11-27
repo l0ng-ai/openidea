@@ -417,6 +417,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "view.resetZoom": [],
   "editor.increaseFontSize": [],
   "editor.decreaseFontSize": [],
+  "editor.increaseFontSizeAll": [],
+  "editor.decreaseFontSizeAll": [],
   // Editing extras, image viewer (keyWhen: image focused) and Markdown editor layouts
   "code.cyclicExpandWord": [],
   "code.cyclicExpandWordBackward": [],

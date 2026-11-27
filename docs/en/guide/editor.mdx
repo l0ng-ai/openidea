@@ -152,8 +152,8 @@ With tabs placed left or right, the tab column is as wide as its longest name, u
 
 | Action                                | macOS | Windows / Linux |
 | ------------------------------------- | ----- | --------------- |
-| **Increase Font Size**                | `⌥⇧.` | `Alt+Shift+.`   |
-| **Decrease Font Size**                | `⌥⇧,` | `Alt+Shift+,`   |
+| **Increase Font Size in All Editors** | `⌃⇧.` | `Alt+Shift+.`   |
+| **Decrease Font Size in All Editors** | `⌃⇧,` | `Alt+Shift+,`   |
 | **Scroll to Center**                  | `⌃L`  | `Ctrl+M`        |
 | **Scroll Up**                         | —     | `Ctrl+Up`       |
 | **Scroll Down**                       | —     | `Ctrl+Down`     |
@@ -169,7 +169,7 @@ With tabs placed left or right, the tab column is as wide as its longest name, u
 **Scroll Up** and **Scroll Down** move the view by one line and leave the caret where it is, even when it scrolls out of sight; **Scroll Left** and **Scroll Right** do the same sideways, by one column. **Scroll Up and Move if Necessary** and **Scroll Down and Move if Necessary** also move the view by one line, but bring a caret the view doesn't show to its first or last line. **Move Up and Scroll** and **Move Down and Scroll** move the caret one line and the view with it, so the caret stays in the same place on screen; their **with Selection** variants select as they go. **Scroll to Top** and **Scroll to Bottom** show the start and the end of the file; the caret stays where it is too. They have no default shortcut: run them from Find Action or assign one in **Settings › Keymap**.
 
 - **View › Active Editor › Soft-Wrap** wraps long lines in the current editor. To wrap some file types by default, use **Settings › Editor › General**, section **Soft Wraps**.
-- **View › Reset Font Size** undoes font zoom in the active editor or focused surface (**View › Reset Font Size in All Editors** resets every open editor). Changing the font size with `⌘` / `Ctrl` + mouse wheel (scoped to **Active editor** by default, or **All editors**) can be turned on in **Settings › Editor › General**, section **Mouse Control**.
+- **View › Reset Font Size** undoes font zoom in the active editor or focused surface (**View › Reset Font Size in All Editors** resets every open editor). **Increase Font Size in All Editors** and **Decrease Font Size in All Editors** resize every open editor together, starting from the active one, and have no default shortcut. Changing the font size with `⌘` / `Ctrl` + mouse wheel (scoped to **Active editor** by default, or **All editors**) can be turned on in **Settings › Editor › General**, section **Mouse Control**.
 - **View › Appearance › Enter Distraction Free Mode** hides tool windows, tabs, the status bar and the gutter and centres the text. Run the same command again to leave.
 - **View › Appearance › Enter Zen Mode** turns on Distraction Free Mode and full screen together; **Exit Zen Mode** turns both off.
 - **Show Line Numbers**, **Show Indent Guides**, **Show Sticky Lines** and **Show Whitespaces** turn these on or off in every editor. Run them from Find Action, or right-click the gutter and open **Appearance**.

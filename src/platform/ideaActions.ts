@@ -122,6 +122,8 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   Unsplit: "editor.unsplit",
   ToggleDistractionFreeMode: "editor.toggleZen",
   ToggleZenMode: "view.toggleZenMode",
+  EditorIncreaseFontSizeGlobal: "editor.increaseFontSizeAll",
+  EditorDecreaseFontSizeGlobal: "editor.decreaseFontSizeAll",
   EditorScrollUp: "editor.scrollUp",
   EditorScrollDown: "editor.scrollDown",
   EditorScrollLeft: "editor.scrollLeft",

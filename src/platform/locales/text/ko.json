@@ -2790,6 +2790,8 @@
   "Import…": "가져오기…",
   "Reload All from Disk": "디스크에서 모두 다시 로드",
   "Reset Font Size in All Editors": "모든 편집기의 글꼴 크기 초기화",
+  "Increase Font Size in All Editors": "모든 편집기의 글꼴 크기 크게",
+  "Decrease Font Size in All Editors": "모든 편집기의 글꼴 크기 작게",
   "Library source (read-only).": "라이브러리 소스(읽기 전용).",
   "Search In Selection": "선택 영역에서 검색",
   "Search Scope": "검색 범위",

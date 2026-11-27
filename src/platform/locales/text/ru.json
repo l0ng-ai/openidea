@@ -4077,6 +4077,8 @@
   "Import…": "Импорт…",
   "Reload All from Disk": "Перезагрузить всё с диска",
   "Reset Font Size in All Editors": "Сбросить размер шрифта во всех редакторах",
+  "Increase Font Size in All Editors": "Увеличить размер шрифта во всех редакторах",
+  "Decrease Font Size in All Editors": "Уменьшить размер шрифта во всех редакторах",
   "Library source (read-only).": "Исходный код библиотеки (только для чтения).",
   "Search In Selection": "Искать в выделенном",
   "Search Scope": "Область поиска",
