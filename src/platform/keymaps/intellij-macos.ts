@@ -118,6 +118,7 @@ export const intellijMacos: Record<string, string[]> = {
   "code.surroundWith": ["Meta+Alt+T"],
   "code.insertLiveTemplate": ["Meta+J"],
   "code.surroundWithLiveTemplate": ["Meta+Alt+J"],
+  "code.saveAsLiveTemplate": [],
   "code.fold": ["Meta+-"],
   "code.unfold": ["Meta+="],
   "code.foldAll": ["Meta+Shift+-"],

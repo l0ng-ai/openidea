@@ -52,6 +52,7 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   SmartTypeCompletion: "code.smartTypeCompletion",
   Generate: "code.generate",
   SurroundWith: "code.surroundWith",
+  SaveAsTemplate: "code.saveAsLiveTemplate",
   EditorSelectWord: "code.extendSelection",
   EditorUnSelectWord: "code.shrinkSelection",
   EditorDuplicateLines: "code.duplicateEntireLines",
