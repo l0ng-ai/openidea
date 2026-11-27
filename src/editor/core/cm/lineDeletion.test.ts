@@ -3,7 +3,14 @@ import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { writeClipboardText } from "@/platform/clipboard";
 import { clearClipboardHistory, clipboardHistory, recordClipboard } from "../clipboardHistory";
-import { cutToLineEnd, deleteToLogicalLineEnd, deleteToLogicalLineStart, hungryBackspace } from "./lineDeletion";
+import {
+  cutToLineEnd,
+  deleteToLogicalLineEnd,
+  deleteToLogicalLineStart,
+  hungryBackspace,
+  killToWordEnd,
+  killToWordStart,
+} from "./lineDeletion";
 
 vi.mock("@/platform/clipboard", () => ({ writeClipboardText: vi.fn(async () => {}) }));
 
@@ -167,6 +174,78 @@ describe("Cut up to Line End", () => {
     expect(run(cutToLineEnd, "ab|")).toBe("ab|");
     const v = make("a|b", true);
     expect(cutToLineEnd(v)).toBe(false);
+    expect(show(v)).toBe("a|b");
+    expect(writeClipboardText).not.toHaveBeenCalled();
+    expect(clipboardHistory()).toEqual([]);
+  });
+});
+
+describe("Kill to Word Start / End", () => {
+  it.each([
+    ["the word before the caret", "foo bar|", false, "foo |", "bar"],
+    ["the rest of the word", "foo ba|r", false, "foo |r", "ba"],
+    ["whitespace and the word before it", "foo  |bar", false, "|bar", "foo  "],
+    ["across line breaks and blank lines", "foo\n  \n|bar", false, "|bar", "foo\n  \n"],
+    ["a punctuation run", "a.b?.|c", false, "a.b|c", "?."],
+    ["the whole identifier without CamelHumps", "x fooBar|", false, "x |", "fooBar"],
+    ["one hump with CamelHumps", "x fooBar|", true, "x foo|", "Bar"],
+    ["a snake_case hump with CamelHumps", "x foo_bar|", true, "x foo_|", "bar"],
+  ])("Kill to Word Start cuts %s", (_, text, camelHumps, after, cut) => {
+    expect(run(killToWordStart(camelHumps), text)).toBe(after);
+    expect(writeClipboardText).toHaveBeenLastCalledWith(cut);
+  });
+
+  it.each([
+    ["the word after the caret", "|foo bar", false, "| bar", "foo"],
+    ["the rest of the word", "f|oo bar", false, "f| bar", "oo"],
+    ["whitespace and the word after it", "foo|  bar.", false, "foo|.", "  bar"],
+    ["across line breaks and blank lines", "foo|\n\n  bar x", false, "foo| x", "\n\n  bar"],
+    ["the whitespace left at the end of the text", "foo|\n  \n", false, "foo|", "\n  \n"],
+    ["the whole identifier without CamelHumps", "|fooBar x", false, "| x", "fooBar"],
+    ["one hump with CamelHumps", "|fooBar x", true, "|Bar x", "foo"],
+  ])("Kill to Word End cuts %s", (_, text, camelHumps, after, cut) => {
+    expect(run(killToWordEnd(camelHumps), text)).toBe(after);
+    expect(writeClipboardText).toHaveBeenLastCalledWith(cut);
+  });
+
+  it("cuts from the caret, not the selection, and from every caret", () => {
+    expect(run(killToWordStart(false), "a [b]c d")).toBe("a |c d");
+    expect(writeClipboardText).toHaveBeenLastCalledWith("b");
+    expect(run(killToWordEnd(false), "a| b\nc| d")).toBe("a|\nc|");
+    expect(writeClipboardText).toHaveBeenLastCalledWith(" b\n d");
+  });
+
+  it("collects repeated kills at the same caret: forward ones after, backward ones before", () => {
+    const v = make("one two| three four");
+    killToWordStart(false)(v);
+    killToWordStart(false)(v);
+    expect(show(v)).toBe("| three four");
+    expect(clipboardHistory().map((e) => e.text)).toEqual(["one two"]);
+    killToWordEnd(false)(v);
+    cutToLineEnd(v);
+    expect(show(v)).toBe("|");
+    expect(writeClipboardText).toHaveBeenLastCalledWith("one two three four");
+    expect(clipboardHistory().map((e) => e.text)).toEqual(["one two three four"]);
+  });
+
+  it("starts a new entry after a caret move", () => {
+    const v = make("ab cd|");
+    killToWordStart(false)(v);
+    v.dispatch({ selection: { anchor: 0 } });
+    killToWordEnd(false)(v);
+    expect(show(v)).toBe("| ");
+    expect(clipboardHistory().map((e) => e.text)).toEqual(["ab", "cd"]);
+  });
+
+  it("leaves the clipboard alone with nothing to cut or in a read-only editor", () => {
+    expect(run(killToWordStart(false), "  \n|ab")).toBe("|ab");
+    vi.mocked(writeClipboardText).mockClear();
+    clearClipboardHistory();
+    expect(run(killToWordStart(false), "|ab")).toBe("|ab");
+    expect(run(killToWordEnd(true), "ab|")).toBe("ab|");
+    const v = make("a|b", true);
+    expect(killToWordStart(false)(v)).toBe(false);
+    expect(killToWordEnd(false)(v)).toBe(false);
     expect(show(v)).toBe("a|b");
     expect(writeClipboardText).not.toHaveBeenCalled();
     expect(clipboardHistory()).toEqual([]);

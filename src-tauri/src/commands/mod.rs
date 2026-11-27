@@ -15,7 +15,6 @@ pub mod clipboard;
 pub mod db;
 pub mod debug;
 pub mod doc;
-pub mod docker;
 pub mod file_dialog;
 pub mod fonts;
 pub mod fs;
@@ -198,7 +197,6 @@ fn catalogue() -> (tauri_specta::Commands<tauri::Wry>, Vec<Command>) {
         desktop clipboard;
         desktop db;
         desktop debug;
-        desktop docker;
         desktop file_dialog;
         desktop fonts;
         desktop fs;

@@ -3,13 +3,18 @@
  * and GitHub CLI (`gh auth login`), backed by an IDE-managed PTY (`agent_login_spawn` /
  * `agent_gh_login_spawn`) and a lazily loaded embedded terminal widget.
  */
+import clsx from "clsx";
 import { useEffect, useRef, useState } from "react";
 import type { AgentLoginEvent, TerminalId } from "@/bindings";
 import { tx } from "@/platform/i18n";
 import { commands } from "@/platform/ipc";
-import { Dialog, Spinner, T } from "@/ui";
+import { openExternalUrl } from "@/platform/openUrl";
+import { isRemoteWindow } from "@/platform/remote";
+import { isWebMode } from "@/platform/webBridge";
+import { Button, Dialog, Spinner, T, copyText, selectableText } from "@/ui";
 import { embeddedTerminal, type EmbeddedTerminal } from "@/workbench/contributions";
 import styles from "./AgentSignInDialog.module.css";
+import { appendLoginOutput, parseDeviceCodePrompt, type DeviceCodePrompt } from "./deviceCode";
 import { tauriCommands } from "./registry";
 
 export type SignInTarget = { kind: "agent"; id: string; name: string } | { kind: "gh" };
@@ -17,6 +22,16 @@ export type SignInTarget = { kind: "agent"; id: string; name: string } | { kind:
 export interface SignInSpawner {
   loginSpawn?(id: string, cols: number, rows: number, onEvent: (e: AgentLoginEvent) => void): Promise<TerminalId>;
   ghLoginSpawn?(cols: number, rows: number, onEvent: (e: AgentLoginEvent) => void): Promise<TerminalId>;
+}
+
+function formatVerificationUrl(rawUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl);
+    const path = parsed.pathname === "/" ? "" : parsed.pathname;
+    return `${parsed.host}${path}`;
+  } catch {
+    return rawUrl;
+  }
 }
 
 export function AgentSignInDialog({
@@ -33,14 +48,27 @@ export function AgentSignInDialog({
   const hostRef = useRef<HTMLDivElement>(null);
   const ptyIdRef = useRef<TerminalId | null>(null);
   const completedRef = useRef(false);
+  const outputBufferRef = useRef("");
+  const devicePromptRef = useRef<DeviceCodePrompt | null>(null);
+  const sentEnterCodesRef = useRef<Set<string>>(new Set());
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const callbacksRef = useRef({ onClose, onCompleted, spawner });
   useEffect(() => {
     callbacksRef.current = { onClose, onCompleted, spawner };
   });
 
+  useEffect(
+    () => () => {
+      if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
+    },
+    [],
+  );
+
   const [attempt, setAttempt] = useState(0);
   const [exitCode, setExitCode] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [devicePrompt, setDevicePrompt] = useState<DeviceCodePrompt | null>(null);
+  const [copiedCode, setCopiedCode] = useState<string | null>(null);
 
   const targetKind = target.kind;
   const agentId = target.kind === "agent" ? target.id : "";
@@ -53,8 +81,13 @@ export function AgentSignInDialog({
     const pendingOutput: string[] = [];
     let pendingSize: { cols: number; rows: number } = { cols: 80, rows: 18 };
     completedRef.current = false;
+    outputBufferRef.current = "";
+    devicePromptRef.current = null;
+    sentEnterCodesRef.current.clear();
     setExitCode(null);
     setError(null);
+    setDevicePrompt(null);
+    setCopiedCode(null);
 
     const killPty = () => {
       const id = ptyIdRef.current;
@@ -69,6 +102,9 @@ export function AgentSignInDialog({
         if (!factory) throw new Error(tx("The terminal is not available in this window."));
         const instance = await factory(el, {
           onData: (data) => {
+            if (devicePromptRef.current) {
+              sentEnterCodesRef.current.add(devicePromptRef.current.code);
+            }
             const id = ptyIdRef.current;
             if (id !== null) void commands.termWrite(id, data).catch(() => {});
           },
@@ -97,6 +133,17 @@ export function AgentSignInDialog({
         if (event.type === "output") {
           if (term) term.write(event.data);
           else pendingOutput.push(event.data);
+          outputBufferRef.current = appendLoginOutput(outputBufferRef.current, event.data);
+          const nextPrompt = parseDeviceCodePrompt(outputBufferRef.current);
+          const prevPrompt = devicePromptRef.current;
+          if (
+            prevPrompt?.code !== nextPrompt?.code ||
+            prevPrompt?.url !== nextPrompt?.url ||
+            prevPrompt?.needsEnterToPoll !== nextPrompt?.needsEnterToPoll
+          ) {
+            devicePromptRef.current = nextPrompt;
+            setDevicePrompt(nextPrompt);
+          }
         } else {
           ptyIdRef.current = null;
           const code = event.code ?? -1;
@@ -141,6 +188,35 @@ export function AgentSignInDialog({
 
   const running = exitCode === null && !error;
   const title = target.kind === "gh" ? tx("Sign In to GitHub CLI") : tx`Sign In to ${target.name}`;
+
+  const markCopied = (code: string) => {
+    setCopiedCode(code);
+    if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
+    copyTimerRef.current = setTimeout(() => {
+      copyTimerRef.current = null;
+      setCopiedCode((prev) => (prev === code ? null : prev));
+    }, 2000);
+  };
+
+  const handleCopyCode = async () => {
+    if (!devicePrompt) return;
+    const { code } = devicePrompt;
+    await copyText(code);
+    markCopied(code);
+  };
+
+  const handleCopyAndOpen = async () => {
+    if (!devicePrompt) return;
+    const { code, url, needsEnterToPoll } = devicePrompt;
+    await copyText(code);
+    markCopied(code);
+    if (needsEnterToPoll && (isRemoteWindow() || isWebMode()) && !sentEnterCodesRef.current.has(code)) {
+      sentEnterCodesRef.current.add(code);
+      const id = ptyIdRef.current;
+      if (id !== null) void commands.termWrite(id, "\r").catch(() => {});
+    }
+    await openExternalUrl(url);
+  };
 
   const finishAndClose = () => {
     const id = ptyIdRef.current;
@@ -189,6 +265,33 @@ export function AgentSignInDialog({
       }
     >
       <div className={styles.body}>
+        {running && devicePrompt && (
+          <div className={styles.deviceBanner} role="region" aria-label={tx("Device verification code")}>
+            <div className={styles.deviceMeta}>
+              <span className={styles.deviceLabel}>
+                <T>One-time verification code</T>
+              </span>
+              <div className={styles.deviceCodeRow}>
+                <code className={clsx(styles.deviceCode, selectableText)}>{devicePrompt.code}</code>
+                <span className={styles.deviceUrl} title={devicePrompt.url}>
+                  {formatVerificationUrl(devicePrompt.url)}
+                </span>
+              </div>
+            </div>
+            <div className={styles.deviceActions}>
+              <Button
+                size="small"
+                icon={copiedCode === devicePrompt.code ? "check" : "copy"}
+                onClick={() => void handleCopyCode()}
+              >
+                {copiedCode === devicePrompt.code ? "Copied" : "Copy"}
+              </Button>
+              <Button size="small" variant="primary" icon="external-link" onClick={() => void handleCopyAndOpen()}>
+                Copy Code & Open Browser
+              </Button>
+            </div>
+          </div>
+        )}
         <div ref={hostRef} className={styles.terminal} data-autofocus />
         {error && <p className={styles.error}>{error}</p>}
       </div>

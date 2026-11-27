@@ -331,6 +331,13 @@ describe("catalogs", () => {
     "psql",
     "JavaScript",
     "TypeScript",
+    "Vue Router",
+    // Python unittest: the runner's name and a dotted module placeholder.
+    "unittest",
+    "tests.test_models",
+    "Pinia",
+    "Vitest",
+    "ESLint",
     "HTML",
     "CSS",
     "JSON",

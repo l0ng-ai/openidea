@@ -90,6 +90,8 @@ Vue、Astro 和 Angular 服务器也会使用这里选择的版本。TypeScript 
 
 **设置 › 编辑器 › 代码样式 › JavaScript** 和 **TypeScript** 有 **空格**（逗号后、运算符两侧、花括号内等）和 **标点**（分号：保持原样、使用或不使用；引号：与文件一致、单引号或双引号）两个标签页。它们和其他代码样式设置一起按项目保存，并发送给 TypeScript 服务器：服务器将其用于 **重新格式化代码**，以及它添加的代码，包括快速修复、自动导入、重构和 **优化导入**。JSX 文件跟随 JavaScript，TSX 文件跟随 TypeScript。启用 EditorConfig 支持时，项目 `.editorconfig` 中设置的 `quote_type` 或 IntelliJ 属性 `ij_typescript_use_semicolon_after_statement`、`ij_typescript_use_double_quotes`、`ij_typescript_space_after_comma`、`ij_typescript_spaces_within_object_literal_braces` 等（JavaScript 用 `ij_javascript_*`）优先。tsserver 没有尾随逗号选项，尾随逗号保持原样。
 
+**导入** 标签页决定 TypeScript 服务器添加导入（自动导入、快速修复、移动文件）时的写法：**导入路径**（最短、相对路径、通过 `paths` / `baseUrl` 的非相对路径，或项目内使用相对路径）、**导入路径结尾**（自动、`./components`、`./components/index` 或 `./components/index.js`）、**不从以下位置自动导入**（glob，例如用 `**/index.ts` 排除 barrel 文件）和 **不自动导入匹配以下表达式的路径**（匹配导入路径的正则表达式，例如 `^node:`）。和其他标签页一样，它们按项目保存，JavaScript 和 TypeScript 分开设置，修改后无需重启服务器即可生效。
+
 ### Biome 检查
 
 在 Biome 项目中，Biome 的诊断显示在编辑器和“问题”工具窗口里，`⌥⏎` / `Alt+Enter` 提供它的快速修复和抑制。Biome 的安全修复（`source.fixAll.biome`）随 **代码 › 代码清理** 运行；开启 **设置 › 工具 › 保存时操作 › 运行代码清理** 后，保存时也会运行。Biome 的格式化器开启时，它的全部修复也会格式化文件。
