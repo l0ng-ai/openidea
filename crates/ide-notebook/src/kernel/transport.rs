@@ -5,6 +5,7 @@ use jupyter_protocol::{ExecuteRequest, JupyterMessage, KernelInfoRequest, Shutdo
 use jupyter_zmq_client::{ClientControlConnection, Connection, DealerSendConnection, RawMessage};
 use parking_lot::Mutex;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,6 +34,8 @@ impl Drop for Admission {
 
 struct Execution {
     code: String,
+    /// Set for a silent inspection: no output, history, count or status change.
+    expressions: Option<HashMap<String, String>>,
     cancel: CancellationToken,
     interrupt: CancellationToken,
     output: OutputCallback,
@@ -69,6 +72,7 @@ impl Running {
     pub async fn execute(
         &self,
         code: &str,
+        expressions: Option<HashMap<String, String>>,
         cancel: CancellationToken,
         interrupt: CancellationToken,
         output: OutputCallback,
@@ -79,6 +83,7 @@ impl Running {
         let (reply, result) = oneshot::channel();
         let execution = Execution {
             code: code.to_owned(),
+            expressions,
             cancel,
             interrupt,
             output,
@@ -307,18 +312,24 @@ impl Session {
         if execution.cancel.is_cancelled() || execution.interrupt.is_cancelled() || execution.reply.is_closed() {
             return Err(IdeError::cancelled());
         }
+        let expressions = execution.expressions.take();
+        let silent = expressions.is_some();
         let request: JupyterMessage = ExecuteRequest {
             code: std::mem::take(&mut execution.code),
+            silent,
+            store_history: !silent,
+            user_expressions: expressions,
             allow_stdin: false,
             stop_on_error: true,
-            ..Default::default()
         }
         .into();
         let request_id = request.header.msg_id.clone();
         // If sending fails/times out, delivery is uncertain. Supervisor closes
         // the process; no caller may retry user code automatically.
         send(&mut self.shell, request).await?;
-        status(notebook, KernelState::Busy, None);
+        if !silent {
+            status(notebook, KernelState::Busy, None);
+        }
         let mut completion = Completion::default();
         let mut budget = Budget::default();
         let mut interrupted = false;
@@ -360,7 +371,9 @@ impl Session {
                         (execution.output)(KernelOutput { kind: frame.kind, content: frame.content, msg_id: frame.parent });
                     }
                     if completion.complete() {
-                        status(notebook, KernelState::Idle, None);
+                        if !silent {
+                            status(notebook, KernelState::Idle, None);
+                        }
                         if interrupted || execution.cancel.is_cancelled() || execution.interrupt.is_cancelled() {
                             return Err(IdeError::cancelled());
                         }
@@ -443,7 +456,8 @@ impl Completion {
                         .ok_or_else(|| protocol("invalid execution count"))?,
                 ),
             };
-            self.reply = Some(ExecutionResult { status: status.to_owned(), execution_count: count });
+            let user_expressions = frame.content.get("user_expressions").cloned();
+            self.reply = Some(ExecutionResult { status: status.to_owned(), execution_count: count, user_expressions });
         }
         Ok(())
     }
