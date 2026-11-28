@@ -60,9 +60,13 @@ const SIX = {
   summary: "Python 2 and 3 compatibility utilities",
   latest: "1.17.0",
   versions: ["1.17.0", "1.16.0"],
-  description: "# Six\n\nRead the [documentation](https://six.readthedocs.io/).<script>alert(1)</script>",
+  description:
+    "# Six\n\n![build](https://img.shields.io/six.svg)\n\nRead the [documentation](https://six.readthedocs.io/).<script>alert(1)</script>",
   markdown: true,
-  links: [{ label: "Source", url: "https://github.com/benjaminp/six" }],
+  links: [
+    { label: "Download", url: "https://pypi.org/project/six" },
+    { label: "Source", url: "https://github.com/benjaminp/six" },
+  ],
 };
 
 function open(interpreter = "") {
@@ -190,6 +194,12 @@ describe("Python Packages", () => {
     fireEvent.click(screen.getByRole("link", { name: "PyPI" }));
     fireEvent.click(screen.getByRole("link", { name: "documentation" }));
     expect(mocks.openUrl.mock.calls).toEqual([["https://pypi.org/project/six/"], ["https://six.readthedocs.io/"]]);
+    // Images load from their sites only when asked for.
+    const doc = screen.getByRole("document", { name: "Package description" });
+    expect(doc.querySelector("img")).toBeNull();
+    expect(doc).toHaveTextContent("build");
+    fireEvent.click(screen.getByRole("button", { name: "Load Images" }));
+    expect(doc.querySelector("img")).toHaveAttribute("src", "https://img.shields.io/six.svg");
   });
 
   it("shows a description that is not Markdown as text", async () => {

@@ -40,6 +40,8 @@ import {
   requirementOf,
   rowKey,
   vcsRequirement,
+  withoutMedia,
+  isPypiPage,
   type Row,
 } from "./model";
 import styles from "./PythonPackages.module.css";
@@ -704,11 +706,17 @@ function openLink(e: MouseEvent) {
   void openExternalUrl(a.getAttribute("href") ?? "");
 }
 
-/** The project's links and its description from PyPI: rendered when Markdown, else as text. */
+/**
+ * The project's links and its description from PyPI: rendered when Markdown, else as text. Its
+ * images come from other sites (badges, GitHub), so they load only when asked for.
+ */
 function Docs({ found }: { found: PypiPackage }) {
   const tx = useTx();
+  const [media, setMedia] = useState(false);
   const html = useMarkupHtml({ kind: "markdown", value: found.markdown ? found.description : "" });
-  const links = [{ label: "PyPI", url: `https://pypi.org/project/${found.name}/` }, ...found.links];
+  const shown = useMemo(() => (media ? { html, count: 0 } : withoutMedia(html)), [media, html]);
+  const pypi = `https://pypi.org/project/${found.name}/`;
+  const links = [{ label: "PyPI", url: pypi }, ...found.links.filter((l) => !isPypiPage(l.url, found.name))];
   return (
     <>
       <nav className={styles.links} aria-label={tx("Project links")} onClick={openLink}>
@@ -718,6 +726,16 @@ function Docs({ found }: { found: PypiPackage }) {
           </a>
         ))}
       </nav>
+      {shown.count > 0 && (
+        <div className={styles.note}>
+          <span>
+            <T>Images in the description load from other sites.</T>
+          </span>{" "}
+          <Button size="small" variant="ghost" onClick={() => setMedia(true)}>
+            <T>Load Images</T>
+          </Button>
+        </div>
+      )}
       {found.description.trim() &&
         (found.markdown ? (
           <div
@@ -725,7 +743,7 @@ function Docs({ found }: { found: PypiPackage }) {
             role="document"
             aria-label={tx("Package description")}
             onClick={openLink}
-            dangerouslySetInnerHTML={{ __html: html }}
+            dangerouslySetInnerHTML={{ __html: shown.html }}
           />
         ) : (
           <pre className={styles.plainDoc} aria-label={tx("Package description")}>
