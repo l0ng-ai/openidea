@@ -94,6 +94,11 @@
   margin-right: 1ch;
 }
 
+/* Spaces and dots stand for bytes, so keep every one. */
+.ascii {
+  white-space: pre;
+}
+
 .target {
   color: var(--fg-strong);
   background: var(--bg-selected);
