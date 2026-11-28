@@ -1,11 +1,35 @@
 import { registerActions, type ActionContext } from "@/platform/actions";
 import { promptInput } from "@/workbench/inputDialogs";
 import type { MenuItem } from "@/ui";
-import { OUTPUT_TAB, closeResult, pinResult, useDatabase } from "./store";
+import { OUTPUT_TAB, activeResultFor, closeResult, pinResult, resultsFor, selectResult, useDatabase } from "./store";
 
-function target({ arg, ctx }: ActionContext): number | null {
-  const id = typeof arg === "number" ? arg : ctx.dbResultsFocus ? useDatabase.getState().activeResult : null;
-  return id === OUTPUT_TAB || useDatabase.getState().results.some((r) => r.id === id) ? id : null;
+interface ResultActionArg {
+  id: number;
+  path: string;
+}
+
+function pathFor({ arg, ctx }: ActionContext): string | undefined {
+  if (typeof arg === "number") return undefined;
+  return arg && typeof arg === "object" && "path" in arg
+    ? (arg as ResultActionArg).path
+    : typeof ctx.dbResultsPath === "string"
+      ? ctx.dbResultsPath
+      : undefined;
+}
+
+function target(c: ActionContext): number | null {
+  const { arg, ctx } = c;
+  const s = useDatabase.getState();
+  const path = pathFor(c);
+  const id =
+    typeof arg === "number"
+      ? arg
+      : arg && typeof arg === "object" && "id" in arg
+        ? (arg as ResultActionArg).id
+        : ctx.dbResultsFocus
+          ? activeResultFor(s, path)
+          : null;
+  return id === OUTPUT_TAB || resultsFor(s, path).some((r) => r.id === id) ? id : null;
 }
 
 function closable(c: ActionContext): boolean {
@@ -13,27 +37,28 @@ function closable(c: ActionContext): boolean {
   return id !== null && id !== OUTPUT_TAB;
 }
 
-function closeOthers(id: number) {
-  for (const tab of useDatabase.getState().results) if (tab.id !== id) closeResult(tab.id);
+function closeOthers(id: number, path?: string) {
+  for (const tab of resultsFor(useDatabase.getState(), path)) if (tab.id !== id) closeResult(tab.id);
 }
 
 function pinned(id: number | null): boolean {
   return !!useDatabase.getState().results.find((r) => r.id === id)?.pinned;
 }
 
-function cycle(direction: 1 | -1, focus: boolean) {
-  const { results, activeResult } = useDatabase.getState();
-  const ids = [OUTPUT_TAB, ...results.map((r) => r.id)];
-  const index = ids.indexOf(activeResult ?? OUTPUT_TAB);
+function cycle(direction: 1 | -1, focus: boolean, path?: string) {
+  const state = useDatabase.getState();
+  const ids = [OUTPUT_TAB, ...resultsFor(state, path).map((r) => r.id)];
+  const index = ids.indexOf(activeResultFor(state, path));
   if (index < 0) return;
   const next = ids[(index + direction + ids.length) % ids.length]!;
   if (focus) {
-    const button = document.getElementById(`db-results-tab-${next}`);
+    const prefix = path === undefined ? "db-results" : "db-output-results";
+    const button = document.getElementById(`${prefix}-tab-${next}`);
     button?.focus();
     // An inline editor can hand focus back to its grid when it blurs.
     if (document.activeElement !== button) button?.focus();
   }
-  useDatabase.setState({ activeResult: next });
+  selectResult(next, path);
 }
 
 export function registerResultTabActions(): () => void {
@@ -52,16 +77,17 @@ export function registerResultTabActions(): () => void {
       title: "Close Others",
       category: "Database",
       keyWhen: "dbResultsFocus && !popupOpen",
-      enabled: (c) => target(c) !== null && useDatabase.getState().results.some((r) => r.id !== target(c)),
-      run: (c) => closeOthers(target(c)!),
+      enabled: (c) =>
+        target(c) !== null && resultsFor(useDatabase.getState(), pathFor(c)).some((r) => r.id !== target(c)),
+      run: (c) => closeOthers(target(c)!, pathFor(c)),
     },
     {
       id: "db.closeAllResultTabs",
       title: "Close All",
       category: "Database",
       keyWhen: "dbResultsFocus && !popupOpen",
-      enabled: (c) => target(c) !== null && useDatabase.getState().results.length > 0,
-      run: () => closeOthers(OUTPUT_TAB),
+      enabled: (c) => target(c) !== null && resultsFor(useDatabase.getState(), pathFor(c)).length > 0,
+      run: (c) => closeOthers(OUTPUT_TAB, pathFor(c)),
     },
     {
       id: "db.closeAllButPinnedResultTabs",
@@ -69,11 +95,11 @@ export function registerResultTabActions(): () => void {
       category: "Database",
       keyWhen: "dbResultsFocus && !popupOpen",
       enabled: (c) => {
-        const { results } = useDatabase.getState();
+        const results = resultsFor(useDatabase.getState(), pathFor(c));
         return target(c) !== null && results.some((r) => r.pinned) && results.some((r) => !r.pinned);
       },
-      run: () => {
-        for (const tab of useDatabase.getState().results) if (!tab.pinned) closeResult(tab.id);
+      run: (c) => {
+        for (const tab of resultsFor(useDatabase.getState(), pathFor(c))) if (!tab.pinned) closeResult(tab.id);
       },
     },
     {
@@ -109,23 +135,24 @@ export function registerResultTabActions(): () => void {
       title: direction === 1 ? "Select Next Tab" : "Select Previous Tab",
       category: "Database",
       keyWhen: "dbResultsFocus && !popupOpen",
-      enabled: (c: ActionContext) => target(c) !== null && useDatabase.getState().results.length > 0,
-      run: ({ ctx }: ActionContext) => cycle(direction, !!ctx.dbResultsFocus),
+      enabled: (c: ActionContext) => target(c) !== null && resultsFor(useDatabase.getState(), pathFor(c)).length > 0,
+      run: (c: ActionContext) => cycle(direction, !!c.ctx.dbResultsFocus, pathFor(c)),
     })),
   ]);
 }
 
-export function resultTabMenu(id: number): MenuItem[] {
+export function resultTabMenu(id: number, path?: string): MenuItem[] {
+  const arg = path === undefined ? id : { id, path };
   return [
-    { kind: "action", action: "db.closeResultTab", arg: id },
-    { kind: "action", action: "db.closeOtherResultTabs", arg: id },
-    { kind: "action", action: "db.closeAllResultTabs", arg: id },
-    { kind: "action", action: "db.closeAllButPinnedResultTabs", arg: id },
+    { kind: "action", action: "db.closeResultTab", arg },
+    { kind: "action", action: "db.closeOtherResultTabs", arg },
+    { kind: "action", action: "db.closeAllResultTabs", arg },
+    { kind: "action", action: "db.closeAllButPinnedResultTabs", arg },
     { kind: "separator" },
-    { kind: "action", action: "db.pinResultTab", arg: id, label: pinned(id) ? "Unpin Tab" : "Pin Tab" },
-    { kind: "action", action: "db.renameResultTab", arg: id },
+    { kind: "action", action: "db.pinResultTab", arg, label: pinned(id) ? "Unpin Tab" : "Pin Tab" },
+    { kind: "action", action: "db.renameResultTab", arg },
     { kind: "separator" },
-    { kind: "action", action: "db.nextResultTab", arg: id },
-    { kind: "action", action: "db.previousResultTab", arg: id },
+    { kind: "action", action: "db.nextResultTab", arg },
+    { kind: "action", action: "db.previousResultTab", arg },
   ];
 }
