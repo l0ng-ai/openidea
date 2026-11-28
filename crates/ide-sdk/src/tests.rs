@@ -1901,6 +1901,37 @@ fn relative_requirements_resolve_against_the_project() {
     assert_eq!(resolve_requirement("./pkg", Some(root)).unwrap(), root.join("./pkg").to_string_lossy());
     assert_eq!(resolve_requirement(".[dev]", Some(root)).unwrap(), root.join(".[dev]").to_string_lossy());
     assert!(resolve_requirement("../lib", None).is_err());
+    let home = dirs::home_dir().unwrap();
+    assert_eq!(resolve_requirement("~/lib", Some(root)).unwrap(), home.join("lib").to_string_lossy());
+}
+
+#[test]
+fn editable_installs_put_e_right_before_the_path() {
+    use crate::python::{Installer, install_args, pip_command};
+    let python = Path::new("/env/bin/python");
+    let sub = install_args("/work/lib", false, true);
+    let (program, args) = pip_command(python, &Installer::Pip, &sub);
+    assert_eq!(program, python);
+    assert_eq!(args, ["-m", "pip", "install", "-e", "/work/lib", "--disable-pip-version-check"]);
+    let (program, args) = pip_command(python, &Installer::Uv("/bin/uv".into()), &sub);
+    assert_eq!(program, Path::new("/bin/uv"));
+    assert_eq!(args, ["pip", "install", "--python", "/env/bin/python", "-e", "/work/lib"]);
+    assert_eq!(install_args("six", true, false), ["install", "--upgrade", "six"]);
+}
+
+#[test]
+fn only_a_local_directory_is_installed_in_editable_mode() {
+    let err = crate::python::install_package(
+        Path::new("/nonexistent/python"),
+        "git+https://github.com/benjaminp/six.git",
+        false,
+        true,
+        None,
+        &CancellationToken::new(),
+        &|_| {},
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("editable"), "{err}");
 }
 
 #[test]

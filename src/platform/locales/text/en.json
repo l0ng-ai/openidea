@@ -1961,7 +1961,6 @@
   "Repository URL": "Repository URL",
   "Project Directory": "Project Directory",
   "Install as editable (-e)": "Install as editable (-e)",
-  "An editable install from version control needs the package name at the end of the URL: #egg=name.": "An editable install from version control needs the package name at the end of the URL: #egg=name.",
   "Open while it streams": "Open while it streams",
   "Always open": "Always open",
   "Folded": "Folded",
