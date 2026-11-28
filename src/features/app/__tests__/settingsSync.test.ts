@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { syncedStorage, writeSyncedStorage } from "../settingsSync";
+import { claimAutoSync, syncedStorage, writeSyncedStorage } from "../settingsSync";
 
 describe("Settings Sync storage", () => {
   it("splits IDE state by category and keeps project-scoped entries out", () => {
@@ -31,5 +31,15 @@ describe("Settings Sync storage", () => {
     expect(localStorage.getItem("openidea.projectTree.options")).toBeNull();
     expect(localStorage.getItem("openidea.vim.v1")).toBe("on");
     expect(localStorage.getItem("openidea.recentProjects")).toBeNull();
+  });
+});
+
+describe("automatic Settings Sync", () => {
+  it("runs once for windows that ask at about the same time", () => {
+    localStorage.clear();
+    expect(claimAutoSync(60_000, 1_000_000)).toBe(true);
+    expect(claimAutoSync(60_000, 1_030_000)).toBe(false);
+    expect(claimAutoSync(5_000, 1_036_000)).toBe(true);
+    expect(claimAutoSync(5_000, 1_038_000)).toBe(false);
   });
 });

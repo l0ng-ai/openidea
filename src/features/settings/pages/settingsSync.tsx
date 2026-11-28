@@ -47,6 +47,12 @@ export const SETTINGS_SYNC_PAGE: PageSpec = {
           label: "Repository URL",
           hint: "A Git repository only you can read and write. A secret Gist's clone URL works too, but anyone with its link can read it. Git signs in with your own credentials; OpenIDEA stores none.",
         },
+        {
+          kind: "toggle",
+          key: "settingsSync.auto",
+          label: "Sync automatically",
+          hint: "On startup and 30 seconds after the settings change. Templates and macros sync on startup and with Sync Now.",
+        },
         { kind: "custom", label: "Sync Now", component: SyncNowRow },
       ],
     },

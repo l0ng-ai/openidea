@@ -190,6 +190,7 @@ export { ACCENT_PRESETS } from "@/workbench/theme";
 type SettingsSyncValid = NonNullable<Settings["settingsSync"]>;
 const DEFAULT_SETTINGS_SYNC: SettingsSyncValid = {
   repository: "",
+  auto: true,
   appearance: true,
   editor: true,
   keymaps: true,

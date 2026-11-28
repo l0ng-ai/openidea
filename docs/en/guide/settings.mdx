@@ -52,6 +52,8 @@ Under **File › Manage IDE Settings**:
 1. Enter the **Repository URL** and choose what syncs: appearance and themes, editor, keymaps, templates, macros, tool window layouts and view options, and other settings.
 2. Apply, then click **Sync Now**, or run **File › Manage IDE Settings › Sync Settings Now**.
 
+With **Sync automatically** on (the default), settings also sync on startup and 30 seconds after they change; templates and macros sync on startup and with Sync Now. An automatic sync only notifies you when it brought in settings, kept this computer's value over another's, or failed. It never asks the first-sync question below: it leaves a notification, and Sync Now asks.
+
 Each sync merges setting by setting with the last synced version: a setting changed on one computer only takes that change. When both computers changed the same setting, this computer's value wins and the notification lists it; earlier values stay in the repository's history. The first sync with a repository that already holds settings asks whether to merge them, use the repository's, or use this computer's.
 
 Never synced: passwords and tokens, environment variables, arguments, commands and paths (interpreters, SDKs, tools, shells), URLs with credentials, proxy, SSH, deployment and run target settings, the download mirror, the MCP server and what agents may run. A list syncs only when nothing in it is one of those, so a CMake profile with its build folder stays on this computer. Syncing never changes this computer's values of any of these.

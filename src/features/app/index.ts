@@ -17,7 +17,7 @@ import { installLocaleSync, registerLocalizedActions } from "./locale";
 import { installMenuBridge } from "./menuBridge";
 import { NewProjectOverlay } from "./NewProject";
 import { projectActions, registerPowerSaveBanner } from "./projectActions";
-import { settingsSyncActions } from "./settingsSync";
+import { installAutoSync, settingsSyncActions } from "./settingsSync";
 import { installWindowTitle } from "./title";
 import { installLaunchHandling, installLightEditAutoClose, windowActions } from "./windows";
 import { WorkspaceDialogHost } from "./WorkspaceDialog";
@@ -42,6 +42,7 @@ export function activate(): () => void {
     }),
     registerLocalizedActions(projectActions),
     registerLocalizedActions(settingsSyncActions),
+    installAutoSync(),
     registerPowerSaveBanner(),
     registerInvalidateCachesActions(),
     installMenuBridge(),

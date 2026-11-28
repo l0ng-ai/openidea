@@ -4458,5 +4458,9 @@
   "Live, file and postfix templates": "Live, file and postfix templates",
   "Tool window layouts and view options": "Tool window layouts and view options",
   "Other settings": "Other settings",
-  "Never synced: passwords and tokens, environment variables, arguments, commands and paths, proxy, SSH, deployment, run targets, the download mirror, the MCP server and agent permissions.": "Never synced: passwords and tokens, environment variables, arguments, commands and paths, proxy, SSH, deployment, run targets, the download mirror, the MCP server and agent permissions."
+  "Never synced: passwords and tokens, environment variables, arguments, commands and paths, proxy, SSH, deployment, run targets, the download mirror, the MCP server and agent permissions.": "Never synced: passwords and tokens, environment variables, arguments, commands and paths, proxy, SSH, deployment, run targets, the download mirror, the MCP server and agent permissions.",
+  "Settings Sync is waiting for you": "Settings Sync is waiting for you",
+  "The repository already holds settings. Sync Now to choose what happens to this computer's.": "The repository already holds settings. Sync Now to choose what happens to this computer's.",
+  "Sync automatically": "Sync automatically",
+  "On startup and 30 seconds after the settings change. Templates and macros sync on startup and with Sync Now.": "On startup and 30 seconds after the settings change. Templates and macros sync on startup and with Sync Now."
 }

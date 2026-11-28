@@ -471,6 +471,8 @@ pub struct SettingsSyncSettings {
     /// Clone URL (a secret GitHub Gist's works too, though anyone with its link can read it);
     /// empty = sync off.
     pub repository: String,
+    /// Sync on startup and after the settings change, besides Sync Now.
+    pub auto: bool,
     pub appearance: bool,
     /// Editor settings, color schemes, code style, inspections and spelling.
     pub editor: bool,
@@ -488,6 +490,7 @@ impl Default for SettingsSyncSettings {
     fn default() -> Self {
         Self {
             repository: String::new(),
+            auto: true,
             appearance: true,
             editor: true,
             keymaps: true,

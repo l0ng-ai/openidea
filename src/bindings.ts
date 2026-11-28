@@ -13645,6 +13645,8 @@ export type SettingsSyncSettings = {
 	 *  empty = sync off.
 	 */
 	repository?: string,
+	/**  Sync on startup and after the settings change, besides Sync Now. */
+	auto?: boolean,
 	appearance?: boolean,
 	/**  Editor settings, color schemes, code style, inspections and spelling. */
 	editor?: boolean,
