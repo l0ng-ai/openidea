@@ -298,6 +298,8 @@ describe("catalogs", () => {
     "16384 MB",
     "Docker",
     "URL",
+    // The character set's name, as the Memory View's text column header.
+    "ASCII",
     "ID:",
     "Code Vision",
     "JUnit",
