@@ -354,6 +354,7 @@
   "menu.vcs.commit": "提交…",
   "menu.vcs.fetch": "获取",
   "menu.vcs.unshallow": "获取完整历史",
+  "menu.vcs.lfsPull": "拉取 LFS 对象",
   "menu.vcs.localHistory": "本地历史记录",
   "menu.vcs.newBranch": "新建分支…",
   "menu.vcs.push": "推送…",

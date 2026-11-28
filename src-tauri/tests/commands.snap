@@ -787,6 +787,7 @@ vcs_init                                     always             project_host bin
 vcs_inspect_push                             trusted            project_host bindings async
 vcs_invalidate_log_signatures                always             project_host bindings async
 vcs_keep_amend_commit                        trusted            project_host bindings async
+vcs_lfs_status                               trusted            project_host bindings async
 vcs_line_hunks                               always             project_host bindings async
 vcs_log                                      always             project_host bindings async
 vcs_log_details                              always             project_host bindings async

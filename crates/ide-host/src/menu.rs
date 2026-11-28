@@ -674,6 +674,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
             act("vcs.pull", "Pull…"),
             act("vcs.fetch", "Fetch"),
             act("vcs.unshallow", "Fetch Full History"),
+            act("vcs.lfsPull", "Pull LFS Objects"),
             SEP,
             // Operation items (Abort Merge, Continue Rebase…) are enabled only while it is in progress.
             act("vcs.merge", "Merge…"),
