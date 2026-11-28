@@ -2364,6 +2364,7 @@
   "New File": "Новый файл",
   "New HTTP Request": "Новый HTTP-запрос",
   "New Scratch File": "Новый временный файл (Scratch)",
+  "Create new scratch file from selection": "Создать новый временный файл (Scratch) из выделения",
   "New Scratch File…": "Новый временный файл (Scratch)…",
   "New Tab": "Новая вкладка",
   "New Tag…": "Новый тег…",

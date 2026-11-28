@@ -9,7 +9,13 @@ import { toBase64 } from "@/platform/base64";
 import { call, commands, emitLocalIdeEvent, isTauri } from "@/platform/ipc";
 import { scratchesDir as hostScratchesDir } from "@/platform/scratchesDir";
 import { editorService, notifications } from "@/workbench/contributions";
-import { scratchContent, scratchFileName, scratchLanguages, type ScratchLanguage } from "./model";
+import {
+  scratchContent,
+  scratchFileName,
+  scratchLanguageForSelection,
+  scratchLanguages,
+  type ScratchLanguage,
+} from "./model";
 
 export interface ScratchBackend {
   /** Absolute scratches folder, created. */
@@ -52,18 +58,38 @@ export async function scratchesDir(): Promise<string> {
 
 export const scratchesAvailable = () => isTauri() || backend !== tauriScratchBackend;
 
-/** Creates `scratch[_n].<ext>` for `lang` from its template and opens it; returns its path. */
-export async function createScratch(lang: ScratchLanguage): Promise<string | null> {
+/** Creates `scratch[_n].<ext>` from selected text or the language template, and opens it. */
+export async function createScratch(lang: ScratchLanguage, initialText?: string): Promise<string | null> {
   try {
     const dir = await scratchesDir();
     const name = scratchFileName(await backend.listNames(dir), lang.ext);
     const path = `${dir}/${name}`;
-    const { text, caret } = scratchContent(lang.template);
+    const { text, caret } =
+      initialText === undefined ? scratchContent(lang.template) : { text: initialText, caret: null };
     await backend.createFile(path, text);
     // The file watcher covers the project only: tell the project view.
     emitLocalIdeEvent({ type: "fsChanged", created: [path], modified: [], removed: [] });
     await backend.open(path, caret);
     return path;
+  } catch (e) {
+    notifications().notify({
+      level: "error",
+      title: "Cannot create scratch file",
+      body: e instanceof Error ? e.message : String(e),
+    });
+    return null;
+  }
+}
+
+/** Creates a numbered scratch from a non-empty selection, without opening the language chooser. */
+export async function createScratchFromSelection(
+  source: { language: string; path: string },
+  text: string,
+): Promise<string | null> {
+  if (!text) return null;
+  try {
+    const lang = scratchLanguageForSelection(source, text, await backend.languages());
+    return lang ? await createScratch(lang, text) : null;
   } catch (e) {
     notifications().notify({
       level: "error",

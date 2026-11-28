@@ -2481,6 +2481,7 @@
   "New HTTP Request": "新建 HTTP 请求",
   "New Scratch Buffer": "新建临时缓冲区",
   "New Scratch File": "新建临时文件",
+  "Create new scratch file from selection": "从所选内容创建新的临时文件",
   "New Scratch File…": "新建临时文件…",
   "New Tab": "新建标签页",
   "New Tag…": "新建标签…",

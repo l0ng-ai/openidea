@@ -2,14 +2,24 @@
  * Scratch Files (⇧⌘N): throwaway files in any language, stored in the app
  * data dir and listed under "Scratches" in the Project view.
  */
+import type { EditorView } from "@codemirror/view";
+import { intentionProviders, registerEditorContribution, type ContributedIntention } from "@/editor/api";
+import { docOf } from "@/editor/lsp/lsp";
 import { registerActions } from "@/platform/actions";
 import { onFileOperation } from "@/platform/fileOps";
 import { emitLocalIdeEvent } from "@/platform/ipc";
+import { tx } from "@/platform/i18n";
 import { useRemote } from "@/platform/remote";
 import { registerMenuGroup, registerOverlay, registerProjectViewRoot } from "@/workbench/contributions";
 import { ScratchChooserHost } from "./ScratchChooser";
 import { openChooser } from "./store";
-import { newScratchBuffer, scratchBackend, scratchesAvailable, scratchesDir } from "./scratches";
+import {
+  createScratchFromSelection,
+  newScratchBuffer,
+  scratchBackend,
+  scratchesAvailable,
+  scratchesDir,
+} from "./scratches";
 
 export { newScratchBuffer };
 
@@ -17,6 +27,29 @@ export const SCRATCHES_ROOT_LABEL = "Scratches";
 
 export async function newScratchFile() {
   openChooser(await scratchBackend().languages());
+}
+
+/** IDEA's Create New Scratch File from Selection, available only for a non-empty selection. */
+export function scratchFromSelectionIntentions(view: EditorView): ContributedIntention[] {
+  if (!scratchesAvailable()) return [];
+  const state = view.state;
+  const selection = state.selection.main;
+  const source = docOf(view);
+  if (!source || selection.empty) return [];
+  const text = state.doc.sliceString(selection.from, selection.to);
+  return [
+    {
+      id: "scratch.createFromSelection",
+      label: tx("Create new scratch file from selection"),
+      icon: "scratches",
+      run: async () => {
+        // The popup may have been open while the source document or selection changed.
+        if (view.state.doc !== state.doc || !view.state.selection.main.eq(selection)) return;
+        const current = docOf(view);
+        if (current) await createScratchFromSelection(current, text);
+      },
+    },
+  ];
 }
 
 export function activate(): () => void {
@@ -46,6 +79,10 @@ export function activate(): () => void {
   };
   if (scratchesAvailable()) registerRoot();
   const disposers = [
+    registerEditorContribution({
+      id: "scratch.fromSelection",
+      extensions: () => intentionProviders.of(scratchFromSelectionIntentions),
+    }),
     // Attaching to (or leaving) a remote server moves the scratches to that host.
     useRemote.subscribe((state, previous) => {
       if (state.session !== previous.session && scratchesAvailable()) registerRoot();

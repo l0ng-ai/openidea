@@ -4378,6 +4378,7 @@
   "Link {text}": "Link {text}",
   "Transpose": "Transpose",
   "New Scratch Buffer": "New Scratch Buffer",
+  "Create new scratch file from selection": "Create new scratch file from selection",
   "Cannot create scratch buffer": "Cannot create scratch buffer",
   "Plots": "Plots",
   "Save Plot": "Save Plot",
