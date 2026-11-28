@@ -9,6 +9,36 @@ pub const CATEGORIES: [&str; 7] = ["appearance", "editor", "keymaps", "other", "
 /// Categories of the frontend's own storage (`key → text`); the others are global settings.
 pub const STORAGE_CATEGORIES: [&str; 3] = ["templates", "macros", "ui"];
 
+/// Each computer's installed plugins (`computer id → plugin id → name`). Every computer writes
+/// only its own list, so the lists never conflict and an uninstall only shortens one of them.
+pub const PLUGINS_FILE: &str = "plugins.json";
+
+type PluginList = BTreeMap<String, String>;
+
+/// A plugin id as the marketplace has them (`openidea.minimap`), never a path or a URL.
+fn is_plugin_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+}
+
+/// Puts this computer's plugins under `machine` in the repository's list (`remote`, the
+/// file's text). Returns the new text and the plugins only other computers have (`id → name`).
+pub fn merge_plugins(remote: Option<&str>, machine: &str, local: &PluginList) -> (String, PluginList) {
+    let mut lists: BTreeMap<String, PluginList> =
+        remote.and_then(|text| serde_json::from_str(text).ok()).unwrap_or_default();
+    let valid = |list: &PluginList| -> PluginList {
+        list.iter().filter(|(id, _)| is_plugin_id(id)).map(|(id, name)| (id.clone(), name.clone())).collect()
+    };
+    let mut elsewhere = PluginList::new();
+    for (computer, list) in &lists {
+        if computer != machine {
+            elsewhere.extend(valid(list).into_iter().filter(|(id, _)| !local.contains_key(id)));
+        }
+    }
+    lists.insert(machine.to_owned(), valid(local));
+    let text = serde_json::to_string_pretty(&lists).unwrap_or_else(|_| "{}".into()) + "\n";
+    (text, elsewhere)
+}
+
 /// Global settings that never sync: Settings Sync's own, what this machine serves or reaches
 /// (MCP server, remote development, proxy, SSH hosts, deployment servers, run targets, download
 /// mirror), the tools and shells it runs, what agents may do here, this machine's own state (the
@@ -379,6 +409,25 @@ mod tests {
                 (vec!["scopes".into()], Some(json!([]))),
             ]
         );
+    }
+
+    #[test]
+    fn each_computer_lists_its_own_plugins() {
+        let local = PluginList::from([("a.one".into(), "One".into()), ("a.two".into(), "Two".into())]);
+        let (text, elsewhere) = merge_plugins(None, "pc-a", &local);
+        assert!(elsewhere.is_empty());
+        let other = PluginList::from([("a.two".into(), "Two".into()), ("b.three".into(), "Three".into())]);
+        let (text, elsewhere) = merge_plugins(Some(&text), "pc-b", &other);
+        assert_eq!(elsewhere, PluginList::from([("a.one".into(), "One".into())]));
+        // A uninstalls `a.one`: it leaves A's list, and B no longer hears of it.
+        let (text, elsewhere) = merge_plugins(Some(&text), "pc-a", &PluginList::from([("a.two".into(), "Two".into())]));
+        assert_eq!(elsewhere, PluginList::from([("b.three".into(), "Three".into())]));
+        let (_, elsewhere) = merge_plugins(Some(&text), "pc-b", &other);
+        assert!(elsewhere.is_empty());
+        // Ids that are not marketplace ids are dropped, and a broken file starts over.
+        let odd = r#"{"pc-c": {"../x": "X", "https://e/x": "Y", "ok.id": "Z"}}"#;
+        assert_eq!(merge_plugins(Some(odd), "pc-a", &local).1, PluginList::from([("ok.id".into(), "Z".into())]));
+        assert_eq!(merge_plugins(Some("not json"), "pc-a", &local).1, PluginList::new());
     }
 
     #[test]

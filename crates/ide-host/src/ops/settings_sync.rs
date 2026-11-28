@@ -33,6 +33,8 @@ pub struct SettingsSyncResult {
     pub settings_changed: bool,
     /// Frontend storage categories that changed here: category → all its entries now.
     pub storage: BTreeMap<String, BTreeMap<String, String>>,
+    /// Plugins other computers have and this one does not: id → name.
+    pub plugins_elsewhere: BTreeMap<String, String>,
 }
 
 type Storage = BTreeMap<String, BTreeMap<String, String>>;
@@ -75,7 +77,8 @@ pub fn has_local_changes(host: &Host, storage: &Storage) -> IdeResult<bool> {
     Ok(enabled.iter().any(|c| local_value(c, &layer, storage) != sync::from_files(&files, c).unwrap_or(empty.clone())))
 }
 
-/// `storage`: the frontend's syncable entries by category (`templates`, `macros`, `ui`).
+/// `storage`: the frontend's syncable entries by category (`templates`, `macros`, `ui`), and
+/// the installed plugins (`plugins`: id → name).
 /// `mode`: `None` unless the user answered [`SettingsSyncResult::needs_choice`].
 /// `interactive`: whether git may ask for credentials (Sync Now) or must use saved ones.
 pub fn sync_now(
@@ -88,10 +91,25 @@ pub fn sync_now(
     let Some((repo, enabled)) = repository(host, interactive)? else {
         return Err(IdeError::invalid("choose a settings repository first"));
     };
-    match sync_once(host, &repo, &enabled, storage, mode) {
+    let machine = host.global_settings.effective().settings_sync.plugins.then(|| machine_id(host)).transpose()?;
+    let sync = |mode| sync_once(host, &repo, &enabled, storage, machine.as_deref(), mode);
+    match sync(mode) {
         // Another machine pushed in between: merge with its settings too.
-        Err(e) if e.kind == ErrorKind::OutOfSync => sync_once(host, &repo, &enabled, storage, mode),
+        Err(e) if e.kind == ErrorKind::OutOfSync => sync(mode),
         result => result,
+    }
+}
+
+/// This computer's id in the repository's plugin list: random, kept in the data directory.
+fn machine_id(host: &Host) -> IdeResult<String> {
+    let file = host.data_dir.join("settings-sync-id");
+    match std::fs::read_to_string(&file) {
+        Ok(id) if !id.trim().is_empty() => Ok(id.trim().to_owned()),
+        _ => {
+            let id = uuid::Uuid::new_v4().to_string();
+            ide_vfs::write_atomic(&file, id.as_bytes())?;
+            Ok(id)
+        }
     }
 }
 
@@ -100,9 +118,11 @@ fn sync_once(
     repo: &SettingsRepo,
     enabled: &[&str],
     storage: &Storage,
+    machine: Option<&str>,
     mode: Option<SettingsSyncMode>,
 ) -> IdeResult<SettingsSyncResult> {
-    let names: Vec<String> = CATEGORIES.iter().map(|c| sync::file_name(c)).collect();
+    let mut names: Vec<String> = CATEGORIES.iter().map(|c| sync::file_name(c)).collect();
+    names.push(sync::PLUGINS_FILE.into());
     let branch = repo.fetch()?;
     let remote_files = match &branch.commit {
         Some(commit) => repo.files(commit, &names)?,
@@ -139,6 +159,13 @@ fn sync_once(
         } else {
             layer_changes.extend(sync::local_changes(&layer, category, &local, &merged));
         }
+    }
+    if let Some(machine) = machine {
+        let local = storage.get("plugins").cloned().unwrap_or_default();
+        let remote = remote_files.get(sync::PLUGINS_FILE).map(String::as_str);
+        let (text, elsewhere) = sync::merge_plugins(remote, machine, &local);
+        files.insert(sync::PLUGINS_FILE.into(), text);
+        result.plugins_elsewhere = elsewhere;
     }
     // Check before anything leaves this machine that the merged settings load here.
     host.global_settings.apply_global_changes(&layer_changes, false)?;

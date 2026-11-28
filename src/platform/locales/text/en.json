@@ -4462,5 +4462,11 @@
   "Settings Sync is waiting for you": "Settings Sync is waiting for you",
   "The repository already holds settings. Sync Now to choose what happens to this computer's.": "The repository already holds settings. Sync Now to choose what happens to this computer's.",
   "Sync automatically": "Sync automatically",
-  "On startup and 30 seconds after the settings change. Templates and macros sync on startup and with Sync Now.": "On startup and 30 seconds after the settings change. Templates and macros sync on startup and with Sync Now."
+  "On startup and 30 seconds after the settings change. Templates and macros sync on startup and with Sync Now.": "On startup and 30 seconds after the settings change. Templates and macros sync on startup and with Sync Now.",
+  "Install Plugins from Other Computers": "Install Plugins from Other Computers",
+  "Plugins from your other computers": "Plugins from your other computers",
+  "Not installed here: {pluginNames}": "Not installed here: {pluginNames}",
+  "Install…": "Install…",
+  "Install Plugins from Marketplace": "Install Plugins from Marketplace",
+  "Plugins installed on your other computers are offered here; nothing is installed or uninstalled without asking.": "Plugins installed on your other computers are offered here; nothing is installed or uninstalled without asking."
 }

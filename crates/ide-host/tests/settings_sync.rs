@@ -44,13 +44,16 @@ async fn two_machines_sync_through_a_bare_repository() {
         "[general]\nlastRunVersion = \"b\"\n[editor]\ntabSize = 2\n[languages.python]\ninterpreter = \"/b/bin/python\"\n",
     );
     let macros = storage(&[("macros", "openidea.macros.v1", "[\"a\"]")]);
+    let a_storage = storage(&[("macros", "openidea.macros.v1", "[\"a\"]"), ("plugins", "acme.minimap", "Minimap")]);
 
     // A pushes first; B finds settings it never synced with and is asked.
-    assert_eq!(sync_now(&a, &macros, None, false).unwrap(), SettingsSyncResult::default());
+    assert_eq!(sync_now(&a, &a_storage, None, false).unwrap(), SettingsSyncResult::default());
     assert!(sync_now(&b, &Storage::new(), None, false).unwrap().needs_choice);
     let merged = sync_now(&b, &Storage::new(), Some(SettingsSyncMode::Merge), false).unwrap();
     assert!(merged.settings_changed);
     assert_eq!(merged.storage, macros);
+    let minimap = BTreeMap::from([("acme.minimap".to_owned(), "Minimap".to_owned())]);
+    assert_eq!(merged.plugins_elsewhere, minimap, "offered, not installed");
     let settings = b.global_settings.effective();
     assert_eq!((settings.editor.font_size, settings.editor.tab_size), (15.0, 2));
     assert_eq!(settings.languages.python.interpreter, "/b/bin/python", "machine paths stay");

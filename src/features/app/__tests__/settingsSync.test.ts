@@ -13,11 +13,17 @@ vi.mock("@/platform/ipc", async (orig) => {
       listeners.set(type, handler);
       return () => listeners.delete(type);
     },
-    commands: { ...actual.commands, settingsSyncNow, settingsSyncHasLocalChanges },
+    commands: {
+      ...actual.commands,
+      settingsSyncNow,
+      settingsSyncHasLocalChanges,
+      pluginList: () => Promise.resolve({ status: "ok", data: { plugins: [] } }),
+    },
   };
 });
 
-const { claimAutoSync, installAutoSync, syncedStorage, writeSyncedStorage } = await import("../settingsSync");
+const { claimAutoSync, installAutoSync, newlyOffered, syncedStorage, writeSyncedStorage } =
+  await import("../settingsSync");
 const { useProject } = await import("@/platform/project");
 
 describe("Settings Sync storage", () => {
@@ -85,7 +91,7 @@ describe("automatic Settings Sync", () => {
 
   const ok = <T>(data: T) => Promise.resolve({ status: "ok" as const, data });
   const synced = {
-    result: { needsChoice: false, overwritten: [], settingsChanged: false, storage: {} },
+    result: { needsChoice: false, overwritten: [], settingsChanged: false, storage: {}, pluginsElsewhere: {} },
     settings: null,
   };
   let dispose = () => {};
@@ -145,5 +151,15 @@ describe("automatic Settings Sync", () => {
     finish();
     await vi.advanceTimersByTimeAsync(0);
     expect(settingsSyncNow).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("plugins from other computers", () => {
+  it("offers each plugin once", () => {
+    localStorage.clear();
+    expect(newlyOffered({ "a.one": "One" }, false)).toEqual(["a.one"]);
+    expect(newlyOffered({ "a.one": "One", "a.two": "Two" })).toEqual(["a.one", "a.two"]);
+    expect(newlyOffered({ "a.one": "One", "a.two": "Two" })).toEqual([]);
+    expect(newlyOffered({ "a.two": "Two", "b.three": "Three" })).toEqual(["b.three"]);
   });
 });

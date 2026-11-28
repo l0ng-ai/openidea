@@ -198,6 +198,7 @@ const DEFAULT_SETTINGS_SYNC: SettingsSyncValid = {
   templates: true,
   macros: true,
   ui: true,
+  plugins: true,
 };
 
 export const DEFAULT_SETTINGS: ValidSettings = {

@@ -10995,5 +10995,11 @@
   "Settings Sync is waiting for you": "设置同步在等你确认",
   "The repository already holds settings. Sync Now to choose what happens to this computer's.": "仓库里已经有设置。点击“立即同步”，选择如何处理这台电脑上的设置。",
   "Sync automatically": "自动同步",
-  "On startup and 30 seconds after the settings change. Templates and macros sync on startup and with Sync Now.": "在启动时，以及设置更改 30 秒后同步。模板和宏在启动时和点击“立即同步”时同步。"
+  "On startup and 30 seconds after the settings change. Templates and macros sync on startup and with Sync Now.": "在启动时，以及设置更改 30 秒后同步。模板和宏在启动时和点击“立即同步”时同步。",
+  "Install Plugins from Other Computers": "安装其他电脑上的插件",
+  "Plugins from your other computers": "其他电脑上的插件",
+  "Not installed here: {pluginNames}": "这台电脑上未安装：{pluginNames}",
+  "Install…": "安装…",
+  "Install Plugins from Marketplace": "从插件市场安装插件",
+  "Plugins installed on your other computers are offered here; nothing is installed or uninstalled without asking.": "会在这里提示安装其他电脑上已安装的插件；不经你同意，不会安装或卸载任何插件。"
 }

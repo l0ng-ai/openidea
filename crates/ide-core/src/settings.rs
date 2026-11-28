@@ -484,6 +484,8 @@ pub struct SettingsSyncSettings {
     pub macros: bool,
     /// Tool window layouts and view options.
     pub ui: bool,
+    /// The list of installed plugins: missing ones are offered, never installed or removed.
+    pub plugins: bool,
 }
 
 impl Default for SettingsSyncSettings {
@@ -498,6 +500,7 @@ impl Default for SettingsSyncSettings {
             templates: true,
             macros: true,
             ui: true,
+            plugins: true,
         }
     }
 }

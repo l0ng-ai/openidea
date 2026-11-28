@@ -13641,6 +13641,8 @@ export type SettingsSyncResult = {
 	settingsChanged: boolean,
 	/**  Frontend storage categories that changed here: category → all its entries now. */
 	storage: { [key in string]: { [key in string]: string } },
+	/**  Plugins other computers have and this one does not: id → name. */
+	pluginsElsewhere: { [key in string]: string },
 };
 
 /**  Settings › Settings Sync: the Git repository the IDE settings sync through, and what syncs. */
@@ -13663,6 +13665,8 @@ export type SettingsSyncSettings = {
 	macros?: boolean,
 	/**  Tool window layouts and view options. */
 	ui?: boolean,
+	/**  The list of installed plugins: missing ones are offered, never installed or removed. */
+	plugins?: boolean,
 };
 
 export type SettingsWindowInit = SettingsWindowInit_Serialize | SettingsWindowInit_Deserialize;

@@ -72,6 +72,12 @@ export const SETTINGS_SYNC_PAGE: PageSpec = {
         { kind: "toggle", key: "settingsSync.ui", label: "Tool window layouts and view options" },
         {
           kind: "toggle",
+          key: "settingsSync.plugins",
+          label: "Plugins",
+          hint: "Plugins installed on your other computers are offered here; nothing is installed or uninstalled without asking.",
+        },
+        {
+          kind: "toggle",
           key: "settingsSync.other",
           label: "Other settings",
           hint: "Never synced: passwords and tokens, environment variables, arguments, commands and paths, proxy, SSH, deployment, run targets, the download mirror, the MCP server and agent permissions.",
