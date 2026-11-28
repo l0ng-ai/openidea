@@ -97,7 +97,7 @@ describe("planJetBrainsImport", () => {
     });
     expect(plan.rows).toContainEqual({ label: "Inspection profile", value: "Default (inspections: 1)" });
     expect(plan.unmappedInspections).toEqual(["JSUnusedLocalSymbols"]);
-    expect(plan.skipped).toEqual(["Code Style options other than Tabs and Indents", "Plugins"]);
+    expect(plan.skipped).toEqual(["Code Style options other than Tabs and Indents"]);
     expect(plan.invalid).toEqual([]);
   });
 

@@ -4,6 +4,11 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 const read = vi.fn();
 const set = vi.fn();
 const notify = vi.fn();
+const execute = vi.fn();
+const market = [
+  { id: "ruyimg.codeglance-pro", name: "CodeGlance Pro", installed: null, compatible: true },
+  { id: "solhovoy.grep-console", name: "Grep Console", installed: null, compatible: true },
+];
 const editor = { fontFamily: "JetBrains Mono", fontSize: 13, customSchemes: {}, colorOverrides: {} };
 
 vi.mock("@/platform/ipc", async (original) => {
@@ -15,9 +20,14 @@ vi.mock("@/platform/ipc", async (original) => {
       settingsReadJetbrains: (path: string) => read(path),
       settingsGetGlobal: async () => ({ editor }),
       settingsSet: (scope: string, key: string, value: string) => set(scope, key, value),
+      pluginMarket: async () => ({ status: "ok", data: market }),
     },
   };
 });
+vi.mock("@/platform/actions", async (original) => ({
+  ...(await original<typeof import("@/platform/actions")>()),
+  executeAction: (id: string, arg?: unknown) => execute(id, arg),
+}));
 vi.mock("@/workbench/contributions", async (original) => ({
   ...(await original<typeof import("@/workbench/contributions")>()),
   notifications: () => ({ notify }),
@@ -37,6 +47,8 @@ beforeEach(() => {
           '<application><component name="DefaultFont"><option name="FONT_FAMILY" value="Monaco" />' +
           '<option name="FONT_SIZE" value="17" /></component></application>',
         "colors/custom.icls": '<scheme name="Custom" version="142" parent_scheme="Darcula"><attributes /></scheme>',
+        "installed.txt": "IdeaVIM\ncom.nasller.CodeGlancePro\nGrepConsole\nsome.unknown.plugin\n",
+        "disabled_plugins.txt": "GrepConsole\n",
         "options/colors.scheme.xml":
           '<application><component name="EditorColorsManagerImpl"><global_color_scheme name="Custom" />' +
           "</component></application>",
@@ -58,7 +70,10 @@ it.each(["Cancel", "Import"])("confirms folder settings before applying them: %s
   expect(screen.getByText("Monaco")).toBeInTheDocument();
   expect(screen.getByText("17")).toBeInTheDocument();
   expect(screen.getAllByText("Custom")).toHaveLength(2);
-  expect(screen.getByText(/Not imported:/)).toHaveTextContent("Plugins");
+  expect(screen.getByText("CodeGlance Pro")).toBeInTheDocument();
+  expect(screen.getByText("Enable Vim emulation")).toBeInTheDocument();
+  expect(screen.getByText(/Not imported:/)).toHaveTextContent("Grep Console (disabled)");
+  expect(screen.getByText(/Plugins without a counterpart/)).toHaveTextContent("some.unknown.plugin");
   expect(set).not.toHaveBeenCalled();
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: button }));
@@ -67,6 +82,7 @@ it.each(["Cancel", "Import"])("confirms folder settings before applying them: %s
   if (button === "Cancel") {
     expect(set).not.toHaveBeenCalled();
     expect(notify).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
   } else {
     const writes = Object.fromEntries(
       set.mock.calls.map(([scope, key, value]) => {
@@ -83,6 +99,11 @@ it.each(["Cancel", "Import"])("confirms folder settings before applying them: %s
       "editor.lineHeight": 25,
     });
     expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: "Settings imported" }));
+    expect(execute).toHaveBeenCalledExactlyOnceWith("vim.toggle", undefined);
+    const offer = notify.mock.calls.map(([n]) => n).find((n) => n.key === "app.settingsImport.plugins");
+    expect(offer.body).toBe("CodeGlance Pro");
+    await act(async () => offer.actions[0].run());
+    expect(execute).toHaveBeenLastCalledWith("plugins.installFromMarket", "ruyimg.codeglance-pro");
   }
 });
 
