@@ -85,3 +85,34 @@ it.each(["Cancel", "Import"])("confirms folder settings before applying them: %s
     expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: "Settings imported" }));
   }
 });
+
+it("offers an imported inspection profile for the open project", async () => {
+  const { useProject } = await import("@/platform/project");
+  useProject.setState({ project: { root: "/p", name: "p" } as never });
+  read.mockResolvedValue({
+    status: "ok",
+    data: {
+      entries: ["inspection/Strict.xml"],
+      files: {
+        "inspection/Strict.xml":
+          '<profile version="1.0"><option name="myName" value="Strict" />' +
+          '<inspection_tool class="SpellCheckingInspection" enabled="false" level="TYPO" enabled_by_default="false" />' +
+          "</profile>",
+      },
+    },
+  });
+  render(<MessagesHost />);
+  let done!: Promise<void>;
+  await act(async () => {
+    done = importJetBrainsSettings("/settings.zip");
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Import" }));
+    await done;
+  });
+  const offer = notify.mock.calls.map(([n]) => n).find((n) => n.key === "app.settingsImport.inspections");
+  expect(offer.actions.map((a: { label: string }) => a.label)).toEqual(["Use Strict"]);
+  await act(async () => offer.actions[0].run());
+  expect(set).toHaveBeenLastCalledWith("project", "inspections.profile", '"ide:strict"');
+  useProject.setState({ project: null });
+});

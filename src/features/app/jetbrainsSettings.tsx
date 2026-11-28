@@ -1,6 +1,6 @@
 /**
  * Import Settings… with a JetBrains `settings.zip`: maps the archive's colour
- * schemes, keymaps, fonts, tabs and indents, live templates, and the editor /
+ * schemes, keymaps, fonts, tabs and indents, live templates, inspection profiles, and the editor /
  * general options OpenIDEA has to settings writes, after a confirmation listing
  * them. Only keys present in the archive are written (JetBrains leaves defaults
  * out). The rest is listed as not imported.
@@ -20,6 +20,7 @@ import { ask } from "@/workbench/messages";
 import { parseJetBrainsTemplates, type JetBrainsTemplateImport } from "@/features/templates/live/jetbrains";
 import { saveImportedTemplates } from "@/features/templates/live/store";
 import styles from "./app.module.css";
+import { parseJetBrainsInspections } from "./jetbrainsInspections";
 import {
   CODE_INSIGHT_FLAGS,
   CODE_INSIGHT_NUMBERS,
@@ -41,6 +42,10 @@ export interface JetBrainsImportPlan {
   invalid: string[];
   /** IDEA action ids the imported keymaps bind that have no counterpart here. */
   unknownActions: string[];
+  /** Inspections of the imported profiles that have no counterpart here. */
+  unmappedInspections: string[];
+  /** Imported named inspection profiles, offered for the open project after the import. */
+  inspectionProfiles?: { id: string; name: string }[];
   /** Custom live templates are committed once after confirmation, not through settings writes. */
   liveTemplates?: JetBrainsTemplateImport;
 }
@@ -55,6 +60,7 @@ interface CurrentSettings {
     codeStyle?: { languages?: Record<string, LanguageCodeStyle> };
   };
   customKeymaps?: Record<string, CustomKeymap>;
+  inspections?: unknown;
 }
 
 const USER_PREFIX = "_@user_";
@@ -148,7 +154,14 @@ export async function planJetBrainsImport(
   languages?: readonly LanguageInfo[],
 ): Promise<JetBrainsImportPlan> {
   const { editor } = current;
-  const plan: JetBrainsImportPlan = { writes: [], rows: [], skipped: [], invalid: [], unknownActions: [] };
+  const plan: JetBrainsImportPlan = {
+    writes: [],
+    rows: [],
+    skipped: [],
+    invalid: [],
+    unknownActions: [],
+    unmappedInspections: [],
+  };
   const add = (key: string, value: string | number | boolean | undefined, label: string, shown?: string) => {
     if (value === undefined) return;
     plan.writes.push([key, value]);
@@ -369,9 +382,26 @@ export async function planJetBrainsImport(
     }
   }
 
+  const inspectionFiles = Object.fromEntries(
+    Object.entries(bundle.files).filter(([file]) => /^inspection\/[^/]+\.xml$/.test(file)),
+  );
+  if (Object.keys(inspectionFiles).length) {
+    const parsed = parseJetBrainsInspections(inspectionFiles, current.inspections);
+    plan.writes.push(...parsed.writes);
+    for (const p of parsed.profiles)
+      plan.rows.push({
+        label: tx("Inspection profile"),
+        value: p.replaces
+          ? tx`${p.name} (inspections: ${p.count}, replaces the existing profile)`
+          : tx`${p.name} (inspections: ${p.count})`,
+      });
+    plan.inspectionProfiles = parsed.profiles.flatMap((p) => (p.id ? [{ id: p.id, name: p.name }] : []));
+    plan.unmappedInspections = parsed.unmapped;
+    plan.invalid.push(...parsed.invalid);
+  }
+
   const has = (prefix: string) => bundle.entries.some((e) => e.startsWith(prefix));
   if (has("codestyles/")) plan.skipped.push(tx("Code Style options other than Tabs and Indents"));
-  if (has("inspection/")) plan.skipped.push(tx("Inspections"));
   if (has("installed.txt")) plan.skipped.push(tx("Plugins"));
   return plan;
 }
@@ -380,6 +410,7 @@ function Summary({ plan }: { plan: JetBrainsImportPlan }) {
   const left = [...plan.skipped, ...(plan.liveTemplates?.skipped ?? []), ...plan.invalid];
   const unknown = plan.unknownActions;
   const unsupported = plan.liveTemplates?.unsupported.join(", ") ?? "";
+  const unmapped = plan.unmappedInspections;
   return (
     <div className={styles.importSummary}>
       <div>{tx("These settings will be imported:")}</div>
@@ -397,6 +428,9 @@ function Summary({ plan }: { plan: JetBrainsImportPlan }) {
         </div>
       )}
       {unknown.length > 0 && <div>{tx`Not available in OpenIDEA (${unknown.length}): ${unknown.join(", ")}.`}</div>}
+      {unmapped.length > 0 && (
+        <div>{tx`Inspections without an equivalent in OpenIDEA (${unmapped.length}): ${unmapped.join(", ")}.`}</div>
+      )}
       {unsupported && <div>{tx`Unsupported template expressions (kept as text, not evaluated): ${unsupported}.`}</div>}
     </div>
   );
@@ -430,4 +464,23 @@ export async function importJetBrainsSettings(path: string) {
   if (plan.liveTemplates?.templates.length) saveImportedTemplates(plan.liveTemplates.templates);
   useProject.setState({ settings });
   notifications().notify({ level: "info", title: "Settings imported", body: path, key: "app.settingsImport" });
+  if (useProject.getState().project && plan.inspectionProfiles?.length)
+    offerInspectionProfiles(plan.inspectionProfiles);
+}
+
+/** JetBrains keeps the profile in use per project, so the import only offers it for the open one. */
+function offerInspectionProfiles(profiles: { id: string; name: string }[]) {
+  notifications().notify({
+    level: "info",
+    sticky: true,
+    key: "app.settingsImport.inspections",
+    title: tx("Use an imported inspection profile in this project?"),
+    actions: profiles.slice(0, 3).map(({ id, name: displayName }) => ({
+      label: tx`Use ${displayName}`,
+      run: async () => {
+        const settings = await call(commands.settingsSet("project", "inspections.profile", JSON.stringify(id)));
+        useProject.setState({ settings });
+      },
+    })),
+  });
 }

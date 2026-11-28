@@ -522,7 +522,7 @@ impl SettingsStore {
 pub struct JetBrainsSettings {
     pub entries: Vec<String>,
     /// Entry name → text, for the files OpenIDEA reads: `colors/*.icls`, `keymaps/*.xml`,
-    /// `codestyles/*.xml`, `templates/*.xml` and some of `options/`.
+    /// `codestyles/*.xml`, `templates/*.xml`, `inspection/*.xml` and some of `options/`.
     pub files: BTreeMap<String, String>,
 }
 
@@ -540,8 +540,13 @@ const JETBRAINS_OPTIONS: [&str; 9] = [
     "options/linux/keymap.xml",
 ];
 /// Folders whose files are all read: (folder, extension).
-const JETBRAINS_READ_DIRS: [(&str, &str); 4] =
-    [("colors/", ".icls"), ("keymaps/", ".xml"), ("codestyles/", ".xml"), ("templates/", ".xml")];
+const JETBRAINS_READ_DIRS: [(&str, &str); 5] = [
+    ("colors/", ".icls"),
+    ("keymaps/", ".xml"),
+    ("codestyles/", ".xml"),
+    ("templates/", ".xml"),
+    ("inspection/", ".xml"),
+];
 const JETBRAINS_MAX_TEXT: u64 = 4 << 20;
 
 /// The settings of a JetBrains IDE: an exported `settings.zip`, or the IDE's own settings folder
@@ -1151,17 +1156,19 @@ mod tests {
                 ("templates/Python.xml", "<templateSet name=\"Python\"/>"),
                 ("templates/nested/ignored.xml", "<templateSet/>"),
                 ("templates/ignored.txt", "not XML"),
+                ("inspection/Strict.xml", "<profile/>"),
                 ("options/mac/keymap.xml", "<application/>"),
                 ("options/terminal-font.xml", "<application/>"),
             ],
         );
         let read = read_jetbrains_settings(&ok).unwrap();
-        assert_eq!(read.entries.len(), 12);
+        assert_eq!(read.entries.len(), 13);
         assert_eq!(
             read.files.keys().collect::<Vec<_>>(),
             [
                 "codestyles/Default.xml",
                 "colors/_@user_Darcula.icls",
+                "inspection/Strict.xml",
                 "keymaps/macOS.xml",
                 "options/editor-font.xml",
                 "options/mac/keymap.xml",
@@ -1192,6 +1199,7 @@ mod tests {
         put("codestyles/Default.xml", "<code_scheme/>");
         put("templates/Python.xml", "<templateSet name=\"Python\"/>");
         put("templates/nested/ignored.xml", "<templateSet/>");
+        put("inspection/Strict.xml", "<profile/>");
         put("plugins/Tools/lib/tools.jar", "jar");
 
         let read = read_jetbrains_settings(&config).unwrap();
@@ -1200,6 +1208,7 @@ mod tests {
             [
                 "codestyles/Default.xml",
                 "colors/_@user_Darcula.icls",
+                "inspection/Strict.xml",
                 "keymaps/macOS.xml",
                 "options/editor-font.xml",
                 "options/mac/keymap.xml",
@@ -1216,6 +1225,7 @@ mod tests {
                 "keymaps/macOS.xml",
                 "codestyles/Default.xml",
                 "templates/Python.xml",
+                "inspection/Strict.xml",
                 "installed.txt"
             ]
         );
