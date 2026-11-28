@@ -131,10 +131,12 @@ export function createVenv(
   location: string,
   /** Also install the packages the project declares (pipenv: its `Pipfile`). */
   installPackages: boolean,
+  /** venv / uv: the environment also sees the base interpreter's packages (`--system-site-packages`). */
+  inheritPackages: boolean,
   onLine: (line: string) => void,
 ): Streamed<Sdk> {
   return streamed(
-    (req, ch) => call(commands.sdkPythonCreateVenv(tool, base, location, installPackages, req, ch)),
+    (req, ch) => call(commands.sdkPythonCreateVenv(tool, base, location, installPackages, inheritPackages, req, ch)),
     onLine,
   );
 }

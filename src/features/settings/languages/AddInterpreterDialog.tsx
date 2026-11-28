@@ -45,6 +45,7 @@ export function AddInterpreterDialog({
   // Conda keeps named environments in its own envs directory, so only a name is asked for.
   const [envName, setEnvName] = useState(() => root.replaceAll("\\", "/").split("/").filter(Boolean).at(-1) ?? "env");
   const [installPackages, setInstallPackages] = useState(true);
+  const [inheritPackages, setInheritPackages] = useState(false);
   const [hatch, setHatch] = useState<{ root: string; names: string[]; error?: string }>();
   const [hatchEnv, setHatchEnv] = useState<string | null>(null);
   const [existing, setExisting] = useState<string | null>(null);
@@ -141,7 +142,8 @@ export function AddInterpreterDialog({
     }
     if (!baseValue || !target) return;
     setLog([]);
-    const job = createVenv(kind, baseValue, target, kind === "pipenv" && installPackages, (line) =>
+    const inherit = (kind === "venv" || kind === "uv") && inheritPackages;
+    const job = createVenv(kind, baseValue, target, kind === "pipenv" && installPackages, inherit, (line) =>
       setLog((l) => [...l.slice(-200), line]),
     );
     setBusy({ cancel: job.cancel });
@@ -156,11 +158,19 @@ export function AddInterpreterDialog({
 
   const canOk = !busy && (mode === "new" ? !!baseValue && !!target : !!existing?.trim());
   const note = {
-    venv: tx("Runs “<base> -m venv <location>”; the new interpreter becomes the project interpreter."),
+    venv: inheritPackages
+      ? tx(
+          "Runs “<base> -m venv --system-site-packages <location>”; the new interpreter becomes the project interpreter.",
+        )
+      : tx("Runs “<base> -m venv <location>”; the new interpreter becomes the project interpreter."),
     conda: tx(
       "Runs “conda create -n <name> python=<version>”: a new environment with only Python in it, in conda's envs directory; the new interpreter becomes the project interpreter.",
     ),
-    uv: tx("Runs “uv venv <location> --python <base>”; the new interpreter becomes the project interpreter."),
+    uv: inheritPackages
+      ? tx(
+          "Runs “uv venv <location> --python <base> --system-site-packages”; the new interpreter becomes the project interpreter.",
+        )
+      : tx("Runs “uv venv <location> --python <base>”; the new interpreter becomes the project interpreter."),
     poetry: tx(
       "Runs “poetry env use <base>” in the project; poetry keeps the environment under its own cache directory.",
     ),
@@ -306,6 +316,14 @@ export function AddInterpreterDialog({
                   />
                 )}
               </div>
+              {(kind === "venv" || kind === "uv") && (
+                <Checkbox
+                  checked={inheritPackages}
+                  onChange={setInheritPackages}
+                  disabled={!!busy}
+                  label={tx("Inherit packages from base interpreter")}
+                />
+              )}
               {kind === "pipenv" && (
                 <Checkbox
                   checked={installPackages}

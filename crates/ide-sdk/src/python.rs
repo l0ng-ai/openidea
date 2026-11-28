@@ -41,25 +41,29 @@ pub enum VenvTool {
 /// Creates a virtualenv at `location` with `tool` and returns its interpreter.
 /// `base` is the interpreter uv / venv build on, or the one poetry's / pipenv's / hatch's env uses.
 /// `install` also installs the packages the project declares, for the tool that reads them (pipenv).
+/// `inherit` gives a venv / uv environment the base interpreter's packages (`--system-site-packages`).
 /// For Hatch, `location` is `<project>/<environment name>`: Hatch decides where the environment goes.
 pub fn create_venv(
     tool: VenvTool,
     base: &Path,
     location: &Path,
     install: bool,
+    inherit: bool,
     cancel: &CancellationToken,
     on_line: &dyn Fn(String),
 ) -> IdeResult<Sdk> {
     let which = |tool: &str| if tool == "conda" { crate::discover::conda_exe_for(base) } else { which(tool) };
-    create_venv_with(tool, base, location, install, which, cancel, on_line)
+    create_venv_with(tool, base, location, install, inherit, which, cancel, on_line)
 }
 
 /// [`create_venv`] with the tool lookup injectable (tests fake `uv` / `poetry`).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn create_venv_with(
     tool: VenvTool,
     base: &Path,
     location: &Path,
     install: bool,
+    inherit: bool,
     which: impl Fn(&str) -> Option<PathBuf>,
     cancel: &CancellationToken,
     on_line: &dyn Fn(String),
@@ -72,10 +76,18 @@ pub(crate) fn create_venv_with(
                     format!("{} already contains a virtual environment", location.display()),
                 ));
             }
+            // A venv's site-packages are not passed on: venv and uv build on the Python it was made from.
+            if inherit && venv_of(base).is_some() {
+                return Err(IdeError::invalid(format!(
+                    "{} is a virtual environment, whose packages a new environment cannot inherit. \
+                     Pick the Python it was created from as the base interpreter.",
+                    base.display()
+                )));
+            }
             if let Some(parent) = location.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            let (program, args) = match tool {
+            let (program, mut args) = match tool {
                 VenvTool::Uv => {
                     let uv = which("uv").ok_or_else(|| {
                         IdeError::unavailable("uv is not installed (install it from https://docs.astral.sh/uv)")
@@ -92,6 +104,9 @@ pub(crate) fn create_venv_with(
                 }
                 _ => (base.to_path_buf(), venv_args(location)),
             };
+            if inherit {
+                args.push("--system-site-packages".to_owned());
+            }
             stream(&program, &args, None, &[], cancel, on_line)?;
             let python = location.join(bin_dir()).join(exe("python"));
             crate::discover::python_sdk(&python, "venv", location.parent().and_then(Path::parent))

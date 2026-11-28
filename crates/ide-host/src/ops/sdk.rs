@@ -377,6 +377,7 @@ pub async fn sdk_python_hatch_envs(host: &Host, window: &str, request: RequestId
 
 /// Creates a Python environment and streams its output through `on_output`.
 /// With Pipenv, `install_packages` also installs the packages declared in the project's `Pipfile`.
+/// With venv / uv, `system_site_packages` lets the environment see the base interpreter's packages.
 #[allow(clippy::too_many_arguments)]
 #[command(trust = outside_restricted)]
 pub async fn sdk_python_create_venv(
@@ -386,13 +387,14 @@ pub async fn sdk_python_create_venv(
     base: PathBuf,
     location: PathBuf,
     install_packages: bool,
+    system_site_packages: bool,
     request: RequestId,
     on_output: Channel<String>,
 ) -> IdeResult<Sdk> {
     host.require_trust_if_project(window)?;
     let cancel = host.begin_project_request(window, request);
     let result = blocking(move || {
-        ide_sdk::python::create_venv(tool, &base, &location, install_packages, &cancel, &|line| {
+        ide_sdk::python::create_venv(tool, &base, &location, install_packages, system_site_packages, &cancel, &|line| {
             let _ = on_output.send(line);
         })
     })

@@ -1558,6 +1558,53 @@ fn venv_creation_ignores_modules_in_the_working_directory() {
 }
 
 #[test]
+fn a_virtualenv_inherits_the_base_packages_only_when_asked() {
+    let Some(python) = crate::exec::which("python3") else { return };
+    let dir = tempfile::tempdir().unwrap();
+    for inherit in [false, true] {
+        let location = dir.path().join(format!("venv-{inherit}"));
+        let which = |tool: &str| crate::exec::which(tool);
+        let venv = crate::python::VenvTool::Venv;
+        crate::python::create_venv_with(venv, &python, &location, false, inherit, which, &Default::default(), &|_| {})
+            .unwrap();
+        let cfg = std::fs::read_to_string(location.join("pyvenv.cfg")).unwrap();
+        assert!(cfg.contains(&format!("include-system-site-packages = {inherit}")), "{cfg}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn uv_inherits_the_base_packages_and_no_venv_base_is_inherited_from() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    // A fake uv that records its arguments and fails, so nothing else runs.
+    let uv = tmp.path().join("uv");
+    let log = tmp.path().join("args");
+    std::fs::write(&uv, format!("#!/bin/sh\necho \"$@\" > '{}'\nexit 1\n", log.display())).unwrap();
+    std::fs::set_permissions(&uv, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let which = |tool: &str| (tool == "uv").then(|| uv.clone());
+    let base = tmp.path().join("python3");
+    let create = |tool, base: &Path, inherit| {
+        let location = tmp.path().join("new");
+        crate::python::create_venv_with(tool, base, &location, false, inherit, which, &Default::default(), &|_| {})
+    };
+    assert!(create(crate::python::VenvTool::Uv, &base, true).is_err());
+    assert!(std::fs::read_to_string(&log).unwrap().trim_end().ends_with("--system-site-packages"));
+    assert!(create(crate::python::VenvTool::Uv, &base, false).is_err());
+    assert!(!std::fs::read_to_string(&log).unwrap().contains("--system-site-packages"));
+    // A virtualenv as the base: refused before any tool runs, as its packages would not be inherited.
+    let venv = tmp.path().join("venv");
+    std::fs::create_dir_all(venv.join("bin")).unwrap();
+    std::fs::write(venv.join("pyvenv.cfg"), "home = /usr/bin").unwrap();
+    std::fs::remove_file(&log).unwrap();
+    for tool in [crate::python::VenvTool::Uv, crate::python::VenvTool::Venv] {
+        let err = create(tool, &venv.join("bin/python"), true).unwrap_err();
+        assert!(err.message.contains("is a virtual environment"), "{}", err.message);
+    }
+    assert!(!log.exists());
+}
+
+#[test]
 fn env_tools_are_reported_missing_before_they_run() {
     // Without uv / Poetry on PATH the error names the install, not a spawn failure.
     let dir = tempfile::tempdir().unwrap();
@@ -1571,6 +1618,7 @@ fn env_tools_are_reported_missing_before_they_run() {
         &base,
         &location,
         false,
+        false,
         none,
         &Default::default(),
         &|_| {},
@@ -1581,6 +1629,7 @@ fn env_tools_are_reported_missing_before_they_run() {
         crate::python::VenvTool::Poetry,
         &base,
         &location,
+        false,
         false,
         none,
         &Default::default(),
@@ -1593,6 +1642,7 @@ fn env_tools_are_reported_missing_before_they_run() {
         &base,
         &location,
         false,
+        false,
         none,
         &Default::default(),
         &|_| {},
@@ -1604,6 +1654,7 @@ fn env_tools_are_reported_missing_before_they_run() {
         &base,
         &location,
         true,
+        false,
         none,
         &Default::default(),
         &|_| {},
@@ -1615,6 +1666,7 @@ fn env_tools_are_reported_missing_before_they_run() {
         crate::python::VenvTool::Hatch,
         &base,
         &location,
+        false,
         false,
         none,
         &Default::default(),
@@ -1632,6 +1684,7 @@ fn env_tools_are_reported_missing_before_they_run() {
         crate::python::VenvTool::Uv,
         &base,
         &location,
+        false,
         false,
         none,
         &Default::default(),
@@ -1655,6 +1708,7 @@ fn an_existing_conda_environment_is_not_recreated() {
         crate::python::VenvTool::Conda,
         &base,
         &location,
+        false,
         false,
         none,
         &Default::default(),
@@ -1707,6 +1761,7 @@ fn a_named_conda_environment_is_found_where_conda_put_it() {
             &base,
             Path::new("ds"),
             false,
+            false,
             which,
             &Default::default(),
             &|_| {},
@@ -1753,6 +1808,7 @@ fn pipenv_creates_the_projects_environment_and_never_replaces_one() {
             &python,
             &project.join(".venv"),
             install,
+            false,
             which,
             &Default::default(),
             &|_| {},
@@ -1864,6 +1920,7 @@ fn hatch_creates_the_selected_environment_on_the_base_interpreter() {
             crate::python::VenvTool::Hatch,
             &python,
             &project.join(env),
+            false,
             false,
             which,
             &Default::default(),
