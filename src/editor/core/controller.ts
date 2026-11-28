@@ -1647,13 +1647,14 @@ export class EditorController implements SlotHost {
    * running process unasked): their answers are resolved first, so the sync
    * and the async ones are protected alike.
    */
-  private enforcePaneTabLimit(paneId: string, keep?: string) {
+  private enforcePaneTabLimit(paneId: string, keep?: string, liveKeys?: ReadonlySet<string>) {
     const kinds = useContributions.getState().editorKinds;
     const busyCapable = (useTabs.getState().panes[paneId]?.tabs ?? []).filter((t) => kinds.get(t.input.kind)?.isBusy);
     const evict = (busy: ReadonlySet<string>) => {
       const prefs = editorPrefs().tabs;
       // A tab whose kind reports a running process is never evicted: that would end it unasked.
-      const protect = (tab: Tab) => busy.has(tab.input.key) || inputDirty(tab.input, kinds) === true;
+      const protect = (tab: Tab) =>
+        busy.has(tab.input.key) || inputDirty(tab.input, kinds) === true || !!liveKeys?.has(tab.input.key);
       return this.removeGuarded(
         (current) =>
           current.panes[paneId]
