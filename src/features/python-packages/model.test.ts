@@ -100,6 +100,19 @@ describe("install from version control or disk", () => {
     expect(isVcsUrl("hg+https://hg.example.org/demo")).toBe(true);
     expect(isVcsUrl(vcsRequirement("requests"))).toBe(false);
     expect(isVcsUrl(vcsRequirement("file:///tmp/pkg"))).toBe(false);
+    for (const url of [
+      "git+ssh://git@github.com/psf/requests.git",
+      "git+file:///work/repo",
+      "hg+https://hg.example.org/demo",
+      "svn+svn://svn.example.org/demo/trunk",
+      "bzr+lp:demo",
+      "git+https://github.com/psf/requests.git@v2.32.0",
+      "git+https://github.com/o/r.git#egg=demo&subdirectory=pkgs/demo",
+      "requests @ git+https://github.com/psf/requests.git",
+      "demo[cli] @ git+https://github.com/o/r.git",
+    ])
+      expect(isVcsUrl(url), url).toBe(true);
+    expect(isVcsUrl("requests @ https://example.org/requests.zip")).toBe(false);
   });
 
   it("never lets a typed path read as a PyPI name", () => {

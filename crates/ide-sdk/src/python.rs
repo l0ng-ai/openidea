@@ -630,8 +630,13 @@ pub fn install_package(
         return Err(IdeError::invalid("enter a package name or requirement"));
     }
     let requirement = resolve_requirement(requirement, project_root)?;
+    // A path (a requirement never starts with a root), without its `[extras]`.
+    let path = Path::new(&requirement).has_root().then(|| Path::new(requirement.split('[').next().unwrap_or_default()));
+    if let Some(path) = path.filter(|p| !p.exists()) {
+        return Err(IdeError::not_found(format!("{} does not exist", path.display())));
+    }
     // An editable clone of a repository would go where pip runs, a temporary folder.
-    if editable && !Path::new(&requirement).is_absolute() {
+    if editable && path.is_none() {
         return Err(IdeError::invalid("only a local directory can be installed in editable mode"));
     }
     let installer = installer(python)?;
