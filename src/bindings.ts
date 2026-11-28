@@ -12764,6 +12764,10 @@ export type RemoteLaunch = {
 export type RemoteOp = { op: "fetch"; 
 /**  The incoming-commit poll keeps Git's tag handling and uses saved credentials only. */
 background?: boolean; report?: boolean; skipRemotes?: string[] } | { op: "fetchRemote"; remote: string; report?: boolean } | { op: "fetchPushTarget"; selection: PushSelection } | { op: "unshallow" } | { op: "pull"; rebase: boolean; expectedBranch?: string | null } | { op: "updateProjectBranch"; rebase: boolean } | { op: "updateSubmodule"; parent: string } | 
+/**  Git › Submodules › Initialize Submodules. */
+{ op: "initSubmodules" } | 
+/**  Git › Submodules › Sync Submodule URLs. */
+{ op: "syncSubmodules" } | 
 /**  Update Project › Reset to the Remote Branch. */
 { op: "resetToUpstream" } | { op: "push"; force_with_lease: boolean; set_upstream: boolean; 
 /**  Push dialog › Push tags. */
@@ -15026,6 +15030,8 @@ export type VcsRoot = {
 	headCommit: string | null,
 	/**  The history ends at a shallow boundary rather than at the initial commit. */
 	shallow?: boolean,
+	/**  Submodules (repository-relative) whose checkout was never initialized. */
+	uninitializedSubmodules?: string[],
 	/**  Remote availability is unknown in Restricted Mode or when config cannot be read. */
 	hasRemotes?: boolean | null,
 	/**  Conflicts staged during the current operation that can be reopened. */

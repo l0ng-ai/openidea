@@ -188,6 +188,8 @@ const REMOTE_TITLE: Record<RemoteOp["op"], [string, string]> = {
   pull: ["Updating project", "Update"],
   updateProjectBranch: ["Updating project", "Update"],
   updateSubmodule: ["Updating project", "Update"],
+  initSubmodules: ["Initializing submodules", "Initialize Submodules"],
+  syncSubmodules: ["Syncing submodule URLs", "Sync Submodule URLs"],
   resetToUpstream: ["Updating project", "Update"],
   pullFrom: ["Pulling", "Pull"],
   push: ["Pushing", "Push"],
@@ -400,7 +402,11 @@ export async function runRemoteRound<Op extends RemoteOp>(
                   ? "pull"
                   : op.op === "updateSubmodule"
                     ? "submodule update"
-                    : op.op;
+                    : op.op === "initSubmodules"
+                      ? "submodule update --init --recursive"
+                      : op.op === "syncSubmodules"
+                        ? "submodule sync --recursive"
+                        : op.op;
       const description = target.detail ?? name ?? detail;
       logConsole("cmd", `git ${command}${description ? ` (${description})` : ""}`);
       if ((op.op === "updateProjectBranch" || (op.op === "pull" && !op.expectedBranch)) && targets.length > 1) {

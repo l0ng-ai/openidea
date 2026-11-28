@@ -175,6 +175,10 @@ pub struct VcsRoot {
     /// The history ends at a shallow boundary rather than at the initial commit.
     #[serde(default)]
     pub shallow: bool,
+    /// Submodules (repository-relative) whose checkout was never initialized.
+    #[serde(default)]
+    #[specta(optional)]
+    pub uninitialized_submodules: Vec<String>,
     /// Remote availability is unknown in Restricted Mode or when config cannot be read.
     #[serde(default)]
     #[specta(optional)]
@@ -220,6 +224,10 @@ pub enum RemoteOp {
     UpdateSubmodule {
         parent: PathBuf,
     },
+    /// Git › Submodules › Initialize Submodules.
+    InitSubmodules,
+    /// Git › Submodules › Sync Submodule URLs.
+    SyncSubmodules,
     /// Update Project › Reset to the Remote Branch.
     ResetToUpstream,
     Push {
@@ -559,6 +567,12 @@ pub async fn vcs_roots(host: &Host, window: &str) -> IdeResult<Vec<VcsRoot>> {
                     head,
                     head_commit,
                     shallow: r.is_shallow().unwrap_or(false),
+                    uninitialized_submodules: r
+                        .uninitialized_submodules()
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|path| ide_core::ipc_path::to_ipc(path))
+                        .collect(),
                     has_remotes: trusted.then(|| r.has_remotes().ok()).flatten(),
                     resolved_conflicts,
                 }
@@ -1708,7 +1722,8 @@ pub async fn vcs_remote(
             | RemoteOp::PullFrom { .. }
             | RemoteOp::UpdateProjectBranch { .. }
             | RemoteOp::ResetToUpstream => Some("Git pull"),
-            RemoteOp::UpdateSubmodule { .. } => Some("Git submodule update"),
+            RemoteOp::UpdateSubmodule { .. } | RemoteOp::InitSubmodules => Some("Git submodule update"),
+            RemoteOp::SyncSubmodules => Some("Git submodule sync"),
             _ => None,
         };
         with_shelf_batch(&project, shelf_batch, || {
@@ -1744,6 +1759,8 @@ pub async fn vcs_remote(
                 RemoteOp::UpdateSubmodule { parent } => project.with_repo_at(Some(&parent), |parent| {
                     r.update_from_superproject(parent, &cancel, &out).map(|()| None)
                 }),
+                RemoteOp::InitSubmodules => r.init_submodules(&cancel, &out).map(|()| None),
+                RemoteOp::SyncSubmodules => r.sync_submodules(&cancel, &out).map(|()| None),
                 RemoteOp::ResetToUpstream => r.reset_to_upstream_with_tags(tags_mode, &cancel, &out).map(|()| None),
                 RemoteOp::Push { force_with_lease, set_upstream, tags, force, no_verify } => r
                     .push_with(PushOptions { force_with_lease, force, set_upstream, tags, no_verify }, &cancel, &out)

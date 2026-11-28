@@ -48,6 +48,56 @@ impl Repo {
         Ok(self.submodule_links()?.into_iter().filter_map(|(rel, _)| self.initialized_submodule(&rel)).collect())
     }
 
+    /// Submodules recorded in the index whose checkout is missing (never initialized), except
+    /// those `git submodule update --init` skips (`update = none`, `active = false`).
+    pub fn uninitialized_submodules(&self) -> IdeResult<Vec<PathBuf>> {
+        let repo = self.gix()?;
+        let mut skipped = Vec::new();
+        if let Some(modules) = repo.submodules().map_err(gx)? {
+            let config = repo.config_snapshot();
+            for module in modules {
+                let inactive = config.boolean(format!("submodule.{}.active", module.name()).as_str()) == Some(false);
+                if inactive || matches!(module.update(), Ok(Some(gix::submodule::config::Update::None))) {
+                    skipped.extend(module.path().ok().and_then(|path| path.to_str().ok().map(PathBuf::from)));
+                }
+            }
+        }
+        Ok(self
+            .submodule_links()?
+            .into_iter()
+            .filter_map(|(rel, _)| {
+                (self.initialized_submodule(&rel).is_none() && !skipped.contains(&rel)).then_some(rel)
+            })
+            .collect())
+    }
+
+    /// Clones and checks out the uninitialized submodules, and their own submodules. Initialized
+    /// ones are left alone: Update Project updates those without detaching a checked-out branch.
+    pub fn init_submodules(&self, cancel: &CancellationToken, on_output: &dyn Fn(String)) -> IdeResult<()> {
+        let _scope = self.execution_scope();
+        if !crate::execution_allowed() {
+            return Err(IdeError::invalid("Submodule initialization requires a trusted project"));
+        }
+        let paths: Vec<String> =
+            self.uninitialized_submodules()?.iter().map(|path| ide_core::ipc_path::to_ipc(path)).collect();
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let mut args = vec!["-c", "submodule.recurse=false", "--literal-pathspecs", "submodule", "update", "--init"];
+        args.extend(["--recursive", "--"]);
+        args.extend(paths.iter().map(String::as_str));
+        cli::run_streaming(self.root(), &args, cancel, on_output)
+    }
+
+    /// Copies the submodule URLs in `.gitmodules` to the repository and submodule configs.
+    pub fn sync_submodules(&self, cancel: &CancellationToken, on_output: &dyn Fn(String)) -> IdeResult<()> {
+        let _scope = self.execution_scope();
+        if !crate::execution_allowed() {
+            return Err(IdeError::invalid("Submodule sync requires a trusted project"));
+        }
+        cli::run_streaming(self.root(), &["submodule", "sync", "--recursive"], cancel, on_output)
+    }
+
     /// Restores the parent index, an initialized checkout, or a missing submodule directory.
     pub fn rollback_submodule(
         &self,
