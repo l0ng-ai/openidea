@@ -1,4 +1,3 @@
-import { showShelfDiff } from "./shelf";
 import type { Stash } from "@/bindings";
 import { commitRepo } from "./multiRoot";
 /** VCS actions (ids match keymaps/intellij-macos.ts where bound). */
@@ -126,7 +125,9 @@ import {
   stagingAreaOn,
 } from "./staging";
 import { stagingRange } from "./stagingRange";
-import { focusedStashDiff, showStashDiff, type StashDiffRequest } from "./stashDiff";
+import { showStashDiff, type StashDiffRequest } from "./stashDiff";
+import { focusedDiffSource, type DiffSource } from "./diffSource";
+import { displayPath } from "./compareData";
 import { showStashChanges, type StashEntry } from "./StashChanges";
 import { showSyncCommitsForCurrent } from "./SyncCommitsPopup";
 import { tx } from "@/platform/i18n";
@@ -290,6 +291,34 @@ function selectedPaths(arg: unknown, project = projectViewSelection()): string[]
       return [];
   }
   return project.length ? project : contextPaths(arg);
+}
+
+function notifySelectChangedFile() {
+  notifications().notify({ group: "vcs", level: "info", title: "Select a changed file to show its diff" });
+}
+
+/**
+ * A file the diff actions guessed (the Project view's or the editor's) that has no local
+ * changes: say so rather than open an empty diff against HEAD.
+ */
+function notifyNoLocalChanges(path: string) {
+  notifications().notify({ group: "vcs", level: "info", title: tx`No local changes in ${displayPath(path)}` });
+}
+
+/** Show Diff in the focused view: its own way, else its selection's diff in the editor. */
+async function showSourceDiff(source: DiffSource) {
+  if (source.show) return source.show();
+  const data = await source.diff?.();
+  if (data) await openVcsDiff(data, { preview: true });
+  else notifySelectChangedFile();
+}
+
+/** Show Diff in New Window in the focused view; a view without a plain diff shows its own. */
+async function showSourceDiffInNewWindow(source: DiffSource) {
+  const data = await source.diff?.();
+  if (data) showDiffWindow(data, () => void openDiff(data, { preview: true }));
+  else if (source.show) await source.show();
+  else notifySelectChangedFile();
 }
 
 /**
@@ -786,9 +815,9 @@ export function registerVcsActions(): () => void {
       // In the Git Log's changed files it shows the commit's diff instead.
       keyWhen: "!editorTextFocus && !diffEditorFocus && !vcsLogChangesFocus && !vcsLogRevisionFocus",
       run: async ({ arg, ctx }) => {
-        if (ctx.shelfFocus && arg === undefined) return showShelfDiff();
-        const stash = arg === undefined ? focusedStashDiff() : null;
-        if (stash) return showStashDiff(stash, workflowSettings().vcs.git.stashDiffTarget);
+        // A view with changes of its own (two revisions, a shelf, a stash) shows its selection.
+        const source = arg === undefined ? focusedDiffSource() : null;
+        if (source) return showSourceDiff(source);
         if (arg === undefined && getContext().activeToolWindow === "commit") {
           const { amend, amendPreview, groupByDir, selectionKeys } = useCommit.getState();
           if (amend && amendPreview && selectionKeys.some((key) => key.startsWith("amend:"))) {
@@ -806,6 +835,7 @@ export function registerVcsActions(): () => void {
           return;
         }
         if (await showDirectoryWorkingDiff(paths)) return;
+        if (arg === undefined && !paths.some((path) => statusOf(path))) return notifyNoLocalChanges(paths[0]!);
         const tree = currentChangeTree();
         // The selected rows while the tree has focus: a file under Staged or Unstaged diffs that side.
         const targets = showDiffTargets(tree, paths, !argPaths(arg)?.length && commitWindowFocused());
@@ -841,8 +871,13 @@ export function registerVcsActions(): () => void {
       keyWhen: "!editorTextFocus",
       run: ({ arg, ctx }) => {
         const requested = arg && typeof arg === "object" && "left" in arg && "right" in arg ? (arg as DiffData) : null;
+        // A view with changes of its own (two revisions, a shelf, a stash) shows its selection.
+        const source = arg === undefined ? focusedDiffSource() : null;
+        if (source) return showSourceDiffInNewWindow(source);
+        const viewed = requested ?? focusedDiffNavigator()?.viewer?.()?.data;
         const path = focusedSelection(arg, ctx)[0];
-        const data = requested ?? focusedDiffNavigator()?.viewer?.()?.data ?? (path ? workingDiffData(path) : null);
+        if (!viewed && arg === undefined && path && !statusOf(path)) return notifyNoLocalChanges(path);
+        const data = viewed ?? (path ? workingDiffData(path) : null);
         if (!data) {
           notifications().notify({ group: "vcs", level: "info", title: "Select a changed file to show its diff" });
           return;

@@ -33,7 +33,7 @@ vi.mock("@/ui", async (original) => ({
 import { StashesPanel } from "../StashesPanel";
 import { useProject } from "@/platform/project";
 import { useCommit } from "../commitStore";
-import { focusedStashDiff } from "../stashDiff";
+import { focusedDiffSource } from "../diffSource";
 import { useVcs } from "../store";
 
 beforeEach(() => {
@@ -159,11 +159,17 @@ it("routes Show Diff to the selected stash file while its tree has focus", async
   render(<StashesPanel />);
   const file = await screen.findByText("app.ts");
   const tree = screen.getByRole("tree", { name: "Changed files" });
-  fireEvent.focus(tree);
   fireEvent.mouseDown(file, { button: 0 });
-  expect(focusedStashDiff()).toMatchObject({ index: 0, changes: [{ repo: "/p/front", after: "/p/front-stash" }] });
-  fireEvent.blur(tree, { relatedTarget: document.body });
-  expect(focusedStashDiff()).toBeNull();
+  tree.focus();
+  await focusedDiffSource()!.show!();
+  expect(action).toHaveBeenLastCalledWith("vcs.stash.showDiff", {
+    index: 0,
+    changes: [expect.objectContaining({ repo: "/p/front", after: "/p/front-stash" })],
+    chain: expect.any(Array),
+    dialogLifetime: undefined,
+  });
+  tree.blur();
+  expect(focusedDiffSource()).toBeNull();
 });
 
 it("passes a multi-file selection to diff, compare and apply actions", async () => {

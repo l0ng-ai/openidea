@@ -1275,15 +1275,17 @@ export function ChangesBetweenDialog({
   useEffect(() => {
     if (native) onCaption?.(caption);
   }, [native, onCaption, caption]);
-  const showDiff = () => {
-    if (!current) return;
-    const data = chainedDiff(tree, current, diffFor) ?? diffFor(current);
+  const showFileDiff = (file: ComparisonFile) => {
+    const data = chainedDiff(tree, file, diffFor) ?? diffFor(file);
     if (onShowDiff) onShowDiff(data);
     else {
       void openVcsDiff(data);
       // A diff window opens on top of this list (#1863); an editor tab would sit behind it.
       if (!vcsDiffInFront()) onClose();
     }
+  };
+  const showDiff = () => {
+    if (current) showFileDiff(current);
   };
   const contents = (
     <>
@@ -1331,6 +1333,7 @@ export function ChangesBetweenDialog({
           ariaLabel="Changed files"
           inlineDiff={!listOnly}
           openOnActivate={listOnly}
+          onShowDiff={showFileDiff}
           renderDetails={(n) =>
             n.file ? (
               <>

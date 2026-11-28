@@ -1,6 +1,7 @@
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Icon, Tree, fileIconName, lazyComponent } from "@/ui";
 import { diffInput, openVcsDiff, withChain, type DiffData } from "./diffInput";
+import { useDiffSource } from "./diffSource";
 import { dirKeys, type FileTreeNode } from "./fileTree";
 import { filesUnder } from "./logChanges";
 import styles from "./common.module.css";
@@ -38,6 +39,7 @@ export function ComparisonTree<F>({
   onOpen,
   inlineDiff = true,
   openDiff = defaultOpenDiff,
+  onShowDiff,
 }: {
   tree: FileTreeNode<F>[];
   current: F | null;
@@ -53,13 +55,40 @@ export function ComparisonTree<F>({
   inlineDiff?: boolean;
   /** With `openOnActivate`: where a double-clicked file's diff opens (default: an editor tab). */
   openDiff?: (diff: DiffData) => void;
+  /**
+   * Show Diff on the tree's selection, as the owner's Show Diff button does. Without it the
+   * file's diff, with the tree's files as its chain, goes to `openDiff`. Show Diff in New
+   * Window opens that diff in a diff window either way (the tree is a {@link useDiffSource}).
+   */
+  onShowDiff?: (file: F) => void;
 }) {
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const root = useRef<HTMLDivElement>(null);
+  // The lead file, else the first file under the selected rows, else the tree's first file.
+  const pick = (): F | undefined => {
+    const all = filesUnder(tree);
+    return (current !== null && all.includes(current) ? current : undefined) ?? filesUnder(tree, selected)[0] ?? all[0];
+  };
+  useDiffSource(root, {
+    diff: () => {
+      const file = pick();
+      return file === undefined ? null : chainedDiff(tree, file, diffFor);
+    },
+    show: () => {
+      const file = pick();
+      if (file === undefined) return;
+      if (onShowDiff) return onShowDiff(file);
+      const diff = chainedDiff(tree, file, diffFor);
+      if (!diff) return;
+      openDiff(diff);
+      onOpen?.();
+    },
+  });
   const [expanded, setExpanded] = useState<ReadonlySet<string> | null>(null);
   const data = inlineDiff && current && diffFor(current);
   const input = data ? diffInput(data) : null;
   return (
-    <div className={`${styles.comparison} ${input ? styles.comparisonWithDiff : ""}`}>
+    <div ref={root} className={`${styles.comparison} ${input ? styles.comparisonWithDiff : ""}`}>
       <Tree<FileTreeNode<F>>
         roots={tree}
         getKey={(n) => n.key}

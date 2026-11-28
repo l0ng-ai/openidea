@@ -16,8 +16,10 @@ const diffWindow = vi.hoisted(() => vi.fn());
 const separateWindow = vi.hoisted(() => vi.fn());
 const project = vi.hoisted(() => ({ paths: [] as string[] }));
 const active = vi.hoisted(() => ({ path: null as string | null }));
+const notify = vi.hoisted(() => vi.fn());
 vi.mock("@/workbench/contributions", async (original) => ({
   ...(await original<typeof import("@/workbench/contributions")>()),
+  notifications: () => ({ notify }),
   editorService: () => ({ openInput: opened }),
   maybeEditorService: () => (active.path ? { activePath: () => active.path } : undefined),
   projectViewSelection: () => project.paths,
@@ -45,6 +47,7 @@ beforeEach(() => {
   opened.mockClear();
   diffWindow.mockClear();
   separateWindow.mockClear();
+  notify.mockClear();
   project.paths = [];
   active.path = null;
   setContext("activeToolWindow", "");
@@ -270,4 +273,24 @@ it.each<DiffData>([
 ])("keeps the requested diff sides when opening a separate window: %j", async (data) => {
   await getAction("vcs.showDiffInNewWindow")!.run({ arg: data, ctx: { vcsAvailable: true } });
   expect(separateWindow.mock.calls[0]![0]).toBe(data);
+});
+
+describe("a guessed file without local changes", () => {
+  // The diff actions guess the Project view's or the editor's file when no view around the
+  // focus has a diff of its own: an unchanged guess says so rather than open an empty diff.
+  it("tells Show Diff and Show Diff in New Window instead of opening an identical diff", async () => {
+    active.path = "/repo/clean.ts";
+    await getAction("vcs.showDiff")!.run({ arg: undefined, ctx: { vcsAvailable: true } });
+    await getAction("vcs.showDiffInNewWindow")!.run({ arg: undefined, ctx: { vcsAvailable: true } });
+    expect(opened).not.toHaveBeenCalled();
+    expect(separateWindow).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledTimes(2);
+    expect(notify).toHaveBeenLastCalledWith(expect.objectContaining({ title: "No local changes in /repo/clean.ts" }));
+  });
+
+  it("still opens a file the action is given, changed or not", async () => {
+    await getAction("vcs.showDiffInNewWindow")!.run({ arg: "/repo/clean.ts", ctx: { vcsAvailable: true } });
+    expect(separateWindow.mock.calls[0]![0]).toMatchObject({ path: "/repo/clean.ts" });
+    expect(notify).not.toHaveBeenCalled();
+  });
 });

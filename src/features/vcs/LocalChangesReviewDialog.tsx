@@ -5,7 +5,8 @@ import { Button, Dialog, Icon, IconButton, T, Tree, fileIconName, showContextMen
 import { showRollbackDialog } from "./changeOps";
 import { isNestedRepoEntry } from "./submoduleRollback";
 import { groupOf, isPartiallyStaged } from "./changes";
-import { workingDiffData, withChain } from "./diffInput";
+import { workingDiffData, withChain, type DiffData } from "./diffInput";
+import { useDiffSource } from "./diffSource";
 import { openDialog } from "./dialogs";
 import { dirKeys, type FileTreeNode } from "./fileTree";
 import { filesUnder } from "./logChanges";
@@ -124,8 +125,9 @@ function LocalChangesReviewDialog({
     Array.from(new Map(rows.flatMap(({ status }) => (status ? [[status.path, status] as const] : []))).values());
   const chosen = uniqueChanges(picked.length ? picked : files.slice(0, 1));
 
-  const showDiff = (selection: readonly FileStatus[]) => {
-    if (!selection.length) return;
+  /** `selection`'s diff with the dialog's files as the chain; a partly staged file shows each side. */
+  const reviewDiff = (selection: readonly FileStatus[]): DiffData | null => {
+    if (!selection.length) return null;
     const chain = selection.length > 1 ? selection : uniqueChanges(files);
     const items = chain.flatMap((file) => {
       const worktree = workingDiffData(file.path);
@@ -134,9 +136,13 @@ function LocalChangesReviewDialog({
       return [{ ...staged, left: worktree.left }, workingDiffData(file.path, undefined, "unstaged")];
     });
     const index = items.findIndex((item) => item.path === selection[0]?.path);
-    if (index < 0) return;
+    return index < 0 ? null : withChain(items, index);
+  };
+  const showDiff = (selection: readonly FileStatus[]) => {
+    const diff = reviewDiff(selection);
+    if (!diff) return;
     void import("./diffDialog").then(({ openDiffDialog }) => {
-      if (content.current?.isConnected) openDiffDialog(withChain(items, index));
+      if (content.current?.isConnected) openDiffDialog(diff);
     });
   };
 
@@ -152,19 +158,14 @@ function LocalChangesReviewDialog({
   useEffect(() =>
     registerKeyClaim((event, stroke) => {
       if (rollingBack || !(event.target instanceof Node) || !content.current?.contains(event.target)) return false;
-      for (const [action, run] of [
-        ["vcs.showDiff", () => showDiff(chosen)],
-        ["vcs.rollback", () => void rollback()],
-      ] as const) {
-        if (!bindingsFor(action).some((binding) => normalizeBinding(binding) === stroke)) continue;
-        event.preventDefault();
-        event.stopPropagation();
-        run();
-        return true;
-      }
-      return false;
+      if (!bindingsFor("vcs.rollback").some((binding) => normalizeBinding(binding) === stroke)) return false;
+      event.preventDefault();
+      event.stopPropagation();
+      void rollback();
+      return true;
     }),
   );
+  useDiffSource(content, rollingBack ? null : { diff: () => reviewDiff(chosen), show: () => showDiff(chosen) });
 
   const blocked = files.length > 0;
   const text = operationText[operation === "checkout" ? "checkout" : "merge"];

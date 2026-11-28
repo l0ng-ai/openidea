@@ -17,8 +17,9 @@ import type {
   ShelfDiffFile,
 } from "@/bindings";
 import { setContext } from "@/platform/context";
-import { bindingsFor, normalizeBinding, registerKeyClaim, shortcutLabel } from "@/platform/keymap";
+import { shortcutLabel } from "@/platform/keymap";
 import { openDiff, openVcsDiff, withChain, workingDiffData, type DiffData } from "./diffInput";
+import { useDiffSource } from "./diffSource";
 import { showCreatePatchForShelf } from "./patches";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
@@ -230,18 +231,24 @@ function ChangeChecklist<F>({
     walk(tree);
     return out;
   };
-  useEffect(() => {
-    if (!showDiff) return;
-    return registerKeyClaim((event, stroke) => {
-      if (!(event.target instanceof Node) || !content.current?.contains(event.target)) return false;
-      if (!bindingsFor("vcs.showDiff").some((binding) => normalizeBinding(binding) === stroke)) return false;
-      event.preventDefault();
-      event.stopPropagation();
-      const file = [...selectedNodes(), tree[0]!].flatMap((n) => filesBelow(n))[0];
-      if (file) showDiff(file);
-      return true;
-    });
-  });
+  const lead = () => [...selectedNodes(), tree[0]!].flatMap((n) => filesBelow(n))[0];
+  useDiffSource(
+    content,
+    diffOf
+      ? {
+          diff: () => {
+            const file = lead();
+            if (!file) return null;
+            const chain = filesBelow(tree[0]!);
+            return withChain(chain.map(diffOf), chain.indexOf(file));
+          },
+          show: () => {
+            const file = lead();
+            if (file) showDiff?.(file);
+          },
+        }
+      : null,
+  );
   const toggle = (...nodes: FileTreeNode<F>[]) => {
     const below = nodes.flatMap((n) => filesBelow(n));
     const include = !below.every((f) => selected.has(keyOf(f)));
@@ -610,13 +617,14 @@ export function shelfDiffs(target: ShelfTarget, local = false): DiffData[] {
     }));
 }
 
-export async function showShelfDiff(arg?: unknown, local = false, newTab = false) {
+/** The shelved diff of `arg` (the shelf's selection when omitted), its files as the chain. */
+async function shelfDiffData(arg?: unknown, local = false): Promise<DiffData | null> {
   const target = shelfTarget(arg);
-  if (!target) return;
+  if (!target) return null;
   if (!useShelf.getState().diffs[target.entry.id]) {
     const root = useVcs.getState().root;
     const files = await call(commands.vcsShelfDiff(target.entry.id));
-    if (useVcs.getState().root !== root) return;
+    if (useVcs.getState().root !== root) return null;
     useShelf.setState((s) => ({ diffs: { ...s.diffs, [target.entry.id]: files } }));
   }
   let items = shelfDiffs({ id: target.entry.id, path: target.path }, local);
@@ -633,10 +641,15 @@ export async function showShelfDiff(arg?: unknown, local = false, newTab = false
     );
     items = items.filter((_, i) => supported[i]);
   }
-  if (!items.length) return;
+  return items.length ? withChain(items, 0) : null;
+}
+
+export async function showShelfDiff(arg?: unknown, local = false, newTab = false) {
+  const data = await shelfDiffData(arg, local);
+  if (!data) return;
   // "Show Diff in a New Tab" asks for an editor tab whatever the commit interface.
-  if (newTab) await openDiff(withChain(items, 0), { preview: false });
-  else await openVcsDiff(withChain(items, 0), { preview: true });
+  if (newTab) await openDiff(data, { preview: false });
+  else await openVcsDiff(data, { preview: true });
 }
 
 export async function importShelfPatches(paths?: string[]) {
@@ -791,6 +804,7 @@ export function ShelfPanel() {
     void loadShelves().catch(() => undefined);
     return () => setContext("shelfFocus", false);
   }, [root]);
+  useDiffSource(panelRef, { diff: () => shelfDiffData(), show: () => showShelfDiff() });
   const selectedId = selectedShelf?.split("\u0000", 1)[0];
   const entry = shelves.find((s) => s.id === selectedId);
   const patches = useMemo<ShelfNode[]>(() => shelves.map((s) => ({ key: s.id, entry: s })), [shelves]);

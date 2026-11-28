@@ -195,6 +195,7 @@ it("reviews the selected stash against local files and returns to the unstash op
     const binding = primaryKeyBinding("vcs.showDiff");
     expect(binding).toMatch(/^(Meta|Ctrl)\+D$/);
     fireEvent.mouseDown(file, { button: 0 });
+    tree.focus();
     fireEvent.keyDown(tree, {
       key: "d",
       code: "KeyD",

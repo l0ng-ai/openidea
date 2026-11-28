@@ -242,6 +242,10 @@ describe("shelf scope and diffs", () => {
       expect(intellijMacos[action.id]).toEqual(["Meta+D"]);
       expect(isActionKeyEnabled(action, { vcsAvailable: true, shelfFocus: true })).toBe(true);
       expect(isActionKeyEnabled(action, { vcsAvailable: true, editorTextFocus: true })).toBe(false);
+      // The shelf panel is the diff source while the focus is inside it.
+      render(<ShelfPanel />);
+      await waitFor(() => expect(screen.getByText("Work")).toBeTruthy());
+      screen.getAllByRole("tree")[0]!.focus();
       await action.run({ ctx: { shelfFocus: true } });
       expect(mocks.openDiff).toHaveBeenCalledWith(expect.objectContaining({ path: "/repo/a.txt" }), { preview: true });
     } finally {
