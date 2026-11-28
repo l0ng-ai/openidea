@@ -1665,6 +1665,47 @@ fn an_existing_conda_environment_is_not_recreated() {
 }
 
 #[test]
+fn a_conda_error_shows_what_is_missing_not_the_channel_hints() {
+    // conda 26's output for an unavailable Python, as it streams it.
+    let lines: Vec<String> = [
+        "Channels:",
+        " - conda-forge",
+        "Solving environment: ...working... failed",
+        "",
+        "PackagesNotFoundInChannelsError: The following packages are not available from current channels:",
+        "",
+        "  - python=3.99",
+        "",
+        "Current channels:",
+        "",
+        "  - https://conda.anaconda.org/conda-forge",
+        "",
+        "To search for alternate channels that may provide the conda package you're",
+        "looking for, navigate to",
+        "",
+        "    https://anaconda.org",
+    ]
+    .map(str::to_owned)
+    .into();
+    assert_eq!(
+        crate::python::conda_error(&lines).as_deref(),
+        Some(
+            "PackagesNotFoundInChannelsError: The following packages are not available from current channels:\n  - python=3.99"
+        )
+    );
+    assert_eq!(crate::python::conda_error(&["Solving environment: done".to_owned()]), None);
+}
+
+#[test]
+fn a_bare_python_version_is_passed_to_conda_as_it_is() {
+    use crate::python::bare_version;
+    assert_eq!(bare_version(Path::new("3.10")), Some("3.10"));
+    for base in ["3", "3.", "/usr/bin/python3.12", "python3.12", "3.12a1", ""] {
+        assert_eq!(bare_version(Path::new(base)), None, "{base}");
+    }
+}
+
+#[test]
 fn conda_creates_named_environments_in_its_envs_directory() {
     use crate::python::conda_create_args;
     use std::path::Path;

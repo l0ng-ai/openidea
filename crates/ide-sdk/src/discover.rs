@@ -285,6 +285,10 @@ fn conda_install_of(python: &Path) -> Option<PathBuf> {
 /// The conda to create an environment with when `base` is the interpreter picked for its
 /// Python version: the conda of `base`'s own installation, else [`conda_exe`].
 pub(crate) fn conda_exe_for(base: &Path) -> Option<PathBuf> {
+    // A bare version (`3.12`) names no installation.
+    if crate::python::bare_version(base).is_some() {
+        return conda_exe();
+    }
     conda_install_of(base).and_then(|root| conda_of_install(&root)).or_else(conda_exe)
 }
 

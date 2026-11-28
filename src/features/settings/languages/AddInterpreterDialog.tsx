@@ -24,6 +24,14 @@ const KINDS: { tool: VenvTool; label: string; missing: string; icon: IconName }[
   { tool: "hatch", label: "Hatch Environment", missing: "Hatch is not installed", icon: "python-hatch" },
 ];
 
+/**
+ * Python versions conda can install, offered even when no local interpreter has them. 3.10 is past
+ * its end of life but still pinned by many projects; conda-forge keeps building it.
+ */
+const CONDA_VERSIONS = ["3.15", "3.14", "3.13", "3.12", "3.11", "3.10"];
+/** The default without a local Python: one with wide package support, not the newest release. */
+const CONDA_DEFAULT_VERSION = "3.13";
+
 /** Tools that keep the environment in a directory of their own: the location is not asked for. */
 const OWN_LOCATION: ReadonlySet<VenvTool> = new Set(["poetry", "pipenv"]);
 
@@ -60,17 +68,26 @@ export function AddInterpreterDialog({
     detail: tildify(s.path),
   });
   // conda installs a fresh Python of the base's version: offer versions, not environments to copy.
+  // A version no local interpreter has is passed as it is (`3.12`); conda downloads it.
   const versionOptions = (() => {
     const seen = new Map<string, SelectOption>();
     for (const s of bases) {
       const short = s.version?.split(".").slice(0, 2).join(".");
       if (short && !seen.has(short)) seen.set(short, { value: s.path, label: tx`Python ${short}` });
     }
+    for (const short of CONDA_VERSIONS) {
+      if (!seen.has(short)) seen.set(short, { value: short, label: tx`Python ${short}` });
+    }
     return [...seen.values()].sort((a, b) => b.label.localeCompare(a.label, undefined, { numeric: true }));
   })();
   const baseOptions = kind === "conda" ? versionOptions : bases.map(toOption);
-  const baseValue =
-    base ?? (kind === "conda" ? (versionOptions[0]?.value as string | undefined) : bases[0]?.path) ?? null;
+  // The newest local version by default, as before; CONDA_DEFAULT_VERSION when nothing is installed.
+  // None while detecting, so the default doesn't change under the user once interpreters arrive.
+  const condaDefault = loading
+    ? undefined
+    : ((versionOptions.find((o) => !CONDA_VERSIONS.includes(o.value as string))?.value as string | undefined) ??
+      CONDA_DEFAULT_VERSION);
+  const baseValue = base ?? (kind === "conda" ? condaDefault : bases[0]?.path) ?? null;
   const existingOptions = [...browsed, ...list.filter((s) => !browsed.some((b) => b.path === s.path))].map((s) => ({
     value: s.path,
     label: `${s.name} — ${tildify(s.path)}`,
