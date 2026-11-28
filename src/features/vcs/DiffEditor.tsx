@@ -302,9 +302,20 @@ const NO_CONTRIBUTIONS: DiffViewerContribution[] = [];
 /** A file without a language; one value, so finding none again doesn't rebuild the views. */
 const NO_LANGUAGE: Extension = [];
 
-/** Joins the open document of a file-backed side (working file, Compare Files); null for revisions / texts. */
+/** The read-only revision document a `rev` side shows, so its pane navigates like an editor. */
+function revisionUri(side: DiffSide, path: string): string | null {
+  if (side.type !== "rev") return null;
+  const target = side.path ?? path;
+  const repo = repoOf(target);
+  if (!repo) return null;
+  const bytes = new TextEncoder().encode(JSON.stringify({ repo, revision: side.rev, path: target }));
+  const encoded = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  return `git-revision:${encoded}/${encodeURIComponent(target.split("/").at(-1)!)}`;
+}
+
+/** Joins the open document of a side: a file's for the working file / Compare Files, a revision's own for a revision. */
 async function attachSide(side: DiffSide, path: string): Promise<DocumentAttachment | null> {
-  const file = sideFile(side, path);
+  const file = sideFile(side, path) ?? revisionUri(side, path);
   if (!file) return null;
   try {
     return await attachDocument(file);

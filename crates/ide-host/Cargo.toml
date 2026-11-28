@@ -17,6 +17,7 @@ ide-mcp.workspace = true
 futures.workspace = true
 tokio-tungstenite.workspace = true
 ide-text.workspace = true
+similar = { version = "2.7", default-features = false }
 ide-vfs.workspace = true
 regex-syntax.workspace = true
 regex-lite = "0.1"

@@ -30,21 +30,15 @@ fn external_log_of(host: &Host, window: &str, path: &Path) -> Option<std::sync::
     })
 }
 
-/// Immutable Git objects exposed through the editor's ordinary read-only VFS.
-/// `encoding` re-decodes the blob with it ("Reload with Encoding") instead of
-/// the project's detection.
-pub async fn revision_virtual_document(
-    host: &Host,
-    window: &str,
-    uri: &str,
-    encoding: Option<&str>,
-) -> IdeResult<ide_lsp::types::VirtualDocument> {
-    #[derive(Deserialize)]
-    struct Target {
-        repo: PathBuf,
-        revision: String,
-        path: PathBuf,
-    }
+#[derive(Deserialize)]
+struct RevisionTarget {
+    repo: PathBuf,
+    revision: String,
+    path: PathBuf,
+}
+
+/// Decodes the `{repo, revision, path}` a `git-revision:` URI carries.
+fn revision_target(uri: &str) -> IdeResult<RevisionTarget> {
     let encoded = uri
         .strip_prefix("git-revision:")
         .and_then(|s| s.split('/').next())
@@ -59,7 +53,26 @@ pub async fn revision_virtual_document(
                 .map_err(|_| ide_core::IdeError::invalid("invalid Git revision URI"))
         })
         .collect::<IdeResult<Vec<_>>>()?;
-    let target: Target = serde_json::from_slice(&bytes).map_err(|e| ide_core::IdeError::invalid(e.to_string()))?;
+    serde_json::from_slice(&bytes).map_err(|e| ide_core::IdeError::invalid(e.to_string()))
+}
+
+/// The file's own path for a `git-revision:` URI: the path the revision blob
+/// stands in for, which is also the path the language server knows.
+pub fn revision_blob_path(uri: &str) -> IdeResult<PathBuf> {
+    let target = revision_target(uri)?;
+    Ok(target.repo.join(&target.path))
+}
+
+/// Immutable Git objects exposed through the editor's ordinary read-only VFS.
+/// `encoding` re-decodes the blob with it ("Reload with Encoding") instead of
+/// the project's detection.
+pub async fn revision_virtual_document(
+    host: &Host,
+    window: &str,
+    uri: &str,
+    encoding: Option<&str>,
+) -> IdeResult<ide_lsp::types::VirtualDocument> {
+    let target = revision_target(uri)?;
     let path = target.repo.join(&target.path);
     let (text, charset, has_bom) = revision_text(host, window, &path, &target.revision, encoding)
         .await?

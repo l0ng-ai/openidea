@@ -1160,12 +1160,15 @@ const linkPlugin = ViewPlugin.fromClass(
       const version = ++this.probeVersion;
       clearTimeout(this.probeTimer);
       // A timed-out probe must be retryable, rather than cached as "no target".
+      // A revision pane's first answer derives and type-checks HEAD in the
+      // server: give it the time to arrive instead of discarding the link.
+      const probeTimeout = doc?.path.startsWith("git-revision:") ? 10000 : 3000;
       this.probeTimer = setTimeout(() => {
         if (this.probeVersion === version) {
           this.probeVersion++;
           this.probing = null;
         }
-      }, 3000);
+      }, probeTimeout);
       const docAt = view.state.doc;
       const epochAt = navigationEpoch();
       const revision = this.revision;
