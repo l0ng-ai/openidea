@@ -9,7 +9,7 @@ import { isMarkdown, relativeImagePath } from "./markdownImages";
 export const clipboardDocumentPath = Facet.define<string, string>({ combine: (paths) => paths[0] ?? "" });
 
 /** Effective Smart Keys setting, supplied by the editor's prefs compartment. */
-export const linePasteMode = Facet.define<LinePasteMode>({ combine: (modes) => modes[0] ?? "above" });
+export const linePasteMode = Facet.define<LinePasteMode, LinePasteMode>({ combine: (modes) => modes[0] ?? "above" });
 
 export function filterCopiedText(state: EditorState, text: string): string {
   return state.facet(EditorView.clipboardOutputFilter).reduce((value, filter) => filter(value, state), text);
