@@ -622,9 +622,10 @@ fn read_jetbrains_folder(dir: &Path) -> IdeResult<JetBrainsSettings> {
         files.insert("disabled_plugins.txt".into(), text);
         entries.push("disabled_plugins.txt".into());
     }
-    // An exported archive lists the plugins in `installed.txt`; here they sit in `plugins/`.
-    if real_dir(&dir.join("plugins")) {
-        let ids = installed_plugin_ids(&dir.join("plugins"));
+    // An exported archive lists the plugins in `installed.txt`; here they sit in a folder.
+    let plugins = jetbrains_plugins_dir(dir, cfg!(not(any(target_os = "macos", windows))), |key| std::env::var_os(key));
+    if real_dir(&plugins) {
+        let ids = installed_plugin_ids(&plugins);
         if !ids.is_empty() {
             files.insert("installed.txt".into(), ids.join("\n"));
             entries.push("installed.txt".into());
@@ -633,8 +634,30 @@ fn read_jetbrains_folder(dir: &Path) -> IdeResult<JetBrainsSettings> {
     Ok(JetBrainsSettings { entries, files })
 }
 
-/// Ids of the plugins in a settings folder's `plugins/`: each is a jar there, or a folder whose
-/// `lib/*.jar` holds `META-INF/plugin.xml`. Links are not followed.
+/// Where the IDE of settings folder `config` keeps its plugins: its `plugins/`, except under the XDG
+/// layout (Linux), where `$XDG_CONFIG_HOME/<vendor>/<IDE>` keeps them in `$XDG_DATA_HOME/<vendor>/<IDE>`.
+fn jetbrains_plugins_dir(config: &Path, xdg: bool, env: impl Fn(&str) -> Option<std::ffi::OsString>) -> PathBuf {
+    let own = config.join("plugins");
+    if !xdg || own.is_dir() {
+        return own;
+    }
+    let var = |key: &str| env(key).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let home = var("HOME");
+    let config_root = var("XDG_CONFIG_HOME").or_else(|| home.as_ref().map(|h| h.join(".config")));
+    let data_root = var("XDG_DATA_HOME").or_else(|| home.as_ref().map(|h| h.join(".local").join("share")));
+    let (Some(vendor), Some(name), Some(config_root), Some(data_root)) =
+        (config.parent(), config.file_name(), config_root, data_root)
+    else {
+        return own;
+    };
+    match vendor.file_name() {
+        Some(vendor_name) if vendor.parent() == Some(config_root.as_path()) => data_root.join(vendor_name).join(name),
+        _ => own,
+    }
+}
+
+/// Ids of the plugins in a plugins folder: each is a jar there, or a folder whose `lib/*.jar`
+/// holds `META-INF/plugin.xml`. Links are not followed.
 fn installed_plugin_ids(plugins: &Path) -> Vec<String> {
     let files = |dir: &Path| -> Vec<std::path::PathBuf> {
         let mut jars: Vec<_> = std::fs::read_dir(dir)
@@ -655,8 +678,9 @@ fn installed_plugin_ids(plugins: &Path) -> Vec<String> {
         .take(JETBRAINS_MAX_PLUGINS)
         .filter_map(|entry| {
             let kind = entry.file_type().ok()?;
-            let jars = if kind.is_dir() {
-                files(&entry.path().join("lib"))
+            let lib = entry.path().join("lib");
+            let jars = if kind.is_dir() && lib.symlink_metadata().is_ok_and(|m| m.is_dir()) {
+                files(&lib)
             } else if kind.is_file() && entry.path().extension().is_some_and(|x| x == "jar") {
                 vec![entry.path()]
             } else {
@@ -676,6 +700,10 @@ fn plugin_id(jar: &Path) -> Option<String> {
     let mut archive = zip::ZipArchive::new(std::fs::File::open(jar).ok()?).ok()?;
     let mut text = String::new();
     archive.by_name("META-INF/plugin.xml").ok()?.take(JETBRAINS_MAX_TEXT).read_to_string(&mut text).ok()?;
+    while let Some(start) = text.find("<!--") {
+        let end = text[start..].find("-->").map_or(text.len(), |e| start + e + 3);
+        text.replace_range(start..end, "");
+    }
     let tag = |name: &str| {
         let start = text.find(&format!("<{name}>"))? + name.len() + 2;
         let end = text[start..].find(&format!("</{name}>"))? + start;
@@ -1289,7 +1317,7 @@ mod tests {
         jar("plugins/IdeaVim/lib/a-deps.jar", &[("a.class", "")]);
         jar(
             "plugins/IdeaVim/lib/vim.jar",
-            &[("META-INF/plugin.xml", "<idea-plugin>\n<id> IdeaVIM </id><name>IdeaVim</name>")],
+            &[("META-INF/plugin.xml", "<idea-plugin>\n<!-- <id>old</id> --><id> IdeaVIM </id><name>IdeaVim</name>")],
         );
         jar("plugins/grep.jar", &[("META-INF/plugin.xml", "<idea-plugin><name>GrepConsole</name></idea-plugin>")]);
 
@@ -1356,6 +1384,41 @@ mod tests {
         let read = read_jetbrains_settings(&config).unwrap();
         assert!(read.entries.is_empty());
         assert!(read.files.is_empty());
+
+        // A plugin folder whose lib/ is a link.
+        std::fs::remove_file(config.join("plugins")).unwrap();
+        std::fs::create_dir_all(config.join("plugins/Linked")).unwrap();
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(outside.join("p.jar")).unwrap());
+        zip.start_file("META-INF/plugin.xml", zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut zip, b"<id>linked</id>").unwrap();
+        zip.finish().unwrap();
+        symlink(&outside, config.join("plugins/Linked/lib")).unwrap();
+        assert!(read_jetbrains_settings(&config).unwrap().files.is_empty());
+    }
+
+    #[test]
+    fn finds_the_plugins_of_a_jetbrains_settings_folder() {
+        let home = Path::new("/home/u");
+        let env = |vars: &'static [(&'static str, &'static str)]| {
+            move |key: &str| vars.iter().find(|(k, _)| *k == key).map(|(_, v)| std::ffi::OsString::from(v))
+        };
+        let config = home.join(".config/JetBrains/IdeaIC2024.1");
+        assert_eq!(
+            jetbrains_plugins_dir(&config, true, env(&[("HOME", "/home/u")])),
+            home.join(".local/share/JetBrains/IdeaIC2024.1")
+        );
+        assert_eq!(
+            jetbrains_plugins_dir(
+                Path::new("/c/Google/AndroidStudio2025.1"),
+                true,
+                env(&[("HOME", "/home/u"), ("XDG_CONFIG_HOME", "/c"), ("XDG_DATA_HOME", "/d")])
+            ),
+            Path::new("/d/Google/AndroidStudio2025.1")
+        );
+        // Elsewhere (an unpacked export, macOS, Windows) the plugins sit in the folder.
+        let other = Path::new("/tmp/PyCharm2025.2");
+        assert_eq!(jetbrains_plugins_dir(other, true, env(&[("HOME", "/home/u")])), other.join("plugins"));
+        assert_eq!(jetbrains_plugins_dir(&config, false, env(&[("HOME", "/home/u")])), config.join("plugins"));
     }
 
     #[test]

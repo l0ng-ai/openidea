@@ -1,18 +1,11 @@
 import { expect, it } from "vitest";
 import type { MarketPlugin } from "@/bindings";
-import { JETBRAINS_PLUGINS, planJetBrainsPlugins } from "../jetbrainsPlugins";
+import { JETBRAINS_PLUGINS, planJetBrainsPlugins, suggestPlugins } from "../jetbrainsPlugins";
 
 const entry = (id: string, name: string, extra: Partial<MarketPlugin> = {}) =>
   ({ id, name, installed: null, compatible: true, ...extra }) as MarketPlugin;
 
-const market = [
-  entry("ruyimg.codeglance-pro", "CodeGlance Pro"),
-  entry("aritti.ignore", ".ignore", { installed: "1.0.0" }),
-  entry("xirf.dart", "Dart", { compatible: false }),
-  entry("solhovoy.grep-console", "Grep Console"),
-];
-
-it("offers the marketplace counterparts and reports the rest", () => {
+it("sorts the installed plugins without the marketplace", () => {
   const installed = [
     "IdeaVIM",
     "com.nasller.CodeGlancePro",
@@ -23,23 +16,35 @@ it("offers the marketplace counterparts and reports the rest", () => {
     "org.example.unknown",
     "com.nasller.CodeGlancePro",
   ].join("\n");
-  expect(planJetBrainsPlugins(installed, "GrepConsole\r\nDocker\n", market)).toEqual({
-    install: [{ id: "ruyimg.codeglance-pro", name: "CodeGlance Pro" }],
+  expect(planJetBrainsPlugins(installed, "GrepConsole\r\nDocker\n")).toEqual({
     vim: true,
     builtIn: ["GraphQL"],
-    disabled: ["Grep Console"],
-    // Dart's counterpart does not run on this version.
-    unmapped: ["Dart", "org.example.unknown"],
+    disabled: ["GrepConsole"],
+    unmapped: ["org.example.unknown"],
+    candidates: [
+      ["com.nasller.CodeGlancePro", "ruyimg.codeglance-pro"],
+      ["mobi.hsz.idea.gitignore", "aritti.ignore"],
+      ["Dart", "xirf.dart"],
+    ],
   });
+  expect(planJetBrainsPlugins("IdeaVIM", "IdeaVIM")).toMatchObject({ vim: false, disabled: ["IdeaVIM"] });
 });
 
-it("keeps a disabled IdeaVim off, and reports everything when the marketplace is unreachable", () => {
-  expect(planJetBrainsPlugins("IdeaVIM\nGrepConsole", "IdeaVIM", null)).toEqual({
-    install: [],
-    vim: false,
-    builtIn: [],
-    disabled: ["IdeaVim"],
-    unmapped: ["GrepConsole"],
+it("suggests the counterparts the marketplace has for this version and that are not installed", () => {
+  const market = [
+    entry("ruyimg.codeglance-pro", "CodeGlance Pro"),
+    entry("aritti.ignore", ".ignore", { installed: "1.0.0" }),
+    entry("xirf.dart", "Dart", { compatible: false }),
+  ];
+  const candidates: [string, string][] = [
+    ["com.nasller.CodeGlancePro", "ruyimg.codeglance-pro"],
+    ["mobi.hsz.idea.gitignore", "aritti.ignore"],
+    ["Dart", "xirf.dart"],
+    ["GrepConsole", "solhovoy.grep-console"],
+  ];
+  expect(suggestPlugins(candidates, market)).toEqual({
+    install: [{ id: "ruyimg.codeglance-pro", name: "CodeGlance Pro" }],
+    unavailable: ["Dart", "GrepConsole"],
   });
 });
 

@@ -36,16 +36,23 @@ const IDEAVIM = "IdeaVIM";
 const BUILT_IN: Readonly<Record<string, string>> = { "com.intellij.lang.jsgraphql": "GraphQL" };
 
 export interface JetBrainsPluginsImport {
-  /** Marketplace plugins to offer, not installed here yet. */
-  install: { id: string; name: string }[];
   /** IdeaVim is installed and enabled: turn on the Vim emulation. */
   vim: boolean;
   /** Plugins OpenIDEA covers without installing anything. */
   builtIn: string[];
   /** Plugins with a counterpart that are disabled in the JetBrains IDE (not offered). */
   disabled: string[];
-  /** JetBrains plugin ids without a counterpart in the marketplace. */
+  /** JetBrains plugin ids OpenIDEA knows no counterpart for. */
   unmapped: string[];
+  /** [JetBrains id, marketplace id] of the plugins to look up in the marketplace. */
+  candidates: [string, string][];
+}
+
+export interface PluginSuggestions {
+  /** Marketplace plugins to offer, not installed here yet. */
+  install: { id: string; name: string }[];
+  /** JetBrains ids whose counterpart the marketplace does not list, or not for this version. */
+  unavailable: string[];
 }
 
 const ids = (text: string | undefined) =>
@@ -54,30 +61,34 @@ const ids = (text: string | undefined) =>
     .map((l) => l.trim())
     .filter(Boolean);
 
-/** `market`: the marketplace's plugins, or null when it cannot be read. */
-export function planJetBrainsPlugins(
-  installed: string | undefined,
-  disabledText: string | undefined,
-  market: readonly MarketPlugin[] | null,
-): JetBrainsPluginsImport {
+export function planJetBrainsPlugins(installed: string | undefined, disabledText: string | undefined) {
   const disabledIds = new Set(ids(disabledText));
-  const byId = new Map((market ?? []).map((m) => [m.id, m]));
-  const out: JetBrainsPluginsImport = { install: [], vim: false, builtIn: [], disabled: [], unmapped: [] };
+  const out: JetBrainsPluginsImport = { vim: false, builtIn: [], disabled: [], unmapped: [], candidates: [] };
   for (const id of new Set(ids(installed))) {
     const off = disabledIds.has(id);
+    const target = JETBRAINS_PLUGINS[id];
     if (id === IDEAVIM) {
-      if (off) out.disabled.push("IdeaVim");
+      if (off) out.disabled.push(id);
       else out.vim = true;
-      continue;
-    }
-    if (BUILT_IN[id]) {
-      out.builtIn.push(BUILT_IN[id]);
-      continue;
-    }
-    const target = byId.get(JETBRAINS_PLUGINS[id] ?? "");
-    if (!target?.compatible) out.unmapped.push(id);
-    else if (off) out.disabled.push(target.name);
-    else if (!target.installed) out.install.push({ id: target.id, name: target.name });
+    } else if (BUILT_IN[id]) out.builtIn.push(BUILT_IN[id]);
+    else if (!target) out.unmapped.push(id);
+    else if (off) out.disabled.push(id);
+    else out.candidates.push([id, target]);
+  }
+  return out;
+}
+
+/** The candidates the marketplace lists for this version and that are not installed yet. */
+export function suggestPlugins(
+  candidates: readonly [string, string][],
+  market: readonly MarketPlugin[],
+): PluginSuggestions {
+  const byId = new Map(market.map((m) => [m.id, m]));
+  const out: PluginSuggestions = { install: [], unavailable: [] };
+  for (const [jetbrains, id] of candidates) {
+    const entry = byId.get(id);
+    if (!entry?.compatible) out.unavailable.push(jetbrains);
+    else if (!entry.installed) out.install.push({ id, name: entry.name });
   }
   return out;
 }

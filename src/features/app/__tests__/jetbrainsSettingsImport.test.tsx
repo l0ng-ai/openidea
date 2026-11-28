@@ -5,6 +5,7 @@ const read = vi.fn();
 const set = vi.fn();
 const notify = vi.fn();
 const execute = vi.fn();
+const marketCall = vi.fn();
 const market = [
   { id: "ruyimg.codeglance-pro", name: "CodeGlance Pro", installed: null, compatible: true },
   { id: "solhovoy.grep-console", name: "Grep Console", installed: null, compatible: true },
@@ -20,7 +21,7 @@ vi.mock("@/platform/ipc", async (original) => {
       settingsReadJetbrains: (path: string) => read(path),
       settingsGetGlobal: async () => ({ editor }),
       settingsSet: (scope: string, key: string, value: string) => set(scope, key, value),
-      pluginMarket: async () => ({ status: "ok", data: market }),
+      pluginMarket: () => marketCall(),
     },
   };
 });
@@ -56,6 +57,7 @@ beforeEach(() => {
     },
   });
   set.mockResolvedValue({ status: "ok", data: { editor } });
+  marketCall.mockResolvedValue({ status: "ok", data: market });
   // jsdom has no canvas: the import falls back to the font size for the line height.
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
 });
@@ -70,9 +72,9 @@ it.each(["Cancel", "Import"])("confirms folder settings before applying them: %s
   expect(screen.getByText("Monaco")).toBeInTheDocument();
   expect(screen.getByText("17")).toBeInTheDocument();
   expect(screen.getAllByText("Custom")).toHaveLength(2);
-  expect(screen.getByText("CodeGlance Pro")).toBeInTheDocument();
+  expect(await screen.findByText(/Suggested plugins/)).toHaveTextContent("CodeGlance Pro");
   expect(screen.getByText("Enable Vim emulation")).toBeInTheDocument();
-  expect(screen.getByText(/Not imported:/)).toHaveTextContent("Grep Console (disabled)");
+  expect(screen.getByText(/Not imported:/)).toHaveTextContent("GrepConsole (disabled)");
   expect(screen.getByText(/Plugins without a counterpart/)).toHaveTextContent("some.unknown.plugin");
   expect(set).not.toHaveBeenCalled();
   await act(async () => {
@@ -136,4 +138,15 @@ it("offers an imported inspection profile for the open project", async () => {
   await act(async () => offer.actions[0].run());
   expect(set).toHaveBeenLastCalledWith("project", "inspections.profile", '"ide:strict"');
   useProject.setState({ project: null });
+});
+
+it("says so when the plugin marketplace cannot be reached, without blaming the plugins", async () => {
+  marketCall.mockRejectedValue(new Error("offline"));
+  render(<MessagesHost />);
+  await act(async () => {
+    void importJetBrainsSettings("/settings/PyCharm2026.1");
+  });
+  expect(await screen.findByText(/Could not reach the plugin marketplace/)).toBeInTheDocument();
+  expect(screen.getByText(/Plugins without a counterpart/)).not.toHaveTextContent("CodeGlancePro");
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Cancel" })));
 });
