@@ -237,6 +237,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
         act("remote.reloadEnvironment", "Reload Environment"),
         SEP,
         act("file.save", "Save All"),
+        act("templates.saveFileAsTemplate", "Save File as Template…"),
         act("file.reloadAllFromDisk", "Reload All from Disk"),
         sub("fileProperties", "File Properties", vec![act("file.toggleReadOnly", "Make File Read-only / Writable")]),
         SEP,

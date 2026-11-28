@@ -1005,6 +1005,7 @@
   "Inner": "Interne",
   "Insert Live Template…": "Insérer un modèle dynamique…",
   "Save as Live Template…": "Enregistrer comme modèle dynamique…",
+  "Save File as Template…": "Enregistrer le fichier comme modèle…",
   "Insert Macro…": "Insérer une macro…",
   "Insert pair quote": "Insérer le guillemet fermant",
   "Insert selected suggestion by pressing space, dot, or other context-dependent keys": "Insérer la suggestion sélectionnée avec espace, point ou d'autres touches selon le contexte",

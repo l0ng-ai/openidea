@@ -233,6 +233,7 @@
   "menu.project.attach": "Proje Ekle…",
   "menu.file.openProject": "Aç…",
   "menu.file.save": "Tümünü Kaydet",
+  "menu.templates.saveFileAsTemplate": "Dosyayı Şablon Olarak Kaydet…",
   "menu.file.projectStructure": "Proje Yapısı…",
   "menu.file.settings": "Ayarlar…",
   "menu.find": "Bul",

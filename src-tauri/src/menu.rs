@@ -840,6 +840,7 @@ mod tests {
                 "file.openInNewWindow",
                 "file.closeProject",
                 "file.save",
+                "templates.saveFileAsTemplate",
                 "file.projectStructure",
                 "file.settings",
                 "file.newProjectsSettings",

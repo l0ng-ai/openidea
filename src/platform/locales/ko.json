@@ -179,6 +179,7 @@
   "menu.file.openInNewWindow": "새 창에서 열기…",
   "menu.file.openProject": "열기…",
   "menu.file.save": "모두 저장",
+  "menu.templates.saveFileAsTemplate": "파일을 템플릿으로 저장…",
   "menu.file.settings": "설정…",
   "menu.find": "찾기",
   "menu.find.inFile": "찾기…",

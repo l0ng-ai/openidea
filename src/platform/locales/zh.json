@@ -237,6 +237,7 @@
   "menu.project.attach": "附加项目…",
   "menu.file.openProject": "打开…",
   "menu.file.save": "全部保存",
+  "menu.templates.saveFileAsTemplate": "将文件另存为模板…",
   "menu.file.projectStructure": "项目结构…",
   "menu.file.settings": "设置…",
   "menu.find": "查找",

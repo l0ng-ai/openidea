@@ -172,6 +172,7 @@
   "menu.file.openInNewWindow": "Ouvrir dans une nouvelle fenêtre…",
   "menu.file.openProject": "Ouvrir…",
   "menu.file.save": "Tout enregistrer",
+  "menu.templates.saveFileAsTemplate": "Enregistrer le fichier comme modèle…",
   "menu.file.settings": "Paramètres…",
   "menu.find": "Rechercher",
   "menu.find.inFile": "Rechercher…",

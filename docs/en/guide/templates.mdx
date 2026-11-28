@@ -85,6 +85,12 @@ Live templates, postfix settings and macros are stored per user on this machine,
 
 For new-file templates (what **File › New › File…** creates), see **Settings › Editor › File and Code Templates**.
 
+## File templates
+
+To reuse a whole file, open it and choose **File › Save File as Template…**. The dialog starts with the file's name and extension and the active editor's current text, including unsaved edits. Edit the **Name**, **Extension** or **Template body**, then choose **Save**.
+
+This is different from **Tools › Save as Live Template…**, which saves a selection as an abbreviation-expanded code snippet. **Save File as Template…** always writes to the global **Default** scheme, even when **Settings › Editor › File and Code Templates** currently shows **Project**. Open that settings page and select **Default** to edit the saved template. A **Project** scheme is separate and starts as a copy of **Default** when first selected.
+
 ## Macros
 
 A macro records the actions you run, the text you type and the editing keys you press in the editor, so you can replay them. The commands are in **Edit › Macros**:
