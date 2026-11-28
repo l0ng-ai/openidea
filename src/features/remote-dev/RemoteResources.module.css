@@ -48,6 +48,9 @@
 }
 
 .pillText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: var(--fs-small);
 }
 

@@ -22,8 +22,18 @@
   transition: opacity var(--dur-fast) var(--ease);
 }
 /* Long paths wrap inside the bubble; the shortcut stays on one line. */
+.withNote {
+  flex-wrap: wrap;
+  align-items: baseline;
+  row-gap: var(--space-0-5);
+}
 .text {
   min-width: 0;
+  overflow-wrap: anywhere;
+}
+.note {
+  min-width: 0;
+  color: color-mix(in srgb, var(--fg-tooltip) 68%, transparent);
   overflow-wrap: anywhere;
 }
 .shortcut {
@@ -43,6 +53,7 @@
   box-shadow: var(--shadow-stripe-tooltip, var(--shadow-tooltip));
   line-height: 18px;
 }
+.stripe .note,
 .stripe .shortcut {
   color: color-mix(in srgb, var(--fg-stripe-tooltip, var(--fg-tooltip)) 80%, transparent);
 }

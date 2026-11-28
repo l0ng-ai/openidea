@@ -27,6 +27,7 @@ export function RemoteStatus() {
   if (lost)
     return (
       <BarButton
+        data-no-tooltip=""
         tooltip={
           reconnecting
             ? tx`Reconnecting to ${session.host}…`
@@ -40,12 +41,13 @@ export function RemoteStatus() {
       >
         <span className={styles.lost}>
           {reconnecting ? <Spinner size={10} /> : <Icon name="warning" size={13} />}
-          {label}
+          <span className={styles.statusLabel}>{label}</span>
         </span>
       </BarButton>
     );
   return (
     <BarButton
+      data-no-tooltip=""
       tooltip={tx`Project runs on ${label}`}
       aria-label={label}
       onClick={() => void executeAction("remote.connect")}
@@ -62,7 +64,7 @@ export function RemoteStatus() {
       }}
     >
       <Icon name="remote" size={13} />
-      {label}
+      <span className={styles.statusLabel}>{label}</span>
     </BarButton>
   );
 }
