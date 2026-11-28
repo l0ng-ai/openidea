@@ -1,9 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+vi.mock("@tauri-apps/api/core", async (original) => ({
+  ...(await original<typeof import("@tauri-apps/api/core")>()),
+  Channel: class {
+    onmessage?: (e: unknown) => void;
+  },
+}));
+
+import type { AgentLoginEvent } from "@/bindings";
 import { getAction, registerAction } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import * as ipc from "@/platform/ipc";
-import { provideToolWindowService, useContributions, type ToolWindowService } from "@/workbench/contributions";
+import {
+  provideEmbeddedTerminal,
+  provideToolWindowService,
+  useContributions,
+  type ToolWindowService,
+} from "@/workbench/contributions";
 import { activate } from "../index";
 import { setCurrentRepository } from "../api/client";
 import type { GHRepository, GHUser } from "../api/types";
@@ -90,6 +104,7 @@ describe("tool window", () => {
   afterEach(() => {
     dispose();
     vi.restoreAllMocks();
+    provideEmbeddedTerminal(undefined);
     setCurrentRepository(null);
     useGhRepository.setState({ connection: null, availability: null, remotes: [] });
     useGhProjectAccount.setState({ status: null, loading: false, saving: false, revision: 0 });
@@ -236,5 +251,92 @@ describe("tool window", () => {
     render(<PullRequestsHeaderActions />);
     const badge = screen.getByRole("button", { name: "@alice" });
     expect(badge).toHaveAttribute("title", "Use alice-work for this project");
+  });
+
+  it("opens the in-IDE GitHub CLI sign-in dialog from notLoggedIn and refreshes connection on completion", async () => {
+    provideEmbeddedTerminal(async () => ({
+      write: () => {},
+      clear: () => {},
+      focus: () => {},
+      fit: () => {},
+      dispose: () => {},
+    }));
+    vi.spyOn(ipc.commands, "termResize").mockResolvedValue({ status: "ok", data: null } as never);
+    vi.spyOn(ipc.commands, "termKill").mockResolvedValue({ status: "ok", data: null } as never);
+    let sendEvent: ((e: AgentLoginEvent) => void) | null = null;
+    const spawnSpy = vi.spyOn(ipc.commands, "agentGhLoginSpawn").mockImplementation(async (_cols, _rows, ch) => {
+      sendEvent = (event) => ch.onmessage?.(event);
+      return { status: "ok", data: { id: 21, pid: 333, title: "gh" } };
+    });
+    const refresh = vi.spyOn(repositoryData, "refreshConnection").mockResolvedValue(undefined);
+
+    useGhRepository.setState({ availability: { kind: "notLoggedIn", message: "not logged in" } });
+    useGhProjectAccount.setState({
+      status: {
+        ghInstalled: true,
+        accounts: [],
+        configuredAccount: "",
+        effectiveAccount: null,
+        suggestedAccount: null,
+      },
+    });
+    render(<PullRequestsToolWindow />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Sign In…" }));
+    expect(await screen.findByRole("dialog", { name: "Sign In to GitHub CLI" })).toBeInTheDocument();
+    await waitFor(() => expect(spawnSpy).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      sendEvent?.({
+        type: "output",
+        data: "! First copy your one-time code: 9F8E-7D6C\r\nOpen https://github.com/login/device\r\n",
+      });
+    });
+    expect(await screen.findByText("9F8E-7D6C")).toBeInTheDocument();
+
+    act(() => {
+      sendEvent?.({ type: "exited", code: 0 });
+    });
+
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Sign In to GitHub CLI" })).toBeNull());
+  });
+
+  it("offers Add account… in the repository selector and connected header account menu", async () => {
+    provideEmbeddedTerminal(async () => ({
+      write: () => {},
+      clear: () => {},
+      focus: () => {},
+      fit: () => {},
+      dispose: () => {},
+    }));
+    vi.spyOn(ipc.commands, "termResize").mockResolvedValue({ status: "ok", data: null } as never);
+    vi.spyOn(ipc.commands, "termKill").mockResolvedValue({ status: "ok", data: null } as never);
+    const spawnSpy = vi.spyOn(ipc.commands, "agentGhLoginSpawn").mockResolvedValue({
+      status: "ok",
+      data: { id: 22, pid: 334, title: "gh" },
+    });
+
+    useGhProjectAccount.setState({
+      status: {
+        ghInstalled: true,
+        accounts: [{ login: "alice", active: true }],
+        configuredAccount: "",
+        effectiveAccount: "alice",
+        suggestedAccount: null,
+      },
+    });
+    useGhRepository.setState({
+      availability: { kind: "ready", repo: {} as never, login: "alice" },
+      remotes: [
+        { owner: "alice", name: "app", remote: "origin", url: "" },
+        { owner: "org", name: "app", remote: "upstream", url: "" },
+      ],
+    });
+    render(<PullRequestsToolWindow />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Add account…" }));
+    expect(await screen.findByRole("dialog", { name: "Sign In to GitHub CLI" })).toBeInTheDocument();
+    await waitFor(() => expect(spawnSpy).toHaveBeenCalledTimes(1));
   });
 });

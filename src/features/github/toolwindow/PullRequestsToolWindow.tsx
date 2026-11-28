@@ -12,12 +12,14 @@ import { GH_MANUAL_INSTALL_URL, installGhTool } from "@/platform/ghTool";
 import { isCancelled } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { Button, EmptyState, IconButton, Select, Spinner, Tabs, T, showContextMenu, type MenuItem } from "@/ui";
+import { CliSignInDialog } from "@/workbench/CliSignInDialog";
 import { CreatePanel } from "../create/CreatePanel";
 import { DetailsPanel } from "../details/DetailsPanel";
 import { ListPanel } from "../list/ListPanel";
 import {
   loadProjectGithubAccount,
   projectAccountOptions,
+  refreshAfterGithubSignIn,
   setProjectGithubAccount,
   useGhProjectAccount,
 } from "../data/account";
@@ -37,10 +39,36 @@ import {
 import { closeTab, selectTab, tabId, useGhTabs, type GhTabId } from "./store";
 import styles from "./ToolWindow.module.css";
 
-function ProjectAccountInline() {
+function useGhSignIn() {
+  const [open, setOpen] = useState(false);
+  const prevLoginsRef = useRef<Set<string>>(new Set());
+  const start = () => {
+    prevLoginsRef.current = new Set((useGhProjectAccount.getState().status?.accounts ?? []).map((a) => a.login));
+    setOpen(true);
+  };
+  const dialog = open ? (
+    <CliSignInDialog
+      target={{ kind: "gh" }}
+      onClose={() => setOpen(false)}
+      onCompleted={() => {
+        const beforeRev = useGhProjectAccount.getState().revision;
+        void refreshAfterGithubSignIn(prevLoginsRef.current).finally(() => {
+          // `setProjectGithubAccount` already bumps `revision` (which triggers `refreshConnection` in runtime.ts);
+          // refresh explicitly when the active account changed under `Automatic` without changing `revision`.
+          if (useGhProjectAccount.getState().revision === beforeRev) {
+            void refreshConnection();
+          }
+        });
+      }}
+    />
+  ) : null;
+  return { start, dialog };
+}
+
+function ProjectAccountInline({ onAddAccount }: { onAddAccount?: () => void }) {
   const status = useGhProjectAccount((s) => s.status);
   const saving = useGhProjectAccount((s) => s.saving);
-  if (!status || status.accounts.length === 0) return null;
+  if (!status || (status.accounts.length === 0 && !(onAddAccount && status.ghInstalled))) return null;
   const suggested = !status.configuredAccount ? status.suggestedAccount : null;
   return (
     <div className={styles.accountInline}>
@@ -54,13 +82,22 @@ function ProjectAccountInline() {
           {tx`Use ${suggested} for this project`}
         </Button>
       )}
-      <Select
-        aria-label="GitHub account"
-        value={status.configuredAccount}
-        disabled={saving}
-        options={projectAccountOptions(status)}
-        onChange={(next) => void setProjectGithubAccount(next)}
-      />
+      <div className={styles.accountInlineRow}>
+        {status.accounts.length > 0 && (
+          <Select
+            aria-label="GitHub account"
+            value={status.configuredAccount}
+            disabled={saving}
+            options={projectAccountOptions(status)}
+            onChange={(next) => void setProjectGithubAccount(next)}
+          />
+        )}
+        {onAddAccount && status.ghInstalled && (
+          <Button size="small" disabled={saving} onClick={onAddAccount}>
+            <T>{status.accounts.length > 0 ? "Add account…" : "Sign In…"}</T>
+          </Button>
+        )}
+      </div>
       {status.configuredAccount && (
         <div className={styles.hint}>
           <T>
@@ -73,7 +110,7 @@ function ProjectAccountInline() {
   );
 }
 
-function Unavailable({ availability }: { availability: GhAvailability }) {
+function Unavailable({ availability, onSignIn }: { availability: GhAvailability; onSignIn: () => void }) {
   const [installingGh, setInstallingGh] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
   const installGh = () => {
@@ -82,7 +119,10 @@ function Unavailable({ availability }: { availability: GhAvailability }) {
     setInstallError(null);
     void installGhTool()
       .promise.then((installed) => {
-        if (installed) void refreshConnection();
+        if (installed) {
+          void loadProjectGithubAccount();
+          void refreshConnection();
+        }
       })
       .catch((e: unknown) => {
         if (!isCancelled(e)) setInstallError(e instanceof Error ? e.message : String(e));
@@ -127,24 +167,14 @@ function Unavailable({ availability }: { availability: GhAvailability }) {
           title="Not logged in to GitHub"
           actions={
             <>
-              <Button
-                size="small"
-                variant="primary"
-                onClick={() =>
-                  void executeAction("terminal.runCommand", {
-                    program: "gh",
-                    args: ["auth", "login"],
-                    name: "gh auth login",
-                  })
-                }
-              >
-                <T>Run gh auth login</T>
+              <Button size="small" variant="primary" onClick={onSignIn}>
+                <T>Sign In…</T>
               </Button>
               {retry}
             </>
           }
         >
-          <T>Run</T> <code>gh auth login</code> <T>in a terminal, then retry.</T>
+          <T>Sign in with GitHub CLI to view and review pull requests.</T>
           <ProjectAccountInline />
         </EmptyState>
       );
@@ -161,7 +191,7 @@ function Unavailable({ availability }: { availability: GhAvailability }) {
       return (
         <EmptyState title="Could not reach GitHub" actions={retry}>
           <div>{availability.message}</div>
-          <ProjectAccountInline />
+          <ProjectAccountInline onAddAccount={onSignIn} />
         </EmptyState>
       );
     default:
@@ -170,7 +200,7 @@ function Unavailable({ availability }: { availability: GhAvailability }) {
 }
 
 /** IntelliJ's repository selector: the repositories (owner always shown), project account, and "View Pull Requests". */
-function RepositorySelector() {
+function RepositorySelector({ onSignIn }: { onSignIn: () => void }) {
   const remotes = useGhRepository((s) => s.remotes);
   const defaultRemote = useGhRepository((s) => s.defaultRemote);
   const connecting = useGhRepository((s) => s.connecting);
@@ -186,16 +216,23 @@ function RepositorySelector() {
   const hosts = new Set(remotes.map((r) => r.host ?? "github.com")).size > 1;
   return (
     <div className={styles.selector}>
-      {status && status.accounts.length > 0 && (
+      {status && (status.accounts.length > 0 || status.ghInstalled) && (
         <>
           <div className={styles.selectorRow}>
-            <Select
-              aria-label="GitHub account"
-              value={status.configuredAccount}
-              disabled={savingAccount}
-              options={projectAccountOptions(status)}
-              onChange={(next) => void setProjectGithubAccount(next)}
-            />
+            {status.accounts.length > 0 && (
+              <Select
+                aria-label="GitHub account"
+                value={status.configuredAccount}
+                disabled={savingAccount}
+                options={projectAccountOptions(status)}
+                onChange={(next) => void setProjectGithubAccount(next)}
+              />
+            )}
+            {status.ghInstalled && (
+              <Button size="small" disabled={savingAccount} onClick={onSignIn}>
+                <T>{status.accounts.length > 0 ? "Add account…" : "Sign In…"}</T>
+              </Button>
+            )}
             {!status.configuredAccount && status.suggestedAccount && (
               <Button
                 size="small"
@@ -310,6 +347,7 @@ export function PullRequestsToolWindow() {
   const checking = useGhRepository((s) => s.checking);
   const connected = useGhRepository((s) => !!s.connection);
   const connecting = useGhRepository((s) => s.connecting);
+  const signIn = useGhSignIn();
   useEffect(() => {
     if (!useGhProjectAccount.getState().status) void loadProjectGithubAccount();
     if (!useGhRepository.getState().availability) void refreshConnection();
@@ -320,7 +358,13 @@ export function PullRequestsToolWindow() {
         {checking && <Spinner size={14} />} {tx("Connecting to GitHub…")}
       </div>
     );
-  if (availability.kind !== "ready") return <Unavailable availability={availability} />;
+  if (availability.kind !== "ready")
+    return (
+      <>
+        <Unavailable availability={availability} onSignIn={signIn.start} />
+        {signIn.dialog}
+      </>
+    );
   if (connected) return <Connected />;
   if (connecting)
     return (
@@ -328,7 +372,12 @@ export function PullRequestsToolWindow() {
         <Spinner size={14} /> {tx("Connecting to GitHub…")}
       </div>
     );
-  return <RepositorySelector />;
+  return (
+    <>
+      <RepositorySelector onSignIn={signIn.start} />
+      {signIn.dialog}
+    </>
+  );
 }
 
 /** The tab's context menu: Close Tab / Close Other Tabs for `#N` and New Pull Request tabs. */
@@ -382,6 +431,7 @@ export function PullRequestsTabs() {
 export function PullRequestsHeaderActions() {
   const connection = useGhRepository((s) => s.connection);
   const status = useGhProjectAccount((s) => s.status);
+  const signIn = useGhSignIn();
   if (!connection) return null;
   const showAccount = (status?.accounts.length ?? 0) > 1 || !!status?.configuredAccount;
   const activeLogin = connection.currentUser.login || status?.effectiveAccount || "";
@@ -420,6 +470,15 @@ export function PullRequestsHeaderActions() {
                 checked: configured === a.login,
                 run: () => void setProjectGithubAccount(a.login),
               })),
+              ...(status.ghInstalled
+                ? [
+                    { kind: "separator" as const },
+                    {
+                      label: "Add account…",
+                      run: signIn.start,
+                    },
+                  ]
+                : []),
             ];
             showContextMenu(e, items);
           }}
@@ -429,6 +488,7 @@ export function PullRequestsHeaderActions() {
       )}
       <IconButton icon="plus" size="small" iconSize={16} action="github.createPullRequest" />
       <IconButton icon="locate" size="small" iconSize={16} action="github.selectOpenedPullRequest" />
+      {signIn.dialog}
     </>
   );
 }

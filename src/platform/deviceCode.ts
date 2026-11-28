@@ -2,7 +2,7 @@
  * Extracts OAuth 2.0 device-authorization URLs and one-time user codes (`ABCD-1234`, etc.)
  * from interactive sign-in PTY output (`copilot login`, `gh auth login`, `codex login`, …).
  */
-import { isOpenable } from "@/platform/openUrl";
+import { isOpenable } from "./openUrl";
 
 const MAX_BUFFER_CHARS = 16_384;
 // oxlint-disable-next-line no-control-regex
@@ -19,11 +19,31 @@ const ESC_SINGLE_RE = /\x1b[@-_]/g;
 const CONTROL_OR_BOX_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f│┃╭╮╯╰┌┐└┘├┤┬┴┼─━═║╔╗╚╝]/g;
 
 const HTTPS_URL_RE = /https:\/\/[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]+/g;
-const TRAILING_PUNCT_RE = /[.,;:!?)'"\]]+$/;
+const TRAILING_SIMPLE_PUNCT_RE = /[.,;:!?'"]+$/;
 const DEVICE_PATH_RE = /(?:^|\/)(?:device|devicelogin|activate|device-login|user-code)(?:\/|$)/i;
 const EXPLICIT_CODE_CUE_RE = /(?:one-time|device|verification)\s+code/i;
 const LABELED_CODE_RE =
-  /(?:[Oo]ne-time|[Dd]evice|[Vv]erification|[Uu]ser|[Ee]nter(?:\s+[Tt]he)?)\s+[Cc]ode(?:\s+[Ii]s)?\s*[:：]?\s*([A-Z0-9]{4,6}-[A-Z0-9]{3,6}|[A-Z0-9]{8,9})(?![A-Za-z0-9-])/g;
+  /(?:[Oo]ne-time|ONE-TIME|[Dd]evice|DEVICE|[Vv]erification|VERIFICATION|[Uu]ser|USER|(?:[Ee]nter|ENTER)(?:\s+(?:[Tt]he|THE))?)\s+(?:[Cc]ode|CODE)(?:\s+(?:[Ii]s|IS))?\s*[:：]?\s*([A-Z0-9]{4,6}-[A-Z0-9]{3,6}|[A-Z0-9]{8,9})(?![A-Za-z0-9-])/g;
+
+function trimTrailingUrlPunct(raw: string): string {
+  let out = raw;
+  for (;;) {
+    const trimmed = out.replace(TRAILING_SIMPLE_PUNCT_RE, "");
+    if (trimmed !== out) {
+      out = trimmed;
+      continue;
+    }
+    if (out.endsWith(")") && out.split(")").length > out.split("(").length) {
+      out = out.slice(0, -1);
+      continue;
+    }
+    if (out.endsWith("]") && out.split("]").length > out.split("[").length) {
+      out = out.slice(0, -1);
+      continue;
+    }
+    return out;
+  }
+}
 const HYPHENATED_CODE_RE = /(?:^|[^A-Za-z0-9-])([A-Z0-9]{4,5}-[A-Z0-9]{4,5})(?![A-Za-z0-9-])/g;
 const YEAR_RANGE_RE = /^(?:19|20)\d{2}-(?:19|20)\d{2}$/;
 const COMPLETE_URI_CODE_RE = /^[A-Za-z0-9]{4,8}(?:-[A-Za-z0-9]{3,8})?$/;
@@ -62,7 +82,7 @@ export function parseDeviceCodePrompt(rawOutput: string): DeviceCodePrompt | nul
   let completeUriPrompt: { url: string; code: string; index: number } | null = null;
 
   for (const match of cleaned.matchAll(HTTPS_URL_RE)) {
-    const candidate = match[0].replace(TRAILING_PUNCT_RE, "");
+    const candidate = trimTrailingUrlPunct(match[0]);
     if (!isOpenable(candidate)) continue;
     let parsed: URL;
     try {

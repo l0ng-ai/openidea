@@ -61,6 +61,14 @@ describe("parseDeviceCodePrompt", () => {
     expect(parseDeviceCodePrompt(raw)?.code).toBe("BBBB-2222");
   });
 
+  it("matches all-caps code labels and preserves balanced parentheses in URLs", () => {
+    expect(parseDeviceCodePrompt("ONE-TIME CODE: K9P4M2X7Q at (https://auth.example.com/device/v1(beta)).")).toEqual({
+      code: "K9P4M2X7Q",
+      url: "https://auth.example.com/device/v1(beta)",
+      needsEnterToPoll: false,
+    });
+  });
+
   it("ignores regular browser OAuth callback URLs with UUIDs and copyright year ranges", () => {
     expect(
       parseDeviceCodePrompt(

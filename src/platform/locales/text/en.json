@@ -4438,5 +4438,7 @@
   "Keep Index": "Keep Index",
   "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite cannot drop the index of a primary key or unique constraint.",
   "Cannot list the manage.py commands": "Cannot list the manage.py commands",
-  "Install django-types into this project's virtual environment to complete Django model fields and managers": "Install django-types into this project's virtual environment to complete Django model fields and managers"
+  "Install django-types into this project's virtual environment to complete Django model fields and managers": "Install django-types into this project's virtual environment to complete Django model fields and managers",
+  "Sign in with GitHub CLI to list and clone your repositories.": "Sign in with GitHub CLI to list and clone your repositories.",
+  "Sign in with GitHub CLI to view and review pull requests.": "Sign in with GitHub CLI to view and review pull requests."
 }

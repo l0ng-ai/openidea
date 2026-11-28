@@ -62,6 +62,24 @@ export async function setProjectGithubAccount(account: string): Promise<GhProjec
   }
 }
 
+/**
+ * Reloads GitHub CLI accounts after an in-IDE `gh auth login`. When the user already
+ * had at least one account and added a new one, selects it for the project immediately.
+ */
+export async function refreshAfterGithubSignIn(
+  prevLogins: ReadonlySet<string>,
+): Promise<GhProjectAccountStatus | null> {
+  const fresh = await loadProjectGithubAccount();
+  if (!fresh) return null;
+  if (prevLogins.size > 0) {
+    const added = fresh.accounts.find((entry) => !prevLogins.has(entry.login));
+    if (added) {
+      return (await setProjectGithubAccount(added.login)) ?? fresh;
+    }
+  }
+  return fresh;
+}
+
 export function projectAccountOptions(status: GhProjectAccountStatus | null): SelectOption[] {
   const accounts = status?.accounts ?? [];
   const configured = status?.configuredAccount ?? "";

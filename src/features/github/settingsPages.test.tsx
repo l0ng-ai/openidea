@@ -1,6 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
-import { useSettingsPages } from "@/workbench/contributions";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+vi.mock("@tauri-apps/api/core", async (original) => ({
+  ...(await original<typeof import("@tauri-apps/api/core")>()),
+  Channel: class {
+    onmessage?: (e: unknown) => void;
+  },
+}));
+
+import type { AgentLoginEvent, GhProjectAccountStatus } from "@/bindings";
+import * as ipc from "@/platform/ipc";
+import { provideEmbeddedTerminal, useSettingsPages } from "@/workbench/contributions";
 import { useGhProjectAccount } from "./data/account";
 import { activateSettingsPages } from "./settingsPages";
 import { GithubSettingsPage } from "./diff/GithubSettingsPage";
@@ -15,6 +25,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
+  provideEmbeddedTerminal(undefined);
   useGhProjectAccount.setState({ status: null, loading: false, saving: false, revision: 0 });
 });
 
@@ -84,5 +96,95 @@ describe("GitHub settings pages", () => {
         "Passes this account's GH_TOKEN to processes started in this project (terminals, agents, Git, and run configurations).",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("runs in-IDE GitHub CLI sign-in from Add account… and selects the newly added account", async () => {
+    provideEmbeddedTerminal(async () => ({
+      write: () => {},
+      clear: () => {},
+      focus: () => {},
+      fit: () => {},
+      dispose: () => {},
+    }));
+    vi.spyOn(ipc, "isTauri").mockReturnValue(true);
+    let accounts = [{ login: "alice", active: true }];
+    let configuredAccount = "";
+    const makeStatus = (): GhProjectAccountStatus => ({
+      ghInstalled: true,
+      accounts,
+      configuredAccount,
+      effectiveAccount: configuredAccount || accounts.find((a) => a.active)?.login || null,
+      suggestedAccount: null,
+    });
+    vi.spyOn(ipc.commands, "ghProjectAccountStatus").mockImplementation(async () => ({
+      status: "ok",
+      data: makeStatus(),
+    }));
+    const setAccountSpy = vi.spyOn(ipc.commands, "ghSetProjectAccount").mockImplementation(async (account: string) => {
+      configuredAccount = account;
+      return { status: "ok", data: makeStatus() };
+    });
+    vi.spyOn(ipc.commands, "termResize").mockResolvedValue({ status: "ok", data: null } as never);
+    vi.spyOn(ipc.commands, "termKill").mockResolvedValue({ status: "ok", data: null } as never);
+    let sendEvent: ((e: AgentLoginEvent) => void) | null = null;
+    const spawnSpy = vi.spyOn(ipc.commands, "agentGhLoginSpawn").mockImplementation(async (_cols, _rows, ch) => {
+      sendEvent = (event) => ch.onmessage?.(event);
+      return { status: "ok", data: { id: 11, pid: 222, title: "gh" } };
+    });
+
+    render(<GithubSettingsPage />);
+    const addBtn = await screen.findByRole("button", { name: "Add account…" });
+    fireEvent.click(addBtn);
+
+    expect(await screen.findByRole("dialog", { name: "Sign In to GitHub CLI" })).toBeInTheDocument();
+    await waitFor(() => expect(spawnSpy).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      sendEvent?.({
+        type: "output",
+        data: "! First copy your one-time code: AB12-CD34\r\nPress Enter to open https://github.com/login/device in your browser...",
+      });
+    });
+    expect(await screen.findByText("AB12-CD34")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy Code & Open Browser" })).toBeInTheDocument();
+
+    act(() => {
+      accounts = [
+        { login: "alice", active: true },
+        { login: "alice-work", active: false },
+      ];
+      sendEvent?.({ type: "exited", code: 0 });
+    });
+
+    await waitFor(() => expect(setAccountSpy).toHaveBeenCalledWith("alice-work"));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Sign In to GitHub CLI" })).toBeNull());
+    expect(screen.getByRole("button", { name: "GitHub account" })).toHaveTextContent("alice-work");
+  });
+
+  it("shows primary Sign In… when gh is installed without accounts, and Install GitHub CLI when missing", async () => {
+    useGhProjectAccount.setState({
+      status: {
+        ghInstalled: true,
+        accounts: [],
+        configuredAccount: "",
+        effectiveAccount: null,
+        suggestedAccount: null,
+      },
+    });
+    const { rerender } = render(<GithubSettingsPage />);
+    expect(screen.getByRole("button", { name: "Sign In…" })).toBeInTheDocument();
+
+    useGhProjectAccount.setState({
+      status: {
+        ghInstalled: false,
+        accounts: [],
+        configuredAccount: "",
+        effectiveAccount: null,
+        suggestedAccount: null,
+      },
+    });
+    rerender(<GithubSettingsPage />);
+    expect(screen.getByRole("button", { name: "Install GitHub CLI" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Download manually…" })).toBeInTheDocument();
   });
 });
