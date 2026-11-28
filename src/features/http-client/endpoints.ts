@@ -9,7 +9,7 @@ import { gutterIconMarkup, showContextMenu } from "@/ui";
 import { notifications, onEndpointsChanged, searchEndpoints, type EndpointEntry } from "@/workbench/contributions";
 import { appendGeneratedRequests } from "./generatedRequests";
 import { headerCompletion } from "./headers";
-import { PYTHON_ENDPOINTS } from "./python/routeIndex";
+import { pythonEndpointsOf } from "./python/routeIndex";
 import { sourceReader } from "./spring/editor";
 import { findHost } from "./spring/request";
 import { METHODS } from "./language";
@@ -79,8 +79,7 @@ export async function endpointCompletion(context: CompletionContext): Promise<Co
 }
 
 const REFRESH_DELAY = 300;
-/** Providers whose endpoints get gutter icons here; Spring draws its own (with request bodies). */
-const hasGutterIcons = (id: string) => id.startsWith("plugin:") || id === PYTHON_ENDPOINTS;
+const isPluginProvider = (id: string) => id.startsWith("plugin:");
 
 type Mark = { pos: number; endpoints: EndpointEntry[] };
 const setMarks = StateEffect.define<Mark[]>();
@@ -139,7 +138,14 @@ export function endpointEditorExtension(ctx: EditorDocContext): Extension {
           clearTimeout(this.timer);
           const seq = ++this.seq;
           const root = useProject.getState().project?.root ?? null;
-          void searchEndpoints(root, hasGutterIcons).then((entries) => {
+          // Plugin endpoints, and in a Python file its Flask / FastAPI routes as typed (not as last saved).
+          // Spring draws its own icons, with request bodies.
+          const python =
+            root && ctx.language === "python"
+              ? pythonEndpointsOf(root, ctx.path, this.view.state.doc.toString()).catch(() => [])
+              : Promise.resolve([]);
+          void Promise.all([searchEndpoints(root, isPluginProvider), python]).then(([plugins, routes]) => {
+            const entries = [...plugins.filter((e) => e.pluginId), ...routes];
             if (this.destroyed || seq !== this.seq) return;
             const byLine = new Map<number, EndpointEntry[]>();
             for (const e of entries) {

@@ -1,9 +1,12 @@
 /**
  * Flask and FastAPI routes read from Python sources: route decorators on apps, blueprints
  * and routers, with the prefixes their `Blueprint(url_prefix=…)` / `APIRouter(prefix=…)` and
- * `register_blueprint(…)` / `include_router(…)` calls add, across modules. A text scan, not a
- * Python parser: string literals and comments are masked first so brackets and keywords inside
- * them don't count; a path built at runtime (an f-string, a constant) is skipped.
+ * `register_blueprint(…)` / `include_router(…)` / `mount(…)` calls add, across modules. A text
+ * scan, not a Python parser: string literals and comments are masked first so brackets and
+ * keywords inside them don't count. A path or prefix may be a module constant or a settings
+ * attribute (`settings.API_V1_STR`, a class attribute of the instance); a route whose path or
+ * prefix is only known at runtime (an f-string, a computed value) is left out rather than shown
+ * under a wrong URL.
  */
 
 export interface PythonSource {
@@ -31,42 +34,56 @@ export interface PythonRoute {
 }
 
 type Kind = "Flask" | "FastAPI" | "Blueprint" | "APIRouter";
+/** A span of the masked code: an argument, a constant's value. */
+type Span = [number, number];
 
 /** A Flask / FastAPI app, blueprint or router assigned to a name. */
 interface WebObject {
-  module: string;
+  file: PythonFile;
   name: string;
   kind: Kind;
   /** `url_prefix=` / `prefix=` of the constructor. */
-  prefix: string;
+  prefix: Span | null;
 }
 
-/** `parent.register_blueprint(child, url_prefix=…)` / `parent.include_router(child, prefix=…)`. */
+/**
+ * `parent.register_blueprint(child, url_prefix=…)`, `parent.include_router(child, prefix=…)`,
+ * `parent.mount(path, child)`.
+ */
 interface Registration {
-  file: ParsedFile;
   parent: string;
   child: string;
-  prefix: string | null;
+  prefix: Span | null;
+  mount: boolean;
 }
 
+/** A route decorator, or `add_url_rule(…)`. */
 interface Decorator {
   receiver: string;
   verb: string;
-  paths: string[];
-  methods: string[] | null;
+  path: Span;
+  methods: Span | null;
   handler: string;
   offset: number;
 }
 
-interface ParsedFile {
+/** A parsed Python source; `parsePython` makes one, `routesOf` reads many. */
+export interface PythonFile {
   source: PythonSource;
   module: string;
+  code: string;
+  strings: Map<number, string | null>;
   /** Local name → imported module and name (`null`: the module itself). */
   imports: Map<string, { module: string; name: string | null }>;
   objects: WebObject[];
   decorators: Decorator[];
   registrations: Registration[];
-  usesFastApi: boolean;
+  /** Module-level `NAME = value`. */
+  constants: Map<string, Span>;
+  /** Module-level `name = Cls(…)`: the class expression. */
+  instances: Map<string, string>;
+  /** Class name → its attributes (`API_V1_STR: str = "/api/v1"`). */
+  classes: Map<string, Map<string, Span>>;
 }
 
 const VERBS = new Set(["get", "post", "put", "patch", "delete", "head", "options", "trace"]);
@@ -186,19 +203,10 @@ function literal(code: string, strings: Map<number, string | null>, [a, b]: [num
   return code.slice(end + quote, b).trim() ? null : value;
 }
 
-/** String literals of a `[…]` / `(…)` / `{…}` argument, or of a single literal. */
-function literals(code: string, strings: Map<number, string | null>, [a, b]: [number, number]): string[] {
-  const single = literal(code, strings, [a, b]);
-  if (single !== null) return [single];
-  const out: string[] = [];
-  for (const [at, value] of strings) if (at > a && at < b && value !== null) out.push(value);
-  return out;
-}
-
 const expression = (code: string, [a, b]: [number, number]) => code.slice(a, b).trim();
 
-function parseImports(code: string, module: string, isPackage: boolean): ParsedFile["imports"] {
-  const imports: ParsedFile["imports"] = new Map();
+function parseImports(code: string, module: string, isPackage: boolean): PythonFile["imports"] {
+  const imports: PythonFile["imports"] = new Map();
   const pkg = isPackage ? module.split(".") : module.split(".").slice(0, -1);
   const absolute = (dots: string, name: string) => {
     if (!dots) return name;
@@ -224,25 +232,71 @@ function parseImports(code: string, module: string, isPackage: boolean): ParsedF
   return imports;
 }
 
-function parseFile(source: PythonSource): ParsedFile {
+/** End of the statement starting at `from`: the next newline outside brackets. */
+function statementEnd(code: string, from: number): number {
+  let depth = 0;
+  for (let i = from; i < code.length; i++) {
+    const c = code[i];
+    if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") depth--;
+    else if (c === "\n" && depth <= 0 && code[i - 1] !== "\\") return i;
+  }
+  return code.length;
+}
+
+/** Module-level assignments, and the attributes assigned in the body of each top-level class. */
+function parseAssignments(file: PythonFile) {
+  const { code } = file;
+  const assignment = /^([ \t]*)(\w+)[ \t]*(?::[^=\n]*)?=(?!=)[ \t]*/my;
+  let cls: { name: string; attrs: Map<string, Span>; indent: string | null } | null = null;
+  for (const line of code.matchAll(/^(?=[ \t]*\S)/gm)) {
+    const at = line.index;
+    const text = code.slice(at, code.indexOf("\n", at) < 0 ? code.length : code.indexOf("\n", at));
+    if (!/^[ \t]/.test(text)) {
+      const c = /^class[ \t]+(\w+)/.exec(text);
+      cls = c ? { name: c[1]!, attrs: new Map(), indent: null } : null;
+      if (cls) file.classes.set(cls.name, cls.attrs);
+    } else if (cls && cls.indent === null) cls.indent = /^[ \t]+/.exec(text)![0];
+    assignment.lastIndex = at;
+    const m = assignment.exec(code);
+    if (!m) continue;
+    const span: Span = [at + m[0].length, statementEnd(code, at + m[0].length)];
+    if (!m[1]) {
+      file.constants.set(m[2]!, span);
+      const instance = /^([\w.]+)[ \t]*\(/.exec(code.slice(span[0], span[1]));
+      if (instance) file.instances.set(m[2]!, instance[1]!);
+    } else if (cls && m[1] === cls.indent) cls.attrs.set(m[2]!, span);
+  }
+}
+
+/** Parses one source for `routesOf`. */
+export function parsePython(source: PythonSource): PythonFile {
   const { code, strings } = maskPython(source.text);
   const module = moduleOf(source.rel);
-  const file: ParsedFile = {
+  const file: PythonFile = {
     source,
     module,
+    code,
+    strings,
     imports: parseImports(code, module, /(^|\/)__init__\.py$/.test(source.rel)),
     objects: [],
     decorators: [],
     registrations: [],
-    usesFastApi: /\bfastapi\b/.test(code),
+    constants: new Map(),
+    instances: new Map(),
+    classes: new Map(),
   };
+  parseAssignments(file);
   const ctor = /^[ \t]*(\w+)[ \t]*(?::[^=\n]*)?=[ \t]*(?:\w+\.)?(Flask|FastAPI|Blueprint|APIRouter)[ \t]*\(/gm;
   for (const m of code.matchAll(ctor)) {
-    const open = m.index + m[0].length - 1;
-    const { named } = callArgs(code, open);
+    const { named } = callArgs(code, m.index + m[0].length - 1);
     const kind = m[2] as Kind;
-    const arg = named.get(kind === "Blueprint" ? "url_prefix" : "prefix");
-    file.objects.push({ module, name: m[1]!, kind, prefix: (arg && literal(code, strings, arg)) ?? "" });
+    file.objects.push({
+      file,
+      name: m[1]!,
+      kind,
+      prefix: named.get(kind === "Blueprint" ? "url_prefix" : "prefix") ?? null,
+    });
   }
   const decorator = /^[ \t]*@[ \t]*([\w.]+)\.(\w+)[ \t]*\(/gm;
   for (const m of code.matchAll(decorator)) {
@@ -250,42 +304,53 @@ function parseFile(source: PythonSource): ParsedFile {
     if (verb !== "route" && verb !== "api_route" && !VERBS.has(verb)) continue;
     const open = m.index + m[0].length - 1;
     const { positional, named } = callArgs(code, open);
-    const pathArg = positional[0] ?? named.get("rule") ?? named.get("path");
-    const path = pathArg ? literal(code, strings, pathArg) : null;
-    if (path === null) continue;
-    const methodsArg = named.get("methods");
-    const methods =
-      verb === "route" || verb === "api_route" ? (methodsArg ? literals(code, strings, methodsArg) : null) : [verb];
+    const path = positional[0] ?? named.get("rule") ?? named.get("path");
+    if (!path) continue;
     const handler = /^[\s\S]*?\b(?:async[ \t]+)?def[ \t]+(\w+)/.exec(code.slice(closing(code, open) + 1))?.[1] ?? "";
     file.decorators.push({
       receiver: m[1]!,
       verb,
-      paths: [path],
-      methods,
+      path,
+      methods: named.get("methods") ?? null,
       handler,
       offset: m.index + m[0].indexOf("@"),
     });
   }
-  file.registrations = parseRegistrations(file, code, strings);
-  return file;
-}
-
-function parseRegistrations(file: ParsedFile, code: string, strings: Map<number, string | null>): Registration[] {
-  const out: Registration[] = [];
-  for (const m of code.matchAll(/([\w.]+)\.(register_blueprint|include_router)[ \t]*\(/g)) {
-    const open = m.index + m[0].length - 1;
-    const { positional, named } = callArgs(code, open);
-    const child = positional[0] ?? named.get("blueprint") ?? named.get("router");
-    if (!child) continue;
-    const prefixArg = named.get(m[2] === "register_blueprint" ? "url_prefix" : "prefix");
-    out.push({
-      file,
-      parent: m[1]!,
-      child: expression(code, child),
-      prefix: prefixArg ? literal(code, strings, prefixArg) : null,
+  // `app.add_url_rule("/", view_func=index)`: Flask's route without a decorator.
+  for (const m of code.matchAll(/([\w.]+)\.add_url_rule[ \t]*\(/g)) {
+    const { positional, named } = callArgs(code, m.index + m[0].length - 1);
+    const path = positional[0] ?? named.get("rule");
+    const view = named.get("view_func") ?? positional[2];
+    if (!path) continue;
+    const handler = view
+      ? (/^([\w.]+)/
+          .exec(expression(code, view))?.[1]
+          ?.replace(/\.as_view$/, "")
+          .split(".")
+          .pop() ?? "")
+      : "";
+    file.decorators.push({
+      receiver: m[1]!,
+      verb: "route",
+      path,
+      methods: named.get("methods") ?? null,
+      handler,
+      offset: m.index,
     });
   }
-  return out;
+  for (const m of code.matchAll(/([\w.]+)\.(register_blueprint|include_router|mount)[ \t]*\(/g)) {
+    const { positional, named } = callArgs(code, m.index + m[0].length - 1);
+    const mount = m[2] === "mount";
+    const child = mount
+      ? (positional[1] ?? named.get("app"))
+      : (positional[0] ?? named.get("blueprint") ?? named.get("router"));
+    if (!child) continue;
+    const prefix = mount
+      ? (positional[0] ?? named.get("path") ?? null)
+      : (named.get(m[2] === "register_blueprint" ? "url_prefix" : "prefix") ?? null);
+    file.registrations.push({ parent: m[1]!, child: expression(code, child), prefix, mount });
+  }
+  return file;
 }
 
 /** Joins a prefix and a rule the way Flask and FastAPI do: one `/` between them. */
@@ -303,15 +368,50 @@ export function normalizePath(path: string): string {
 
 /** Every Flask and FastAPI route of `sources`. */
 export function pythonRoutes(sources: readonly PythonSource[]): PythonRoute[] {
-  const files = sources.map(parseFile);
-  const registrations = files.flatMap((f) => f.registrations);
+  return routesOf(sources.map(parsePython));
+}
+
+/**
+ * Modules that a prefix, path or method list names a value from (`settings.API_V1_STR` after
+ * `from app.core.config import settings`) and that `files` lacks: a settings module imports
+ * neither framework, so the scan doesn't return it.
+ */
+export function missingModules(files: readonly PythonFile[]): Array<{ file: PythonFile; module: string }> {
+  const known = (module: string) => files.some((f) => f.module === module || f.module.endsWith(`.${module}`));
+  const out: Array<{ file: PythonFile; module: string }> = [];
+  for (const file of files) {
+    const spans = [
+      ...file.objects.map((o) => o.prefix),
+      ...file.registrations.map((r) => r.prefix),
+      ...file.decorators.flatMap((d) => [d.path, d.methods]),
+    ];
+    for (const span of spans) {
+      const head = span && /^(\w+)(?:\.\w+)?$/.exec(expression(file.code, span))?.[1];
+      const bound = head ? file.imports.get(head) : undefined;
+      if (!bound) continue;
+      // `from a import b`: `b` is a name in module `a`, or the module `a.b`.
+      const candidates = bound.name ? [bound.module, `${bound.module}.${bound.name}`] : [bound.module];
+      if (candidates.some(known)) continue;
+      for (const module of candidates) if (!out.some((m) => m.module === module)) out.push({ file, module });
+    }
+  }
+  return out;
+}
+
+/** Depth of constant lookups through other names and modules. */
+const MAX_HOPS = 6;
+
+/** Every Flask and FastAPI route of the parsed `files`. */
+export function routesOf(files: readonly PythonFile[]): PythonRoute[] {
   const objects = files.flatMap((f) => f.objects);
   // A module imported as `app.routers.items` may live at `src/app/routers/items.py`: match on the dotted suffix.
   const sameModule = (actual: string, wanted: string) => actual === wanted || actual.endsWith(`.${wanted}`);
-  const find = (module: string, name: string) => objects.find((o) => o.name === name && sameModule(o.module, module));
+  const fileOf = (module: string) => files.find((f) => sameModule(f.module, module));
+  const find = (module: string, name: string) =>
+    objects.find((o) => o.name === name && sameModule(o.file.module, module));
 
   /** The object a dotted name in `file` refers to: one of its own, or one it imports. */
-  const resolve = (file: ParsedFile, dotted: string): WebObject | undefined => {
+  const resolve = (file: PythonFile, dotted: string): WebObject | undefined => {
     const [head, ...rest] = dotted.split(".");
     if (!head) return undefined;
     if (!rest.length) {
@@ -327,25 +427,102 @@ export function pythonRoutes(sources: readonly PythonSource[]): PythonRoute[] {
     return find([bound.module, ...path].join("."), name) ?? (path.length ? undefined : find(bound.module, name));
   };
 
-  const parentsOf = new Map<WebObject, Array<{ parent: WebObject; prefix: string | null }>>();
-  for (const r of registrations) {
-    const parent = resolve(r.file, r.parent);
-    const child = resolve(r.file, r.child);
-    if (!parent || !child || parent === child) continue;
-    parentsOf.set(child, [...(parentsOf.get(child) ?? []), { parent, prefix: r.prefix }]);
+  /** The strings a span evaluates to: a literal, a list or tuple of them, or a name for one; null when unknown. */
+  const valueOf = (file: PythonFile, span: Span, hops = 0): string[] | null => {
+    const { code, strings } = file;
+    const single = literal(code, strings, span);
+    if (single !== null) return [single];
+    const text = expression(code, span);
+    if (/^[[(][\s\S]*[\])]$/.test(text)) {
+      const open = code.indexOf(text[0]!, span[0]);
+      const items = callArgs(code, open).positional.map((item) => valueOf(file, item, hops));
+      return items.every((v) => v !== null) ? items.flat() : null;
+    }
+    return /^[\w.]+$/.test(text) && hops < MAX_HOPS ? named(file, text, hops + 1) : null;
+  };
+
+  /** The value of `NAME`, `module.NAME` or `instance.ATTR` as seen from `file`. */
+  const named = (file: PythonFile, dotted: string, hops: number): string[] | null => {
+    const [head, attr, ...more] = dotted.split(".");
+    if (!head || more.length) return null;
+    if (!attr) {
+      const own = file.constants.get(head);
+      if (own) return valueOf(file, own, hops);
+      const bound = file.imports.get(head);
+      const from = bound?.name ? fileOf(bound.module) : undefined;
+      return from && bound?.name ? named(from, bound.name, hops + 1) : null;
+    }
+    if (file.instances.has(head)) return classAttr(file, file.instances.get(head)!, attr, hops);
+    const bound = file.imports.get(head);
+    if (!bound) return null;
+    if (!bound.name) {
+      const module = fileOf(bound.module);
+      return module ? named(module, attr, hops + 1) : null;
+    }
+    // `from app.core.config import settings` then `settings.X`; or `from app import config` then `config.X`.
+    const owner = fileOf(bound.module);
+    if (owner?.instances.has(bound.name)) return classAttr(owner, owner.instances.get(bound.name)!, attr, hops);
+    const module = fileOf(`${bound.module}.${bound.name}`);
+    return module ? named(module, attr, hops + 1) : null;
+  };
+
+  /** An attribute of the class `cls` (named in `file`): `Settings().API_V1_STR`. */
+  const classAttr = (file: PythonFile, cls: string, attr: string, hops: number): string[] | null => {
+    const [head, name, ...more] = cls.split(".");
+    if (!head || more.length) return null;
+    let owner: PythonFile | undefined = file;
+    let className = head;
+    if (name) {
+      owner = file.imports.get(head)?.name ? undefined : fileOf(file.imports.get(head)?.module ?? "");
+      className = name;
+    } else if (!file.classes.has(head)) {
+      const bound = file.imports.get(head);
+      owner = bound?.name ? fileOf(bound.module) : undefined;
+      className = bound?.name ?? head;
+    }
+    const span = owner?.classes.get(className)?.get(attr);
+    return owner && span ? valueOf(owner, span, hops + 1) : null;
+  };
+
+  /** One value of a prefix, `""` when none was given, null when it can't be known here. */
+  const prefixOf = (file: PythonFile, span: Span | null): string | null => {
+    if (!span) return "";
+    const values = valueOf(file, span);
+    return values?.length === 1 ? values[0]! : null;
+  };
+
+  const parentsOf = new Map<WebObject, Array<{ parent: WebObject; prefix: string | null; given: boolean }>>();
+  for (const file of files) {
+    for (const r of file.registrations) {
+      const parent = resolve(file, r.parent);
+      const child = resolve(file, r.child);
+      if (!parent || !child || parent === child) continue;
+      // Only FastAPI apps mount sub-applications; blueprints and routers register.
+      if (r.mount !== (child.kind === "FastAPI" && parent.kind === "FastAPI")) continue;
+      const entry = { parent, prefix: prefixOf(file, r.prefix), given: r.prefix !== null };
+      parentsOf.set(child, [...(parentsOf.get(child) ?? []), entry]);
+    }
   }
 
-  /** Every full prefix of `o`: one per chain of registrations up to an app. */
-  const prefixes = (o: WebObject, seen: Set<WebObject>): string[] => {
-    if (o.kind === "Flask" || o.kind === "FastAPI") return [o.prefix];
+  /** Every full prefix of `o`, one per chain of registrations up to an app; null where one is unknown. */
+  const prefixes = (o: WebObject, seen: Set<WebObject>): Array<string | null> => {
+    const own = o.kind === "Flask" || o.kind === "FastAPI" ? "" : prefixOf(o.file, o.prefix);
     const parents = parentsOf.get(o)?.filter((p) => !seen.has(p.parent));
-    if (!parents?.length) return [o.prefix];
+    if (!parents?.length) return [own];
     const next = new Set(seen).add(o);
-    return parents.flatMap(({ parent, prefix }) =>
-      prefixes(parent, next).map((up) =>
+    return parents.flatMap(({ parent, prefix, given }) =>
+      prefixes(parent, next).map((up) => {
         // A blueprint's `url_prefix` given at registration replaces its own; a router's adds to it.
-        o.kind === "Blueprint" ? joinPath(up, prefix ?? o.prefix) : joinPath(joinPath(up, prefix ?? ""), o.prefix),
-      ),
+        const added =
+          o.kind === "Blueprint"
+            ? given
+              ? prefix
+              : own
+            : prefix === null || own === null
+              ? null
+              : joinPath(prefix, own);
+        return up === null || added === null ? null : joinPath(up, added);
+      }),
     );
   };
 
@@ -353,19 +530,22 @@ export function pythonRoutes(sources: readonly PythonSource[]): PythonRoute[] {
   for (const file of files) {
     const lines = lineStarts(file.source.text);
     for (const d of file.decorators) {
+      // Only receivers known to be an app, blueprint or router: `@mock.patch("…")` is not a route.
       const target = resolve(file, d.receiver);
-      // A receiver we can't trace (an app imported from a module outside the project) still routes.
-      const fastapi = target ? target.kind === "FastAPI" || target.kind === "APIRouter" : file.usesFastApi;
-      if (!target && d.receiver.includes(".")) continue;
-      if (!fastapi && VERBS.has(d.verb) && ["head", "options", "trace"].includes(d.verb)) continue;
-      const methods = (d.methods ?? ["GET"]).map((m) => m.toUpperCase());
+      if (!target) continue;
+      const fastapi = target.kind === "FastAPI" || target.kind === "APIRouter";
+      if (!fastapi && ["head", "options", "trace"].includes(d.verb)) continue;
+      const paths = valueOf(file, d.path);
+      const methods = d.methods ? valueOf(file, d.methods) : VERBS.has(d.verb) ? [d.verb] : ["GET"];
+      if (!paths?.length || !methods?.length) continue;
       const at = position(lines, d.offset);
-      for (const prefix of target ? [...new Set(prefixes(target, new Set()))] : [""]) {
-        for (const path of d.paths) {
+      for (const prefix of new Set(prefixes(target, new Set()))) {
+        if (prefix === null) continue;
+        for (const path of paths) {
           for (const method of methods) {
             routes.push({
               framework: fastapi ? "FastAPI" : "Flask",
-              method,
+              method: method.toUpperCase(),
               url: normalizePath(joinPath(prefix, path)),
               module: file.module,
               handler: d.handler,

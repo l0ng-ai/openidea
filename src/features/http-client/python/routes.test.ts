@@ -187,6 +187,140 @@ app.register_blueprint(bp, url_prefix="/b", name="b2")
   });
 });
 
+describe("pythonRoutes: receivers and constants", () => {
+  it("routes only on receivers known to be an app, blueprint or router", () => {
+    const test = src(
+      "tests/test_api.py",
+      `from unittest import mock
+from fastapi.testclient import TestClient
+from somewhere import app
+
+@mock.patch("app.db.session")
+def test_a(session): ...
+
+@app.get("/outside")
+def outside(): ...
+`,
+    );
+    expect(brief([test])).toEqual([]);
+  });
+
+  it("follows the official FastAPI template's settings prefix", () => {
+    const main = src(
+      "backend/app/main.py",
+      `from fastapi import FastAPI
+from app.api.main import api_router
+from app.core.config import settings
+
+app = FastAPI(title=settings.PROJECT_NAME)
+app.include_router(api_router, prefix=settings.API_V1_STR)
+`,
+    );
+    const api = src(
+      "backend/app/api/main.py",
+      `from fastapi import APIRouter
+from app.api.routes import items
+
+api_router = APIRouter()
+api_router.include_router(items.router)
+`,
+    );
+    const items = src(
+      "backend/app/api/routes/items.py",
+      `from fastapi import APIRouter
+router = APIRouter(prefix="/items", tags=["items"])
+
+@router.get("/{id}")
+def read_item(id: int): ...
+`,
+    );
+    const config = src(
+      "backend/app/core/config.py",
+      `from pydantic_settings import BaseSettings
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file="../.env")
+    API_V1_STR: str = "/api/v1"
+    PROJECT_NAME: str
+
+    def all_cors_origins(self) -> list[str]:
+        API_V1_STR = "/not-this"
+        return []
+
+
+settings = Settings()  # type: ignore
+`,
+    );
+    expect(brief([main, api, items, config])).toEqual([
+      "FastAPI GET /api/v1/items/{id} backend.app.api.routes.items.read_item 3:0",
+    ]);
+  });
+
+  it("reads module constants for paths, prefixes and methods, and skips a prefix it can't know", () => {
+    const consts = src("app/consts.py", `API = "/api"\nWRITE = ["POST", "PUT"]\n`);
+    const app = src(
+      "app/main.py",
+      `import os
+from fastapi import FastAPI, APIRouter
+from app.consts import API, WRITE
+from app import consts
+
+V2 = API + "/v2"
+ITEMS = "/items"
+
+app = FastAPI()
+known = APIRouter(prefix=consts.API)
+unknown = APIRouter(prefix=os.environ["PREFIX"])
+
+@known.api_route(ITEMS, methods=WRITE)
+def write(): ...
+
+@unknown.get("/x")
+def x(): ...
+
+app.include_router(known)
+app.include_router(unknown)
+app.include_router(known, prefix=V2)
+`,
+    );
+    expect(brief([consts, app])).toEqual([
+      "FastAPI POST /api/items app.main.write 12:0",
+      "FastAPI PUT /api/items app.main.write 12:0",
+    ]);
+  });
+
+  it("reads add_url_rule and FastAPI sub-applications", () => {
+    const flask = src(
+      "site.py",
+      `from flask import Flask
+from views import index, UserView
+
+app = Flask(__name__)
+app.add_url_rule("/", view_func=index)
+app.add_url_rule("/users/<int:id>", view_func=UserView.as_view("user"), methods=["GET", "DELETE"])
+`,
+    );
+    const fastapi = src(
+      "api.py",
+      `from fastapi import FastAPI
+app = FastAPI()
+admin = FastAPI()
+
+@admin.get("/stats")
+def stats(): ...
+
+app.mount("/admin", admin)
+`,
+    );
+    expect(brief([flask, fastapi])).toEqual([
+      "Flask GET / site.index 4:0",
+      "Flask GET /users/{id} site.UserView 5:0",
+      "Flask DELETE /users/{id} site.UserView 5:0",
+      "FastAPI GET /admin/stats api.stats 4:0",
+    ]);
+  });
+});
+
 describe("helpers", () => {
   it("names modules after their file", () => {
     expect(moduleOf("app/routers/items.py")).toBe("app.routers.items");
