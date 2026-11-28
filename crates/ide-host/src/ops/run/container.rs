@@ -6,8 +6,8 @@ use ide_core::remote_settings::{RunTarget, RunTargetKind};
 use ide_core::{IdeError, IdeResult};
 use ide_docker::DockerEndpoint;
 use ide_remote::docker::{
-    ContainerDebug, ContainerRun, DEBUG_BOOTSTRAP, DEBUG_BOOTSTRAP_NAME, compose_bind_mounts, compose_container_root,
-    container_config, container_name, default_container_root,
+    ComposeService, ContainerDebug, ContainerRun, DEBUG_BOOTSTRAP, DEBUG_BOOTSTRAP_NAME, compose_container_root,
+    compose_service, container_config, container_name, default_container_root,
 };
 use ide_run::RunConfig;
 use std::collections::{BTreeMap, HashMap};
@@ -41,6 +41,7 @@ pub(super) async fn prepare(host: &Host, root: &Path, target: RunTarget, config:
         })?;
         let container_root = container_root(&endpoint, &root, &target)?;
         let file_env = env_files(&root, &config)?;
+        let (service_env, service_ports) = server_context(&data_dir, &root, &target, &config);
         let name = container_name(&config.id, &unique());
         let debugging = if debug { Some(Debugging::prepare(&data_dir)?) } else { None };
         container_config(
@@ -52,6 +53,8 @@ pub(super) async fn prepare(host: &Host, root: &Path, target: RunTarget, config:
                 docker: &docker.to_string_lossy(),
                 endpoint_env: &ide_docker::run_env(&endpoint),
                 file_env: &file_env,
+                service_env: &service_env,
+                service_ports: &service_ports,
                 name: &name,
                 user: user(&root, &target),
                 debug: debugging.as_ref().map(|d| ContainerDebug {
@@ -104,9 +107,9 @@ type Mounts = Vec<(PathBuf, String)>;
 /// The modification times of the Compose files a result was read with.
 type Stamp = Vec<Option<SystemTime>>;
 
-/// `docker compose config`'s mounts per project and target, until a Compose file changes.
-type MountCache = HashMap<(PathBuf, String), (Stamp, Mounts)>;
-static COMPOSE_MOUNTS: LazyLock<Mutex<MountCache>> = LazyLock::new(Default::default);
+/// `docker compose config` per project and target, until a Compose file changes.
+type ServiceCache = HashMap<(PathBuf, String), (Stamp, ComposeService)>;
+static COMPOSE_SERVICES: LazyLock<Mutex<ServiceCache>> = LazyLock::new(Default::default);
 
 /// The folders of the project a container of `target` mounts: `(folder here, folder in
 /// the container)`. A Compose service's come from `docker compose config` (cached).
@@ -116,6 +119,11 @@ pub(crate) fn mounts(data_dir: &Path, root: &Path, target: &RunTarget) -> IdeRes
         "" => return Ok(vec![(root.to_path_buf(), default_container_root(root))]),
         folder => return Ok(vec![(root.to_path_buf(), folder.to_owned())]),
     }
+    Ok(compose_service_of(data_dir, root, target)?.mounts.into_iter().map(|(s, t)| (PathBuf::from(s), t)).collect())
+}
+
+/// What `docker compose config` says of `target`'s service (cached until a Compose file changes).
+fn compose_service_of(data_dir: &Path, root: &Path, target: &RunTarget) -> IdeResult<ComposeService> {
     let files: Vec<PathBuf> = if target.compose_files.iter().all(|f| f.trim().is_empty()) {
         DEFAULT_COMPOSE_FILES.iter().map(|f| root.join(f)).collect()
     } else {
@@ -123,19 +131,37 @@ pub(crate) fn mounts(data_dir: &Path, root: &Path, target: &RunTarget) -> IdeRes
     };
     let stamp: Stamp = files.iter().map(|f| std::fs::metadata(f).and_then(|m| m.modified()).ok()).collect();
     let key = (root.to_path_buf(), format!("{}\0{}\0{}", target.id, target.service, target.compose_files.join(";")));
-    let cache = || COMPOSE_MOUNTS.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((seen, mounts)) = cache().get(&key)
+    let cache = || COMPOSE_SERVICES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((seen, service)) = cache().get(&key)
         && *seen == stamp
     {
-        return Ok(mounts.clone());
+        return Ok(service.clone());
     }
     let json = ide_docker::compose_config(&endpoint(data_dir, target)?, root, &target.compose_files)?;
-    let mounts: Mounts = compose_bind_mounts(&json, target.service.trim())?
-        .into_iter()
-        .map(|(source, folder)| (PathBuf::from(source), folder))
-        .collect();
-    cache().insert(key, (stamp, mounts.clone()));
-    Ok(mounts)
+    let service = compose_service(&json, target.service.trim())?;
+    cache().insert(key, (stamp, service.clone()));
+    Ok(service)
+}
+
+/// Variables a development server in the container finds besides the configuration's: the
+/// Compose service's `environment` (and published ports), and the `.env` / `.flaskenv` of the
+/// folder it runs in. Best effort: a Compose file `docker compose config` can't read gives none.
+fn server_context(
+    data_dir: &Path,
+    root: &Path,
+    target: &RunTarget,
+    config: &RunConfig,
+) -> (BTreeMap<String, String>, Vec<(u16, u16)>) {
+    let service = if target.kind == RunTargetKind::Compose {
+        compose_service_of(data_dir, root, target).unwrap_or_default()
+    } else {
+        ComposeService::default()
+    };
+    let cwd = config.cwd.as_ref().map_or(root.to_path_buf(), |c| root.join(c));
+    let dotenv: Vec<PathBuf> = [".env", ".flaskenv"].iter().map(|f| cwd.join(f)).filter(|f| f.is_file()).collect();
+    let mut env = ide_run::envfile::load(&dotenv, &BTreeMap::new()).unwrap_or_default();
+    env.extend(service.environment);
+    (env, service.ports)
 }
 
 /// What a debug run mounts and publishes.

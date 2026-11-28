@@ -24,6 +24,11 @@ pub struct ContainerRun<'a> {
     pub endpoint_env: &'a BTreeMap<String, String>,
     /// Variables of the configuration's `.env` files, already read.
     pub file_env: &'a BTreeMap<String, String>,
+    /// Variables the container gets elsewhere: the Compose service's `environment`, and the
+    /// `.env` / `.flaskenv` a development server reads. Not passed: only consulted.
+    pub service_env: &'a BTreeMap<String, String>,
+    /// The Compose service's published ports: `(port here, port in the container)`.
+    pub service_ports: &'a [(u16, u16)],
     /// Container name, unique per run.
     pub name: &'a str,
     /// `--user uid:gid`; `None` keeps the image's user.
@@ -77,6 +82,84 @@ pub fn mounted_file(container_path: &str, mounts: &[(std::path::PathBuf, String)
     (!parts.is_empty() && !parts.contains(&"..")).then(|| parts.iter().fold(local.clone(), |p, c| p.join(c)))
 }
 
+/// A development server `program args` runs, and the port it listens on in the container.
+/// They listen on `127.0.0.1` by default, which a published port can't reach: Django's
+/// `runserver`, `flask run`, `uvicorn` and `fastapi dev` are made to listen on all interfaces
+/// unless the command, or a variable `set` finds (the configuration, its env files, the
+/// service's `environment`, `.env` / `.flaskenv`), already chooses an address.
+fn dev_server(
+    program: &str,
+    args: &mut Vec<String>,
+    env: &mut BTreeMap<String, String>,
+    set: &dyn Fn(&str) -> Option<String>,
+) -> Option<u16> {
+    let name = |s: &str| s.rsplit('/').next().unwrap_or(s).trim_end_matches(".py").to_owned();
+    // `words[0]` is the program: `words[i]` is `args[i - 1]`.
+    let words: Vec<String> = std::iter::once(program).chain(args.iter().map(String::as_str)).map(name).collect();
+    let option = |args: &[String], names: &[&str]| -> Option<String> {
+        args.iter().enumerate().find_map(|(i, a)| {
+            names.iter().find_map(|n| {
+                if a == n { args.get(i + 1).cloned() } else { a.strip_prefix(&format!("{n}=")).map(str::to_owned) }
+            })
+        })
+    };
+    let port = |given: Option<String>, default: u16| given.and_then(|p| p.trim().parse().ok()).unwrap_or(default);
+    // The word after `tool` and its options (`flask --app x run`): its index in `words`.
+    let subcommand = |tool: &[&str], sub: &[&str]| {
+        let start = words.iter().position(|w| tool.contains(&w.as_str()))? + 1;
+        let mut i = start;
+        while let Some(w) = words.get(i).filter(|w| w.starts_with('-')) {
+            i += if matches!(w.as_str(), "--app" | "-A" | "--env-file" | "-e") { 2 } else { 1 };
+        }
+        words.get(i).filter(|w| sub.contains(&w.as_str())).map(|_| i - 1)
+    };
+    if let Some(i) = subcommand(&["manage", "django-admin", "django"], &["runserver"]) {
+        // The first positional argument after `runserver` is `[address:]port`.
+        let mut at = i + 1;
+        while let Some(a) = args.get(at) {
+            if matches!(a.as_str(), "--settings" | "--pythonpath" | "-v" | "--verbosity") {
+                at += 2;
+            } else if a.starts_with('-') {
+                at += 1;
+            } else {
+                break;
+            }
+        }
+        return Some(match args.get(at).cloned() {
+            None => {
+                args.insert(i + 1, "0.0.0.0:8000".into());
+                8000
+            }
+            Some(p) if p.chars().all(|c| c.is_ascii_digit()) => {
+                args[at] = format!("0.0.0.0:{p}");
+                port(Some(p), 8000)
+            }
+            Some(address) => port(address.rsplit(':').next().map(str::to_owned), 8000),
+        });
+    }
+    let host = option(args, &["--host", "-h"]).is_some();
+    if subcommand(&["flask"], &["run"]).is_some() {
+        if !host && set("FLASK_RUN_HOST").is_none() {
+            env.insert("FLASK_RUN_HOST".into(), "0.0.0.0".into());
+        }
+        return Some(port(option(args, &["--port", "-p"]).or_else(|| set("FLASK_RUN_PORT")), 5000));
+    }
+    if words.iter().any(|w| w == "uvicorn") {
+        if !host && set("UVICORN_HOST").is_none() {
+            env.insert("UVICORN_HOST".into(), "0.0.0.0".into());
+        }
+        return Some(port(option(args, &["--port"]).or_else(|| set("UVICORN_PORT")), 8000));
+    }
+    if let Some(i) = subcommand(&["fastapi"], &["dev", "run"]) {
+        // `fastapi run` listens on all interfaces already.
+        if !host && words[i + 1] == "dev" {
+            args.extend(["--host".into(), "0.0.0.0".into()]);
+        }
+        return Some(port(option(args, &["--port"]), 8000));
+    }
+    None
+}
+
 /// A container name for a run of `config_id`: Docker allows `[a-zA-Z0-9][a-zA-Z0-9_.-]*`.
 pub fn container_name(config_id: &str, unique: &str) -> String {
     let id: String = config_id
@@ -90,7 +173,15 @@ pub fn container_name(config_id: &str, unique: &str) -> String {
 /// `config` as a local run of the docker CLI that runs it in a new container.
 pub fn container_config(config: &RunConfig, run: &ContainerRun) -> IdeResult<RunConfig> {
     let target = run.target;
-    let command = remote_command(config, target, run.root, run.container_root);
+    let mut command = remote_command(config, target, run.root, run.container_root);
+    let set = |key: &str| [&command.env, run.file_env, run.service_env].into_iter().find_map(|e| e.get(key).cloned());
+    let mut added = BTreeMap::new();
+    let server = if command.shell_line.is_none() {
+        dev_server(&command.program.clone(), &mut command.args, &mut added, &set)
+    } else {
+        None
+    };
+    command.env.extend(added);
     // Variables go by name (`-e NAME`) so their values stay out of the command line
     // echoed in the console; the docker CLI reads them from its own environment.
     let mut env: BTreeMap<String, String> = run.file_env.clone();
@@ -143,6 +234,13 @@ pub fn container_config(config: &RunConfig, run: &ContainerRun) -> IdeResult<Run
     }
     for port in target.ports.iter().map(|p| p.trim()).filter(|p| !p.is_empty()) {
         args.extend(["--publish".into(), port.to_owned()]);
+    }
+    // A development server on a target without ports of its own: its port, on this machine's
+    // loopback interface only (the service's mapping when it has one; `compose run` publishes
+    // none of them).
+    if let Some(port) = server.filter(|_| target.ports.iter().all(|p| p.trim().is_empty())) {
+        let here = run.service_ports.iter().find(|(_, inside)| *inside == port).map_or(port, |(here, _)| *here);
+        args.extend(["--publish".into(), format!("127.0.0.1:{here}:{port}")]);
     }
     if let Some((uid, gid)) = run.user {
         args.extend(["--user".into(), format!("{uid}:{gid}")]);
@@ -319,19 +417,45 @@ fn shell_word(word: &str) -> String {
     }
 }
 
-/// The bind mounts of a Compose `service`, from the JSON of `docker compose config
-/// --format json`: `(source here, target in the container)`.
-pub fn compose_bind_mounts(config_json: &str, service: &str) -> IdeResult<Vec<(String, String)>> {
+/// What `docker compose config --format json` says of a service.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ComposeService {
+    /// Bind mounts: `(source here, target in the container)`.
+    pub mounts: Vec<(String, String)>,
+    /// Published ports: `(port here, port in the container)`.
+    pub ports: Vec<(u16, u16)>,
+    /// `environment:` (a variable without a value is empty).
+    pub environment: BTreeMap<String, String>,
+}
+
+/// The mounts, ports and environment of a Compose `service`, from the JSON of `docker
+/// compose config --format json`.
+pub fn compose_service(config_json: &str, service: &str) -> IdeResult<ComposeService> {
     let model: serde_json::Value = serde_json::from_str(config_json)
         .map_err(|e| IdeError::internal(format!("cannot read `docker compose config`: {e}")))?;
     let Some(svc) = model.pointer(&format!("/services/{}", service.replace('~', "~0").replace('/', "~1"))) else {
         return Err(IdeError::not_found(format!("the Compose files have no service '{service}'")));
     };
-    let mounts = svc.get("volumes").and_then(|v| v.as_array()).into_iter().flatten();
-    Ok(mounts
-        .filter(|m| m.get("type").and_then(|t| t.as_str()) == Some("bind"))
-        .filter_map(|m| Some((m.get("source")?.as_str()?.to_owned(), m.get("target")?.as_str()?.to_owned())))
-        .collect())
+    let list = |key: &str| svc.get(key).and_then(|v| v.as_array()).into_iter().flatten();
+    let number = |v: Option<&serde_json::Value>| match v? {
+        serde_json::Value::Number(n) => n.as_u64().and_then(|n| u16::try_from(n).ok()),
+        serde_json::Value::String(s) => s.parse().ok(),
+        _ => None,
+    };
+    Ok(ComposeService {
+        mounts: list("volumes")
+            .filter(|m| m.get("type").and_then(|t| t.as_str()) == Some("bind"))
+            .filter_map(|m| Some((m.get("source")?.as_str()?.to_owned(), m.get("target")?.as_str()?.to_owned())))
+            .collect(),
+        ports: list("ports").filter_map(|p| Some((number(p.get("published"))?, number(p.get("target"))?))).collect(),
+        environment: svc
+            .get("environment")
+            .and_then(|e| e.as_object())
+            .into_iter()
+            .flatten()
+            .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_owned()))
+            .collect(),
+    })
 }
 
 /// The project's folder in the container of a Compose `service`, from the JSON of
@@ -339,7 +463,7 @@ pub fn compose_bind_mounts(config_json: &str, service: &str) -> IdeResult<Vec<(S
 /// or a folder above it.
 pub fn compose_container_root(config_json: &str, service: &str, root: &Path) -> IdeResult<String> {
     let mut best: Option<(usize, String)> = None;
-    for (source, target) in compose_bind_mounts(config_json, service)? {
+    for (source, target) in compose_service(config_json, service)?.mounts {
         let Ok(rel) = root.strip_prefix(&source) else { continue };
         let depth = Path::new(&source).components().count();
         if best.as_ref().is_none_or(|(d, _)| depth > *d) {
@@ -397,6 +521,8 @@ mod tests {
             docker: "/usr/local/bin/docker",
             endpoint_env: endpoint,
             file_env: files,
+            service_env: files,
+            service_ports: &[],
             name: "openidea-app-1",
             user: Some((501, 20)),
             debug: None,
@@ -482,6 +608,27 @@ mod tests {
              --env DATA --env PYTHONUNBUFFERED --user 501:20 web python3 manage.py test"
         );
         assert_eq!(out.env["DATA"], "/app/data");
+
+        // A development server: on all interfaces, its port published on the loopback
+        // interface only, through the service's own mapping when it has one.
+        c.args = vec!["manage.py".into(), "runserver".into()];
+        let out = container_config(&c, &r).unwrap().args.join(" ");
+        assert!(out.contains("--publish 127.0.0.1:8000:8000") && !out.contains("--service-ports"), "{out}");
+        assert!(out.ends_with("web python3 manage.py runserver 0.0.0.0:8000"), "{out}");
+        r.service_ports = &[(8080, 8000)];
+        let out = container_config(&c, &r).unwrap().args.join(" ");
+        assert!(out.contains("--publish 127.0.0.1:8080:8000"), "{out}");
+        let ports = RunTarget { ports: vec!["8000:8000".into()], ..target.clone() };
+        let out = container_config(&c, &run(&ports, &none, &none)).unwrap().args.join(" ");
+        assert!(
+            out.contains("--publish 8000:8000") && !out.contains("127.0.0.1:8000"),
+            "the target's own ports: {out}"
+        );
+        // A host the env file sets is the user's.
+        c.args = vec!["-m".into(), "flask".into(), "run".into()];
+        let files = BTreeMap::from([("FLASK_RUN_HOST".to_owned(), "127.0.0.1".to_owned())]);
+        let out = container_config(&c, &run(&target, &none, &files)).unwrap();
+        assert_eq!(out.env["FLASK_RUN_HOST"], "127.0.0.1");
 
         let target = RunTarget { kind: RunTargetKind::Compose, name: "c".into(), ..Default::default() };
         assert!(container_config(&c, &run(&target, &none, &none)).unwrap_err().message.contains("no service"));
@@ -604,6 +751,58 @@ mod tests {
         }
     }
 
+    #[test]
+    fn development_servers_listen_on_all_interfaces() {
+        let elsewhere = BTreeMap::from([("UVICORN_HOST".to_owned(), "127.0.0.1".to_owned())]);
+        let run = |program: &str, args: &[&str]| {
+            let mut args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            let mut env = BTreeMap::new();
+            let set = |k: &str| elsewhere.get(k).cloned();
+            let port = dev_server(program, &mut args, &mut env, &set);
+            let env: Vec<String> = env.into_iter().map(|(k, v)| format!("{k}={v}")).collect();
+            (port, args.join(" "), env.join(" "))
+        };
+        let out = |port: Option<u16>, args: &str, env: &str| (port, args.to_owned(), env.to_owned());
+        assert_eq!(
+            run("python3", &["manage.py", "runserver"]),
+            out(Some(8000), "manage.py runserver 0.0.0.0:8000", "")
+        );
+        assert_eq!(
+            run("/usr/bin/python", &["/w/manage.py", "runserver", "--noreload"]),
+            out(Some(8000), "/w/manage.py runserver 0.0.0.0:8000 --noreload", "")
+        );
+        assert_eq!(
+            run("python", &["manage.py", "runserver", "--settings", "x.dev", "8001"]),
+            out(Some(8001), "manage.py runserver --settings x.dev 0.0.0.0:8001", "")
+        );
+        assert_eq!(
+            run("python", &["manage.py", "runserver", "127.0.0.1:9000"]),
+            out(Some(9000), "manage.py runserver 127.0.0.1:9000", "")
+        );
+        assert_eq!(
+            run("python", &["-m", "django", "runserver"]),
+            out(Some(8000), "-m django runserver 0.0.0.0:8000", "")
+        );
+        assert_eq!(run("django-admin", &["runserver"]), out(Some(8000), "runserver 0.0.0.0:8000", ""));
+        assert_eq!(run("python", &["-m", "flask", "run"]), out(Some(5000), "-m flask run", "FLASK_RUN_HOST=0.0.0.0"));
+        assert_eq!(
+            run("flask", &["--app", "web", "run", "--port", "5001"]),
+            out(Some(5001), "--app web run --port 5001", "FLASK_RUN_HOST=0.0.0.0")
+        );
+        assert_eq!(run("flask", &["run", "--host", "::", "-p", "7000"]), out(Some(7000), "run --host :: -p 7000", ""));
+        assert_eq!(run("uvicorn", &["app:app", "--port=9001"]), out(Some(9001), "app:app --port=9001", ""));
+        assert_eq!(run("fastapi", &["dev", "main.py"]), out(Some(8000), "dev main.py --host 0.0.0.0", ""));
+        assert_eq!(run("fastapi", &["run", "main.py"]), out(Some(8000), "run main.py", ""));
+        for (program, args) in [
+            ("python", &["manage.py", "migrate"][..]),
+            ("pytest", &["tests"]),
+            ("poetry", &["run", "flask", "db", "upgrade"]),
+            ("uv", &["run", "flask", "shell"]),
+        ] {
+            assert_eq!(run(program, args).0, None, "{program} {args:?}");
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn compose_container_root_follows_the_project_bind_mount() {
@@ -619,9 +818,17 @@ mod tests {
         let root = Path::new("/work/proj");
         assert_eq!(compose_container_root(json, "web", root).unwrap(), "/app", "the closest mount wins");
         assert_eq!(
-            compose_bind_mounts(json, "web").unwrap(),
+            compose_service(json, "web").unwrap().mounts,
             [("/work".to_owned(), "/src".to_owned()), ("/work/proj".to_owned(), "/app/".to_owned())]
         );
+        let served = r#"{"services": {"web": {
+            "ports": [{"target": 8000, "published": "8080"}, {"target": 9000}],
+            "environment": {"FLASK_RUN_HOST": "127.0.0.1", "EMPTY": null}
+        }}}"#;
+        let web = compose_service(served, "web").unwrap();
+        assert_eq!(web.ports, [(8080, 8000)]);
+        assert_eq!(web.environment["FLASK_RUN_HOST"], "127.0.0.1");
+        assert_eq!(web.environment["EMPTY"], "");
         assert_eq!(compose_container_root(json, "worker", root).unwrap(), "/src/proj");
         assert!(compose_container_root(json, "db", root).unwrap_err().message.contains("does not mount"));
         assert_eq!(compose_container_root(json, "api", root).unwrap_err().kind, ide_core::error::ErrorKind::NotFound);
