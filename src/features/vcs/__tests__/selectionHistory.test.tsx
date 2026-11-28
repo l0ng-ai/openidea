@@ -521,7 +521,7 @@ describe("History for Selection tab", () => {
       expect(screen.getByTestId("diff").textContent).toContain("after 9");
     });
 
-    it("never evicts the currently displayed row when the cache is full", async () => {
+    it("never evicts the currently displayed row or its prefetch neighbours when the cache is full", async () => {
       const makeRev = (i: number): BlockRevision => ({
         id: i.toString(16).padStart(40, "0"),
         shortId: i.toString(16).padStart(7, "0"),
@@ -579,8 +579,9 @@ describe("History for Selection tab", () => {
       await stepDownTo(1);
       expect(screen.getByTestId("diff").textContent).toContain("after 61");
 
-      // Jump back to Commit 71 and step up to Commit 69 (one of the 4 oldest cached entries).
-      // Lookahead from 69 prefetches [64..67]; eviction must NOT evict Commit 69 while it is displayed.
+      // Jump back to Commit 71 and step up to Commit 69 (whose 69 ± 2 neighbours 68, 70, 71 are
+      // also among the 4 oldest cached entries). Lookahead from 69 prefetches [64..67]; eviction
+      // must keep 69 and its neighbours 68, 70, 71 instead of evicting and refetching them.
       fireEvent.keyDown(list, { key: "End" });
       expect(screen.getByTestId("diff").textContent).toContain("after 71");
       fireEvent.keyDown(list, { key: "ArrowUp" });
@@ -595,7 +596,23 @@ describe("History for Selection tab", () => {
       });
 
       expect(screen.getByTestId("diff").textContent).toContain("after 69");
-      expect(fetchedIds.filter((id) => id === revs[69]!.id)).toHaveLength(1);
+      expect(vcsBlockHistoryRevisionsAt).toHaveBeenCalledTimes(callsBefore + 1);
+      for (const index of [68, 69, 70, 71]) {
+        expect(fetchedIds.filter((id) => id === revs[index]!.id)).toHaveLength(1);
+      }
+
+      // Stepping onto the neighbours (68, then 69, 70, 71) stays cached with no spinner or refetch.
+      fireEvent.keyDown(list, { key: "ArrowUp" });
+      expect(screen.getByTestId("diff").textContent).toContain("after 68");
+      for (const index of [69, 70, 71]) {
+        fireEvent.keyDown(list, { key: "ArrowDown" });
+        expect(screen.getByTestId("diff").textContent).toContain(`after ${index}`);
+      }
+      expect(vcsBlockHistoryRevisionsAt).toHaveBeenCalledTimes(callsBefore + 1);
+
+      // The cache cap of 64 was still enforced by evicting the oldest non-protected rows [4..7].
+      fireEvent.click(screen.getByText("Commit 4"));
+      await waitFor(() => expect(fetchedIds.filter((id) => id === revs[4]!.id)).toHaveLength(2));
     });
   });
 });

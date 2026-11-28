@@ -173,11 +173,11 @@ export function SelectionHistoryEditor({ input }: { input: EditorInput }) {
     cancel: () => void;
   } | null>(null);
   const nav = useRef<{ history: BlockHistorySummary; index: number; direction: 1 | -1 } | null>(null);
-  const currentId = useRef<string | null>(null);
+  const currentIndex = useRef<{ history: BlockHistorySummary; index: number } | null>(null);
 
   useLayoutEffect(() => {
-    currentId.current = current?.kind === "revision" ? current.revision.id : null;
-  }, [current]);
+    currentIndex.current = history && current?.kind === "revision" ? { history, index: current.index } : null;
+  }, [history, current]);
 
   useEffect(
     () => () => {
@@ -303,12 +303,21 @@ export function SelectionHistoryEditor({ input }: { input: EditorInput }) {
         setDiffError(null);
         setDiffs((previous) => {
           const revisions = new Map(previous?.history === history ? previous.revisions : []);
-          const pinned = currentId.current;
-          if (pinned) {
-            const existing = revisions.get(pinned);
+          const pinned = new Set<string>();
+          if (currentIndex.current?.history === history) {
+            const center = currentIndex.current.index;
+            const lo = Math.max(history.diffs.length, center - PREFETCH_AHEAD);
+            const hi = Math.min(history.diffs.length + history.rest.length - 1, center + PREFETCH_AHEAD);
+            for (let i = lo; i <= hi; i++) {
+              const row = history.rest[i - history.diffs.length];
+              if (row) pinned.add(row.id);
+            }
+          }
+          for (const id of pinned) {
+            const existing = revisions.get(id);
             if (existing) {
-              revisions.delete(pinned);
-              revisions.set(pinned, existing);
+              revisions.delete(id);
+              revisions.set(id, existing);
             }
           }
           for (const diff of batch) {
@@ -317,7 +326,7 @@ export function SelectionHistoryEditor({ input }: { input: EditorInput }) {
           }
           for (const key of revisions.keys()) {
             if (revisions.size <= DIFF_CACHE_SIZE) break;
-            if (key === pinned) continue;
+            if (pinned.has(key)) continue;
             revisions.delete(key);
           }
           return { history, revisions };

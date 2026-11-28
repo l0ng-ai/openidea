@@ -205,9 +205,10 @@ fn spots_work_when_diff_prefixes_are_customized_in_git_config() {
     let cancel = CancellationToken::new();
     let full = history(&repo, &path, None, (0, 1499));
 
-    for (key, value) in [("diff.noprefix", "true"), ("diff.mnemonicPrefix", "true")] {
+    for (key, value) in [("diff.noprefix", "true"), ("diff.mnemonicPrefix", "true"), ("diff.dstPrefix", "Y/")] {
         fx.git(&["config", "diff.noprefix", "false"]);
         fx.git(&["config", "diff.mnemonicPrefix", "false"]);
+        let _ = Command::new("git").current_dir(&fx.dir).args(["config", "--unset", "diff.dstPrefix"]).output();
         fx.git(&["config", key, value]);
         let summary = repo.block_history_summary(&path, None, (0, 1499), encoding_rs::UTF_8, &cancel).unwrap();
         assert_eq!(summary.diffs.len(), 4, "{key}={value}");
