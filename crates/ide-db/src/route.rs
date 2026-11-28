@@ -240,22 +240,24 @@ impl DbManager {
 
     pub async fn release_target_console(&self, console: crate::ConsoleId<'_>, target: Option<&str>) -> IdeResult<()> {
         self.cursors.release_console(console, target);
-        let transactions: Vec<_> = self
+        let connections: Vec<_> = self
             .pools
             .lock()
             .iter()
             .filter(|(id, _)| target.is_none_or(|target| id.as_str() == target))
-            .filter_map(|(_, slot)| slot.value.get())
-            .map(|connection| {
-                if let Pool::Clickhouse(pool) = &*connection.pool {
-                    pool.release_console(console);
-                }
-                connection.console_transactions.clone()
-            })
+            .filter_map(|(_, slot)| slot.value.get().cloned())
             .collect();
         let mut result = Ok(());
-        for transaction in transactions {
-            if let Err(error) = transaction.release(console).await {
+        for connection in connections {
+            let released = match &*connection.pool {
+                Pool::Clickhouse(pool) => {
+                    pool.release_console(console);
+                    Ok(())
+                }
+                Pool::Jdbc(pool) => pool.release_console(console).await,
+                _ => connection.console_transactions.release(console).await,
+            };
+            if let Err(error) = released {
                 result = Err(error);
             }
         }
