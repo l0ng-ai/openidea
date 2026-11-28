@@ -4,10 +4,18 @@
  */
 import { create } from "zustand";
 import type { Branch, Commit } from "@/bindings";
-import { executeAction, registerActions, type Action } from "@/platform/actions";
+import { executeAction, registerActions } from "@/platform/actions";
 import { relativePath } from "@/platform/project";
 import { notifications, toolWindowService } from "@/workbench/contributions";
-import { deleteBranches, newBranch, newBranchInRepos, toggleFavoriteBranch, updateBranches } from "./branchOps";
+import {
+  deleteBranches,
+  favoriteBranches,
+  newBranch,
+  newBranchInRepos,
+  setFavoriteBranch,
+  updateBranches,
+} from "./branchOps";
+import { isFavoriteBranch } from "./branches";
 import {
   applySelectedChanges,
   changesArg,
@@ -89,14 +97,13 @@ function branchTargets(arg: unknown): BranchTarget[] {
   return useBranchesPane.getState().selected;
 }
 
-const withBranch =
-  (fn: (b: Branch) => unknown): Action["run"] =>
-  async ({ arg }) => {
-    const target = branchArg(arg);
-    if (target?.repo) await focusRepo(target.repo);
-    const b = target?.branch;
-    if (b) void fn(b);
-  };
+/** The first target's branch in each repository it was picked in: a favorite when it is one in any, then set in all (IDEA). */
+async function toggleFavoriteTargets(targets: readonly BranchTarget[]) {
+  const picked = targets.filter((t) => t.branch && t.ref === targets[0]?.ref);
+  const favorite = picked.some((t) => isFavoriteBranch(t.branch!, favoriteBranches(t.repo)));
+  if (picked[0]?.repo) await focusRepo(picked[0].repo);
+  return Promise.all(picked.map((t) => setFavoriteBranch(t.branch!, !favorite, t.repo)));
+}
 
 export function canUpdateBranch(t: BranchTarget | null): boolean {
   return !!t?.branch && !t.branch.remote && !!t.branch.upstream;
@@ -210,7 +217,7 @@ export function registerLogPaneActions(): () => void {
       icon: "star",
       when: VCS,
       hidden: true,
-      run: withBranch(toggleFavoriteBranch),
+      run: ({ arg }) => toggleFavoriteTargets(branchTargets(arg)),
     },
     {
       id: "vcs.log.branches.navigate",

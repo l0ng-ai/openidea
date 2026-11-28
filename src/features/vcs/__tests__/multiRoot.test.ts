@@ -234,7 +234,7 @@ describe("multi-root Git log", () => {
         branches: [branch("main"), branch("origin/main", true)],
         tags: ["v1"],
       })),
-      [],
+      () => [],
     );
     for (const group of roots.filter((r) => r.kind === "group")) {
       expect(group.children?.map((c) => c.label)).toEqual(["front", "back"]);

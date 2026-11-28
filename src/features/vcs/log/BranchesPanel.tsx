@@ -13,12 +13,13 @@ import {
   buildMergedBranchTree,
   buildRepositoryBranchTree,
   filterBranchTree,
+  favoritesInAny,
   isFavoriteBranch,
   mergedRefTooltip,
   type BranchTreeNode,
 } from "../branches";
 import { branchMenu, inRepo, mergedBranchMenu, showTagContextMenu } from "../branchMenu";
-import { canDeleteBranch, loadFavoriteBranches, useFavoriteBranches } from "../branchOps";
+import { canDeleteBranch, useFavoriteBranchesOf } from "../branchOps";
 import { BranchSync } from "../BranchSync";
 import { summarizeBranchSync, type BranchSyncSummary } from "../branchSyncState";
 import { FetchButton } from "../FetchButton";
@@ -128,22 +129,19 @@ export function BranchesPanel() {
     repositories.length === 1 && (logRepositories.length > 1 || repositories[0] !== currentRepository)
       ? repositories[0]
       : undefined;
+  const listedRepo = repositories.length === 1 && repositories[0] !== currentRepository ? repositories[0] : undefined;
   const branches = useMemo(
-    () =>
-      repositories.length === 1 && repositories[0] !== currentRepository
-        ? (allBranches[repositories[0]!] ?? [])
-        : selectedBranches,
-    [repositories, currentRepository, allBranches, selectedBranches],
+    () => (listedRepo ? (allBranches[listedRepo] ?? []) : selectedBranches),
+    [listedRepo, allBranches, selectedBranches],
   );
   const root = useVcs((s) => s.root);
   const branchesLoaded = useVcs((s) => s.branchesLoaded);
   const remoteBusy = useVcs((s) => s.remoteBusy);
   const current = useVcs((s) => s.branch?.head ?? null);
-  const favorites = useFavoriteBranches((s) => s.names);
+  const favoritesOf = useFavoriteBranchesOf();
   const { branches: filterBranches, branchTargets } = filters;
   const [query, setQuery] = useState("");
   const [tags, setTags] = useState<string[]>([]);
-  useEffect(() => loadFavoriteBranches(), [root]);
   // Branches reload when refs move (fetch, new tag…): the tags are re-read with them.
   useEffect(() => {
     let live = true;
@@ -171,7 +169,7 @@ export function BranchesPanel() {
   const allRoots = useMemo(() => {
     if (!repositories.length && availableRepositories.length) return [];
     if (repositories.length < 2)
-      return buildBranchTree(branches, favorites, scopedRepo ? (allTags[scopedRepo] ?? []) : tags);
+      return buildBranchTree(branches, favoritesOf(listedRepo), scopedRepo ? (allTags[scopedRepo] ?? []) : tags);
     const list = repositories.map((repo) => ({
       root: repo,
       name: repoName(branchRoots[repo] ?? repo),
@@ -179,8 +177,12 @@ export function BranchesPanel() {
       tags: allTags[repo] ?? [],
     }));
     return grouped
-      ? buildRepositoryBranchTree(list, favorites)
-      : buildMergedBranchTree(list, favorites, currentRepository);
+      ? buildRepositoryBranchTree(list, favoritesOf)
+      : buildMergedBranchTree(
+          list,
+          list.flatMap((r) => favoritesInAny(r.branches, [favoritesOf(r.root)])),
+          currentRepository,
+        );
   }, [
     repositories,
     availableRepositories,
@@ -188,7 +190,8 @@ export function BranchesPanel() {
     allBranches,
     allTags,
     branches,
-    favorites,
+    favoritesOf,
+    listedRepo,
     tags,
     grouped,
     currentRepository,
@@ -247,7 +250,9 @@ export function BranchesPanel() {
     return () => useBranchesPane.setState({ selected: [] });
   }, [targets, active]);
   const target = targets[0] ?? undefined;
-  const favorite = !!target?.branch && isFavoriteBranch(target.branch, favorites);
+  // The selected branch in each repository it was picked in (a merged branch: all of them).
+  const favoriteTargets = targets.filter((t) => t.branch && t.ref === target?.ref);
+  const favorite = favoriteTargets.some((t) => isFavoriteBranch(t.branch!, favoritesOf(t.repo)));
   const onKeyDownCapture = (e: KeyboardEvent<HTMLDivElement>) => {
     if ((e.key !== "c" && e.key !== "C") || !hasPrimaryModifier(e) || e.altKey || e.shiftKey) return;
     // The branch search keeps the browser's own copy.
@@ -300,7 +305,7 @@ export function BranchesPanel() {
               title={favorite ? "Remove from Favorites" : "Add to Favorites"}
               size="small"
               action="vcs.log.branches.toggleFavorite"
-              actionArg={target}
+              actionArg={favoriteTargets}
               pressed={favorite}
               disabled={!target?.branch}
             />
@@ -409,6 +414,10 @@ export function BranchesPanel() {
             // A merged branch in several repositories acts in all of them, like a common branch.
             if (n?.branch && n.repos && n.repos.length > 1) {
               const lists = n.repos.map((r) => allBranches[r] ?? []);
+              const favorites = favoritesInAny(
+                lists.flat(),
+                n.repos.map((r) => favoritesOf(r)),
+              );
               const group = commonBranches(lists, favorites)[n.branch.remote ? "remote" : "local"];
               const common = group.find((c) => c.name === n.ref);
               if (!common) return;
@@ -438,6 +447,7 @@ export function BranchesPanel() {
                     headCommit: repo ? (useVcs.getState().heads[repo]?.headCommit ?? null) : undefined,
                     existingWorktree: worktreeFor(repo ?? currentRepository, n.branch.name),
                     branches: (repo ? allBranches[repo] : undefined) ?? branches,
+                    repo,
                   },
                 )
               : n?.kind === "remote" || (n?.kind === "group" && n.key.endsWith("g:remote"))

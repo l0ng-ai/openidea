@@ -1,5 +1,5 @@
 /** Branch operations (checkout, create, merge, rebase, update, delete) with recents and favorites. */
-import { createElement, Fragment } from "react";
+import { createElement, Fragment, useCallback } from "react";
 import { create } from "zustand";
 import type {
   Branch,
@@ -1786,40 +1786,91 @@ export async function renameInRepos(name: string, roots: readonly string[], upst
 
 // --- favorites ---------------------------------------------------------------
 
-const favoritesKey = () => `openidea.vcs.favoriteBranches:${useVcs.getState().root ?? ""}`;
+/** Like IDEA (`DvcsBranchManager`, a project service), each repository of a project has its own favorites. */
+const favoritesKey = (project: string | null, repo: string) =>
+  `openidea.vcs.favoriteBranches.v2:${JSON.stringify([project ?? "", repo])}`;
 
-/** The user's favorite branches for the open repository; `null` = defaults (main / master). */
-export const useFavoriteBranches = create<{ key: string; names: string[] | null }>(() => ({ key: "", names: null }));
+/**
+ * Favorites used to be one list per project. A repository without a list of its own still reads
+ * it (never writes it), like IDEA's favorites without a repository, which apply to all of them.
+ */
+const projectFavoritesKey = (project: string | null) => `openidea.vcs.favoriteBranches:${project ?? ""}`;
 
-export function loadFavoriteBranches() {
-  const key = favoritesKey();
-  if (useFavoriteBranches.getState().key === key) return;
-  let names: string[] | null = null;
+function storedFavorites(key: string): string[] | null {
   try {
     const raw = localStorage.getItem(key);
     const v: unknown = raw ? JSON.parse(raw) : null;
-    if (Array.isArray(v)) names = v.filter((x): x is string => typeof x === "string");
+    if (Array.isArray(v)) return v.filter((x): x is string => typeof x === "string");
   } catch {
     // Storage unavailable: defaults.
   }
-  useFavoriteBranches.setState({ key, names });
+  return null;
 }
 
-export function toggleFavoriteBranch(b: Branch) {
-  loadFavoriteBranches();
-  const stored = useFavoriteBranches.getState().names;
-  // First edit: start from the defaults that are currently shown.
-  const base =
-    stored ??
-    useVcs
-      .getState()
-      .branches.filter((x) => isFavoriteBranch(x, null))
-      .map((x) => x.name);
-  const names = base.includes(b.name) ? base.filter((n) => n !== b.name) : [...base, b.name];
-  useFavoriteBranches.setState({ names });
+/** Storage key → the favorites written there this session (they outlive storage that is unavailable). */
+export const useFavoriteBranches = create<Record<string, string[]>>(() => ({}));
+
+/** Linked worktrees share their repository's branches, and so its favorites. */
+const favoritesRoot = (repo: string | null | undefined, branchRoots: Readonly<Record<string, string>>) => {
+  const root = repo ?? currentRepoRoot() ?? "";
+  return branchRoots[root] ?? root;
+};
+
+function favoritesOf(edited: Record<string, string[]>, project: string | null, root: string): string[] | null {
+  const key = favoritesKey(project, root);
+  return edited[key] ?? storedFavorites(key) ?? storedFavorites(projectFavoritesKey(project));
+}
+
+/** The favorite branches of `repo` (default: the selected repository); `null` = defaults (main / master). */
+export function favoriteBranches(repo?: string | null): string[] | null {
+  const s = useVcs.getState();
+  return favoritesOf(useFavoriteBranches.getState(), s.root, favoritesRoot(repo, s.branchRoots));
+}
+
+/** `favoriteBranches`, as a function that changes whenever its results may change. */
+export function useFavoriteBranchesOf(): (repo?: string | null) => string[] | null {
+  const edited = useFavoriteBranches();
+  const project = useVcs((s) => s.root);
+  const selected = useVcs((s) => s.repo ?? s.roots[0] ?? s.root);
+  const branchRoots = useVcs((s) => s.branchRoots);
+  return useCallback(
+    (repo?: string | null) => favoritesOf(edited, project, favoritesRoot(repo ?? selected, branchRoots)),
+    [edited, project, selected, branchRoots],
+  );
+}
+
+/**
+ * Makes `b` a favorite of `repo` (default: the selected repository) or not. `branches`, that
+ * repository's branches, give the defaults to start from on its first edit; read when not given.
+ */
+export async function setFavoriteBranch(
+  b: Branch,
+  favorite: boolean,
+  repo?: string | null,
+  branches?: readonly Branch[],
+) {
+  const worktree = repo ?? currentRepoRoot() ?? "";
+  let stored = favoriteBranches(worktree);
+  if (!stored) {
+    // First edit: start from the defaults that are currently shown.
+    const known =
+      branches ??
+      (worktree === currentRepoRoot()
+        ? useVcs.getState().branches
+        : await call(commands.vcsBranches(worktree)).catch((): Branch[] => []));
+    stored = favoriteBranches(worktree) ?? known.filter((x) => isFavoriteBranch(x, null)).map((x) => x.name);
+  }
+  const s = useVcs.getState();
+  const key = favoritesKey(s.root, favoritesRoot(worktree, s.branchRoots));
+  const names = [...stored.filter((n) => n !== b.name), ...(favorite ? [b.name] : [])];
+  useFavoriteBranches.setState({ [key]: names });
   try {
-    localStorage.setItem(favoritesKey(), JSON.stringify(names));
+    localStorage.setItem(key, JSON.stringify(names));
   } catch {
     // Favorites last for the session only.
   }
+}
+
+export function toggleFavoriteBranch(b: Branch, repo?: string | null, branches?: readonly Branch[]) {
+  return setFavoriteBranch(b, !isFavoriteBranch(b, favoriteBranches(repo)), repo, branches);
 }

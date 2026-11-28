@@ -6,6 +6,7 @@ import { rootOf } from "./model";
 import {
   actionRows,
   defaultFolderOpen,
+  favoritesInAny,
   isFavoriteBranch,
   preferredMatch,
   prefixTreeRows,
@@ -166,7 +167,8 @@ export interface MultiRepoInput extends Omit<BranchTreeOptions, "expanded"> {
   actions: readonly PopupAction[];
   /** Groups / folders the user expanded or collapsed (`common:local`, `repo:remote`, `repo:folder:local:feat`…). */
   expanded: ReadonlyMap<string, boolean>;
-  favorites?: readonly string[] | null;
+  /** Root → its favorite branches. */
+  favorites?: (root: string) => readonly string[] | null;
   /** The current repository (of the active file), whose lists are shown when the repositories' branches differ. */
   current?: string | null;
   /** Recently checked-out branches (newest first). */
@@ -192,7 +194,7 @@ export function buildMultiRepoRows({
   query,
   actions,
   expanded,
-  favorites = null,
+  favorites = () => null,
   current = null,
   recent = [],
   tags = [],
@@ -241,11 +243,12 @@ export function buildMultiRepoRows({
     depth: number,
     grouped = groupByPrefix,
   ): RepoRow[] => {
+    const repoFavorites = favorites(repo.root);
     const items = list.flatMap((b): PrefixItem<Branch>[] => {
       const m = match(b.name);
       return m === false
         ? []
-        : [{ item: b, name: b.name, matches: m, pinned: b.current || isFavoriteBranch(b, favorites) }];
+        : [{ item: b, name: b.name, matches: m, pinned: b.current || isFavoriteBranch(b, repoFavorites) }];
     });
     return prefixTreeRows(items, {
       keyPrefix: `repo:folder:${kind}:`,
@@ -272,7 +275,7 @@ export function buildMultiRepoRows({
             label: r.label,
             depth: r.depth,
             matches: r.matches,
-            favorite: isFavoriteBranch(r.item, favorites),
+            favorite: isFavoriteBranch(r.item, repoFavorites),
           },
     );
   };
@@ -320,10 +323,14 @@ export function buildMultiRepoRows({
   const currentRepo = repos.find((r) => r.root === current) ?? repos[0];
   if (sync) {
     const loaded = repos.every((r) => branches[r.root]);
+    const lists = repos.map((r) => branches[r.root] ?? []);
     const common = loaded
       ? commonBranches(
-          repos.map((r) => branches[r.root]!),
-          favorites,
+          lists,
+          favoritesInAny(
+            lists.flat(),
+            repos.map((r) => favorites(r.root)),
+          ),
         )
       : { local: [], remote: [] };
     shown = new Set([...common.local, ...common.remote].map((b) => `${b.remote}:${b.name}`));
@@ -331,7 +338,8 @@ export function buildMultiRepoRows({
     group(groups, "common:remote", tx("Common Remote Branches"), commonRows(common.remote, "remote"), false);
   } else if (currentRepo) {
     const list = branches[currentRepo.root] ?? [];
-    const local = sortLocal(list, favorites);
+    const currentFavorites = favorites(currentRepo.root);
+    const local = sortLocal(list, currentFavorites);
     const recentList = q || !showRecent ? [] : recentLocal(local, recent);
     const name = currentRepo.name;
     const recentRows = branchRows(currentRepo, recentList, "recent", 1);
@@ -347,7 +355,7 @@ export function buildMultiRepoRows({
       groups,
       "repo:remote",
       tx`Remote Branches in ${name}`,
-      branchRows(currentRepo, sortRemote(list, favorites), "remote", 1),
+      branchRows(currentRepo, sortRemote(list, currentFavorites), "remote", 1),
       false,
     );
     if (showTags) {
@@ -368,8 +376,8 @@ export function buildMultiRepoRows({
       const list = branches[repo.root] ?? [];
       const own = (l: Branch[]) => l.filter((b) => !shown.has(`${b.remote}:${b.name}`));
       const rows = [
-        ...branchRows(repo, own(sortLocal(list, favorites)), "local", 0, false),
-        ...branchRows(repo, own(sortRemote(list, favorites)), "remote", 0, false),
+        ...branchRows(repo, own(sortLocal(list, favorites(repo.root))), "local", 0, false),
+        ...branchRows(repo, own(sortRemote(list, favorites(repo.root))), "remote", 0, false),
       ];
       if (rows.length) blocks.push([{ type: "section", key: `section:${repo.root}`, label: repo.name }, ...rows]);
     }
