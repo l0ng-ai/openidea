@@ -13,11 +13,20 @@ import { emitTo } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { allActions, executeAction, getAction, registerActions, useActions, type Action } from "@/platform/actions";
 import { isTauri } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
+import {
+  editorService,
+  maybeEditorService,
+  provideEditorService,
+  type EditorService,
+  type OpenOptions,
+} from "@/workbench/contributions";
 
 const SETTINGS_PREFIX = "settings-";
 const REQUEST_ACTIONS = "openidea://settings/request-actions";
 const ACTIONS = "openidea://settings/actions";
 const EXEC = "openidea://settings/exec";
+const OPEN_FILE = "openidea://settings/open-file";
 
 export type ActionInfo = Pick<
   Action,
@@ -68,7 +77,27 @@ function listen<T>(event: string, handler: (payload: T) => void, onReady?: () =>
   };
 }
 
-/** Project window side: serves the action list and runs forwarded actions. */
+async function focusCurrentWindow(): Promise<void> {
+  const win = getCurrentWebviewWindow();
+  await win.unminimize?.().catch(() => {});
+  await win.show?.().catch(() => {});
+  await win.setFocus?.().catch(() => {});
+}
+
+async function openFileInParent(path: string, options?: OpenOptions): Promise<void> {
+  const { project, lightEdit } = useProject.getState();
+  if (project || lightEdit) {
+    await editorService().openFile(path, options);
+    if (options?.focus !== false) await focusCurrentWindow();
+    return;
+  }
+  await executeAction("file.openPaths", [path]);
+  if (options?.focus !== false && (useProject.getState().project || useProject.getState().lightEdit)) {
+    await focusCurrentWindow();
+  }
+}
+
+/** Project window side: serves the action list, runs forwarded actions, and opens requested files. */
 export function installSettingsHost(): () => void {
   const label = currentLabel();
   if (!label || settingsWindowParent(label)) return () => {};
@@ -82,6 +111,9 @@ export function installSettingsHost(): () => void {
   const disposers = [
     listen<null>(REQUEST_ACTIONS, send),
     listen<{ id: string; arg?: unknown }>(EXEC, ({ id, arg }) => void executeAction(id, arg)),
+    listen<{ path: string; options?: OpenOptions }>(OPEN_FILE, ({ path, options }) => {
+      void openFileInParent(path, options).catch((error) => console.error("cannot open file from settings", error));
+    }),
     // Pushed on every change (and once now, for a settings window that outlived a reload of this one).
     useActions.subscribe((s, prev) => {
       if (s.actions !== prev.actions) schedule();
@@ -91,6 +123,28 @@ export function installSettingsHost(): () => void {
   return () => {
     clearTimeout(timer);
     disposers.forEach((d) => d());
+  };
+}
+
+/**
+ * Settings window side: forwards editor opens (e.g. Open SKILL.md) to the
+ * parent window, since the standalone settings window does not host editors.
+ */
+export function installEditorProxy(parent: string): () => void {
+  const previous = maybeEditorService();
+  const proxy: EditorService = {
+    openFile: (path, options) => emitTo(parent, OPEN_FILE, { path, options }),
+    openInput: (input, options) =>
+      input.path ? emitTo(parent, OPEN_FILE, { path: input.path, options }) : Promise.resolve(),
+    activePath: () => null,
+    activeCursor: () => null,
+    saveAll: () => Promise.resolve(),
+  };
+  provideEditorService(proxy);
+  return () => {
+    if (maybeEditorService() === proxy) {
+      provideEditorService(previous as EditorService);
+    }
   };
 }
 

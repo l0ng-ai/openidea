@@ -402,3 +402,96 @@ test("manages multi-level skills in Settings and per-session overrides via Compo
     await settingsDialog.screenshot({ path: `${screenshotDir}/after-settings-skills-installed.png` });
   }
 });
+
+test("opens SKILL.md in an editor tab from Settings and via the native Settings window bridge", async ({
+  workbench: page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 840 });
+  await stubDesktop(page);
+
+  const skillDir = "/Users/dev/.copilot/installed-plugins/awesome-copilot/db-tools/skills/pg-tune";
+  const skillFile = `${skillDir}/SKILL.md`;
+  const skillMarkdown = [
+    "---",
+    "name: pg-tune",
+    "description: Tune PostgreSQL queries from 2-level Copilot marketplace plugin",
+    "---",
+    "",
+    "# pg-tune",
+    "",
+    "Analyze `EXPLAIN (ANALYZE, BUFFERS)` output and recommend targeted indexes.",
+  ].join("\n");
+
+  await page.evaluate(
+    async ({ initialSkills, skillFile, skillMarkdown }) => {
+      const backendModule = "/src/editor/core/backend.ts";
+      const { docBackend } = await import(/* @vite-ignore */ backendModule);
+      (docBackend() as { files: Map<string, string> }).files.set(skillFile, skillMarkdown);
+
+      const handlers = window.__ipc.handlers;
+      handlers.agent_skills_list = () => structuredClone(initialSkills);
+      // Force the in-page Settings dialog so the test drives Settings › Agents › Skills directly.
+      handlers.window_open_settings = () => {
+        throw { kind: "unavailable", message: "separate settings window disabled in browser test", detail: null };
+      };
+
+      const actionsModule = "/src/platform/actions.ts";
+      const { executeAction } = await import(/* @vite-ignore */ actionsModule);
+      await executeAction("file.settings", "agents.skills");
+    },
+    { initialSkills, skillFile, skillMarkdown },
+  );
+
+  const settingsDialog = page.getByRole("dialog", { name: "Settings", exact: true });
+  await expect(settingsDialog).toBeVisible();
+  await settingsDialog.getByRole("tab", { name: /Agent Folders/ }).click();
+  await settingsDialog.getByRole("button", { name: /^pg-tune/ }).click();
+  await expect(settingsDialog.getByText(skillDir)).toBeVisible();
+
+  const openSkillBtn = settingsDialog.getByRole("button", { name: "Open SKILL.md" });
+  await openSkillBtn.scrollIntoViewIfNeeded();
+
+  const screenshotDir = process.env.CAPTURE_SKILLS_SCREENSHOTS;
+  if (screenshotDir) {
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: `${screenshotDir}/settings-open-skill-button.png`, animations: "disabled" });
+  }
+
+  await openSkillBtn.click();
+
+  // Clicking Open SKILL.md closes the clean in-page Settings dialog and opens SKILL.md in the editor.
+  await expect(settingsDialog).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: "SKILL.md" })).toBeVisible();
+  await expect(page.locator(".cm-content")).toContainText("name: pg-tune");
+
+  if (screenshotDir) {
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: `${screenshotDir}/after-skill-md-opened.png`, animations: "disabled" });
+  }
+
+  // Also verify the native Settings window bridge (`openidea://settings/open-file`) opens a second SKILL.md.
+  const verifySkillFile = "/dev/openidea/.agents/skills/verify/SKILL.md";
+  await page.evaluate(
+    async ({ verifySkillFile }) => {
+      const backendModule = "/src/editor/core/backend.ts";
+      const { docBackend } = await import(/* @vite-ignore */ backendModule);
+      (docBackend() as { files: Map<string, string> }).files.set(
+        verifySkillFile,
+        "---\nname: verify\ndescription: Build and verify OpenIDEA\n---\n\n# verify\n",
+      );
+      const bridgeModule = "/src/features/settings/window/bridge.ts";
+      const { installSettingsHost } = await import(/* @vite-ignore */ bridgeModule);
+      const disposeHost = installSettingsHost();
+      // Wait a microtask for `getCurrentWebviewWindow().listen(...)` to register.
+      await Promise.resolve();
+      window.__ipc.dispatch("openidea://settings/open-file", {
+        path: verifySkillFile,
+        options: { focus: true },
+      });
+      setTimeout(disposeHost, 500);
+    },
+    { verifySkillFile },
+  );
+
+  await expect(page.locator(".cm-content")).toContainText("name: verify");
+});

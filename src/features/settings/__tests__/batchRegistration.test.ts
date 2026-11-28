@@ -2,13 +2,24 @@ import { describe, expect, it, vi } from "vitest";
 
 const listeners = new Map<string, (e: { payload: unknown }) => void>();
 const emitTo = vi.fn(() => Promise.resolve());
+const windowControls = {
+  label: "settings-main",
+  unminimize: vi.fn(() => Promise.resolve()),
+  show: vi.fn(() => Promise.resolve()),
+  setFocus: vi.fn(() => Promise.resolve()),
+};
 
 vi.mock("@tauri-apps/api/event", () => ({
   emitTo: (...args: unknown[]) => (emitTo as (...a: unknown[]) => Promise<void>)(...args),
 }));
 vi.mock("@tauri-apps/api/webviewWindow", () => ({
   getCurrentWebviewWindow: () => ({
-    label: "settings-main",
+    get label() {
+      return windowControls.label;
+    },
+    unminimize: () => windowControls.unminimize(),
+    show: () => windowControls.show(),
+    setFocus: () => windowControls.setFocus(),
     listen: (event: string, cb: (e: { payload: unknown }) => void) => {
       listeners.set(event, cb);
       return Promise.resolve(() => listeners.delete(event));
@@ -20,9 +31,19 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
   return { ...real, isTauri: () => true };
 });
 
+import type { ProjectInfo } from "@/bindings";
 import { executeAction, getAction, registerAction, useActions } from "@/platform/actions";
-import { registerSettingsPage, registerSettingsPages, useSettingsPages } from "@/workbench/contributions";
-import { installActionProxies, type ActionInfo } from "../window/bridge";
+import { useProject } from "@/platform/project";
+import {
+  editorService,
+  maybeEditorService,
+  provideEditorService,
+  registerSettingsPage,
+  registerSettingsPages,
+  useSettingsPages,
+  type EditorService,
+} from "@/workbench/contributions";
+import { installActionProxies, installEditorProxy, installSettingsHost, type ActionInfo } from "../window/bridge";
 
 describe("registerSettingsPages", () => {
   it("registers and disposes a page batch in one store update each while keeping later overrides", () => {
@@ -86,6 +107,79 @@ describe("installActionProxies", () => {
       off();
       dispose();
       disposeLocal();
+    }
+  });
+});
+
+describe("settings window editor bridge", () => {
+  it("forwards editorService().openFile from the settings window to the parent and restores on dispose", async () => {
+    emitTo.mockClear();
+    const previous = maybeEditorService();
+    const dispose = installEditorProxy("main");
+    try {
+      await editorService().openFile("/Users/dev/.copilot/skills/azure-storage/SKILL.md", { focus: true });
+      expect(emitTo).toHaveBeenCalledWith("main", "openidea://settings/open-file", {
+        path: "/Users/dev/.copilot/skills/azure-storage/SKILL.md",
+        options: { focus: true },
+      });
+    } finally {
+      dispose();
+    }
+    expect(maybeEditorService()).toBe(previous);
+  });
+
+  it("opens forwarded files in the parent project window and focuses it", async () => {
+    windowControls.label = "main";
+    windowControls.unminimize.mockClear();
+    windowControls.show.mockClear();
+    windowControls.setFocus.mockClear();
+    const openFile = vi.fn(async () => {});
+    const previous = maybeEditorService();
+    provideEditorService({ openFile } as unknown as EditorService);
+    useProject.setState({ project: { root: "/repo", name: "repo", trusted: true, isGit: true } as ProjectInfo });
+    const dispose = installSettingsHost();
+    try {
+      await vi.waitFor(() => expect(listeners.has("openidea://settings/open-file")).toBe(true));
+      listeners.get("openidea://settings/open-file")!({
+        payload: { path: "/Users/dev/.copilot/skills/azure-storage/SKILL.md", options: { focus: true } },
+      });
+      await vi.waitFor(() =>
+        expect(openFile).toHaveBeenCalledWith("/Users/dev/.copilot/skills/azure-storage/SKILL.md", { focus: true }),
+      );
+      await vi.waitFor(() => expect(windowControls.setFocus).toHaveBeenCalledTimes(1));
+    } finally {
+      dispose();
+      provideEditorService(previous as EditorService);
+      useProject.setState({ project: null, lightEdit: false });
+      windowControls.label = "settings-main";
+    }
+  });
+
+  it("falls back to file.openPaths when the parent is on the Welcome screen", async () => {
+    windowControls.label = "main";
+    windowControls.setFocus.mockClear();
+    useProject.setState({ project: null, lightEdit: false });
+    const openPaths = vi.fn(async () => {
+      useProject.setState({ lightEdit: true });
+    });
+    const disposeAction = registerAction({ id: "file.openPaths", title: "Open Paths", run: openPaths });
+    const disposeHost = installSettingsHost();
+    try {
+      await vi.waitFor(() => expect(listeners.has("openidea://settings/open-file")).toBe(true));
+      listeners.get("openidea://settings/open-file")!({
+        payload: { path: "/Users/dev/.copilot/skills/azure-storage/SKILL.md", options: { focus: true } },
+      });
+      await vi.waitFor(() =>
+        expect(openPaths).toHaveBeenCalledWith(
+          expect.objectContaining({ arg: ["/Users/dev/.copilot/skills/azure-storage/SKILL.md"] }),
+        ),
+      );
+      await vi.waitFor(() => expect(windowControls.setFocus).toHaveBeenCalledTimes(1));
+    } finally {
+      disposeHost();
+      disposeAction();
+      useProject.setState({ project: null, lightEdit: false });
+      windowControls.label = "settings-main";
     }
   });
 });
