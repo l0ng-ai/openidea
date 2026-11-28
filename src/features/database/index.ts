@@ -27,6 +27,8 @@ import {
   registerServiceView,
   registerTextEditorWrapper,
   registerToolWindow,
+  SERVICES_WINDOW,
+  useActiveServiceView,
   setFileDecorations,
   toolWindowService,
 } from "@/workbench/contributions";
@@ -44,7 +46,6 @@ import { nodeSchema, nodeTarget, type DbNode } from "./nodes";
 import { registerDatabaseTreeActions } from "./treeActions";
 import {
   DB_TOOL_WINDOW,
-  RESULTS_VIEW,
   consoleSource,
   consoleDecorations,
   inEditorResults,
@@ -54,7 +55,7 @@ import {
   connect,
   loadSchemas,
   loadDatabases,
-  listsDatabases,
+  listsTreeDatabases,
   sourceById,
   newConsole,
   openConsole,
@@ -64,6 +65,51 @@ import {
   watchConsoleSessions,
   watchIdleConnections,
 } from "./store";
+
+import { DB_OUTPUT_WINDOW, outputDestination, RESULTS_VIEW, revealDatabaseResults } from "./outputDestination";
+
+function registerResultsDestination() {
+  const registerOutput = () =>
+    registerToolWindow({
+      id: DB_OUTPUT_WINDOW,
+      title: "Database Output",
+      icon: "db-console",
+      anchor: "bottom",
+      stripe: "onUse",
+      sessionContent: true,
+      order: 9,
+      component: lazyComponent(() => import("./DatabaseOutput").then((m) => m.DatabaseOutput)),
+    });
+  const disposeServices = registerServiceView({
+    id: RESULTS_VIEW,
+    title: "Database",
+    icon: "database",
+    order: 20,
+    onUse: true,
+    component: lazyComponent(() => import("./ResultsView").then((m) => m.ResultsView)),
+  });
+  let destination = outputDestination();
+  let disposeOutput = destination === "databaseOutput" ? registerOutput() : undefined;
+  const off = useProject.subscribe((s) => {
+    const next = outputDestination(s.settings);
+    if (destination === next) return;
+    const windows = toolWindowService();
+    const previous = destination === "databaseOutput" ? DB_OUTPUT_WINDOW : SERVICES_WINDOW;
+    const reopen =
+      windows.isVisible(previous) &&
+      (destination === "databaseOutput" || useActiveServiceView.getState().active === RESULTS_VIEW);
+    if (reopen) windows.hide(previous);
+    disposeOutput?.();
+    destination = next;
+    disposeOutput = destination === "databaseOutput" ? registerOutput() : undefined;
+    if (reopen) revealDatabaseResults();
+  });
+  return () => {
+    off();
+    disposeOutput?.();
+    disposeServices();
+  };
+}
 
 /**
  * The schema a console opened for `id` starts in: the invoking node's, else the selected tree
@@ -199,14 +245,7 @@ export function activate(): () => void {
       void loadSourceFolders();
     }),
     registerDatabaseWindow(),
-    registerServiceView({
-      id: RESULTS_VIEW,
-      title: "Database",
-      icon: "database",
-      order: 20,
-      onUse: true,
-      component: lazyComponent(() => import("./ResultsView").then((m) => m.ResultsView)),
-    }),
+    registerResultsDestination(),
     registerEditorKind({
       kind: TABLE_KIND,
       component: lazyComponent(() => import("./TableEditor").then((m) => m.TableEditor)),
@@ -268,6 +307,7 @@ export function activate(): () => void {
         inline: [],
         output: [],
         activeResult: null,
+        activeClientResults: {},
         selectedSource: null,
         selectedNode: null,
         selectedNodes: [],
@@ -314,7 +354,7 @@ export function activate(): () => void {
           const connected = await connect(id);
           if (!current()) return;
           if (!connected) throw new Error(tx("Database connection failed"));
-          if (listsDatabases(sourceById(id))) await loadDatabases(id);
+          if (listsTreeDatabases(sourceById(id))) await loadDatabases(id);
           else await loadSchemas(id);
         },
       },

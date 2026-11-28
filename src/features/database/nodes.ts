@@ -15,6 +15,7 @@ import type {
   DbTriggerInfo,
 } from "@/platform/ipc";
 import type { DbObjectRef } from "./objects";
+import type { TableRef } from "./tableInput";
 
 export type Group = "columns" | "keys" | "foreignKeys" | "indexes" | "triggers";
 
@@ -59,32 +60,27 @@ export function routineFolder(kind: DbRoutineInfo["kind"], separate = false): "r
   return kind === "procedure" ? "procedures" : "functions";
 }
 
-/** Where a table-level node lives: connection target, schema, table. */
-interface InTable {
-  id: string;
-  schema: string;
-  table: string;
-}
+type InSchema = Pick<TableRef, "id" | "catalog" | "schema">;
 
 export type DbNode =
   | { kind: "source"; key: string; source: DataSource }
   | { kind: "sourceFolder"; key: string; folder: DbSourceFolder }
-  /** A database of a PostgreSQL / SQL Server host; `id` is its connection target. */
-  | { kind: "database"; key: string; id: string; name: string; current: boolean }
-  | { kind: "schema"; key: string; id: string; schema: string }
-  | { kind: "folder"; key: string; id: string; schema: string; folder: Folder }
-  | { kind: "table"; key: string; id: string; schema: string; table: DbTableInfo }
+  /** DuckDB's `catalog` stays on the session of `id`; other databases have their own target. */
+  | { kind: "database"; key: string; id: string; name: string; current: boolean; catalog?: string }
+  | ({ kind: "schema"; key: string } & InSchema)
+  | ({ kind: "folder"; key: string; folder: Folder } & InSchema)
+  | ({ kind: "table"; key: string; table: DbTableInfo } & InSchema)
   | { kind: "routine"; key: string; id: string; schema: string; routine: DbRoutineInfo }
   | { kind: "package"; key: string; id: string; schema: string; package: DbPackageInfo }
   | { kind: "sequence"; key: string; id: string; schema: string; sequence: DbSequenceInfo }
   /** A stage, stream, task, pipe or file format: listed by name. */
   | { kind: "object"; key: string; id: string; schema: string; object: DbSchemaObject }
-  | ({ kind: "group"; key: string; group: Group } & InTable)
-  | ({ kind: "column"; key: string; column: DbColumnInfo; foreignKey: boolean } & InTable)
-  | ({ kind: "key"; key: string; columns: string[] } & InTable)
-  | ({ kind: "foreignKey"; key: string; fk: DbForeignKey } & InTable)
-  | ({ kind: "index"; key: string; index: DbIndexInfo } & InTable)
-  | ({ kind: "trigger"; key: string; trigger: DbTriggerInfo } & InTable)
+  | ({ kind: "group"; key: string; group: Group } & TableRef)
+  | ({ kind: "column"; key: string; column: DbColumnInfo; foreignKey: boolean } & TableRef)
+  | ({ kind: "key"; key: string; columns: string[] } & TableRef)
+  | ({ kind: "foreignKey"; key: string; fk: DbForeignKey } & TableRef)
+  | ({ kind: "index"; key: string; index: DbIndexInfo } & TableRef)
+  | ({ kind: "trigger"; key: string; trigger: DbTriggerInfo } & TableRef)
   | { kind: "message"; key: string; text: string; error?: boolean };
 
 /** The connection target a node belongs to. */
@@ -101,13 +97,18 @@ export function nodeSchema(n: DbNode): string | null {
 }
 
 /** The table (or view) a node is, or is inside of. */
-export function tableOf(
-  n: DbNode,
-): { id: string; schema: string; table: string; view: boolean; kind: DbTableKind } | null {
+export function tableOf(n: DbNode): (TableRef & { view: boolean; kind: DbTableKind }) | null {
   if (n.kind === "table")
-    return { id: n.id, schema: n.schema, table: n.table.name, view: n.table.kind !== "table", kind: n.table.kind };
+    return {
+      id: n.id,
+      catalog: n.catalog,
+      schema: n.schema,
+      table: n.table.name,
+      view: n.table.kind !== "table",
+      kind: n.table.kind,
+    };
   if ("table" in n && typeof n.table === "string")
-    return { id: n.id, schema: n.schema, table: n.table, view: false, kind: "table" };
+    return { id: n.id, catalog: n.catalog, schema: n.schema, table: n.table, view: false, kind: "table" };
   return null;
 }
 

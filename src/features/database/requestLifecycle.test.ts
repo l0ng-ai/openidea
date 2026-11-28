@@ -1,13 +1,17 @@
+import { CompletionContext } from "@codemirror/autocomplete";
+import { EditorState } from "@codemirror/state";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DataSource, ProjectInfo } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 
 const backend = vi.hoisted(() => ({
   databases: vi.fn(),
+  catalog: vi.fn(),
   schemas: vi.fn(),
   tables: vi.fn(),
   objects: vi.fn(),
   details: vi.fn(),
+  catalogDetails: vi.fn(),
   connect: vi.fn(),
   disconnect: vi.fn(),
   completion: vi.fn(),
@@ -31,10 +35,12 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     commands: {
       ...actual.commands,
       dbDatabases: backend.databases,
+      dbDatabaseCatalog: backend.catalog,
       dbSchemas: backend.schemas,
       dbTables: backend.tables,
       dbSchemaObjects: backend.objects,
       dbTableDetails: backend.details,
+      dbCatalogTableDetails: backend.catalogDetails,
       dbConnect: backend.connect,
       dbDisconnect: backend.disconnect,
       dbCompletion: backend.completion,
@@ -62,11 +68,15 @@ import {
   renameSource,
   revealInTree,
   saveSource,
+  schemasKey,
+  tablesKey,
+  detailsKey,
   runSql,
   executeConsole,
   useDatabase,
   withConnection,
 } from "./store";
+import { completionSource } from "./console";
 import { provideToolWindowService } from "@/workbench/contributions";
 
 const initial = useDatabase.getState();
@@ -154,6 +164,90 @@ beforeEach(() => {
 afterEach(() => {
   useProject.setState(initialProject, true);
   useDatabase.setState(initial, true);
+});
+
+it("loads distinct DuckDB catalog metadata on one source and discards detached entries on refresh", async () => {
+  const duck: DataSource = { id: "duck", name: "DuckDB", driver: "jdbc", vendor: "duckdb" };
+  const catalog = "other.db:archive/one";
+  const schema = "main";
+  const table = "items";
+  useDatabase.setState({ sources: [duck], loaded: true, connected: new Set(["duck"]) });
+  backend.databases.mockResolvedValue(ok({ current: "memory", names: ["memory", catalog] }));
+  backend.catalog.mockImplementation(async (_id, name) =>
+    ok([{ name: schema, tables: [{ name: table, kind: name === catalog ? "view" : "table" }] }]),
+  );
+  backend.catalogDetails.mockResolvedValue(ok({ columns: [], indexes: [], foreignKeys: [], triggers: [] }));
+
+  await loadDatabases("duck");
+  await loadSchemas("duck", "memory");
+  await loadSchemas("duck", catalog);
+  await loadDetails("duck", schema, table, catalog);
+  expect(backend.catalog).toHaveBeenCalledWith("duck", "memory");
+  expect(backend.catalog).toHaveBeenCalledWith("duck", catalog);
+  expect(backend.catalogDetails).toHaveBeenCalledWith("duck", catalog, schema, table);
+  expect(backend.details).not.toHaveBeenCalled();
+  expect(useDatabase.getState().tables[tablesKey("duck", schema, "memory")]).toEqual({
+    status: "ok",
+    value: [{ name: table, kind: "table" }],
+  });
+  expect(useDatabase.getState().tables[tablesKey("duck", schema, catalog)]).toEqual({
+    status: "ok",
+    value: [{ name: table, kind: "view" }],
+  });
+
+  backend.catalog.mockClear();
+  backend.databases.mockResolvedValue(ok({ current: "memory", names: ["memory"] }));
+  await refresh("duck");
+  expect(backend.catalog.mock.calls).toEqual([["duck", "memory"]]);
+  expect(useDatabase.getState().schemas[schemasKey("duck", catalog)]).toBeUndefined();
+  expect(useDatabase.getState().tables[tablesKey("duck", schema, catalog)]).toBeUndefined();
+  expect(useDatabase.getState().details[detailsKey("duck", schema, table, catalog)]).toBeUndefined();
+  expect([...useDatabase.getState().connected]).toEqual(["duck"]);
+});
+
+it("completes live DuckDB attachments through the source and refreshes after session commands", async () => {
+  const id = "duck";
+  const path = "console.sql";
+  const name = "archive.db:1";
+  const duck: DataSource = { id, name: "DuckDB", driver: "jdbc", url: "jdbc:duckdb:" };
+  useDatabase.setState({ sources: [duck], consoles: { [path]: id }, completion: { [id]: completion } });
+  backend.databases.mockResolvedValue(ok({ current: "memory", names: ["memory", name] }));
+  backend.catalog.mockResolvedValue(ok([{ name: "Main", tables: [{ name: "archive_only", kind: "table" }] }]));
+  const complete = async (doc: string) =>
+    (await completionSource(path)(new CompletionContext(EditorState.create({ doc }), doc.length, true)))?.options.map(
+      (option) => option.label,
+    ) ?? [];
+
+  expect(await complete("select * from ")).toContain(name);
+  expect(backend.catalog).not.toHaveBeenCalled();
+  expect(await complete('select * from "ARCHIVE.db:1".')).toEqual(["Main"]);
+  expect(await complete('select * from "archive.db:1".main.')).toEqual(["archive_only"]);
+  expect(backend.databases.mock.calls).toEqual([[id]]);
+  expect(backend.catalog.mock.calls).toEqual([[id, name]]);
+  expect(useDatabase.getState().databases[id]).toBeUndefined();
+  expect(useDatabase.getState().catalogs[id]).toBeUndefined();
+
+  const success = (text: string) => ok([{ statement: { text, from: 0, to: text.length }, result: null, error: null }]);
+  const detach = '/* comment */ DETACH "archive.db:1"';
+  backend.execute.mockResolvedValueOnce(success(detach));
+  backend.databases.mockResolvedValueOnce(ok({ current: "memory", names: ["memory"] }));
+  expect(await runSql(id, [detach])).toBe(true);
+  expect(await complete('select * from "archive.db:1".main.')).toEqual([]);
+  expect(backend.catalog).toHaveBeenCalledOnce();
+
+  const next = deferred();
+  backend.databases.mockResolvedValue(ok({ current: "memory", names: ["memory", name] }));
+  const attach = "ATTACH " + "':memory:'" + ' AS "archive.db:1"';
+  backend.execute.mockResolvedValueOnce(success(attach));
+  expect(await runSql(id, [attach])).toBe(true);
+  backend.catalog.mockReturnValueOnce(next.promise);
+  const pending = complete('select * from "archive.db:1".main.');
+  await vi.waitFor(() => expect(backend.catalog).toHaveBeenCalledTimes(2));
+  const use = 'USE "archive.db:1"';
+  backend.execute.mockResolvedValueOnce(success(use));
+  expect(await runSql(id, [use])).toBe(true);
+  next.resolve(ok([{ name: "Main", tables: [{ name: "stale", kind: "table" }] }]));
+  expect(await pending).toEqual([]);
 });
 
 describe("database metadata request lifetimes", () => {

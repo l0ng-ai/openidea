@@ -1305,6 +1305,8 @@
   "Database": "資料庫",
   "Database actions": "資料庫操作",
   "Database output": "資料庫輸出",
+  "Catalog browsing requires a DuckDB data source": "瀏覽目錄需要 DuckDB 資料來源",
+  "View Data": "檢視資料",
   "Database:": "資料庫：",
   "Date": "日期",
   "Date Formats": "日期格式",

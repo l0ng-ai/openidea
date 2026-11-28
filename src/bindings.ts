@@ -352,6 +352,8 @@ export const commands = {
 	/**  Records the exact helper and destination reviewed in the local data-source dialog. */
 	dbApproveExternalTunnel: (source: DataSource_Deserialize) => typedError<null, IdeError>(__TAURI_INVOKE("db_approve_external_tunnel", { source })),
 	dbApproveJdbcSource: (source: DataSource_Deserialize) => typedError<null, IdeError>(__TAURI_INVOKE("db_approve_jdbc_source", { source })),
+	dbCatalogTableDetails: (id: string, catalog: string, schema: string, table: string) => typedError<DbTableDetails, IdeError>(__TAURI_INVOKE("db_catalog_table_details", { id, catalog, schema, table })),
+	dbCatalogTablePage: (request: RequestId, id: string, catalog: string, schema: string, table: string, filter: string | null, sort: DbSortKey[], offset: number, limit: number) => typedError<DbTablePage, IdeError>(__TAURI_INVOKE("db_catalog_table_page", { request, id, catalog, schema, table, filter, sort, offset, limit })),
 	dbCompletion: (id: string) => typedError<DbCompletion, IdeError>(__TAURI_INVOKE("db_completion", { id })),
 	dbConnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_connect", { id })),
 	dbConnected: () => typedError<string[], IdeError>(__TAURI_INVOKE("db_connected")),
@@ -5386,13 +5388,18 @@ export type DataSource_Serialize = {
 	pluginSourceId?: string | null,
 };
 
+/**  Database › Query Output: where SQL results open. */
+export type DatabaseOutputDestination = "databaseOutput" | "services";
+
 /**  Database settings: Query Execution and SQL Resolution Scopes. */
 export type DatabaseSettings = {
 	/**
 	 *  A console's result sets show under the statements that produced them, in the editor,
-	 *  instead of in the Services view's result tabs.
+	 *  instead of in the output window's result tabs.
 	 */
 	inEditorResults?: boolean,
+	/**  The tool window that receives SQL query output and plans. */
+	outputDestination?: DatabaseOutputDestination,
 	/**
 	 *  Languages & Frameworks › SQL Resolution Scopes: the data source SQL in a file or folder
 	 *  resolves against (completion, inspections, navigation), most specific path first.

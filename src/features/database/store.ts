@@ -39,7 +39,6 @@ import {
   editorService,
   maybeEditorService,
   notifications,
-  showServiceView,
   toolWindowService,
   type FileDecoration,
 } from "@/workbench/contributions";
@@ -51,6 +50,8 @@ import {
   colorVar,
   connectRemedy,
   databaseKey,
+  schemaNodeKey,
+  treeIdentifier,
   effectiveSsh,
   idleTargets,
   newSourceId,
@@ -65,18 +66,22 @@ import { TABLE_KIND, type TableRef } from "./tableInput";
 import type { DiagramData } from "./erDiagram";
 import type { ExportData, ExportFormat } from "./export";
 import type { DbObjectRef } from "./objects";
+import type { SqlCatalog } from "./sql/complete";
+import { nameMatcher, sqlDriverOf } from "./sql/dialect";
 import { formatted } from "./sql/format";
-import { unsafeStatement, type UnsafeStatement } from "./sql/unsafe";
+import { lex } from "./sql/lexer";
 import { bindParams, findParams, unbindRange } from "./sql/params";
+import { unsafeStatement, type UnsafeStatement } from "./sql/unsafe";
 import { isReadOnlyQuery } from "./sql/readOnly";
 import { pageFetch } from "./resultView";
 import type { TableSnapshot } from "./schemaCompare";
 import { resolutionScopeOf, resolutionScopesOf, type SqlResolutionScope } from "./resolutionScopes";
 import { databaseRequest, invalidateDatabaseRequests, projectRequest } from "./requests";
 import { tx } from "@/platform/i18n";
+import { revealDatabaseResults } from "./outputDestination";
+export { RESULTS_VIEW } from "./outputDestination";
 
 export const DB_TOOL_WINDOW = "database";
-export const RESULTS_VIEW = "dbResults";
 const BINDINGS_KEY = "openidea.database.consoles";
 const CONSOLE_SCHEMAS_KEY = "openidea.database.consoleSchemas";
 const VIEW_OPTIONS_KEY = "openidea.database.viewOptions";
@@ -131,6 +136,8 @@ export interface OutputLine {
   text: string;
   /** Prompt before a statement: the schema it ran in (`main>`). */
   prompt?: string;
+  /** SQL console or file that emitted the line. */
+  path?: string;
 }
 
 /** `activeResult` value of the Output tab. */
@@ -238,6 +245,7 @@ interface DatabaseState {
   inline: ResultTab[];
   /** Result tab id, or `OUTPUT_TAB`. */
   activeResult: number | null;
+  activeClientResults: Record<string, number>;
   output: OutputLine[];
   /** Console path → running request. */
   running: Record<string, RequestId>;
@@ -332,6 +340,7 @@ export const useDatabase = create<DatabaseState>(() => ({
   results: [],
   inline: [],
   activeResult: null,
+  activeClientResults: {},
   output: [],
   running: {},
   executions: {},
@@ -396,8 +405,11 @@ function saveViewOptions() {
   }
 }
 
-export const tablesKey = (id: string, schema: string) => `${id}\u0000${schema}`;
-export const detailsKey = (id: string, schema: string, table: string) => `${id}\u0000${schema}\u0000${table}`;
+const catalogKey = (key: string, catalog?: string) => (catalog === undefined ? key : `${key}\u0000${catalog}`);
+export const schemasKey = catalogKey;
+export const tablesKey = (id: string, schema: string, catalog?: string) => catalogKey(`${id}\u0000${schema}`, catalog);
+export const detailsKey = (id: string, schema: string, table: string, catalog?: string) =>
+  catalogKey(`${id}\u0000${schema}\u0000${table}`, catalog);
 
 function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -653,6 +665,7 @@ function expandSourceFolder(id: string) {
 /** Drops cached metadata of target `id` (refresh, disconnect); a data source id drops all its databases. */
 function forget(id: string) {
   invalidateDatabaseRequests(id);
+  duckdbCatalogLoads.delete(id);
   const whole = !splitTarget(id).database;
   const ofTarget = (t: string) => t === id || (whole && splitTarget(t).id === id);
   const dropKeys = <T>(m: Record<string, T>) =>
@@ -1022,6 +1035,14 @@ export function listsDatabases(source: DataSource | undefined): boolean {
   );
 }
 
+export function duckdbCatalogTree(source: DataSource | undefined): boolean {
+  return source?.driver === "jdbc" && source.vendor === "duckdb";
+}
+
+export function listsTreeDatabases(source: DataSource | undefined): boolean {
+  return listsDatabases(source) || duckdbCatalogTree(source);
+}
+
 /** New › Database and Drop on database nodes: PostgreSQL and SQL Server data sources that show their databases. */
 export function createsDatabases(source: DataSource | undefined): boolean {
   return listsDatabases(source) && source?.driver !== "snowflake";
@@ -1037,9 +1058,9 @@ export function newSchemaTarget(n: DbNode): string | null {
 }
 
 interface LoadedLevels {
-  schemas: string[];
-  tables: [string, string][];
-  details: [string, string, string][];
+  schemas: [id: string, catalog?: string][];
+  tables: [id: string, schema: string, catalog?: string][];
+  details: [id: string, schema: string, table: string, catalog?: string][];
 }
 
 /** The metadata of target `id` (a data source id: all its databases) the tree has loaded. */
@@ -1053,9 +1074,9 @@ function loadedLevels(id: string): LoadedLevels {
   const loaded = (m: Record<string, Loaded<unknown>>) =>
     Object.keys(m).filter((k) => ofTarget(k) && m[k]!.status === "ok");
   return {
-    schemas: loaded(st.schemas),
-    tables: loaded(st.tables).map((k) => k.split("\u0000") as [string, string]),
-    details: loaded(st.details).map((k) => k.split("\u0000") as [string, string, string]),
+    schemas: loaded(st.schemas).map((k) => k.split("\u0000") as LoadedLevels["schemas"][number]),
+    tables: loaded(st.tables).map((k) => k.split("\u0000") as LoadedLevels["tables"][number]),
+    details: loaded(st.details).map((k) => k.split("\u0000") as LoadedLevels["details"][number]),
   };
 }
 
@@ -1070,26 +1091,30 @@ export async function refresh(id: string, levels = loadedLevels(id)): Promise<vo
   forget(id);
   const current = databaseRequest(id);
   const targets = new Map(
-    [...new Set([...schemas, ...tables.map(([t]) => t), ...details.map(([t]) => t)])].map((target) => [
+    [...new Set([...schemas, ...tables, ...details].map(([target]) => target))].map((target) => [
       target,
       databaseRequest(target),
     ]),
   );
   const valid = (target: string) => targets.get(target)?.() ?? current();
-  if (whole && listsDatabases(sourceById(id))) await loadDatabases(id);
-  else if (!schemas.includes(id)) schemas.push(id);
+  if (whole && listsTreeDatabases(sourceById(id))) await loadDatabases(id);
+  else if (!schemas.some(([t, catalog]) => t === id && catalog === undefined)) schemas.push([id]);
   if (!current()) return;
-  await Promise.all(schemas.filter(valid).map((t) => loadSchemas(t)));
+  const listed = useDatabase.getState().databases[id];
+  const present = (catalog?: string) =>
+    catalog === undefined || (listed?.status === "ok" && listed.value.names.includes(catalog));
+  await Promise.all(schemas.filter(([t, catalog]) => valid(t) && present(catalog)).map(([t, c]) => loadSchemas(t, c)));
   if (!current()) return;
-  await Promise.all(tables.filter(([t]) => valid(t)).map(([t, schema]) => loadTables(t, schema)));
+  // Loading a DuckDB catalog already loaded its tables along with its schemas.
+  await Promise.all(
+    tables.filter(([t, , catalog]) => valid(t) && catalog === undefined).map(([t, schema]) => loadTables(t, schema)),
+  );
   if (!current()) return;
-  const exists = (t: string, schema: string, table: string) => {
-    const l = useDatabase.getState().tables[tablesKey(t, schema)];
+  const exists = (t: string, schema: string, table: string, catalog?: string) => {
+    const l = useDatabase.getState().tables[tablesKey(t, schema, catalog)];
     return l?.status === "ok" && l.value.some((x) => x.name === table);
   };
-  await Promise.all(
-    details.filter((d) => valid(d[0]) && exists(...d)).map(([t, schema, table]) => loadDetails(t, schema, table)),
-  );
+  await Promise.all(details.filter((d) => valid(d[0]) && exists(...d)).map((d) => loadDetails(...d)));
 }
 
 function metadataRequest(id: string, cache: "databases" | "schemas" | "tables" | "details", key = id) {
@@ -1111,19 +1136,35 @@ export async function loadDatabases(id: string): Promise<void> {
   }
 }
 
-export async function loadSchemas(id: string): Promise<void> {
-  const current = metadataRequest(id, "schemas");
+export async function loadSchemas(id: string, catalog?: string): Promise<void> {
+  const key = schemasKey(id, catalog);
+  const current = metadataRequest(id, "schemas", key);
   try {
+    if (catalog !== undefined) {
+      const catalogSchemas = await withConnection(id, () => call(commands.dbDatabaseCatalog(id, catalog)));
+      if (!current()) return;
+      useDatabase.setState((s) => {
+        const tables = { ...s.tables };
+        for (const schema of catalogSchemas)
+          tables[tablesKey(id, schema.name, catalog)] = { status: "ok", value: schema.tables };
+        return {
+          schemas: { ...s.schemas, [key]: { status: "ok", value: catalogSchemas.map((schema) => schema.name) } },
+          tables,
+        };
+      });
+      return;
+    }
     const value = await withConnection(id, () => call(commands.dbSchemas(id)));
     if (!current()) return;
     useDatabase.setState((s) => ({ schemas: { ...s.schemas, [id]: { status: "ok", value } } }));
   } catch (e) {
     if (!current()) return;
-    useDatabase.setState((s) => ({ schemas: { ...s.schemas, [id]: { status: "error", message: message(e) } } }));
+    useDatabase.setState((s) => ({ schemas: { ...s.schemas, [key]: { status: "error", message: message(e) } } }));
   }
 }
 
-export async function loadTables(id: string, schema: string): Promise<void> {
+export async function loadTables(id: string, schema: string, catalog?: string): Promise<void> {
+  if (catalog !== undefined) return loadSchemas(id, catalog);
   const key = tablesKey(id, schema);
   const current = metadataRequest(id, "tables", key);
   try {
@@ -1162,11 +1203,17 @@ export async function schemaSnapshot(id: string, schema: string, signal?: AbortS
   return out;
 }
 
-export async function loadDetails(id: string, schema: string, table: string): Promise<void> {
-  const key = detailsKey(id, schema, table);
+export async function loadDetails(id: string, schema: string, table: string, catalog?: string): Promise<void> {
+  const key = detailsKey(id, schema, table, catalog);
   const current = metadataRequest(id, "details", key);
   try {
-    const value = await withConnection(id, () => call(commands.dbTableDetails(id, schema, table)));
+    const value = await withConnection(id, () =>
+      call(
+        catalog === undefined
+          ? commands.dbTableDetails(id, schema, table)
+          : commands.dbCatalogTableDetails(id, catalog, schema, table),
+      ),
+    );
     if (!current()) return;
     useDatabase.setState((s) => ({ details: { ...s.details, [key]: { status: "ok", value } } }));
   } catch (e) {
@@ -1191,12 +1238,16 @@ export async function revealInTree(
   table: string,
   kind: DbTableKind | undefined,
   column?: string,
+  catalog?: string,
 ): Promise<void> {
   const current = databaseRequest(id);
   const loaded = (l: Loaded<unknown> | undefined) => l?.status === "ok";
   const { id: sourceId, database } = splitTarget(id);
+  const source = sourceById(id);
+  const duck = duckdbCatalogTree(source) || catalog !== undefined;
+  const eq = nameMatcher("duckdb");
   let databaseNode: string[] = [];
-  if (listsDatabases(sourceById(id))) {
+  if (listsTreeDatabases(source) || duck) {
     if (!loaded(useDatabase.getState().databases[sourceId])) {
       if (!(await connect(sourceId))) return;
       if (!current()) return;
@@ -1204,27 +1255,42 @@ export async function revealInTree(
       if (!current()) return;
     }
     const dbs = useDatabase.getState().databases[sourceId];
-    const name = database ?? (dbs?.status === "ok" ? dbs.value.current : null);
-    if (name) databaseNode = [databaseKey(sourceId, name)];
+    if (duck) {
+      if (dbs?.status !== "ok") return selectInTree([], sourceId);
+      catalog = catalog === undefined ? dbs.value.current : dbs.value.names.find((name) => eq(name, catalog));
+      if (!catalog) return selectInTree([], sourceId);
+    }
+    const name = catalog ?? database ?? (dbs?.status === "ok" ? dbs.value.current : null);
+    if (name) databaseNode = [databaseKey(sourceId, name, duck)];
   }
-  if (!loaded(useDatabase.getState().schemas[id])) {
+  const schemaKey = schemasKey(id, catalog);
+  if (!loaded(useDatabase.getState().schemas[schemaKey])) {
     if (!(await connect(id))) return;
     if (!current()) return;
-    await loadSchemas(id);
+    await loadSchemas(id, catalog);
     if (!current()) return;
   }
-  if (!loaded(useDatabase.getState().tables[tablesKey(id, schema)])) await loadTables(id, schema);
+  if (duck) {
+    const schemas = useDatabase.getState().schemas[schemaKey];
+    if (schemas?.status === "ok") schema = schemas.value.find((name) => eq(name, schema)) ?? schema;
+  }
+  const key = tablesKey(id, schema, catalog);
+  if (!loaded(useDatabase.getState().tables[key])) await loadTables(id, schema, catalog);
   if (!current()) return;
-  if (column && !loaded(useDatabase.getState().details[detailsKey(id, schema, table)]))
-    await loadDetails(id, schema, table);
+  const tables = useDatabase.getState().tables[key];
+  const match =
+    tables?.status === "ok" ? tables.value.find((t) => (duck ? eq(t.name, table) : t.name === table)) : undefined;
+  if (match) table = match.name;
+  if (column && !loaded(useDatabase.getState().details[detailsKey(id, schema, table, catalog)]))
+    await loadDetails(id, schema, table, catalog);
   if (!current()) return;
-  const tables = useDatabase.getState().tables[tablesKey(id, schema)];
-  kind ??= (tables?.status === "ok" ? tables.value.find((t) => t.name === table)?.kind : undefined) ?? "table";
-  const folder = `${id}/${schema}/${tableFolder(kind)}`;
-  const tableKey = `${folder}/${table}`;
+  kind ??= match?.kind ?? "table";
+  const schemaNode = schemaNodeKey(id, schema, catalog);
+  const folder = `${schemaNode}/${tableFolder(kind)}`;
+  const tableKey = `${folder}/${treeIdentifier(table, catalog)}`;
   selectInTree(
-    [sourceId, ...databaseNode, `${id}/${schema}`, folder, ...(column ? [tableKey, `${tableKey}/columns`] : [])],
-    column ? `${tableKey}/columns/${column}` : tableKey,
+    [sourceId, ...databaseNode, schemaNode, folder, ...(column ? [tableKey, `${tableKey}/columns`] : [])],
+    column ? `${tableKey}/columns/${treeIdentifier(column, catalog)}` : tableKey,
   );
 }
 
@@ -1249,8 +1315,8 @@ function selectInTree(open: string[], key: string) {
 export async function revealOpened(): Promise<void> {
   const input = maybeEditorService()?.activeInput?.();
   if (input?.kind === TABLE_KIND) {
-    const { id, schema, table } = input.data as TableRef;
-    return revealInTree(id, schema, table, undefined);
+    const { id, schema, table, catalog } = input.data as TableRef;
+    return revealInTree(id, schema, table, undefined, undefined, catalog);
   }
   const editor = activeEditor();
   if (editor?.ctx.language !== SQL_LANGUAGE || (input && input.path !== editor.ctx.path)) return;
@@ -1261,24 +1327,31 @@ export async function revealOpened(): Promise<void> {
   const open: string[] = [];
   let key = sourceId;
   let nodeTarget = target;
-  if (listsDatabases(sourceById(sourceId))) {
+  const source = sourceById(sourceId);
+  let catalog: string | undefined;
+  if (listsTreeDatabases(source)) {
     const dbs = s.databases[sourceId];
     const name = database ?? (dbs?.status === "ok" ? dbs.value.current : null);
     if (dbs?.status !== "ok" || !name) return selectInTree(open, key);
     open.push(key);
-    key = databaseKey(sourceId, name);
-    nodeTarget = targetOf(sourceId, name, dbs.value.current);
+    if (duckdbCatalogTree(source)) catalog = name;
+    key = databaseKey(sourceId, name, catalog !== undefined);
+    nodeTarget = catalog === undefined ? targetOf(sourceId, name, dbs.value.current) : sourceId;
   }
   const schema = consoleSchema(editor.ctx.path);
-  const schemas = s.schemas[nodeTarget];
+  const schemas = s.schemas[schemasKey(nodeTarget, catalog)];
   if (schema && schemas?.status === "ok" && schemas.value.includes(schema)) {
     open.push(key);
-    key = `${nodeTarget}/${schema}`;
+    key = schemaNodeKey(nodeTarget, schema, catalog);
   }
   selectInTree(open, key);
 }
 
 const completionLoads = new Map<string, { current: () => boolean; promise: Promise<DbCompletion | null> }>();
+const duckdbCatalogLoads = new Map<
+  string,
+  { names: Promise<DbDatabases>; catalog?: { name: string; schemas: Promise<DbCatalogSchema[]> } }
+>();
 const preparingConsoles = new Map<string, RequestId>();
 interface ConsoleScope {
   id: string;
@@ -1289,6 +1362,7 @@ interface ConsoleScope {
 
 const consoleScopes = new Map<string, ConsoleScope>();
 const closingConsoles = new Map<string, Promise<unknown>>();
+const pendingExplains = new Map<string, RequestId>();
 const stopResultDelivery = new Map<RequestId, () => void>();
 const incompleteResultDelivery = Symbol("incomplete SQL result delivery");
 const streamingResultTabs = new Set<number>();
@@ -1316,6 +1390,51 @@ export function loadCompletion(id: string): Promise<DbCompletion | null> {
   return pending.promise;
 }
 
+/** DuckDB attachments belong to this JDBC session. The catalog name is never a connection target. */
+export async function loadDuckdbCatalog(id: string, wanted?: string): Promise<SqlCatalog | undefined> {
+  const sourceId = splitTarget(id).id;
+  if (!allowsPassiveConsoleMetadata(sourceId)) return undefined;
+  let live = duckdbCatalogLoads.get(sourceId);
+  if (!live) {
+    const names = call(commands.dbDatabases(sourceId)).catch((error) => {
+      if (duckdbCatalogLoads.get(sourceId)?.names === names) duckdbCatalogLoads.delete(sourceId);
+      throw error;
+    });
+    live = { names };
+    duckdbCatalogLoads.set(sourceId, live);
+  }
+  const { names } = await live.names;
+  if (duckdbCatalogLoads.get(sourceId) !== live) return undefined;
+  const eq = nameMatcher("duckdb");
+  const database = wanted === undefined ? undefined : names.find((name) => eq(name, wanted));
+  let schemas: DbCatalogSchema[] = [];
+  if (database !== undefined) {
+    if (live.catalog?.name !== database) {
+      const entry = live;
+      const schemas = call(commands.dbDatabaseCatalog(sourceId, database)).catch((error) => {
+        if (entry.catalog?.schemas === schemas) delete entry.catalog;
+        throw error;
+      });
+      live.catalog = { name: database, schemas };
+    }
+    schemas = await live.catalog.schemas;
+  }
+  if (duckdbCatalogLoads.get(sourceId) !== live) return undefined;
+  return {
+    databases: names,
+    schemas: (name) => (name === database ? schemas.map((schema) => schema.name) : null),
+    tables: (name, schema) =>
+      name === database
+        ? (schemas
+            .find((s) => eq(s.name, schema))
+            ?.tables.map((table) => ({
+              name: table.name,
+              view: table.kind !== "table",
+            })) ?? null)
+        : null,
+  };
+}
+
 useProject.subscribe((state, previous) => {
   if (state.project?.root === previous.project?.root) return;
   sourcesRequest++;
@@ -1323,10 +1442,12 @@ useProject.subscribe((state, previous) => {
   sourceConnectionIntents.clear();
   sourceMutations.clear();
   completionLoads.clear();
+  duckdbCatalogLoads.clear();
   preparingConsoles.clear();
   for (const scope of consoleScopes.values()) scope.retired = true;
   consoleScopes.clear();
   closingConsoles.clear();
+  pendingExplains.clear();
   lastUsed.clear();
   if (useDatabase.getState().pausedConsoleMetadata.size) useDatabase.setState({ pausedConsoleMetadata: new Set() });
 });
@@ -1475,17 +1596,17 @@ let nextTab = 1;
 let nextRun = 1;
 let nextLine = 1;
 
-function outputLine(kind: OutputLine["kind"], text: string, prompt?: string): OutputLine {
-  return { id: nextLine++, time: Date.now(), kind, text, prompt };
+function outputLine(kind: OutputLine["kind"], text: string, prompt?: string, path?: string): OutputLine {
+  return { id: nextLine++, time: Date.now(), kind, text, prompt, path };
 }
 
-export function log(kind: OutputLine["kind"], text: string, prompt?: string) {
-  const line = outputLine(kind, text, prompt);
+export function log(kind: OutputLine["kind"], text: string, prompt?: string, path?: string) {
+  const line = outputLine(kind, text, prompt, path);
   useDatabase.setState((s) => ({ output: [...s.output, line].slice(-MAX_OUTPUT) }));
 }
 
-export function clearOutput() {
-  useDatabase.setState({ output: [] });
+export function clearOutput(path?: string) {
+  useDatabase.setState((s) => ({ output: path === undefined ? [] : s.output.filter((line) => line.path !== path) }));
 }
 
 function elapsed(ms: number): string {
@@ -1510,8 +1631,14 @@ function promptOf(id: string): string {
   return useDatabase.getState().completion[id]?.defaultSchema || sourceById(id)?.name || id;
 }
 
-function changesSchema(outcome: DbStatementOutcome): boolean {
-  return !outcome.error && /^\s*(create|drop|alter|rename)\b/i.test(outcome.statement.text);
+function changesSchema(id: string, outcome: DbStatementOutcome): boolean {
+  if (outcome.error) return false;
+  const { text } = outcome.statement;
+  if (sqlDriverOf(sourceById(id)) === "duckdb") {
+    const first = /^\s*([a-z_][\w$]*)/i.exec(text)?.[1]?.toUpperCase() ?? lex(text, "duckdb").tokens[0]?.upper;
+    return /^(ATTACH|DETACH|USE|CREATE|DROP|ALTER|RENAME)$/.test(first ?? "");
+  }
+  return /^\s*(create|drop|alter|rename)\b/i.test(text);
 }
 
 function outcomeUpdates(
@@ -1523,13 +1650,13 @@ function outcomeUpdates(
   path?: string,
 ): Pick<DatabaseState, "output" | "pendingTx" | "consolePendingTx"> {
   const prompt = `${schema || promptOf(id)}>`;
-  const lines = logConnected ? [outputLine("info", "Connected")] : [];
+  const lines = logConnected ? [outputLine("info", "Connected", undefined, path)] : [];
   for (const outcome of outcomes) {
-    lines.push(outputLine("statement", outcome.statement.text, prompt));
+    lines.push(outputLine("statement", outcome.statement.text, prompt, path));
     lines.push(
       outcome.error
-        ? outputLine("error", `[${targetLabel(id)}] ${outcome.error}`)
-        : outputLine("result", outcomeSummary(outcome)),
+        ? outputLine("error", `[${targetLabel(id)}] ${outcome.error}`, undefined, path)
+        : outputLine("result", outcomeSummary(outcome), undefined, path),
     );
   }
   const pending =
@@ -1551,16 +1678,17 @@ function outcomeUpdates(
  * each statement in it, so unqualified names resolve there.
  */
 /** Shows `id` disconnected when the backend closed its connection (it reconnects on next use). */
-async function syncDropped(id: string) {
+async function syncDropped(id: string, path?: string) {
   const current = databaseRequest(id);
   const server = await call(commands.dbConnected()).catch(() => null);
   if (!current() || !server || server.includes(id) || !useDatabase.getState().connected.has(id)) return;
+  duckdbCatalogLoads.delete(id);
   useDatabase.setState((s) => {
     const connected = new Set(s.connected);
     connected.delete(id);
     return { connected };
   });
-  log("info", `${targetLabel(id)}: the connection was lost; the next statement reconnects`);
+  log("info", `${targetLabel(id)}: the connection was lost; the next statement reconnects`, undefined, path);
 }
 
 function consoleScopeKey(id: string, path: string): string {
@@ -1781,11 +1909,11 @@ async function run(
   });
   if (!current()) return outcomes;
   // A failed statement can have found the session dead; the backend then dropped it.
-  if (outcomes.some((o) => o.error)) void syncDropped(id);
+  if (outcomes.some((o) => o.error)) void syncDropped(id, path);
   // Consoles publish the same outcome updates alongside their progress and grids.
   if (progress) return outcomes;
   useDatabase.setState((s) => outcomeUpdates(s, id, schema, outcomes, !wasConnected, path));
-  if (outcomes.some(changesSchema)) void refresh(id);
+  if (outcomes.some((outcome) => changesSchema(id, outcome))) void refresh(id);
   return outcomes;
 }
 
@@ -1976,16 +2104,19 @@ export async function executeConsole(
   const request = nextRequestId();
   const ownsRun = () => current() && useDatabase.getState().running[path] === request;
   preparingConsoles.set(path, request);
+  const earlierExplain = pendingExplains.get(path);
   const resultIds = new Set<number>();
   let finished = false;
   let selectOutput = false;
   let schemaChanged = false;
   let statementCancelled = false;
   let deliveryIncomplete = false;
+  const inline = inEditorResults();
   try {
     const statements = await consoleStatements(id, text, from, to, confirmUnsafe);
     if (!current() || preparingConsoles.get(path) !== request || !statements.length) return [];
     preparingConsoles.delete(path);
+    if (pendingExplains.get(path) === earlierExplain) pendingExplains.delete(path);
     const prev = useDatabase.getState().running[path];
     if (prev) cancelExecution(prev);
     const execution = { startedAt: Date.now(), statements: statements.length, active: null };
@@ -1994,8 +2125,7 @@ export async function executeConsole(
       executions: { ...s.executions, [path]: execution },
     }));
     onStart?.(statements);
-    const inline = inEditorResults();
-    if (!inline) showServiceView(RESULTS_VIEW, false);
+    if (!inline) revealDatabaseResults(path);
     const pageSize = useDatabase.getState().maxRows;
     const schema = consoleSchema(path) || (await loadCompletion(id))?.defaultSchema || "";
     if (!ownsRun() || (wasOpen && !editor?.openPaths?.()?.includes(path))) return [];
@@ -2026,7 +2156,7 @@ export async function executeConsole(
         if (!inline) streamingResultTabs.add(tab.id);
         tabs.push(tab);
       }
-      schemaChanged ||= completed.some(changesSchema);
+      schemaChanged ||= completed.some((outcome) => changesSchema(id, outcome));
       useDatabase.setState((s) => {
         const executions = { ...s.executions, [path]: { ...execution, active } };
         const state = completed.length
@@ -2035,7 +2165,12 @@ export async function executeConsole(
         const latest = tabs.at(-1);
         if (!latest) return state;
         if (inline) return { ...state, inline: [...s.inline, ...tabs.map((tab) => ({ ...tab, inline: true }))] };
-        return { ...state, results: capResults([...s.results, ...tabs], resultIds), activeResult: latest.id };
+        return {
+          ...state,
+          results: capResults([...s.results, ...tabs], resultIds),
+          activeResult: latest.id,
+          activeClientResults: { ...s.activeClientResults, [path]: latest.id },
+        };
       });
       if (completed.length) logConnected = false;
     };
@@ -2064,7 +2199,7 @@ export async function executeConsole(
     if (!ownsRun()) return [];
     if (deliveryIncomplete) {
       const summary = tx("SQL result delivery was incomplete. The final execution status is unknown.");
-      log("info", summary);
+      log("info", summary, undefined, path);
       notifications().notify({ level: "warning", title: summary, key: "db-execute" });
       if (consoleUsesManualCommit(useDatabase.getState(), id, path)) setPending(id, true, path);
     }
@@ -2074,13 +2209,14 @@ export async function executeConsole(
   } catch (e) {
     if (!current() || (!ownsRun() && preparingConsoles.get(path) !== request)) return [];
     if (!isCancelled(e)) {
-      log("error", message(e));
+      if (!inline) showOutputFor(path);
+      log("error", message(e), undefined, path);
       notifications().notify({ level: "error", title: "Cannot execute", body: message(e), key: "db-execute" });
     } else {
-      log("info", "Cancelled");
+      log("info", "Cancelled", undefined, path);
       // Interrupting a running statement discards its held transaction. Between statements it stays open.
       if (statementCancelled && consoleHasPending(useDatabase.getState(), id, path)) {
-        log("info", "Transaction rolled back");
+        log("info", "Transaction rolled back", undefined, path);
         setPending(id, false, path);
       }
     }
@@ -2107,7 +2243,15 @@ export async function executeConsole(
             )
           : capResults(s.results, resultIds);
       }
-      return { running, executions, results, activeResult: selectOutput ? OUTPUT_TAB : s.activeResult };
+      return {
+        running,
+        executions,
+        results,
+        ...(selectOutput && {
+          activeResult: OUTPUT_TAB,
+          activeClientResults: { ...s.activeClientResults, [path]: OUTPUT_TAB },
+        }),
+      };
     });
     if (refreshMetadata) void refresh(id);
   }
@@ -2167,10 +2311,17 @@ async function consoleStatements(
 
 const PLAN_TITLE = "Query Plan";
 
-/** Shows `plan` of `statement` in the window's Query Plan tab (one per window, like IDEA's). */
-function showPlan(path: string, id: string, statement: SqlStatement, schema: string | undefined, plan: DbPlanNode[]) {
+/** Publishes the plan, selecting its tab only if Explain still owns the selection. */
+function showPlan(
+  path: string,
+  id: string,
+  statement: SqlStatement,
+  schema: string | undefined,
+  plan: DbPlanNode[],
+  select: boolean,
+) {
   useDatabase.setState((s) => {
-    const old = s.results.find((r) => r.plan && !r.pinned);
+    const old = select ? s.results.find((r) => r.path === path && r.plan && !r.pinned) : undefined;
     const tab: ResultTab = {
       id: old?.id ?? nextTab++,
       title: old?.title ?? PLAN_TITLE,
@@ -2180,12 +2331,15 @@ function showPlan(path: string, id: string, statement: SqlStatement, schema: str
       outcome: { statement, result: null, error: null },
       plan,
     };
-    const results = old
-      ? s.results.map((r) => (r === old ? tab : r))
-      : capResults([...s.results, tab], new Set([tab.id]));
-    return { results, activeResult: tab.id };
+    const active = select ? tab.id : activeResultFor(s, path);
+    // Adding a late plan must not evict any of the selected tabs.
+    const keep = select
+      ? new Set([tab.id])
+      : new Set([tab.id, active, s.activeResult ?? OUTPUT_TAB, ...Object.values(s.activeClientResults)]);
+    const results = old ? s.results.map((r) => (r === old ? tab : r)) : capResults([...s.results, tab], keep);
+    const activeClientResults = { ...s.activeClientResults, [path]: active };
+    return select ? { results, activeResult: tab.id, activeClientResults } : { results, activeClientResults };
   });
-  showServiceView(RESULTS_VIEW, false);
 }
 
 async function explain(
@@ -2193,12 +2347,16 @@ async function explain(
   statement: SqlStatement,
   schema: string | undefined,
   path: string,
+  request = nextRequestId(),
 ): Promise<DbPlanNode[]> {
+  const current = databaseRequest(id);
   const plan = await withConsoleConnection(id, path, (console, manual) =>
-    call(commands.dbExplain(nextRequestId(), id, statement.text, schema || null, console, manual)),
+    call(commands.dbExplain(request, id, statement.text, schema || null, console, manual)),
   );
-  log("statement", `explain ${statement.text}`, `${schema || promptOf(id)}>`);
-  log("result", `${plan.length} plan node${plan.length === 1 ? "" : "s"}`);
+  if (current()) {
+    log("statement", `explain ${statement.text}`, `${schema || promptOf(id)}>`, path);
+    log("result", `${plan.length} plan node${plan.length === 1 ? "" : "s"}`, undefined, path);
+  }
   return plan;
 }
 
@@ -2206,20 +2364,30 @@ async function explain(
 export async function explainConsole(path: string, text: string, from: number, to: number): Promise<void> {
   const id = consoleSource(path);
   if (!id || !supportsExplain(sourceById(id))) return;
+  const current = databaseRequest(id);
+  const request = nextRequestId();
+  pendingExplains.set(path, request);
+  const ownsSelection = () => pendingExplains.get(path) === request;
   try {
     const [statement] = await consoleStatements(id, text, from, to);
-    if (!statement) return;
+    if (!current() || !statement) return;
+    if (ownsSelection()) revealDatabaseResults(path);
     const schema = consoleSchema(path);
-    showPlan(path, id, statement, schema, await explain(id, statement, schema, path));
+    const plan = await explain(id, statement, schema, path, request);
+    if (current()) showPlan(path, id, statement, schema, plan, ownsSelection());
   } catch (e) {
-    if (isCancelled(e)) return;
-    log("error", `[${targetLabel(id)}] ${message(e)}`);
+    if (!current() || isCancelled(e)) return;
+    log("error", `[${targetLabel(id)}] ${message(e)}`, undefined, path);
+    if (!ownsSelection()) return;
+    showOutputFor(path);
     notifications().notify({
       level: "error",
       title: "Cannot explain the statement",
       body: message(e),
       key: "db-explain",
     });
+  } finally {
+    if (ownsSelection()) pendingExplains.delete(path);
   }
 }
 
@@ -2262,7 +2430,7 @@ export async function rerunResult(tabId: number): Promise<void> {
       });
     } catch (e) {
       patchResult(tabId, { busy: false });
-      if (!isCancelled(e)) log("error", `[${targetLabel(tab.sourceId)}] ${message(e)}`);
+      if (!isCancelled(e)) log("error", `[${targetLabel(tab.sourceId)}] ${message(e)}`, undefined, tab.path);
     }
     return;
   }
@@ -2353,11 +2521,10 @@ export async function loadResultPage(tabId: number, page: number, pageSize: numb
       });
     } else patchResult(tabId, { busy: false });
     // A run of its console may have replaced the tab meanwhile.
-    if (outcome?.error && useDatabase.getState().results.some((r) => r.id === tabId))
-      useDatabase.setState({ activeResult: OUTPUT_TAB });
+    if (outcome?.error && useDatabase.getState().results.some((r) => r.id === tabId)) showOutputFor(tab.path);
   } catch (e) {
     patchResult(tabId, { busy: false });
-    if (!isCancelled(e)) log("error", message(e));
+    if (!isCancelled(e)) log("error", message(e), undefined, tab.path);
   }
 }
 
@@ -2395,7 +2562,7 @@ export async function countResult(tabId: number): Promise<number | null> {
     return known;
   } catch (e) {
     patchResult(tabId, { busy: false });
-    if (!isCancelled(e)) log("error", message(e));
+    if (!isCancelled(e)) log("error", message(e), undefined, tab.path);
     return null;
   }
 }
@@ -2441,12 +2608,12 @@ export async function finishTransaction(id: string, commit: boolean, path?: stri
         : commands.dbFinishTransaction(id, commit),
     );
     if (!current()) return false;
-    log("statement", commit ? "commit" : "rollback", `${promptOf(id)}>`);
-    log("result", commit ? "Transaction committed" : "Transaction rolled back");
+    log("statement", commit ? "commit" : "rollback", `${promptOf(id)}>`, path);
+    log("result", commit ? "Transaction committed" : "Transaction rolled back", undefined, path);
     setPending(id, false, path);
     return true;
   } catch (e) {
-    log("error", `[${targetLabel(id)}] ${message(e)}`);
+    log("error", `[${targetLabel(id)}] ${message(e)}`, undefined, path);
     notifications().notify({ level: "error", title: commit ? "Cannot commit" : "Cannot roll back", body: message(e) });
     return false;
   }
@@ -2517,14 +2684,53 @@ function cancelExecution(request: RequestId) {
   void commands.cancelRequest(request);
 }
 
+export function resultsFor(s: Pick<DatabaseState, "results">, path?: string) {
+  return path === undefined ? s.results : s.results.filter((tab) => tab.path === path);
+}
+
+export function activeResultFor(
+  s: Pick<DatabaseState, "activeResult" | "activeClientResults" | "results">,
+  path?: string,
+) {
+  const selected = path === undefined ? s.activeResult : s.activeClientResults[path];
+  if (
+    selected === OUTPUT_TAB ||
+    s.results.some((tab) => tab.id === selected && (path === undefined || tab.path === path))
+  )
+    return selected ?? OUTPUT_TAB;
+  return path === undefined ? OUTPUT_TAB : (resultsFor(s, path).at(-1)?.id ?? OUTPUT_TAB);
+}
+
+function showOutputFor(path: string) {
+  useDatabase.setState((s) => ({
+    activeResult: OUTPUT_TAB,
+    activeClientResults: { ...s.activeClientResults, [path]: OUTPUT_TAB },
+  }));
+}
+
+export function selectResult(id: number, path?: string) {
+  useDatabase.setState((s) =>
+    path === undefined ? { activeResult: id } : { activeClientResults: { ...s.activeClientResults, [path]: id } },
+  );
+}
+
 export function closeResult(id: number) {
   useDatabase.setState((s) => {
     const index = s.results.findIndex((r) => r.id === id);
     if (index < 0) return s;
+    const path = s.results[index]!.path;
     const results = s.results.filter((r) => r.id !== id);
+    const sameClient = resultsFor(s, path);
+    const clientIndex = sameClient.findIndex((r) => r.id === id);
     return {
       results,
       activeResult: s.activeResult === id ? ((results[index - 1] ?? results[index])?.id ?? OUTPUT_TAB) : s.activeResult,
+      ...(s.activeClientResults[path] === id && {
+        activeClientResults: {
+          ...s.activeClientResults,
+          [path]: (sameClient[clientIndex - 1] ?? sameClient[clientIndex + 1])?.id ?? OUTPUT_TAB,
+        },
+      }),
     };
   });
 }

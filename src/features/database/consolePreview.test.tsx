@@ -1,9 +1,12 @@
+import { CompletionContext } from "@codemirror/autocomplete";
+import { StandardSQL } from "@codemirror/lang-sql";
+import { ensureSyntaxTree } from "@codemirror/language";
 import { act } from "@testing-library/react";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useProject } from "@/platform/project";
-import { consoleExtension, executeInView, previewRanges } from "./console";
+import { completionSource, consoleExtension, executeInView, previewRanges } from "./console";
 import { SQL_LANGUAGE } from "./sqlLanguage";
 import { streamExecution } from "./executeStream.fixture";
 import { useDatabase } from "./store";
@@ -106,7 +109,7 @@ function makeView(doc: string, anchor: number, head = anchor) {
     state: EditorState.create({
       doc,
       selection: { anchor, head },
-      extensions: consoleExtension({ language: SQL_LANGUAGE, path: PATH } as never),
+      extensions: [StandardSQL.extension, consoleExtension({ language: SQL_LANGUAGE, path: PATH } as never)],
     }),
   });
   return view;
@@ -114,6 +117,48 @@ function makeView(doc: string, anchor: number, head = anchor) {
 
 /** The text each execution-range box surrounds (jsdom has no layout to draw the boxes in). */
 const bordered = (view: EditorView) => previewRanges(view.state).map((r) => view.state.sliceDoc(r.from, r.to));
+
+it("uses DuckDB completion and highlighting only for a bound DuckDB source", async () => {
+  const doc = "FROM read_parquet('sample.parquet') SELECT * EXCLUDE (\"My Col\") QUALIFY row_number() OVER () = 1";
+  const view = makeView(doc, 0);
+  const parsed = (kind: string) => {
+    const found: string[] = [];
+    ensureSyntaxTree(view.state, doc.length, 1000)?.iterate({
+      enter: (n) => {
+        if (n.name === kind) found.push(doc.slice(n.from, n.to));
+      },
+    });
+    return found;
+  };
+  const statements = async () =>
+    (await completionSource(PATH)(new CompletionContext(EditorState.create(), 0, true)))?.options.map((o) => o.label);
+  try {
+    useDatabase.setState({
+      sources: [
+        { id: "named", driver: "jdbc", vendor: "duckdb", name: "DuckDB" },
+        { id: "custom", driver: "jdbc", url: " JDBC:DUCKDB:example.duckdb ", name: "Custom DuckDB" },
+        { id: "other", driver: "jdbc", vendor: "postgres", url: "jdbc:postgresql://localhost/duckdb" },
+      ],
+      completion: Object.fromEntries(
+        ["named", "custom", "other"].map((id) => [id, { defaultSchema: "main", tables: [], foreignKeys: [] }]),
+      ),
+    });
+    const checkDuckDB = async (id: string) => {
+      useDatabase.setState({ consoles: { [PATH]: id } });
+      expect(parsed("Keyword")).toEqual(expect.arrayContaining(["FROM", "SELECT", "EXCLUDE", "QUALIFY", "OVER"]));
+      expect(parsed("Builtin")).toEqual(["read_parquet", "row_number"]);
+      expect(parsed("QuotedIdentifier")).toEqual(['"My Col"']);
+      expect(await statements()).toEqual(expect.arrayContaining(["FROM", "SUMMARIZE"]));
+    };
+    await checkDuckDB("named");
+    await checkDuckDB("custom");
+    useDatabase.setState({ consoles: { [PATH]: "other" } });
+    expect(parsed("Keyword")).not.toContain("QUALIFY");
+    expect(await statements()).not.toContain("FROM");
+  } finally {
+    view.destroy();
+  }
+});
 
 describe("the execution range preview", () => {
   it("borders the statement the caret is in, asking the splitter the run asks", async () => {
