@@ -13,6 +13,9 @@ import { inContainer } from "@/platform/remoteSettings";
 import { targetOf } from "./remote";
 import { isLive, startRun, stopSession, useRun } from "./store";
 
+/** The bootstrap's first line, once the program has started. */
+const STARTING = "debugpy is starting";
+
 /** The bootstrap's line (`ide_remote::docker::DEBUG_READY`). */
 const READY = /^debugpy is waiting for the debugger on port (\d+), project folder (.+)$/;
 
@@ -68,10 +71,28 @@ export async function debugOnTarget(config: RunConfig): Promise<void> {
       runConfig: config,
     });
   };
+  const startTimer = () => {
+    if (done || pending.timer) return;
+    pending.timer = setTimeout(() => {
+      fail(
+        container
+          ? tx(
+              "debugpy did not become ready within 120 seconds. Check the Run console and the container's Python interpreter.",
+            )
+          : tx(
+              "debugpy did not become ready within 120 seconds. Check the Run console and the SSH host's Python interpreter.",
+            ),
+      );
+      if (sessionId) void stopSession(sessionId);
+    }, 120_000);
+  };
   const session = await startRun(config, undefined, undefined, {
     launch: targetDebugLaunch(config),
     onLine: (line) => {
       if (done) return;
+      // Over SSH the project and debugpy may be uploaded first, for as long as the link needs:
+      // the wait starts with the program.
+      if (line.trim() === STARTING) startTimer();
       const parsed = debugpyReady(line);
       if (!parsed) return;
       ready = parsed;
@@ -94,14 +115,5 @@ export async function debugOnTarget(config: RunConfig): Promise<void> {
   check();
   if (done) return;
   if (ready) return attach(ready);
-  // Over SSH, the project and debugpy may be uploaded first, for as long as the link needs.
-  if (!container) return;
-  pending.timer = setTimeout(() => {
-    fail(
-      tx(
-        "debugpy did not become ready within 120 seconds. Check the Run console and the container's Python interpreter.",
-      ),
-    );
-    void stopSession(session.id);
-  }, 120_000);
+  if (container) startTimer();
 }

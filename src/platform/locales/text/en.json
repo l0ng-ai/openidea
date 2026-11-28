@@ -1391,6 +1391,7 @@
   "Cannot generate the HTTP request": "Cannot generate the HTTP request",
   "Cannot start container debugging": "Cannot start container debugging",
   "Cannot start debugging on the SSH host": "Cannot start debugging on the SSH host",
+  "debugpy did not become ready within 120 seconds. Check the Run console and the SSH host's Python interpreter.": "debugpy did not become ready within 120 seconds. Check the Run console and the SSH host's Python interpreter.",
   "The program exited before debugpy was ready. Check the Run console for errors.": "The program exited before debugpy was ready. Check the Run console for errors.",
   "Only Python can be debugged on SSH run targets": "Only Python can be debugged on SSH run targets",
   "Install debugpy": "Install debugpy",

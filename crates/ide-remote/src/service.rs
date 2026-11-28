@@ -4,8 +4,8 @@
 use crate::deploy::{Deployment, FileStamp, SyncEntry, SyncStatus, SyncStep, TransferError, TransferReport, status};
 use crate::mapping::{Excludes, Mappings, ResolvedMapping, posix};
 use crate::target::{
-    DEBUG_PARAM, RemoteDebug, RemoteRuns, RemoteStart, SyncFn, debug_interpreter, debugpy_probe, remote_command,
-    rewrite_external_classpath, ssh_debug_command,
+    DEBUG_PARAM, PROBE_NO_FOLDER, RemoteDebug, RemoteRuns, RemoteStart, SyncFn, debug_interpreter, debugpy_probe,
+    remote_command, rewrite_external_classpath, ssh_debug_command,
 };
 use ide_core::remote_settings::{AutoUpload, DeploymentServer, DeploymentType, RunTarget};
 use ide_core::settings::Settings;
@@ -570,6 +570,27 @@ impl RemoteService {
 
 /// Where the debug bootstrap and the IDE's debugpy go on an SSH host, under its home folder.
 const DEBUG_FOLDER: &str = ".openidea/debug";
+/// How long the check for debugpy on an SSH host may take.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// `openidea_debug-<hash of script>.py`: each version of the bootstrap gets its own file.
+fn bootstrap_name(script: &str) -> String {
+    let hash = script.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3));
+    format!("openidea_debug-{hash:016x}.py")
+}
+
+/// Renames the finished `partial` to `path`. SFTP refuses to rename onto an existing entry, so
+/// when a concurrent run has put its copy there first, that one stays and `partial` goes.
+async fn settle(fs: &RemoteFs, partial: &str, path: &str) -> IdeResult<()> {
+    match fs.rename(partial, path).await {
+        Ok(()) => Ok(()),
+        Err(_) if fs.stat(path).await?.is_some() => {
+            let _ = fs.remove(partial).await;
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
 
 /// A debug run of `config` on an SSH target: writes the bootstrap to the host, picks the IDE's
 /// debugpy for an interpreter without one (the upload, when the host doesn't have this version
@@ -591,14 +612,33 @@ async fn prepare_debug(
         )));
     }
     let dir = join(&fs.home().await?, DEBUG_FOLDER);
-    let bootstrap = join(&dir, crate::docker::DEBUG_BOOTSTRAP_NAME);
-    fs.write(&bootstrap, crate::docker::DEBUG_BOOTSTRAP.as_bytes(), None).await?;
     let port = std::net::TcpListener::bind(("127.0.0.1", 0))?.local_addr()?.port();
+    // Unique among this machine's debug runs; other machines' runs use other temporary names too.
+    let temp = |path: &str| format!("{path}.{}-{port}.tmp", std::process::id());
+    // Named after its content and never rewritten: a concurrent run may be reading it.
+    let bootstrap = join(&dir, &bootstrap_name(crate::docker::DEBUG_BOOTSTRAP));
+    if fs.stat(&bootstrap).await?.is_none() {
+        let partial = temp(&bootstrap);
+        fs.write(&partial, crate::docker::DEBUG_BOOTSTRAP.as_bytes(), None).await?;
+        settle(fs, &partial, &bootstrap).await?;
+    }
     let plain = remote_command(config, target, root, remote_root);
     let mut command = ssh_debug_command(&plain, target, remote_root, port, &bootstrap, None)?;
     let mut upload: Option<SyncFn> = None;
-    let has_debugpy = session.exec(&debugpy_probe(&command, &bootstrap), None).await?.code == Some(0);
-    if !has_debugpy {
+    let probe = tokio::time::timeout(PROBE_TIMEOUT, session.exec(&debugpy_probe(&command, &bootstrap), None))
+        .await
+        .map_err(|_| {
+            IdeError::unavailable(format!(
+                "{} did not answer within {} seconds while checking for debugpy",
+                session.label(),
+                PROBE_TIMEOUT.as_secs()
+            ))
+        })??
+        .code;
+    // Before the first sync the project's interpreter can't be asked: the IDE's copy is the fallback
+    // when there is one, else the bootstrap reports a missing debugpy itself.
+    let unknown = probe == Some(PROBE_NO_FOLDER);
+    if probe != Some(0) && !(unknown && debugpy_lib.is_none()) {
         let Some(lib) = debugpy_lib else {
             return Err(IdeError::unavailable(format!(
                 "debugpy is not installed for {} on {}. Install OpenIDEA's copy, which is uploaded to the host for debugging, or install debugpy there",
@@ -606,7 +646,7 @@ async fn prepare_debug(
                 session.label()
             )));
         };
-        // One folder per debugpy version (its `.dist-info` name), complete once `.complete` exists.
+        // One folder per debugpy version (its `.dist-info` name), renamed into place once complete.
         let version = std::fs::read_dir(lib)?
             .flatten()
             .filter_map(|e| e.file_name().to_str()?.strip_suffix(".dist-info").map(str::to_owned))
@@ -614,15 +654,15 @@ async fn prepare_debug(
             .unwrap_or_else(|| "debugpy".into());
         let remote_lib = join(&dir, &version);
         command = ssh_debug_command(&plain, target, remote_root, port, &bootstrap, Some(&remote_lib))?;
-        let done = join(&remote_lib, ".complete");
-        if fs.stat(&done).await?.is_none() {
+        if fs.stat(&remote_lib).await?.is_none() {
             let copy = RemoteFs::new(session.sftp().await?);
             let lib = lib.to_path_buf();
+            let partial = temp(&remote_lib);
             upload = Some(Box::new(move |out| {
                 Box::pin(async move {
                     out(OutputChunk::System { text: format!("Uploading OpenIDEA's debugpy to {remote_lib}...\n") });
-                    let result = match sync_external_libraries(&copy, &[(lib, remote_lib)], true).await {
-                        Ok(_) => copy.write(&done, b"", None).await,
+                    let result = match sync_external_libraries(&copy, &[(lib, partial.clone())], true).await {
+                        Ok(_) => settle(&copy, &partial, &remote_lib).await,
                         Err(e) => Err(e),
                     };
                     copy.close().await;
@@ -875,5 +915,16 @@ mod download_into_tests {
         assert_eq!(download_target(dir, "/srv/a", "/srv/ab/x"), None, "a sibling with the same prefix");
         assert_eq!(download_target(dir, "/", "/etc"), None, "the root has no name");
         assert_eq!(download_target(dir, "/srv/..", "/srv/.."), None);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn each_bootstrap_version_gets_its_own_file() {
+        let name = super::bootstrap_name("print(1)\n");
+        assert_eq!(name, super::bootstrap_name("print(1)\n"));
+        assert_ne!(name, super::bootstrap_name("print(2)\n"));
+        assert!(name.starts_with("openidea_debug-") && name.ends_with(".py"), "{name}");
     }
 }

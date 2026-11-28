@@ -250,6 +250,33 @@ describe("remote debugging", () => {
     }
   });
 
+  it("stops an SSH debug run whose program never announces debugpy", async () => {
+    const off = registerActions([{ id: "debug.attach", title: "Attach", run: () => undefined }]);
+    vi.useFakeTimers();
+    try {
+      const py = cfg("app", { target: "box", debugAdapter: "debugpy" });
+      useRun.setState({ configs: [py], loaded: true });
+      ipc.runStart.mockResolvedValueOnce(ok);
+      await executeAction("run.debugConfig", py.id);
+      const channel = ipc.runStart.mock.calls.at(-1)![1] as { onmessage: (m: unknown) => void };
+      // Uploads take as long as they take; the wait starts with the program.
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(ipc.runStop).not.toHaveBeenCalled();
+      channel.onmessage({ kind: "stderr", text: "debugpy is starting\n" });
+      await vi.advanceTimersByTimeAsync(121_000);
+      expect(ipc.runStop).toHaveBeenCalledWith(3);
+      expect(notify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: "Cannot start debugging on the SSH host",
+          body: expect.stringContaining("SSH host's Python interpreter"),
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+      off();
+    }
+  });
+
   describe("in containers", () => {
     const container: RunTargetValid = { ...DEFAULT_RUN_TARGET, kind: "docker", id: "py", name: "Python", image: "x" };
     const attach = vi.fn();

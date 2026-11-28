@@ -19,6 +19,8 @@ def main():
     ide_copy = os.environ.pop("OPENIDEA_DEBUGPY_LIB", "/opt/openidea/debugpy-lib")
     host = os.environ.pop("OPENIDEA_DEBUG_HOST", "0.0.0.0")
     port, folder, argv = int(sys.argv[1]), sys.argv[2], sys.argv[3:]
+    # Uploads are over: the IDE waits a limited time for the line below from here on.
+    print("debugpy is starting", file=sys.stderr, flush=True)
     try:
         import debugpy
     except ImportError:
@@ -30,7 +32,10 @@ def main():
                 "debugpy is not installed for %s. Install OpenIDEA's copy (Settings > Tools) "
                 "or install debugpy for this interpreter." % sys.executable
             )
-    debugpy.listen((host, port))
+    try:
+        debugpy.listen((host, port))
+    except RuntimeError as e:  # The port is taken (on an SSH host, the IDE picked a port free on its machine).
+        sys.exit("debugpy cannot listen on port %d: %s. Start debugging again to use another port." % (port, e))
     print(
         "debugpy is waiting for the debugger on port %d, project folder %s" % (port, folder),
         file=sys.stderr,

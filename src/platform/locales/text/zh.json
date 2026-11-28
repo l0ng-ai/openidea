@@ -8141,6 +8141,7 @@
   "Open in HTTP Client": "在 HTTP 客户端中打开",
   "Cannot start container debugging": "无法启动容器调试",
   "Cannot start debugging on the SSH host": "无法在 SSH 主机上启动调试",
+  "debugpy did not become ready within 120 seconds. Check the Run console and the SSH host's Python interpreter.": "debugpy 在 120 秒内未就绪。请检查运行控制台和 SSH 主机上的 Python 解释器。",
   "The program exited before debugpy was ready. Check the Run console for errors.": "程序在 debugpy 就绪前已退出。请检查运行控制台中的错误。",
   "Only Python can be debugged on SSH run targets": "SSH 运行目标上只能调试 Python",
   "Install debugpy": "安装 debugpy",

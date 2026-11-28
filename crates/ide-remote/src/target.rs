@@ -159,11 +159,21 @@ pub fn debug_interpreter(debug: &RemoteCommand, bootstrap: &str) -> RemoteComman
     RemoteCommand { args: debug.args[..end].to_vec(), ..debug.clone() }
 }
 
-/// The command line that exits with 0 when the interpreter of an [`ssh_debug_command`] has debugpy.
+/// Exit status of [`debugpy_probe`] when the project folder is not on the host yet (the first
+/// sync runs later): a project interpreter or `uv run` can't be asked before it.
+pub const PROBE_NO_FOLDER: u32 = 97;
+
+/// The command line that exits with 0 when the interpreter of an [`ssh_debug_command`] has
+/// debugpy, [`PROBE_NO_FOLDER`] when its folder does not exist yet.
 pub fn debugpy_probe(debug: &RemoteCommand, bootstrap: &str) -> String {
-    let mut probe = debug_interpreter(debug, bootstrap);
-    probe.args.extend(["-c".into(), "import debugpy".into()]);
-    probe.line()
+    let probe = debug_interpreter(debug, bootstrap);
+    let mut args = probe.args;
+    args.extend(["-c".into(), "import debugpy".into()]);
+    format!(
+        "cd {} 2>/dev/null || exit {PROBE_NO_FOLDER}; {}",
+        ide_ssh::shell::quote(&probe.cwd),
+        ide_ssh::shell::command_line(None, &probe.env, &probe.program, &args)
+    )
 }
 
 /// `java` flags whose value is a path list that may point outside the project
@@ -564,9 +574,10 @@ mod tests {
         assert_eq!(debug.args, ["-u", bootstrap, "50123", "/home/me/proj", "/home/me/proj/src/main.py", "--n", "1"]);
         assert_eq!(debug.env["OPENIDEA_DEBUG_HOST"], "127.0.0.1");
         assert!(!debug.env.contains_key("OPENIDEA_DEBUGPY_LIB"));
+        // A folder the first sync has yet to create is told apart from a missing debugpy.
         assert_eq!(
             debugpy_probe(&debug, bootstrap),
-            "cd /home/me/proj && exec env DATA=/home/me/proj/data OPENIDEA_DEBUG_HOST=127.0.0.1 /opt/py/bin/python -u -c 'import debugpy'"
+            "cd /home/me/proj 2>/dev/null || exit 97; exec env DATA=/home/me/proj/data OPENIDEA_DEBUG_HOST=127.0.0.1 /opt/py/bin/python -u -c 'import debugpy'"
         );
 
         // A console script runs as a module; the IDE's uploaded copy is the fallback.
