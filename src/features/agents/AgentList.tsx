@@ -36,7 +36,7 @@ import {
 } from "@/ui";
 import { useSettingsForm } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
-import { AgentSignInDialog, type SignInTarget } from "./AgentSignInDialog";
+import { CliSignInDialog, type SignInTarget } from "@/workbench/CliSignInDialog";
 import { LocalCliUpdate } from "./LocalCliUpdate";
 import { approvalDefaults, cursorModelDefaults, isPerModelOption } from "./composerModel";
 import { providerIcon, slugifyId } from "./model";
@@ -1193,7 +1193,7 @@ function ProviderSettings({
         )}
       </Section>
       {signInTarget && (
-        <AgentSignInDialog
+        <CliSignInDialog
           target={signInTarget}
           spawner={backend}
           onClose={() => setSignInTarget(null)}

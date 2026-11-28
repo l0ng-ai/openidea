@@ -1,19 +1,31 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+vi.mock("@tauri-apps/api/core", async (original) => ({
+  ...(await original<typeof import("@tauri-apps/api/core")>()),
+  Channel: class {
+    onmessage?: (e: unknown) => void;
+  },
+}));
 
 const ghAccountRepos = vi.fn();
 const toolsList = vi.fn();
+const agentGhLoginSpawn = vi.fn();
 vi.mock("@/platform/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/platform/ipc")>()),
   isTauri: () => true,
   commands: {
     ghAccountRepos: () => ghAccountRepos(),
     toolsList: () => toolsList(),
+    agentGhLoginSpawn: (cols: number, rows: number, ch: unknown) => agentGhLoginSpawn(cols, rows, ch),
+    termResize: () => Promise.resolve({ status: "ok", data: null }),
+    termKill: () => Promise.resolve({ status: "ok", data: null }),
   },
 }));
 
-import type { GhAccountRepo } from "@/bindings";
+import type { AgentLoginEvent, GhAccountRepo } from "@/bindings";
 import { registerAction } from "@/platform/actions";
+import { provideEmbeddedTerminal } from "@/workbench/contributions";
 import { GitHubCloneSource, matchRepos } from "./GitHubCloneSource";
 
 const repo = (nameWithOwner: string, extra: Partial<GhAccountRepo> = {}): GhAccountRepo => ({
@@ -29,8 +41,10 @@ const repos = [repo("me/app", { private: true, description: "The app" }), repo("
 
 afterEach(() => {
   cleanup();
+  provideEmbeddedTerminal(undefined);
   ghAccountRepos.mockReset();
   toolsList.mockReset();
+  agentGhLoginSpawn.mockReset();
 });
 
 describe("GitHub clone source", () => {
@@ -69,6 +83,43 @@ describe("GitHub clone source", () => {
     ghAccountRepos.mockResolvedValueOnce({ status: "ok", data: { kind: "ready", login: "me", repos } });
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(screen.getByRole("option", { name: /me\/app/ })).toBeInTheDocument());
+  });
+
+  it("signs in via the in-IDE GitHub CLI dialog from notLoggedIn and reloads repositories", async () => {
+    provideEmbeddedTerminal(async () => ({
+      write: () => {},
+      clear: () => {},
+      focus: () => {},
+      fit: () => {},
+      dispose: () => {},
+    }));
+    let sendEvent: ((e: AgentLoginEvent) => void) | null = null;
+    agentGhLoginSpawn.mockImplementation(async (_cols, _rows, ch: { onmessage?: (e: AgentLoginEvent) => void }) => {
+      sendEvent = (event) => ch.onmessage?.(event);
+      return { status: "ok", data: { id: 31, pid: 444, title: "gh" } };
+    });
+    ghAccountRepos.mockResolvedValueOnce({ status: "ok", data: { kind: "notLoggedIn", message: "x" } });
+    render(<GitHubCloneSource url="" onUrl={() => {}} onClone={() => {}} disabled={false} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Sign In…" }));
+    expect(await screen.findByRole("dialog", { name: "Sign In to GitHub CLI" })).toBeInTheDocument();
+    await waitFor(() => expect(agentGhLoginSpawn).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      sendEvent?.({
+        type: "output",
+        data: "! First copy your one-time code: 4FE2-9B7D\r\nOpen https://github.com/login/device\r\n",
+      });
+    });
+    expect(await screen.findByText("4FE2-9B7D")).toBeInTheDocument();
+
+    ghAccountRepos.mockResolvedValueOnce({ status: "ok", data: { kind: "ready", login: "me", repos } });
+    act(() => {
+      sendEvent?.({ type: "exited", code: 0 });
+    });
+
+    await waitFor(() => expect(screen.getByRole("option", { name: /me\/app/ })).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Add account…" })).toBeInTheDocument();
   });
 
   it("installs GitHub CLI in-app when missing and reloads repositories", async () => {

@@ -2,7 +2,7 @@
  * Extracts OAuth 2.0 device-authorization URLs and one-time user codes (`ABCD-1234`, etc.)
  * from interactive sign-in PTY output (`copilot login`, `gh auth login`, `codex login`, …).
  */
-import { isOpenable } from "@/platform/openUrl";
+import { isOpenable } from "./openUrl";
 
 const MAX_BUFFER_CHARS = 16_384;
 // oxlint-disable-next-line no-control-regex

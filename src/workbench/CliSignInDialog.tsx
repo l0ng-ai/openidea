@@ -3,25 +3,48 @@
  * and GitHub CLI (`gh auth login`), backed by an IDE-managed PTY (`agent_login_spawn` /
  * `agent_gh_login_spawn`) and a lazily loaded embedded terminal widget.
  */
+import { Channel } from "@tauri-apps/api/core";
 import clsx from "clsx";
 import { useEffect, useRef, useState } from "react";
 import type { AgentLoginEvent, TerminalId } from "@/bindings";
+import { appendLoginOutput, parseDeviceCodePrompt, type DeviceCodePrompt } from "@/platform/deviceCode";
 import { tx } from "@/platform/i18n";
-import { commands } from "@/platform/ipc";
+import { call, commands } from "@/platform/ipc";
 import { openExternalUrl } from "@/platform/openUrl";
 import { isRemoteWindow } from "@/platform/remote";
 import { isWebMode } from "@/platform/webBridge";
 import { Button, Dialog, Spinner, T, copyText, selectableText } from "@/ui";
 import { embeddedTerminal, type EmbeddedTerminal } from "@/workbench/contributions";
-import styles from "./AgentSignInDialog.module.css";
-import { appendLoginOutput, parseDeviceCodePrompt, type DeviceCodePrompt } from "./deviceCode";
-import { tauriCommands } from "./registry";
+import styles from "./CliSignInDialog.module.css";
 
 export type SignInTarget = { kind: "agent"; id: string; name: string } | { kind: "gh" };
 
 export interface SignInSpawner {
   loginSpawn?(id: string, cols: number, rows: number, onEvent: (e: AgentLoginEvent) => void): Promise<TerminalId>;
   ghLoginSpawn?(cols: number, rows: number, onEvent: (e: AgentLoginEvent) => void): Promise<TerminalId>;
+}
+
+async function defaultLoginSpawn(
+  id: string,
+  cols: number,
+  rows: number,
+  onEvent: (e: AgentLoginEvent) => void,
+): Promise<TerminalId> {
+  const channel = new Channel<AgentLoginEvent>();
+  channel.onmessage = onEvent;
+  const info = await call(commands.agentLoginSpawn(id, cols, rows, channel));
+  return info.id;
+}
+
+async function defaultGhLoginSpawn(
+  cols: number,
+  rows: number,
+  onEvent: (e: AgentLoginEvent) => void,
+): Promise<TerminalId> {
+  const channel = new Channel<AgentLoginEvent>();
+  channel.onmessage = onEvent;
+  const info = await call(commands.agentGhLoginSpawn(cols, rows, channel));
+  return info.id;
 }
 
 function formatVerificationUrl(rawUrl: string): string {
@@ -34,7 +57,7 @@ function formatVerificationUrl(rawUrl: string): string {
   }
 }
 
-export function AgentSignInDialog({
+export function CliSignInDialog({
   target,
   spawner,
   onClose,
@@ -160,13 +183,8 @@ export function AgentSignInDialog({
         const custom = callbacksRef.current.spawner;
         const ptyId =
           targetKind === "gh"
-            ? await (custom?.ghLoginSpawn ?? tauriCommands.ghLoginSpawn!)(pendingSize.cols, pendingSize.rows, onEvent)
-            : await (custom?.loginSpawn ?? tauriCommands.loginSpawn!)(
-                agentId,
-                pendingSize.cols,
-                pendingSize.rows,
-                onEvent,
-              );
+            ? await (custom?.ghLoginSpawn ?? defaultGhLoginSpawn)(pendingSize.cols, pendingSize.rows, onEvent)
+            : await (custom?.loginSpawn ?? defaultLoginSpawn)(agentId, pendingSize.cols, pendingSize.rows, onEvent);
         if (disposed) {
           void commands.termKill(ptyId).catch(() => {});
           return;

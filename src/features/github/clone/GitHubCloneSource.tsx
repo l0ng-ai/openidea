@@ -17,6 +17,7 @@ import {
   listNavigate,
 } from "@/ui";
 import type { CloneSourceProps } from "@/workbench/contributions";
+import { CliSignInDialog } from "@/workbench/CliSignInDialog";
 import { openInBrowser } from "../data/local";
 import styles from "./GitHubCloneSource.module.css";
 import { useRowHeight } from "@/ui/density";
@@ -40,6 +41,7 @@ export function GitHubCloneSource({ url, onUrl, onClone, disabled }: CloneSource
   const [attempt, setAttempt] = useState(0);
   const [installingGh, setInstallingGh] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
+  const [signingIn, setSigningIn] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -76,6 +78,9 @@ export function GitHubCloneSource({ url, onUrl, onClone, disabled }: CloneSource
       <T>Retry</T>
     </Button>
   );
+  const signInDialog = signingIn ? (
+    <CliSignInDialog target={{ kind: "gh" }} onClose={() => setSigningIn(false)} onCompleted={reload} />
+  ) : null;
 
   if (!state)
     return (
@@ -114,9 +119,22 @@ export function GitHubCloneSource({ url, onUrl, onClone, disabled }: CloneSource
     );
   if (state.kind === "notLoggedIn")
     return (
-      <EmptyState title="Not logged in to GitHub" actions={retry}>
-        <T>Run</T> <code>gh auth login</code> <T>in a terminal, then retry.</T>
-      </EmptyState>
+      <>
+        <EmptyState
+          title="Not logged in to GitHub"
+          actions={
+            <>
+              <Button size="small" variant="primary" onClick={() => setSigningIn(true)}>
+                <T>Sign In…</T>
+              </Button>
+              {retry}
+            </>
+          }
+        >
+          <T>Sign in with GitHub CLI to list and clone your repositories.</T>
+        </EmptyState>
+        {signInDialog}
+      </>
     );
   if (state.kind === "error")
     return (
@@ -157,6 +175,9 @@ export function GitHubCloneSource({ url, onUrl, onClone, disabled }: CloneSource
           disabled={disabled}
           data-autofocus
         />
+        <Button size="small" disabled={disabled} onClick={() => setSigningIn(true)}>
+          <T>Add account…</T>
+        </Button>
       </div>
       <div className={styles.list}>
         <List<Row>
@@ -197,6 +218,7 @@ export function GitHubCloneSource({ url, onUrl, onClone, disabled }: CloneSource
           )}
         />
       </div>
+      {signInDialog}
     </div>
   );
 }

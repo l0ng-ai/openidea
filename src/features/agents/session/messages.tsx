@@ -8,7 +8,7 @@ import { notifications } from "@/workbench/contributions";
 import clsx from "clsx";
 import { memo, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { AgentReply, MessageActions, ReplyActions } from "../AgentReply";
-import { AgentSignInDialog } from "../AgentSignInDialog";
+import { CliSignInDialog } from "@/workbench/CliSignInDialog";
 import { ImageStrip } from "../ImageStrip";
 import { ReferencedText } from "../ReferenceChip";
 import styles from "../Session.module.css";
@@ -261,7 +261,7 @@ function AgentErrorEntry({ task, message }: { task: AgentTask; message: string }
         )}
       </div>
       {signingIn && (
-        <AgentSignInDialog
+        <CliSignInDialog
           target={{ kind: "agent", id: task.provider, name }}
           onClose={() => setSigningIn(false)}
           onCompleted={() => {
