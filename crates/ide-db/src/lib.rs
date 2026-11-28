@@ -1422,7 +1422,7 @@ impl DbManager {
         };
         let mut details = TableDetails { comment, columns, indexes, foreign_keys, triggers, ..Default::default() };
         if let Some(q) = sql::table_properties(driver, schema, table) {
-            match catalog_rows(&pool, &q).await {
+            match catalog_rows(pool, &q).await {
                 Ok(rows) => {
                     if let Some(row) = rows.into_iter().next() {
                         read_table_properties(&mut details, row);
