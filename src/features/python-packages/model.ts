@@ -68,8 +68,12 @@ export function vcsRequirement(url: string) {
   return scp ? `git+ssh://${scp[1]}/${scp[2]}` : text;
 }
 
-/** Whether `url` (after {@link vcsRequirement}) is a version control URL pip can install. */
-export const isVcsUrl = (url: string) => /^(git|hg|svn|bzr)\+[a-z]+:\/\/\S+$/i.test(url);
+/**
+ * Whether `url` (after {@link vcsRequirement}) is a version control URL pip can install, bare
+ * (`git+https://…`, `bzr+lp:project`) or as a direct reference (`name @ git+https://…`).
+ */
+export const isVcsUrl = (url: string) =>
+  /^([A-Za-z0-9][\w.-]*(\[[^\]]*\])?\s*@\s*)?((git|hg|svn|bzr)\+[a-z]+:\/\/|bzr\+lp:)\S+$/i.test(url);
 
 /**
  * A path typed for Install from Disk, made explicit so pip never reads it as a PyPI name: a
