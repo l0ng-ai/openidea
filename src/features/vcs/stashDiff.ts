@@ -12,19 +12,6 @@ export interface StashDiffRequest {
   dialogLifetime?: AbortSignal;
 }
 
-let focusedStash: StashDiffRequest | null = null;
-
-export function focusedStashDiff(): StashDiffRequest | null {
-  return focusedStash;
-}
-
-export function focusStashDiff(request: StashDiffRequest): () => void {
-  focusedStash = request;
-  return () => {
-    if (focusedStash === request) focusedStash = null;
-  };
-}
-
 async function hasWorkingFile(path: string): Promise<boolean> {
   if (editorsFor(path).length) return true;
   return call(commands.fsEntryKind(path)).then(
@@ -51,25 +38,32 @@ async function stashFileDiff(change: LogChange, label: string, target: StashDiff
   return { path, left, right };
 }
 
-/** The stash's diff chain, with a local side that follows the editor buffer. */
-export async function showStashDiff(request: StashDiffRequest, target: StashDiffTarget, preview?: AbortSignal) {
+/** The stash's diff chain, with a local side that follows the editor buffer; null when no file has one. */
+export async function stashDiffData(request: StashDiffRequest, target: StashDiffTarget): Promise<DiffData | null> {
   const { changes, chain, dialogLifetime } = request;
-  const signal = dialogLifetime ?? preview;
-  if (!changes.length || signal?.aborted) return;
+  if (!changes.length) return null;
   const files = chain.includes(changes[0]!) ? chain : changes;
   const saved = `stash@{${request.index}}`;
   const results = await Promise.all(
     files.map(async (file) => ({ file, diff: await stashFileDiff(file, saved, dialogLifetime ? "local" : target) })),
   );
-  if (signal?.aborted) return;
   const ready = results.flatMap(({ file, diff }) => (diff ? [{ file, diff }] : []));
   const selected = new Set(changes);
   const index = ready.findIndex(({ file }) => selected.has(file));
-  if (index < 0) return;
-  const diff = withChain(
+  if (index < 0) return null;
+  return withChain(
     ready.map((item) => item.diff),
     index,
   );
+}
+
+/** Shows the stash's diff chain: in front of the modal stash review, else in the editor. */
+export async function showStashDiff(request: StashDiffRequest, target: StashDiffTarget, preview?: AbortSignal) {
+  const { dialogLifetime } = request;
+  const signal = dialogLifetime ?? preview;
+  if (signal?.aborted) return;
+  const diff = await stashDiffData(request, target);
+  if (!diff || signal?.aborted) return;
   if (dialogLifetime) {
     const { openDiffDialog } = await import("./diffDialog");
     if (!dialogLifetime.aborted) openDiffDialog(diff);

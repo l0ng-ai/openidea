@@ -35,11 +35,14 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { DIFF_KIND, diffInput } from "../diffInput";
+import { useDiffSource } from "../diffSource";
 import { buildFileTree, dirKeys, type FileTreeNode } from "../fileTree";
 import styles from "../GitLog.module.css";
 import {
   canApplySelectedChanges,
   absolutePath,
+  changesArg,
+  changesDiffData,
   filesUnder,
   flatFileNodes,
   showChangesDiff,
@@ -309,6 +312,12 @@ export function CommitDetails({ commits, fileHistory = false }: { commits: Commi
     [scope],
   );
   useEffect(() => () => setContext("vcsLogChangesFocus", false), []);
+  // Show Diff in New Window (and Show Diff, whatever key runs it) diffs the selected changes.
+  const filesPane = useRef<HTMLDivElement>(null);
+  useDiffSource(filesPane, {
+    diff: () => changesDiffData(changesArg(undefined)),
+    show: () => void executeAction("vcs.log.changes.showDiff"),
+  });
 
   if (!commit)
     return (
@@ -386,6 +395,7 @@ export function CommitDetails({ commits, fileHistory = false }: { commits: Commi
         minSize={fileHistory ? "25%" : "60px"}
       >
         <div
+          ref={filesPane}
           className={styles.filesPane}
           onFocusCapture={() => setContext("vcsLogChangesFocus", true)}
           onBlurCapture={(e) => {

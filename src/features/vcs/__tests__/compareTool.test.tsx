@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 const mocks = vi.hoisted(() => ({
   worktree: vi.fn(),
@@ -7,7 +7,9 @@ const mocks = vi.hoisted(() => ({
   presentations: vi.fn(),
   openDiff: vi.fn(),
   openFile: vi.fn(),
+  diffWindow: vi.fn(),
 }));
+vi.mock("../DiffWindow", () => ({ showDiffWindow: mocks.diffWindow }));
 vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
   return {
@@ -36,9 +38,13 @@ vi.mock("@/workbench/contributions", async (original) => {
   const real = await original<typeof import("@/workbench/contributions")>();
   return { ...real, maybeEditorService: () => ({ openFile: mocks.openFile }) };
 });
+import { executeAction } from "@/platform/actions";
+import { setContext } from "@/platform/context";
+import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
 import { ChangesBetweenDialog, comparisonDiffData, type ComparisonFile } from "../operations";
 import { CompareToolWindow, useCompareTool } from "../compareTool";
+import { registerVcsActions } from "../actions";
 import type { DiffData } from "../diffInput";
 import { useVcs } from "../store";
 
@@ -282,5 +288,120 @@ describe("CompareToolWindow", () => {
         right: expect.objectContaining({ type: "rev", label: "main" }),
       }),
     );
+  });
+});
+
+// The diff actions ask the focused tree for its diff (diffSource.ts): whatever the keymap binds,
+// the shortcut opens the compared sides, never the file against HEAD. With ⌘D bound to Show Diff
+// in New Window, the Compare tool window used to open an empty diff of an unrelated file.
+describe("the Compare trees' Show Diff shortcuts", () => {
+  const ctrlD = { key: "d", code: "KeyD", ctrlKey: true };
+  const cleanups: (() => void)[] = [];
+  const original = useKeymap.getState().overrides;
+  const bind = (overrides: Record<string, string[]>) =>
+    useKeymap.setState({ overrides: { ...original, "vcs.showDiff": [], "vcs.showDiffInNewWindow": [], ...overrides } });
+  /** Selects `name` in the tree and presses Ctrl+D with the focus on the tree. */
+  const pressOn = async (name: string) => {
+    fireEvent.mouseDown(await screen.findByText(name), { button: 0 });
+    const tree = screen.getByRole("tree", { name: "Changed files" });
+    tree.focus();
+    fireEvent.keyDown(tree, ctrlD);
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useProject.setState({ project: { root: "/workspace", name: "workspace" } as never });
+    useVcs.setState({ available: true, root: "/workspace", roots: ["/workspace/client"], repo: "/workspace/client" });
+    setContext("vcsAvailable", true);
+    mocks.worktree.mockResolvedValue({
+      status: "ok",
+      data: [
+        modified,
+        { path: "src/new.ts", kind: "added", oldPath: null, root: "/workspace/client", revision: "aaa" },
+      ],
+    });
+    mocks.openDiff.mockResolvedValue(undefined);
+    useCompareTool.getState().show(from, null);
+    cleanups.push(registerVcsActions(), installKeyboardDispatcher());
+  });
+  afterEach(() => {
+    while (cleanups.length) cleanups.pop()!();
+    cleanup();
+    setContext("vcsAvailable", false);
+    useKeymap.setState({ overrides: original });
+    useCompareTool.getState().close();
+    useProject.setState({ project: null });
+  });
+
+  it("opens the compared sides of the selected file in a new window, not its diff against HEAD", async () => {
+    bind({ "vcs.showDiffInNewWindow": ["Ctrl+D"] });
+    render(<CompareToolWindow />);
+    await pressOn("app.ts");
+    await waitFor(() => expect(mocks.diffWindow).toHaveBeenCalledOnce());
+    const data = mocks.diffWindow.mock.calls[0]![0] as DiffData;
+    expect(data).toMatchObject({
+      path: "/workspace/client/src/app.ts",
+      left: { type: "rev", rev: "main", label: "main" },
+      right: { type: "worktree" },
+    });
+    expect(data.chain?.map((d) => d.path)).toEqual(["/workspace/client/src/app.ts", "/workspace/client/src/new.ts"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Swap Sides" }));
+    await pressOn("app.ts");
+    await waitFor(() => expect(mocks.diffWindow).toHaveBeenCalledTimes(2));
+    expect(mocks.diffWindow.mock.calls[1]![0]).toMatchObject({
+      left: { type: "worktree" },
+      right: { type: "rev", rev: "main" },
+    });
+    expect(mocks.openDiff).not.toHaveBeenCalled();
+  });
+
+  it("shows the selected file's comparison diff as the Show Diff button does", async () => {
+    bind({ "vcs.showDiff": ["Ctrl+D"] });
+    render(<CompareToolWindow />);
+    await pressOn("new.ts");
+    await waitFor(() => expect(mocks.openDiff).toHaveBeenCalledOnce());
+    expect(mocks.openDiff.mock.calls[0]![0]).toMatchObject({
+      path: "/workspace/client/src/new.ts",
+      left: { type: "text", label: "(does not exist)" },
+      right: { type: "worktree" },
+    });
+    expect(mocks.diffWindow).not.toHaveBeenCalled();
+  });
+
+  it("hands the comparison window's revisions to its Show Diff", async () => {
+    bind({ "vcs.showDiff": ["Ctrl+D"] });
+    mocks.revisions.mockResolvedValue({ status: "ok", data: [modified] });
+    const onShowDiff = vi.fn();
+    render(
+      <ChangesBetweenDialog
+        from={from}
+        to={{ rev: "next", label: "next" }}
+        onClose={() => {}}
+        onShowDiff={onShowDiff}
+        native
+      />,
+    );
+    await pressOn("app.ts");
+    await waitFor(() =>
+      expect(onShowDiff).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: "/workspace/client/src/app.ts",
+          left: { type: "rev", rev: "main", label: "main", path: undefined },
+          right: { type: "rev", rev: "next", label: "next" },
+        }),
+      ),
+    );
+  });
+
+  it("reaches the same diff when the action runs without a key (menu, Find Action)", async () => {
+    render(<CompareToolWindow />);
+    fireEvent.mouseDown(await screen.findByText("app.ts"), { button: 0 });
+    screen.getByRole("tree", { name: "Changed files" }).focus();
+    await executeAction("vcs.showDiffInNewWindow");
+    expect(mocks.diffWindow.mock.calls[0]![0]).toMatchObject({
+      path: "/workspace/client/src/app.ts",
+      left: { type: "rev", rev: "main" },
+    });
   });
 });

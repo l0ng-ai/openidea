@@ -225,6 +225,23 @@ export function changesArg(arg: unknown): LogChange[] {
 }
 
 /**
+ * The first file's diff with every file of the pane in the chain (F7 moves along); null without
+ * files, or for a merge commit's file, which shows a merge diff of its own.
+ */
+export function changesDiffData(
+  changes: readonly LogChange[],
+  chainChanges: readonly LogChange[] = useLogChanges.getState().all,
+): DiffData | null {
+  const first = changes[0];
+  if (!first || (first.mergeParents?.length === 2 && first.after)) return null;
+  const chain = chainChanges.includes(first) ? chainChanges : [...changes];
+  return withChain(
+    chain.map((c) => c.diff),
+    Math.max(0, chain.indexOf(first)),
+  );
+}
+
+/**
  * Show Diff: the first file, with every file of the pane in the chain (F7 moves along), in the
  * editor's preview tab, so looking through a commit's files reuses one tab.
  * `preview`: without taking focus (selection in the pane).
@@ -251,11 +268,7 @@ export async function showChangesDiff(
     else await editorService().openInput(input, { preview: true, focus: !preview });
     return;
   }
-  const chain = chainChanges.includes(first) ? chainChanges : [...changes];
-  const data = withChain(
-    chain.map((c) => c.diff),
-    Math.max(0, chain.indexOf(first)),
-  );
+  const data = changesDiffData(changes, chainChanges)!;
   // Selection preview stays a preview tab even under the modal interface; an explicit
   // diff opens where the commit interface puts it. With "Open diff as editor tab" off
   // (and no all-in-one diff) that is a separate window, so there is no tab to preview in.

@@ -2,12 +2,16 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
 import type { FileStatus } from "@/bindings";
-import { installKeyboardDispatcher, primaryKeyBinding } from "@/platform/keymap";
+import { setContext } from "@/platform/context";
+import { installKeyboardDispatcher, primaryKeyBinding, useKeymap } from "@/platform/keymap";
+import { registerVcsActions } from "../actions";
 import { FileChecklist } from "../shelf";
 import { useVcs } from "../store";
 
 const openDiffDialog = vi.hoisted(() => vi.fn());
 vi.mock("../diffDialog", () => ({ openDiffDialog }));
+const showDiffWindow = vi.hoisted(() => vi.fn());
+vi.mock("../DiffWindow", () => ({ showDiffWindow }));
 
 const file = (rel: string): FileStatus => ({
   path: `/repo/${rel}`,
@@ -66,10 +70,18 @@ it("checks or clears a directory's files at once and shows a partly included one
 });
 
 it("shows a file's diff on double-click and ⌘D, and toggles inclusion with the box and Space", async () => {
-  const off = installKeyboardDispatcher();
+  setContext("vcsAvailable", true);
+  const offActions = registerVcsActions();
+  const offKeys = installKeyboardDispatcher();
+  const off = () => {
+    offKeys();
+    offActions();
+    setContext("vcsAvailable", false);
+  };
   try {
     render(<Harness />);
     const tree = screen.getByRole("tree", { name: "Files to shelve" });
+    tree.focus();
     const binding = primaryKeyBinding("vcs.showDiff");
     expect(binding).toMatch(/^(Meta|Ctrl)\+D$/);
     const showDiffKey = { key: "d", code: "KeyD", metaKey: binding === "Meta+D", ctrlKey: binding === "Ctrl+D" };
@@ -144,4 +156,31 @@ it("compares the index with the working copy when asked for the unstaged side", 
       }),
     ),
   );
+});
+
+it("opens the tree's diff when the user binds the key to Show Diff in New Window", async () => {
+  const original = useKeymap.getState().overrides;
+  useKeymap.setState({ overrides: { ...original, "vcs.showDiff": [], "vcs.showDiffInNewWindow": ["Ctrl+D"] } });
+  setContext("vcsAvailable", true);
+  const offActions = registerVcsActions();
+  const offKeys = installKeyboardDispatcher();
+  try {
+    render(<Harness />);
+    const tree = screen.getByRole("tree", { name: "Files to shelve" });
+    fireEvent.mouseDown(screen.getByText("pom.xml"), { button: 0 });
+    tree.focus();
+    fireEvent.keyDown(tree, { key: "d", code: "KeyD", ctrlKey: true });
+    await waitFor(() =>
+      expect(showDiffWindow).toHaveBeenCalledWith(
+        expect.objectContaining({ path: "/repo/pom.xml", left: { type: "rev", rev: "HEAD" } }),
+        expect.any(Function),
+      ),
+    );
+    expect(openDiffDialog).not.toHaveBeenCalled();
+  } finally {
+    offKeys();
+    offActions();
+    setContext("vcsAvailable", false);
+    useKeymap.setState({ overrides: original });
+  }
 });

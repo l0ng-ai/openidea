@@ -3,7 +3,6 @@ import type { Stash } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
-import { bindingsFor, normalizeBinding, registerKeyClaim } from "@/platform/keymap";
 import { dirname } from "@/platform/project";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { Dialog, IconButton, Tree, fileIconName, showContextMenu } from "@/ui";
@@ -14,7 +13,8 @@ import { vcsDiffInFront } from "./diffInput";
 import type { FileTreeNode } from "./fileTree";
 import { canApplySelectedChanges, filesUnder, flatFileNodes, toLogChanges, type LogChange } from "./logChanges";
 import { KIND_COLOR } from "./model";
-import { focusStashDiff, showStashDiff, type StashDiffRequest } from "./stashDiff";
+import { showStashDiff, stashDiffData, type StashDiffRequest } from "./stashDiff";
+import { useDiffSource } from "./diffSource";
 import styles from "./CommitView.module.css";
 
 export type StashEntry = Stash & { repo: string | null };
@@ -61,7 +61,6 @@ export function StashChanges({ stash, dialogLifetime }: { stash: StashEntry; dia
   const [files, setFiles] = useState<Awaited<ReturnType<typeof stashFiles>>>();
   const [error, setError] = useState<string>();
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
-  const [focused, setFocused] = useState(false);
   const previewTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const previewRequest = useRef<AbortController | null>(null);
   const content = useRef<HTMLDivElement>(null);
@@ -100,25 +99,17 @@ export function StashChanges({ stash, dialogLifetime }: { stash: StashEntry; dia
   const all = useMemo(() => filesUnder(roots), [roots]);
   const selection = useMemo(() => filesUnder(roots, selected), [roots, selected]);
 
-  useEffect(() => {
-    const request = {
-      index: stash.index,
-      changes: selection.length ? selection : all,
-      chain: selection.length > 1 ? selection : all,
-      dialogLifetime,
-    };
-    if (dialogLifetime) {
-      return registerKeyClaim((event, stroke) => {
-        if (!(event.target instanceof Node) || !content.current?.contains(event.target)) return false;
-        if (!bindingsFor("vcs.showDiff").some((binding) => normalizeBinding(binding) === stroke)) return false;
-        event.preventDefault();
-        event.stopPropagation();
-        void executeAction("vcs.stash.showDiff", request);
-        return true;
-      });
-    }
-    if (focused) return focusStashDiff(request);
-  }, [focused, stash.index, selection, all, dialogLifetime]);
+  const request: StashDiffRequest = {
+    index: stash.index,
+    changes: selection.length ? selection : all,
+    chain: selection.length > 1 ? selection : all,
+    dialogLifetime,
+  };
+  useDiffSource(content, {
+    // The modal stash review compares with local, as its Show Diff does.
+    diff: () => stashDiffData(request, dialogLifetime ? "local" : target),
+    show: () => void executeAction("vcs.stash.showDiff", request),
+  });
 
   const diffSelection = (changes: LogChange[]): StashDiffRequest => ({
     index: stash.index,
@@ -133,14 +124,7 @@ export function StashChanges({ stash, dialogLifetime }: { stash: StashEntry; dia
   };
 
   return (
-    <div
-      ref={content}
-      className={styles.changes}
-      onFocusCapture={() => setFocused(true)}
-      onBlurCapture={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false);
-      }}
-    >
+    <div ref={content} className={styles.changes}>
       <div className={styles.toolbar} role="toolbar" aria-label={tx("Changed files")}>
         <IconButton
           icon="diff"

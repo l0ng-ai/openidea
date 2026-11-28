@@ -34,7 +34,7 @@ import {
   type MenuItem,
 } from "@/ui";
 import { executeAction } from "@/platform/actions";
-import { bindingsFor, normalizeBinding, registerKeyClaim, shortcutLabel } from "@/platform/keymap";
+import { shortcutLabel } from "@/platform/keymap";
 import { choosePath, chooseSavePath } from "@/platform/choosePath";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { notifications } from "@/workbench/contributions";
@@ -63,6 +63,7 @@ import styles from "./common.module.css";
 import { tx, useTx } from "@/platform/i18n";
 import previewStyles from "./ApplyPatch.module.css";
 import type { PatchDiffRequest } from "./patchDiff";
+import { useDiffSource } from "./diffSource";
 
 export type PatchOrigin =
   | { kind: "changes"; files: FileStatus[]; staging?: readonly StagingPatchEntry[] }
@@ -677,23 +678,8 @@ function ApplyPatchDialog({
     },
     [base, files, mapped, patch, placements, repo],
   );
-  useEffect(
-    () =>
-      registerKeyClaim((event, stroke) => {
-        if (
-          !activeFile ||
-          !(event.target instanceof Element) ||
-          !fileList.current?.contains(event.target.closest('[role="tree"]')) ||
-          !bindingsFor("vcs.showDiff").some((binding) => normalizeBinding(binding) === stroke)
-        )
-          return false;
-        event.preventDefault();
-        event.stopPropagation();
-        showDiff(activeFile);
-        return true;
-      }),
-    [activeFile, showDiff],
-  );
+  // A patch's diff shows in its own dialog, also for Show Diff in New Window.
+  useDiffSource(fileList, activeFile ? { show: () => showDiff(activeFile) } : null);
   const count = files?.length ?? 0;
   const needsDirectory = (file: PatchFile) =>
     file.missingBase || (!!placements.get(file.path)?.error && directoryMatches.has(file.path));
