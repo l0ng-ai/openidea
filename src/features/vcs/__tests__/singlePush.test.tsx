@@ -13,6 +13,12 @@ const mocks = vi.hoisted(() => ({
   editRemote: vi.fn(),
   branchInfo: vi.fn(),
   failure: vi.fn(),
+  ask: vi.fn(),
+}));
+
+vi.mock("@/workbench/messages", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/workbench/messages")>()),
+  ask: mocks.ask,
 }));
 
 vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
@@ -106,6 +112,7 @@ beforeEach(() => {
     operation: null,
   });
   mocks.failure.mockReset();
+  mocks.ask.mockReset();
   useProject.setState({ settings: null });
   provideNotificationService({ notify: () => {}, expire: () => {} });
   useVcs.setState({
@@ -456,6 +463,27 @@ it("remembers the submitted tag option for the project without saving cancelled 
   await submit(turnOff);
   expect(mocks.remote).toHaveBeenLastCalledWith(expect.objectContaining({ tags: null }));
   expect(await open()).not.toBeChecked();
+});
+
+it("asks again before a force push to the same target in another project", async () => {
+  mocks.inspect.mockReturnValue({ state: "ready", localTip: "c2", remoteTip: "r1", remoteCommits: 0 });
+  mocks.ask.mockResolvedValue({ button: "force", checked: true });
+  render(<VcsDialogHost />);
+  const forcePush = async () => {
+    await act(() => showPushDialog());
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Force (with lease)" }));
+    const before = mocks.remote.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Force Push" }));
+    await waitFor(() => expect(mocks.remote).toHaveBeenCalledTimes(before + 1));
+    await waitFor(() => expect(useVcs.getState().remoteBusy).toBeNull());
+  };
+  await forcePush();
+  await forcePush();
+  expect(mocks.ask).toHaveBeenCalledTimes(1);
+
+  useVcs.setState({ root: "/other", repo: "/other", roots: ["/other"] });
+  await forcePush();
+  expect(mocks.ask).toHaveBeenCalledTimes(2);
 });
 
 it("offers to define another remote without changing the destination being reviewed", async () => {
