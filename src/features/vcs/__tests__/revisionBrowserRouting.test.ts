@@ -6,7 +6,7 @@ vi.mock("@/workbench/contributions", async (importOriginal) => ({
   editorService: () => editor,
 }));
 
-import { openRevisionFile } from "../revisionInput";
+import { gitRevisionUri, openRevisionFile } from "../revisionInput";
 import { useVcs } from "../store";
 
 beforeEach(() => {
@@ -41,5 +41,20 @@ describe("openRevisionFile", () => {
       data: { repo: "/external/repo", revision: "b".repeat(40), path: "src/file.ts", external: true },
     });
     expect(editor.openFile).not.toHaveBeenCalled();
+  });
+});
+
+describe("gitRevisionUri", () => {
+  it("encodes the repository, revision and repository-relative path", () => {
+    const uri = gitRevisionUri("/repo", "abc123", "src/file.ts");
+    const hex = uri.slice("git-revision:".length).split("/", 1)[0]!;
+    const encoded = Uint8Array.from(hex.match(/.{2}/g)!, (byte) => Number.parseInt(byte, 16));
+
+    expect(JSON.parse(new TextDecoder().decode(encoded))).toEqual({
+      repo: "/repo",
+      revision: "abc123",
+      path: "src/file.ts",
+    });
+    expect(uri.endsWith("/file.ts")).toBe(true);
   });
 });

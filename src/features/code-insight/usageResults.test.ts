@@ -102,6 +102,16 @@ describe("findUsages", () => {
     resetUsages();
   });
 
+  it("uses an explicitly supplied caret context", async () => {
+    const at = { path: "/p/b.rs", range: { start: { line: 1, col: 4 }, end: { line: 1, col: 8 } } };
+    lspReferences.mockClear();
+    referenceResponse.mockResolvedValueOnce({ locations: [at], incomplete: null });
+    await findUsages({ doc: 9, path: "/p/diff.rs", line: 3, col: 5, word: "diffSymbol", view: null });
+    expect(lspReferences.mock.lastCall!.slice(1, 3)).toEqual([9, { line: 3, col: 5 }]);
+    expect(activeUsageSearch(useUsages.getState())).toMatchObject({ symbol: "diffSymbol", loading: false });
+    resetUsages();
+  });
+
   it("shows the usages found first while it searches for the rest", async () => {
     const at = (line: number) => ({ path: "/p/b.rs", range: { start: { line, col: 4 }, end: { line, col: 8 } } });
     let resolve!: (refs: unknown) => void;

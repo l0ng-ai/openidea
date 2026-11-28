@@ -324,8 +324,7 @@ export function resetUsages() {
   popupTarget = null;
 }
 
-export async function findUsages() {
-  const c = caretContext();
+export async function findUsages(c: CaretContext | null = caretContext()) {
   if (!c) {
     hint("Open a file to find usages");
     return;

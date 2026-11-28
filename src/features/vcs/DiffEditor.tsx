@@ -33,6 +33,8 @@ import {
 } from "@codemirror/merge";
 import { useStore } from "zustand";
 import { attachDocument, diffSideExtensions, embeddedEditorExtensions, type DocumentAttachment } from "@/editor/api";
+import { reportError, withDocument, type CaretContext } from "@/features/code-insight/ipc";
+import { findUsages } from "@/features/code-insight/usages";
 import { findChangedRanges, setFindOpen } from "@/editor/core/cm/find";
 import { softWrapActive } from "@/editor/core/cm/prefs";
 import { FindPanel, searchAgain, seedFind, type FindTarget } from "@/editor/core/view/FindBar";
@@ -106,6 +108,7 @@ import {
   type DiffData,
   type DiffSide,
 } from "./diffInput";
+import { gitRevisionUri } from "./revisionInput";
 import { useGitDiffEntries } from "./gitDiffEntries";
 import { diffAnnotations } from "./diffAnnotations";
 import { setAllInOneDiff } from "./allInOneDiff";
@@ -133,7 +136,7 @@ import {
   useEmbeddedStagedSave,
   useStagedDiffDocument,
 } from "./stagedDocument";
-import { baseName, effectiveKind, stripSlash } from "./model";
+import { baseName, effectiveKind, relTo, stripSlash } from "./model";
 import { errorMessage, logConsole, readWorkingText, runOp, saveAll } from "./ops";
 import { refreshNow, repoOf, useVcs } from "./store";
 import styles from "./DiffEditor.module.css";
@@ -1732,6 +1735,55 @@ function TwoPaneDiff({
       },
     ];
   };
+  /** A Find Usages item using the clicked pane's caret, not the active editor's. */
+  const findUsagesItem = (
+    target: Pick<CaretContext, "path" | "line" | "col" | "word" | "view">,
+    doc: number | null,
+  ): MenuItem => ({
+    label: "Find Usages",
+    shortcut: shortcutLabel("find.usages"),
+    run: () => {
+      if (doc !== null) void findUsages({ ...target, doc });
+      else void withDocument(target.path, (opened) => findUsages({ ...target, doc: opened })).catch(reportError);
+    },
+  });
+  /** A revision pane's text is a read-only Git virtual document the language server can search. */
+  const revisionUsageTarget = (
+    side: DiffSide,
+    line: number,
+    col: number,
+    word: string,
+  ): Pick<CaretContext, "path" | "line" | "col" | "word" | "view"> | null => {
+    if (side.type !== "rev") return null;
+    const filePath = stripSlash(side.path ?? path);
+    const repo = stripSlash(repoOf(filePath) ?? "");
+    if (!repo) return null;
+    const relative = relTo(repo, filePath);
+    if (!relative) return null;
+    return { path: gitRevisionUri(repo, side.rev, relative), line, col, word, view: null };
+  };
+  /** Find Usages for the symbol under a clicked pane, in that pane's own document. */
+  const findUsagesItems = (pane: DiffViewerPane | undefined, pos: number | null): MenuItem[] => {
+    if (!pane || pos === null) return [];
+    const word = pane.view.state.wordAt(pos);
+    if (!word) return [];
+    const at = pane.view.state.doc.lineAt(pos);
+    const line = at.number - 1;
+    const col = pos - at.from;
+    const symbol = pane.view.state.sliceDoc(word.from, word.to);
+    const side = viewMode === "split" ? (pane.side === "left" ? left : right) : unifiedOnLeft ? left : right;
+    const att =
+      viewMode === "split"
+        ? pane.side === "left"
+          ? attached?.a
+          : attached?.b
+        : unifiedOnLeft
+          ? attached?.a
+          : attached?.b;
+    if (att) return [findUsagesItem({ path: att.path, line, col, word: symbol, view: pane.view }, att.doc)];
+    const target = revisionUsageTarget(side, line, col, symbol);
+    return target ? [findUsagesItem(target, null)] : [];
+  };
   /**
    * The panes' right-click menu: the contributions' items for the clicked line and Git annotations
    * (none: the default menu). The divider between the panes acts on the pane focused last.
@@ -1741,9 +1793,8 @@ function TwoPaneDiff({
     if (!viewer || e.defaultPrevented) return;
     const hit = viewer.panes().find((p) => p.view.dom.contains(e.target as Node | null));
     const pane = hit ?? viewer.focusedPane();
-    const line = hit
-      ? hit.view.state.doc.lineAt(hit.view.posAtCoords({ x: e.clientX, y: e.clientY }, false)).number - 1
-      : -1;
+    const pos = hit ? hit.view.posAtCoords({ x: e.clientX, y: e.clientY }, false) : null;
+    const line = hit && pos !== null ? hit.view.state.doc.lineAt(pos).number - 1 : -1;
     const local = viewsRef.current?.b;
     const inclusion: MenuItem[] = [];
     if (includable && local && hit && line >= 0) {
@@ -1769,6 +1820,7 @@ function TwoPaneDiff({
     }
     const groups = [
       ...(hit ? contribs.map((c) => c.contextMenuItems?.({ side: hit.side, line }) ?? []) : []),
+      findUsagesItems(hit, pos),
       inclusion,
       blameItems(pane),
     ].filter((g) => g.length);
