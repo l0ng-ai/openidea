@@ -31,6 +31,7 @@ pub enum VenvTool {
     Poetry,
     /// `conda create -n <name> -y` for a bare name, else `-p <location>`, with the conda of the
     /// base interpreter's installation, else the one on PATH, `CONDA_EXE` or a default install.
+    /// The base may also be a bare version such as `3.12`, which conda downloads.
     Conda,
     /// `pipenv --python <base>` in the project (pipenv must be on PATH).
     Pipenv,
@@ -338,7 +339,8 @@ fn create_pipenv_env(
 /// `conda create -n <name> -y` builds a named environment in conda's envs directory when
 /// `location` is a bare name, `conda create -p <location> -y` one at that prefix otherwise.
 /// `base` pins the Python version (`python=<major.minor>`) when it reports one, so the
-/// created env matches the interpreter the user picked rather than conda's default.
+/// created env matches the interpreter the user picked rather than conda's default; a bare
+/// version such as `3.12` is used as it is, for a Python not installed on the machine.
 fn create_conda_env(
     base: &Path,
     location: &Path,
@@ -376,8 +378,11 @@ fn create_conda_env(
     } else if let Some(parent) = location.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let version = query_in(base, &["--version"], None, &[], Duration::from_secs(15))
-        .and_then(|v| v.strip_prefix("Python ").map(str::to_owned));
+    let version = match bare_version(base) {
+        Some(version) => Some(version.to_owned()),
+        None => query_in(base, &["--version"], None, &[], Duration::from_secs(15))
+            .and_then(|v| v.strip_prefix("Python ").map(str::to_owned)),
+    };
     stream(&conda, &conda_create_args(location, version.as_deref()), None, &env, cancel, on_line)?;
     let prefix = match name {
         Some(name) => prefixes()
@@ -393,6 +398,13 @@ fn create_conda_env(
         .unwrap_or_else(|| prefix.join(bin_dir()).join(exe("python")));
     crate::discover::python_sdk(&python, "conda", prefix.parent().and_then(Path::parent))
         .ok_or_else(|| IdeError::internal(format!("{} was not created", python.display())))
+}
+
+/// `base` when it is a Python version (`3.12`) rather than an interpreter's path.
+pub(crate) fn bare_version(base: &Path) -> Option<&str> {
+    let text = base.to_str()?;
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    (text.contains('.') && text.split('.').all(digits)).then_some(text)
 }
 
 /// The environment name when `location` is a bare name rather than a path.

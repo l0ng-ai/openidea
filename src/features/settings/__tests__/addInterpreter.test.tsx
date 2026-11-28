@@ -124,6 +124,30 @@ describe("Add Python Interpreter", () => {
     await waitFor(() => expect(onAdded).toHaveBeenCalledWith("/project/.venv/bin/python"));
   });
 
+  it("offers conda Python versions that are not installed and passes them as versions", async () => {
+    let finish: (v: unknown) => void = () => {};
+    mocks.createVenv.mockImplementation(() => new Promise((r) => (finish = r)));
+    open();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Base interpreter" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Conda Environment" }));
+    // The installed 3.12 stays the default and is passed as its interpreter.
+    expect(screen.getByRole("button", { name: "Python version" })).toHaveTextContent("Python 3.12");
+    fireEvent.click(screen.getByRole("button", { name: "Python version" }));
+    const options = screen.getAllByRole("option").map((o) => o.textContent);
+    expect(options).toEqual(["Python 3.15", "Python 3.14", "Python 3.13", "Python 3.12", "Python 3.11", "Python 3.10"]);
+    fireEvent.click(screen.getByRole("option", { name: "Python 3.10" }));
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    expect(mocks.createVenv).toHaveBeenLastCalledWith(
+      "conda",
+      "3.10",
+      "project",
+      false,
+      expect.anything(),
+      expect.anything(),
+    );
+    await act(async () => finish(ok(VENV)));
+  });
+
   it("passes each tool and Poetry hides the location field", async () => {
     let finish: (v: unknown) => void = () => {};
     mocks.createVenv.mockImplementation(() => new Promise((r) => (finish = r)));

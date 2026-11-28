@@ -15005,6 +15005,7 @@ export type VenvTool =
 /**
  *  `conda create -n <name> -y` for a bare name, else `-p <location>`, with the conda of the
  *  base interpreter's installation, else the one on PATH, `CONDA_EXE` or a default install.
+ *  The base may also be a bare version such as `3.12`, which conda downloads.
  */
 "conda" | 
 /**  `pipenv --python <base>` in the project (pipenv must be on PATH). */

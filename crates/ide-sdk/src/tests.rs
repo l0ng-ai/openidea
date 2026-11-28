@@ -1665,6 +1665,15 @@ fn an_existing_conda_environment_is_not_recreated() {
 }
 
 #[test]
+fn a_bare_python_version_is_passed_to_conda_as_it_is() {
+    use crate::python::bare_version;
+    assert_eq!(bare_version(Path::new("3.10")), Some("3.10"));
+    for base in ["3", "3.", "/usr/bin/python3.12", "python3.12", "3.12a1", ""] {
+        assert_eq!(bare_version(Path::new(base)), None, "{base}");
+    }
+}
+
+#[test]
 fn conda_creates_named_environments_in_its_envs_directory() {
     use crate::python::conda_create_args;
     use std::path::Path;
