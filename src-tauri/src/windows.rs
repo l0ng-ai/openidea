@@ -1111,7 +1111,10 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
     #[cfg(target_os = "macos")]
-    crate::page_swipe::install(&window);
+    {
+        suppress_window_writing_tools_affordance(&window);
+        crate::page_swipe::install(&window);
+    }
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window, app.try_state::<WindowsState>().is_some_and(|w| w.opens_project(window.label())));
@@ -1952,7 +1955,10 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
     #[cfg(target_os = "macos")]
-    crate::page_swipe::install(&window);
+    {
+        suppress_window_writing_tools_affordance(&window);
+        crate::page_swipe::install(&window);
+    }
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window, false);
@@ -2536,8 +2542,11 @@ fn webview_profile<'a>(
 }
 
 /// Configure macOS `WKWebViewConfiguration` before `WKWebView` creation:
-/// - Disable macOS 15+ Apple Intelligence Writing Tools so its floating selection
-///   affordance does not appear over Markdown previews, Quick Documentation, or editors.
+/// - Disable macOS 15+ Apple Intelligence Writing Tools (`writingToolsBehavior = None`) and, on
+///   macOS 27 where `WKWebView` ignores `writingToolsBehavior = None` for the Siri selection
+///   affordance (WebKit bug 327446), also disable `TextInputClientSelectionUpdatesEnabled` on
+///   `WKPreferences` and override `allowsWritingToolsAffordance` on `WryWebView` so the floating
+///   affordance never appears over Markdown previews, Quick Documentation, chat, or editors.
 /// - In debug builds, optionally reproduce WKWebView's user-font restriction when
 ///   `OPENIDEA_DEV_DISALLOW_USER_FONTS=1` is set (absent from release builds).
 #[cfg(target_os = "macos")]
@@ -2611,6 +2620,11 @@ fn configure_macos_webview_configuration(config: &objc2_web_kit::WKWebViewConfig
         unsafe {
             let _: () = msg_send![config, setWritingToolsBehavior: NSWritingToolsBehavior::None];
         }
+        let preferences = unsafe { config.preferences() };
+        disable_macos_text_input_selection_updates(&preferences);
+        if let Some(wry_cls) = objc2::runtime::AnyClass::get(c"WryWebView") {
+            suppress_webview_class_writing_tools_affordance(wry_cls);
+        }
         configured = true;
     }
     #[cfg(debug_assertions)]
@@ -2628,6 +2642,101 @@ fn configure_macos_webview_configuration(config: &objc2_web_kit::WKWebViewConfig
         }
     }
     configured
+}
+
+/// Work around WebKit bug 327446 on macOS 27: `WebViewImpl::selectionDidChange` sends selection
+/// updates to `NSTextInputContext` whenever `TextInputClientSelectionUpdatesEnabled` is true
+/// without checking `writingToolsBehavior == None`, triggering the Siri selection affordance.
+/// Turning this embedder feature off keeps `inputContext()` active for editable content (IME
+/// composition, dictation) while skipping non-editable selection notifications.
+#[cfg(target_os = "macos")]
+fn disable_macos_text_input_selection_updates(preferences: &objc2_web_kit::WKPreferences) -> bool {
+    use objc2::{ClassType, msg_send, rc::Retained, runtime::AnyObject, sel};
+    use objc2_foundation::{NSArray, NSObjectProtocol, NSString, ns_string};
+    use objc2_web_kit::WKPreferences;
+
+    if !preferences.respondsToSelector(sel!(_setEnabled:forFeature:)) {
+        return false;
+    }
+    let cls = WKPreferences::class();
+    let responds_features: bool = unsafe { msg_send![cls, respondsToSelector: sel!(_features)] };
+    if !responds_features {
+        return false;
+    }
+    let Some(features): Option<Retained<NSArray<AnyObject>>> = (unsafe { msg_send![cls, _features] }) else {
+        return false;
+    };
+    let target = ns_string!("TextInputClientSelectionUpdatesEnabled");
+    for i in 0..features.count() {
+        let feature = features.objectAtIndex(i);
+        let has_key: bool = unsafe { msg_send![&*feature, respondsToSelector: sel!(key)] };
+        if !has_key {
+            continue;
+        }
+        let key: Option<Retained<NSString>> = unsafe { msg_send![&*feature, key] };
+        if key.as_deref() == Some(target) {
+            unsafe {
+                let _: () = msg_send![preferences, _setEnabled: false, forFeature: &*feature];
+            }
+            return true;
+        }
+    }
+    false
+}
+
+/// Work around WebKit bug 327446 on macOS 27: `-[WKWebView allowsWritingToolsAffordance]` ignores
+/// `writingToolsBehavior == None` and returns `YES` for any ranged or editable selection. Override
+/// `allowsWritingToolsAffordance` on the `WKWebView` subclass (`WryWebView`) so AppKit always
+/// suppresses the affordance even if `NSTextInputContext` queries the view directly.
+#[cfg(target_os = "macos")]
+fn suppress_window_writing_tools_affordance(window: &WebviewWindow) {
+    let _ = window.with_webview(|webview| unsafe {
+        let ptr = webview.inner().cast::<objc2::runtime::AnyObject>();
+        if !ptr.is_null() {
+            let cls = (*ptr).class();
+            suppress_webview_class_writing_tools_affordance(cls);
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn suppress_webview_class_writing_tools_affordance(webview_cls: &objc2::runtime::AnyClass) -> bool {
+    use objc2::{
+        runtime::{AnyClass, AnyObject, Bool, Imp, Sel},
+        sel,
+    };
+
+    type AllowsAffordance = unsafe extern "C-unwind" fn(*mut AnyObject, Sel) -> Bool;
+    unsafe extern "C-unwind" fn disallow_writing_tools_affordance(_this: *mut AnyObject, _cmd: Sel) -> Bool {
+        Bool::NO
+    }
+
+    // Only patch subclasses of WKWebView (such as WryWebView), never WKWebView itself.
+    let Some(wk_cls) = AnyClass::get(c"WKWebView") else {
+        return false;
+    };
+    if std::ptr::eq(webview_cls, wk_cls) {
+        return false;
+    }
+    let Some(super_cls) = webview_cls.superclass() else {
+        return false;
+    };
+    let selector = sel!(allowsWritingToolsAffordance);
+    if !super_cls.responds_to(selector) {
+        return false;
+    }
+    unsafe {
+        let imp: Imp = std::mem::transmute(disallow_writing_tools_affordance as AllowsAffordance);
+        if webview_cls.instance_method(selector).is_some_and(|m| std::ptr::fn_addr_eq(m.implementation(), imp)) {
+            return true;
+        }
+        let cls = (webview_cls as *const AnyClass).cast_mut();
+        let added = objc2::ffi::class_addMethod(cls, selector, imp, c"B@:".as_ptr());
+        if !added.as_bool() {
+            objc2::ffi::class_replaceMethod(cls, selector, imp, c"B@:".as_ptr());
+        }
+    }
+    true
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -2726,9 +2835,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_webview_configuration_disables_writing_tools() {
-        use objc2::{MainThreadMarker, msg_send, sel};
+        use objc2::{ClassType, MainThreadMarker, msg_send, rc::Retained, runtime::AnyObject, sel};
         use objc2_app_kit::NSWritingToolsBehavior;
-        use objc2_foundation::NSObjectProtocol;
+        use objc2_foundation::{NSArray, NSObjectProtocol, NSString, ns_string};
+        use objc2_web_kit::WKPreferences;
 
         let Some(mtm) = MainThreadMarker::new() else {
             return;
@@ -2739,6 +2849,64 @@ mod tests {
             assert!(configured);
             let behavior: NSWritingToolsBehavior = unsafe { msg_send![&config, writingToolsBehavior] };
             assert_eq!(behavior, NSWritingToolsBehavior::None);
+
+            // If WebKit exposes the `TextInputClientSelectionUpdatesEnabled` embedder feature
+            // (macOS 27+), `configure_macos_webview_configuration` must turn it off.
+            let preferences = unsafe { config.preferences() };
+            let cls = WKPreferences::class();
+            let has_features: bool = unsafe { msg_send![cls, respondsToSelector: sel!(_features)] };
+            if has_features && preferences.respondsToSelector(sel!(_isEnabledForFeature:)) {
+                let features: Option<Retained<NSArray<AnyObject>>> = unsafe { msg_send![cls, _features] };
+                let target = ns_string!("TextInputClientSelectionUpdatesEnabled");
+                if let Some(features) = features {
+                    for i in 0..features.count() {
+                        let feature = features.objectAtIndex(i);
+                        let has_key: bool = unsafe { msg_send![&*feature, respondsToSelector: sel!(key)] };
+                        if !has_key {
+                            continue;
+                        }
+                        let key: Option<Retained<NSString>> = unsafe { msg_send![&*feature, key] };
+                        if key.as_deref() == Some(target) {
+                            let enabled: bool = unsafe { msg_send![&preferences, _isEnabledForFeature: &*feature] };
+                            assert!(!enabled, "TextInputClientSelectionUpdatesEnabled must be disabled");
+                        }
+                    }
+                }
+            }
+
+            // If `WKWebView` implements `allowsWritingToolsAffordance`, overriding a `WKWebView`
+            // subclass (`WryWebView`) must replace `allowsWritingToolsAffordance` with `NO` while
+            // leaving `WKWebView` itself untouched.
+            if let Some(wk_cls) = objc2::runtime::AnyClass::get(c"WKWebView")
+                && wk_cls.responds_to(sel!(allowsWritingToolsAffordance))
+            {
+                assert!(
+                    !suppress_webview_class_writing_tools_affordance(wk_cls),
+                    "base WKWebView class must not be modified directly"
+                );
+                let sub_cls = objc2::runtime::ClassBuilder::new(c"OpenIdeaTestWebView", wk_cls)
+                    .map(|b| b.register())
+                    .unwrap_or_else(|| {
+                        objc2::runtime::AnyClass::get(c"OpenIdeaTestWebView").expect("OpenIdeaTestWebView should exist")
+                    });
+                assert!(suppress_webview_class_writing_tools_affordance(sub_cls));
+                assert!(suppress_webview_class_writing_tools_affordance(sub_cls));
+                let method = sub_cls
+                    .instance_method(sel!(allowsWritingToolsAffordance))
+                    .expect("subclass should resolve allowsWritingToolsAffordance");
+                let super_method = wk_cls
+                    .instance_method(sel!(allowsWritingToolsAffordance))
+                    .expect("WKWebView should resolve allowsWritingToolsAffordance");
+                assert!(
+                    !std::ptr::fn_addr_eq(method.implementation(), super_method.implementation()),
+                    "subclass must override WKWebView's allowsWritingToolsAffordance"
+                );
+                type AllowsAffordance =
+                    unsafe extern "C-unwind" fn(*const AnyObject, objc2::runtime::Sel) -> objc2::runtime::Bool;
+                let imp: AllowsAffordance = unsafe { std::mem::transmute(method.implementation()) };
+                let allowed = unsafe { imp(std::ptr::null(), sel!(allowsWritingToolsAffordance)) };
+                assert!(!allowed.as_bool());
+            }
         }
     }
 
