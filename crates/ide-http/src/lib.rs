@@ -11,6 +11,7 @@ pub mod env;
 pub mod exec;
 pub mod history;
 pub mod parse;
+pub mod tunnel;
 
 pub use env::Environments;
 pub use exec::{HttpResponse, PreparedRequest};

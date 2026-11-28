@@ -13,9 +13,10 @@ import type { NotebookCell, NotebookCellDoc } from "@/bindings";
 import { tx } from "@/platform/i18n";
 import { useMarkdownPreviewFontSize } from "@/platform/languageSettings";
 import { useProject } from "@/platform/project";
-import { Button, Dialog, EmptyState, IconButton, Select, Spinner } from "@/ui";
+import { Button, Dialog, EmptyState, IconButton, Select, Spinner, type SelectOption } from "@/ui";
 import type { EditorInput } from "@/workbench/contributions";
 import { CellEditor } from "./CellEditor";
+import { CONNECT, connectJupyterServer, REMOVE, remoteKernel, removeJupyterServer } from "./jupyterServer";
 import { CellOutputs, MarkdownCell } from "./OutputView";
 import { notebookSession, type CellReveal, type NotebookSession } from "./session";
 import styles from "./Notebook.module.css";
@@ -100,13 +101,26 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
   } as CSSProperties;
   const disabled = state.frozen || !state.snapshot;
   const historyDisabled = disabled || state.running;
-  const options = state.environments.map((sdk) => ({
+  const options: SelectOption[] = state.environments.map((sdk) => ({
     value: sdk.path,
     verbatim: true,
     verbatimDetail: true,
     label: sdk.name,
     detail: sdk.path,
   }));
+  for (const server of state.servers) {
+    options.push({ value: server.url, label: server.url, verbatim: true, section: true });
+    for (const kernel of server.kernels)
+      options.push({
+        value: remoteKernel(server.url, kernel.name),
+        verbatim: true,
+        verbatimDetail: true,
+        label: kernel.displayName,
+        detail: server.url,
+      });
+  }
+  options.push({ value: CONNECT, label: "Connect to Jupyter Server…" });
+  if (state.servers.length) options.push({ value: REMOVE, label: "Remove Jupyter Server…" });
   if (state.python && !options.some((option) => option.value === state.python))
     options.unshift({
       value: state.python,
@@ -181,13 +195,19 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
           value={state.python}
           options={options}
           disabled={disabled || state.running}
-          onChange={(value) => session.selectPython(value)}
+          onChange={(value) =>
+            value === CONNECT
+              ? connectJupyterServer(session)
+              : value === REMOVE
+                ? void removeJupyterServer()
+                : session.selectPython(value)
+          }
         />
         <IconButton
           icon="refresh"
           title="Refresh Python interpreters"
           disabled={disabled || state.running}
-          onClick={() => invoke(session.detectEnvironments())}
+          onClick={() => invoke(session.detectEnvironments(true))}
         />
         <span className={styles.kernel} role="status" title={state.error ?? undefined}>
           {state.running && <Spinner size={12} />}

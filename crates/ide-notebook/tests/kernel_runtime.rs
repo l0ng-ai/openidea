@@ -27,7 +27,7 @@ fn manager(root: &Path) -> Arc<KernelManager> {
 async fn run(
     manager: &KernelManager,
     notebook: &Path,
-    python: &Path,
+    target: impl Into<ide_notebook::kernel::KernelTarget>,
     code: &str,
 ) -> (IdeResult<ExecutionResult>, Vec<KernelOutput>) {
     let outputs: Outputs = Arc::new(Mutex::new(Vec::new()));
@@ -36,7 +36,7 @@ async fn run(
         Duration::from_secs(45),
         manager.execute(
             notebook,
-            python,
+            target,
             code,
             CancellationToken::new(),
             Arc::new(move |output| sink.lock().unwrap().push(output)),
@@ -423,4 +423,133 @@ async fn interrupt_stops_a_stuck_inspection_and_keeps_state() {
     let (result, _) = run(&manager, &notebook, &python, "kept").await;
     assert_eq!(result.unwrap().status, "ok", "the kernel and its state survive");
     manager.shutdown().await;
+}
+
+#[tokio::test]
+#[ignore = "requires OPENIDEA_TEST_JUPYTER_URL (and OPENIDEA_TEST_JUPYTER_TOKEN) of a running Jupyter server"]
+async fn remote_kernel_runs_interrupts_restarts_and_is_deleted() {
+    let (server, token, target) = remote(None).await;
+    let before = server_kernels(&server, &token).await;
+    let root = tempfile::tempdir().unwrap();
+    let notebook = root.path().join("remote.ipynb");
+    let manager = manager(root.path());
+    let run = |code: &'static str| {
+        let (manager, notebook, target) = (manager.clone(), notebook.clone(), target.clone());
+        async move {
+            let outputs: Outputs = Arc::new(Mutex::new(Vec::new()));
+            let sink = outputs.clone();
+            let result = manager
+                .execute(
+                    &notebook,
+                    target,
+                    code,
+                    CancellationToken::new(),
+                    Arc::new(move |o| sink.lock().unwrap().push(o)),
+                )
+                .await;
+            let outputs = std::mem::take(&mut *outputs.lock().unwrap());
+            (result, outputs)
+        }
+    };
+    let (result, outputs) = run("answer = 6 * 7\nanswer").await;
+    assert_eq!(result.unwrap().status, "ok");
+    assert!(outputs.iter().any(|o| o.kind == "execute_result" && o.content["data"]["text/plain"] == "42"));
+    let sleeping = tokio::spawn(run("import time\ntime.sleep(30)"));
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    manager.interrupt(&notebook).await.unwrap();
+    let (result, _) = tokio::time::timeout(Duration::from_secs(10), sleeping).await.unwrap().unwrap();
+    assert!(result.is_err() || result.unwrap().status == "error", "the interrupted run must not succeed");
+    let (result, _) = run("answer").await;
+    assert_eq!(result.unwrap().status, "ok", "state survives an interrupt");
+    manager.restart(&notebook).await.unwrap();
+    let (result, outputs) = run("answer").await;
+    assert_eq!(result.unwrap().status, "error");
+    assert!(outputs.iter().any(|o| o.kind == "error" && o.content["ename"] == "NameError"));
+    manager.shutdown_kernel(&notebook).await.unwrap();
+    assert_eq!(server_kernels(&server, &token).await, before, "closing the notebook deletes its kernel on the server");
+}
+
+/// The test server from `OPENIDEA_TEST_JUPYTER_URL` / `OPENIDEA_TEST_JUPYTER_TOKEN`, with `base`
+/// in place of its URL when given (a forwarder in front of it).
+async fn remote(base: Option<String>) -> (String, String, ide_notebook::kernel::KernelTarget) {
+    use ide_notebook::kernel::{KernelTarget, RemoteKernel, kernel_specs, normalize_server_url};
+    let (server, in_url) = normalize_server_url(&std::env::var("OPENIDEA_TEST_JUPYTER_URL").unwrap()).unwrap();
+    let token = std::env::var("OPENIDEA_TEST_JUPYTER_TOKEN").ok().or(in_url).unwrap_or_default();
+    let spec = kernel_specs(&server, &token).await.unwrap().remove(0).name;
+    let base = base.unwrap_or(server.clone());
+    (server.clone(), token.clone(), KernelTarget::Remote(RemoteKernel { base, token, spec }))
+}
+
+/// The ids of the server's kernels.
+async fn server_kernels(server: &str, token: &str) -> std::collections::HashSet<String> {
+    let client = ide_http::client::shared_without_redirects().unwrap();
+    let reply = client.get(format!("{server}api/kernels")).header("Authorization", format!("token {token}"));
+    let kernels: Vec<Value> = serde_json::from_slice(&reply.send().await.unwrap().bytes().await.unwrap()).unwrap();
+    kernels.iter().map(|kernel| kernel["id"].as_str().unwrap().to_owned()).collect()
+}
+
+#[tokio::test]
+#[ignore = "requires OPENIDEA_TEST_JUPYTER_URL (and OPENIDEA_TEST_JUPYTER_TOKEN) of a running Jupyter server"]
+async fn closing_a_notebook_while_its_remote_kernel_starts_deletes_the_kernel() {
+    let (server, token, target) = remote(None).await;
+    let before = server_kernels(&server, &token).await;
+    let root = tempfile::tempdir().unwrap();
+    let notebook = root.path().join("closed.ipynb");
+    let manager = manager(root.path());
+    let starting = {
+        let (manager, notebook) = (manager.clone(), notebook.clone());
+        tokio::spawn(async move { run(&manager, &notebook, target, "1").await })
+    };
+    // Closed once the server has the kernel, before it answers.
+    while server_kernels(&server, &token).await == before {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    manager.shutdown_kernel(&notebook).await.unwrap();
+    assert!(starting.await.unwrap().0.is_err());
+    for _ in 0..50 {
+        if server_kernels(&server, &token).await == before {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("the kernel was left on the server");
+}
+
+#[tokio::test]
+#[ignore = "requires OPENIDEA_TEST_JUPYTER_URL (and OPENIDEA_TEST_JUPYTER_TOKEN) of a running Jupyter server"]
+async fn a_dropped_connection_to_the_server_reconnects_and_keeps_the_kernel() {
+    // A forwarder in front of the server whose connections can be cut.
+    let (server, token, _) = remote(None).await;
+    let upstream = reqwest::Url::parse(&server).unwrap();
+    let upstream = format!("{}:{}", upstream.host_str().unwrap(), upstream.port_or_known_default().unwrap());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/", listener.local_addr().unwrap());
+    let links: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>> = Arc::default();
+    let accepting = {
+        let links = links.clone();
+        tokio::spawn(async move {
+            while let Ok((mut client, _)) = listener.accept().await {
+                let upstream = upstream.clone();
+                links.lock().unwrap().push(tokio::spawn(async move {
+                    let mut server = tokio::net::TcpStream::connect(upstream).await.unwrap();
+                    let _ = tokio::io::copy_bidirectional(&mut client, &mut server).await;
+                }));
+            }
+        })
+    };
+    let (_, _, target) = remote(Some(base)).await;
+    let before = server_kernels(&server, &token).await;
+    let root = tempfile::tempdir().unwrap();
+    let notebook = root.path().join("dropped.ipynb");
+    let manager = manager(root.path());
+    let (result, _) = run(&manager, &notebook, target.clone(), "kept = 5").await;
+    assert_eq!(result.unwrap().status, "ok");
+    links.lock().unwrap().drain(..).for_each(|link| link.abort());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (result, outputs) = run(&manager, &notebook, target, "kept").await;
+    assert_eq!(result.unwrap().status, "ok", "the run goes to the same kernel after reconnecting");
+    assert!(outputs.iter().any(|o| o.kind == "execute_result" && o.content["data"]["text/plain"] == "5"));
+    manager.shutdown_kernel(&notebook).await.unwrap();
+    accepting.abort();
+    assert_eq!(server_kernels(&server, &token).await, before, "closing the notebook deletes its one kernel");
 }

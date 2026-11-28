@@ -1,9 +1,19 @@
 import { Channel } from "@tauri-apps/api/core";
 import type { EditorState } from "@codemirror/state";
-import type { NotebookCellDoc, NotebookSnapshot, NotebookEdit, NotebookOutputEvent, Sdk, RequestId } from "@/bindings";
+import type {
+  JupyterServer,
+  NotebookCellDoc,
+  NotebookSnapshot,
+  NotebookEdit,
+  NotebookOutputEvent,
+  Sdk,
+  RequestId,
+} from "@/bindings";
 import { call, commands, IpcError, isTauri, nextRequestId, onIdeEvent } from "@/platform/ipc";
 import { notifyEditorDocumentChanged } from "@/workbench/contributions";
 import { OutputReducer } from "./outputs";
+
+let savedServers: Promise<JupyterServer[]> | null = null;
 
 export const notebookBackend = {
   open: (path: string) => call(commands.notebookOpen(path)),
@@ -25,6 +35,15 @@ export const notebookBackend = {
     output: Channel<NotebookOutputEvent>,
   ) => call(commands.notebookExecute(id, cells, python, request, output)),
   environments: () => Promise.all([call(commands.sdkDetect("python")), call(commands.sdkPythonEffective(null))]),
+  /** Saved Jupyter servers, probed over the network once for every notebook until `refresh`. */
+  servers: (refresh = false) => {
+    if (refresh || !savedServers)
+      savedServers = call(commands.jupyterServers()).catch((error: unknown) => {
+        savedServers = null;
+        throw error;
+      });
+    return savedServers;
+  },
   cancel: (request: RequestId) => commands.cancelRequest(request),
 };
 
@@ -48,6 +67,8 @@ export interface NotebookViewState {
   kernel: string;
   python: string | null;
   environments: Sdk[];
+  /** Saved Jupyter servers and their kernel specs. */
+  servers: JupyterServer[];
   pending: number;
   /** Language-server documents of the code cells, by cell id (none without a server). */
   cellDocs: ReadonlyMap<string, NotebookCellDoc>;
@@ -109,6 +130,7 @@ export class NotebookSession {
     kernel: "idle",
     python: null,
     environments: [],
+    servers: [],
     pending: 0,
     cellDocs: new Map(),
     reveal: null,
@@ -287,7 +309,10 @@ export class NotebookSession {
       .finally(() => this.publish({ loading: false }));
     return this.loading;
   }
-  async detectEnvironments() {
+  async detectEnvironments(refreshServers = false) {
+    // Saved servers answer over the network, or not at all: local interpreters do not wait.
+    // They are optional: an untrusted project or an unreachable store leaves local ones.
+    const servers = this.backend.servers(refreshServers).catch(() => []);
     try {
       const [environments, effective] = await this.backend.environments();
       if (!this.disposed) {
@@ -297,6 +322,8 @@ export class NotebookSession {
     } catch (error) {
       if (!this.disposed) this.reportOperation(error, "environment");
     }
+    const listed = await servers;
+    if (!this.disposed) this.publish({ servers: listed });
   }
   selectPython(python: string) {
     if (this.state.running || this.state.frozen) return;

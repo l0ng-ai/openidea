@@ -3,7 +3,7 @@ use crate::ops::Channel;
 use base64::Engine;
 use ide_core::error::ErrorKind;
 use ide_core::{CancellationToken, IdeError, IdeEvent, IdeResult, IpcPath, SharedSink};
-use ide_notebook::kernel::{KernelManager, KernelOutput};
+use ide_notebook::kernel::{KernelManager, KernelOutput, KernelTarget};
 use ide_notebook::{NotebookDocument, NotebookEdit, NotebookSnapshot};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -375,7 +375,7 @@ impl NotebookService {
     pub(crate) async fn execute(
         self: &Arc<Self>,
         admission: ExecutionAdmission,
-        python: PathBuf,
+        target: KernelTarget,
         on_output: Channel<NotebookOutputEvent>,
     ) -> IdeResult<NotebookSnapshot> {
         let document = admission.guard.document.clone();
@@ -384,7 +384,7 @@ impl NotebookService {
         tokio::spawn(async move {
             let ExecutionAdmission { guard, generation, plan } = admission;
             let result =
-                service.run_batch(document.clone(), generation, plan, python, guard.batch.clone(), on_output).await;
+                service.run_batch(document.clone(), generation, plan, target, guard.batch.clone(), on_output).await;
             drop(guard);
             match result {
                 Ok(()) => snapshot(&document),
@@ -400,7 +400,7 @@ impl NotebookService {
         document: Arc<ManagedDocument>,
         generation: u64,
         plan: Vec<(String, String)>,
-        python: PathBuf,
+        target: KernelTarget,
         batch: Arc<Batch>,
         on_output: Channel<NotebookOutputEvent>,
     ) -> IdeResult<()> {
@@ -428,7 +428,7 @@ impl NotebookService {
                 .kernels
                 .execute(
                     &document.path,
-                    &python,
+                    target.clone(),
                     &source,
                     batch.cancel.clone(),
                     Arc::new(move |output: KernelOutput| {
