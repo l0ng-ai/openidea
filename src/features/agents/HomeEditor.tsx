@@ -34,6 +34,7 @@ import {
   useAgentCommands,
   useAgents,
 } from "./store";
+import { useGitEnabled } from "@/platform/gitEnabled";
 import { useAgentSettings } from "./agentSettings";
 import styles from "./Home.module.css";
 
@@ -154,7 +155,8 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
   const agentCommands = useAgentCommands(provider?.id, null, provider?.commands ?? NO_COMMANDS);
   const providerOptions: SelectOption[] = agentOptions(providers, tx, providerIcon);
   // Without git under the project there are no worktrees: force the local checkout.
-  const isGit = project?.workspace ? repoState?.root === root && repoState.isGit : (project?.isGit ?? false);
+  const gitOn = useGitEnabled();
+  const isGit = gitOn && (project?.workspace ? repoState?.root === root && repoState.isGit : (project?.isGit ?? false));
   const isolation = isGit ? draft.isolation : "local";
   const base = draft.base ?? current;
   const canStart =

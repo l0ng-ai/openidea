@@ -922,12 +922,27 @@ pub fn route(spec: &[Entry], id: &str) -> Option<MenuRoute> {
 
 /// `entries` without the action `id` (and a separator it leaves doubled or trailing).
 pub fn without_action(entries: Vec<Entry>, id: &str) -> Vec<Entry> {
+    without(entries, &|e| e == id)
+}
+
+/// `entries` without the submenus and actions [`MenuConfig::hidden`] lists.
+pub fn without_hidden(entries: Vec<Entry>, config: &MenuConfig) -> Vec<Entry> {
+    if config.hidden.is_empty() {
+        return entries;
+    }
+    without(entries, &|id| config.hidden.iter().any(|h| h == id))
+}
+
+/// `entries` without the actions and submenus whose id `drop` matches, and the separators
+/// left dangling.
+fn without(entries: Vec<Entry>, drop: &dyn Fn(&str) -> bool) -> Vec<Entry> {
     let mut out: Vec<Entry> = Vec::with_capacity(entries.len());
     for e in entries {
         match e {
-            Entry::Action { id: a, .. } if a == id => {}
+            Entry::Action { id: a, .. } if drop(a) => {}
+            Entry::Submenu { id: sid, .. } if drop(sid) => {}
             Entry::Submenu { id: sid, label, children } => {
-                out.push(Entry::Submenu { id: sid, label, children: without_action(children, id) })
+                out.push(Entry::Submenu { id: sid, label, children: without(children, drop) })
             }
             Entry::Separator if matches!(out.last(), None | Some(Entry::Separator)) => {}
             e => out.push(e),
@@ -971,6 +986,9 @@ pub struct MenuConfig {
     /// Ids of the toggle actions currently on.
     #[serde(default)]
     pub checked: Vec<String>,
+    /// Ids of submenus and actions left out of the menu (the Git menu while Git integration is off).
+    #[serde(default)]
+    pub hidden: Vec<String>,
 }
 
 /// An item of a frontend-listed menu slot.

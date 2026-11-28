@@ -155,6 +155,11 @@ pub trait PluginWorkspace: Send + Sync {
     fn git_executable(&self, _root: &Path) -> Option<PathBuf> {
         None
     }
+    /// Settings › Version Control › Git › Enable Git integration of the project at `root`:
+    /// off, plugins find no repository there.
+    fn git_enabled(&self, _root: &Path) -> bool {
+        true
+    }
     /// Root of the project open in `window`.
     fn project_of(&self, window: &str) -> Option<PathBuf>;
     /// Windows showing the open project at `root`, the most recently focused first.
@@ -1584,6 +1589,9 @@ pub(super) fn commit_draft(
         if cancel.is_cancelled() {
             return Err(HostError::Cancelled);
         }
+        if !workspace.git_enabled(&repo.root.0) {
+            return Err(HostError::Failed("Git integration is disabled".into()));
+        }
         let Some(r) = ide_vcs::Repo::discover(&repo.root.0).map_err(failed)? else {
             return Err(HostError::NotFound(format!("{} is not in a git repository", repo.root.0.display())));
         };
@@ -2633,6 +2641,9 @@ impl HostApi for PluginApi {
     }
 
     fn vcs_remotes(&self, root: &Path) -> Result<Vec<(String, String)>, HostError> {
+        if self.shared.workspace().is_some_and(|w| !w.git_enabled(root)) {
+            return Ok(Vec::new());
+        }
         let Some(repo) = ide_vcs::Repo::discover(root).map_err(failed)? else { return Ok(Vec::new()) };
         plugin_remotes(&repo)
     }
@@ -4053,6 +4064,13 @@ impl PluginWorkspace for HostWorkspace {
         HostWorkspace::project_covering(self, root)?.git_executable()
     }
 
+    fn git_enabled(&self, root: &Path) -> bool {
+        match HostWorkspace::project_covering(self, root) {
+            Some(project) => project.git_enabled(),
+            None => self.0.upgrade().is_none_or(|host| host.global_settings.read_effective(|s| s.vcs.git.enabled)),
+        }
+    }
+
     fn project_of(&self, window: &str) -> Option<PathBuf> {
         self.0.upgrade()?.project(window).ok().map(|p| p.root.clone())
     }
@@ -5144,6 +5162,9 @@ impl PluginApi {
     /// Status needs it there: a restricted repository is read without its config, so it knows
     /// no upstream. The other reads use [`Self::read_repo`] and never execute.
     fn repo(&self, root: &Path) -> Result<Option<ide_vcs::Repo>, HostError> {
+        if self.shared.workspace().is_some_and(|w| !w.git_enabled(root)) {
+            return Ok(None);
+        }
         let repo = ide_vcs::Repo::discover(root).map_err(failed)?;
         if let Some(repo) = &repo
             && let Some(workspace) = self.shared.workspace()
@@ -5157,6 +5178,9 @@ impl PluginApi {
     fn read_repo(&self, root: &Path) -> Result<Option<ide_vcs::Repo>, HostError> {
         if !self.shared.workspace().is_some_and(|w| w.trusted(root)) {
             return Err(HostError::Failed("the project is in Restricted Mode: git does not run there".into()));
+        }
+        if self.shared.workspace().is_some_and(|w| !w.git_enabled(root)) {
+            return Ok(None);
         }
         let repo = ide_vcs::Repo::discover(root).map_err(failed)?;
         if let Some(repo) = &repo {

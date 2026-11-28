@@ -761,6 +761,8 @@ impl Host {
         {
             let weak = Arc::downgrade(&project);
             project.agents.set_git_executable_hook(Arc::new(move || weak.upgrade()?.git_executable()));
+            let weak = Arc::downgrade(&project);
+            project.agents.set_git_enabled_hook(Arc::new(move || weak.upgrade().is_some_and(|p| p.git_enabled())));
         }
         self.insert_project(window, project.clone());
         for (key, text, dirty) in &carried {
@@ -1123,6 +1125,10 @@ fn scan_repositories(
 /// The project-open scan and the watcher's rescan share these skip rules.
 fn discover_repositories(root: &Path, settings: &SettingsStore, build_cache: &Path, trusted: bool) -> IdeResult<Repos> {
     let settings = settings.effective();
+    // Git integration off: the project has no repositories, so nothing runs git for it.
+    if !settings.vcs.git.enabled {
+        return Ok(Repos::default());
+    }
     let found = detect_repositories(root, &settings, build_cache, trusted)?;
     let mappings = &settings.vcs.mappings;
     if mappings.is_empty() {
@@ -1169,6 +1175,11 @@ impl Project {
             &self.build_cache_dir(),
             self.is_trusted(),
         );
+    }
+
+    /// Settings › Version Control › Git › Enable Git integration (effective value).
+    pub fn git_enabled(&self) -> bool {
+        self.settings.read_effective(|s| s.vcs.git.enabled)
     }
 
     /// Settings › Version Control › Git › Path to Git executable, this project's value (its own

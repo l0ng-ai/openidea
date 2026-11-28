@@ -37,6 +37,7 @@ import { windowDragRegion } from "./window-drag";
 import { useToolbarCenter } from "./toolbarCenter";
 import { useProjectGradientAnchor } from "./projectGradient";
 import { useToolbarLabelWidth } from "./toolbarLabelWidth";
+import { useGitEnabled } from "@/platform/gitEnabled";
 
 export function orderTitleItems(items: Iterable<TitleItemContribution>) {
   const all = [...items];
@@ -109,6 +110,7 @@ const VCS_FALLBACK_ACTIONS = ["vcs.createRepository", "vcs.clone", "vcs.localHis
 
 /** "Version Control ▾" shown while no VCS widget is contributed (project without a repository). */
 function VcsFallback() {
+  const gitOn = useGitEnabled();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLButtonElement>(null);
   const actions = useActions((s) => s.actions);
@@ -116,7 +118,8 @@ function VcsFallback() {
     () => VCS_FALLBACK_ACTIONS.filter((id) => actions.has(id)).map((action) => ({ kind: "action", action })),
     [actions],
   );
-  if (!items.length) return null;
+  // Git integration off: no Version Control widget at all (Local History stays in Find Action).
+  if (!gitOn || !items.length) return null;
   return (
     <>
       <BarButton

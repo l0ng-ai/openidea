@@ -3,6 +3,13 @@ import { splitCommandLine } from "./commandLine";
 import { DEFAULT_WORKFLOW, validateWorkflow } from "./workflowSettings";
 
 describe("validateWorkflow", () => {
+  it("keeps Git enabled unless switched off", () => {
+    const enabled = (value: unknown) => validateWorkflow({ vcs: { git: { enabled: value } } }).vcs.git.enabled;
+    expect(enabled(undefined)).toBe(true);
+    expect(enabled(false)).toBe(false);
+    expect(enabled("off")).toBe(true);
+  });
+
   it("recurses into submodules when cloning unless switched off", () => {
     const recurse = (cloneSubmodules: unknown) =>
       validateWorkflow({ vcs: { git: { cloneSubmodules } } }).vcs.git.cloneSubmodules;

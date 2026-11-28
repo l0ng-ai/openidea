@@ -823,6 +823,7 @@ pub async fn vcs_log_users(host: &Host, window: &str, repo: Option<PathBuf>) -> 
 
 #[command(trust = always)]
 pub async fn vcs_open_external_log(host: &Host, window: &str, path: PathBuf) -> IdeResult<ide_core::IpcPath> {
+    host.ensure_git_enabled(window)?;
     let path = dunce::canonicalize(path)?;
     let repo = Repo::discover(&path)?.ok_or_else(|| ide_core::IdeError::unavailable("folder is not a Git worktree"))?;
     let root = repo.root().to_path_buf();
@@ -1909,6 +1910,9 @@ pub async fn vcs_clone(
     on_output: Channel<String>,
 ) -> IdeResult<()> {
     let settings = host.global_settings.effective();
+    if !settings.vcs.git.enabled {
+        return Err(ide_core::IdeError::unavailable("Git integration is disabled in Settings › Version Control › Git"));
+    }
     let recurse_submodules = settings.vcs.git.clone_submodules;
     let cancel = host.begin_request(request);
     let result = tokio::task::spawn_blocking(move || {
@@ -1926,6 +1930,7 @@ pub async fn vcs_clone(
 /// it is trusted, the default one in a window without a project.
 #[command(trust = always)]
 pub async fn vcs_init(host: &Host, window: &str, dir: PathBuf) -> IdeResult<()> {
+    host.ensure_git_enabled(window)?;
     let git = host.project(window).ok().and_then(|p| p.git_executable());
     blocking(move || ide_vcs::with_git_executable(git.as_deref(), || ide_vcs::init(&dir))).await
 }

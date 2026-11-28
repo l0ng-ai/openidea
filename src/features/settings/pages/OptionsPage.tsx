@@ -1,6 +1,15 @@
-import { FormGroup, Section, SettingNumber, SettingSelect, SettingText, SettingToggle } from "../components/Form";
+import type { ReactNode } from "react";
+import {
+  FormGroup,
+  Section,
+  SettingNumber,
+  SettingSelect,
+  SettingText,
+  SettingToggle,
+  Toggle,
+} from "../components/Form";
 import { useSetting } from "../components/context";
-import type { OptionSpec, PageSpec } from "./spec";
+import type { MasterToggleSpec, OptionSpec, PageSpec } from "./spec";
 import styles from "./Pages.module.css";
 
 const optionKey = (o: OptionSpec) => ("key" in o ? o.key : o.label);
@@ -54,8 +63,8 @@ function ToggleOption({ o, disabled }: { o: Extract<OptionSpec, { kind: "toggle"
 /** Renders a declarative page spec. */
 export function OptionsPage({ spec }: { spec: PageSpec }) {
   const Footer = spec.footer;
-  return (
-    <div className={styles.options}>
+  const body = (
+    <>
       {spec.sections?.map((section, i) => (
         <Section key={section.title ?? i} title={section.title}>
           {section.options.map((o) => (
@@ -64,6 +73,25 @@ export function OptionsPage({ spec }: { spec: PageSpec }) {
         </Section>
       ))}
       {Footer && <Footer />}
-    </div>
+    </>
+  );
+  return (
+    <div className={styles.options}>{spec.master ? <MasterGate master={spec.master}>{body}</MasterGate> : body}</div>
+  );
+}
+
+/** The page's master checkbox; while it is unchecked the rest of the page is dimmed and inert. */
+function MasterGate({ master, children }: { master: MasterToggleSpec; children: ReactNode }) {
+  const [on, set] = useSetting<boolean>(master.key, master.scope);
+  const off = !on;
+  return (
+    <>
+      <Section>
+        <Toggle label={master.label} checked={!!on} onChange={set} hint={master.hint} />
+      </Section>
+      <fieldset disabled={off} inert={off} aria-disabled={off} className={off ? styles.gatedOff : styles.gated}>
+        {children}
+      </fieldset>
+    </>
   );
 }

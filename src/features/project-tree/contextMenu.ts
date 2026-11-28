@@ -43,6 +43,7 @@ import { canDownload } from "./download";
 import { isSameOrInside } from "./paths";
 import { useProjectTree } from "./store";
 import { tx, txPart } from "@/platform/i18n";
+import { gitEnabled } from "@/platform/gitEnabled";
 
 /** Keys handled by the project view itself (the default keymap has no entries for them). */
 export const LOCAL_KEYS: Record<string, string> = {
@@ -367,7 +368,7 @@ export function contextMenuItems(nodes: ProjectNode[], at: MenuPoint = "center")
   );
 
   // Git › (`vcsAvailable` also covers repositories nested below a non-Git project root)
-  if (inWorkspace && (project?.isGit || getContext().vcsAvailable === true)) {
+  if (inWorkspace && gitEnabled() && (project?.isGit || getContext().vcsAvailable === true)) {
     const dirs = nodes.map((n) => n.dir);
     push(
       submenu(

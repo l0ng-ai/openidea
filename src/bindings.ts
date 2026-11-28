@@ -8022,6 +8022,11 @@ export type GitOperation_Serialize =
 export type GitSaveChangesPolicy = "shelve" | "stash";
 
 export type GitSettings = {
+	/**
+	 *  Git integration on: off, the IDE finds no repositories and runs no git at all
+	 *  (no status, log, blame, fetch, clone or agent worktrees), and hides its Git UI.
+	 */
+	enabled?: boolean,
 	annotate?: GitAnnotateSettings,
 	/**  Show blame after the current editor line. */
 	inlineBlame?: boolean,
@@ -10598,6 +10603,8 @@ export type MenuConfig = {
 	dynamic?: { [key in string]: DynamicItem[] },
 	/**  Ids of the toggle actions currently on. */
 	checked?: string[],
+	/**  Ids of submenus and actions left out of the menu (the Git menu while Git integration is off). */
+	hidden?: string[],
 };
 
 /**

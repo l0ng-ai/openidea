@@ -4,6 +4,7 @@
  * merge and Local History editors, remote operations.
  */
 import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowSettings";
+import { installGitEnabledContext, whileGitEnabled } from "@/platform/gitEnabled";
 import { useTodoSettings } from "@/platform/todo";
 import { editorsFor, registerEditorContribution } from "@/editor/api";
 import {
@@ -189,6 +190,58 @@ function conflictsBody(names: string[]): string {
     : tx`${names.length} files have conflicts: ${list}`;
 }
 
+/** The Git tool windows, actions, menus, editor markers and background checks. */
+function registerGitContributions(): () => void {
+  const disposers = [
+    installIncomingCheck(),
+    registerActions(openOnRemoteActions),
+    registerOpenOnRemote(),
+    registerActions(copyRepositoryPathActions),
+    registerActions(copyBranchNameActions),
+    registerCopyRepositoryPath(),
+    registerHistoryActions(),
+    registerLogPaneActions(),
+    trackTitleItem(),
+    trackMergeRebaseItem(),
+    installHunkPopup(),
+    installCloneHandoff(),
+    registerOverlay({ id: "vcs.branches", component: BranchesPopupHost }),
+    registerOverlay({ id: "vcs.syncCommits", component: SyncCommitsPopupHost }),
+    activateConflictBanner(),
+    trackCommitWindow(),
+    registerToolWindow({
+      id: "git",
+      title: "Git",
+      icon: "toolwindow-git",
+      anchor: "bottom",
+      order: 5,
+      component: lazyComponent(() => import("./GitLog").then((m) => m.GitToolWindow), { prefetch: true }),
+      headerContent: lazyComponent(() => import("./GitLog").then((m) => m.GitTabs)),
+    }),
+    registerEditorContribution({
+      id: "vcs.changeMarkers",
+      order: 60,
+      extensions: (ctx) => [changeMarkers(ctx), blameSlot(), inlineBlame(ctx)],
+    }),
+    registerMenuGroup({
+      id: "vcs.gutter",
+      menus: ["editorGutter"],
+      order: 10,
+      items: (_menu, { paths: [path] }) => {
+        if (!path || !getContext().vcsAvailable) return [];
+        const shown = editorsFor(path).some((h) => annotationsShown(h.view));
+        return [
+          {
+            label: shown ? "Close Annotations" : "Annotate with Git Blame",
+            run: () => void executeAction("vcs.annotate", path),
+          },
+        ];
+      },
+    }),
+  ];
+  return () => disposers.reverse().forEach((d) => d());
+}
+
 export function activate(): () => void {
   let resolvedNoticeRepo: string | null = null;
   onConflictsChanged((files) => {
@@ -231,6 +284,7 @@ export function activate(): () => void {
 
   useCommit.setState({ signOff: workflowSettings().vcs.git.signOff });
   const disposers = [
+    installGitEnabledContext(),
     installVcsStore(),
     clearUnstashConflictNotices,
     installOperationNoticeExpiry(() => resolvedNoticeRepo),
@@ -260,7 +314,6 @@ export function activate(): () => void {
         .selection.filter((p) => !deleted.has(p))
         .map(stripSlash);
     }),
-    installIncomingCheck(),
     installFileConfirmations(),
     installDiffEditorHost(),
     // Settings › Git › Sign-off commit: the default of Commit Options › Sign-off Commit.
@@ -269,39 +322,15 @@ export function activate(): () => void {
       (signOff) => useCommit.setState({ signOff }),
     ),
     registerVcsActions(),
-    registerActions(openOnRemoteActions),
-    registerOpenOnRemote(),
-    registerActions(copyRepositoryPathActions),
-    registerActions(copyBranchNameActions),
-    registerCopyRepositoryPath(),
-    registerHistoryActions(),
-    registerLogPaneActions(),
     activateSettingsPages(),
     registerLocalHistoryActions(),
     installChangelists(),
     trackOperationContext(),
     registerCompareActions(),
     registerMergeActions(),
-    trackTitleItem(),
-    trackMergeRebaseItem(),
-    installHunkPopup(),
     registerOverlay({ id: "vcs.dialogs", component: VcsDialogHost }),
-    installCloneHandoff(),
-    registerOverlay({ id: "vcs.branches", component: BranchesPopupHost }),
-    registerOverlay({ id: "vcs.syncCommits", component: SyncCommitsPopupHost }),
-    activateConflictBanner(),
     registerWorktreeIncludeEditor(),
     activateConflictMarkers(),
-    trackCommitWindow(),
-    registerToolWindow({
-      id: "git",
-      title: "Git",
-      icon: "toolwindow-git",
-      anchor: "bottom",
-      order: 5,
-      component: lazyComponent(() => import("./GitLog").then((m) => m.GitToolWindow), { prefetch: true }),
-      headerContent: lazyComponent(() => import("./GitLog").then((m) => m.GitTabs)),
-    }),
     registerEditorKind({
       kind: "git-revision",
       standalone: true,
@@ -369,26 +398,8 @@ export function activate(): () => void {
       },
       icon: () => "history",
     }),
-    registerEditorContribution({
-      id: "vcs.changeMarkers",
-      order: 60,
-      extensions: (ctx) => [changeMarkers(ctx), blameSlot(), inlineBlame(ctx)],
-    }),
-    registerMenuGroup({
-      id: "vcs.gutter",
-      menus: ["editorGutter"],
-      order: 10,
-      items: (_menu, { paths: [path] }) => {
-        if (!path || !getContext().vcsAvailable) return [];
-        const shown = editorsFor(path).some((h) => annotationsShown(h.view));
-        return [
-          {
-            label: shown ? "Close Annotations" : "Annotate with Git Blame",
-            run: () => void executeAction("vcs.annotate", path),
-          },
-        ];
-      },
-    }),
+    // Everything that shows or runs Git: registered only while Settings › Git › Enable Git integration is on.
+    whileGitEnabled(registerGitContributions),
   ];
   return () => {
     onConflictsChanged(() => undefined);

@@ -19,6 +19,9 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + '
 /// primary repository (a folder holding several repositories is not one itself).
 fn root(window: &Window, state: &AppState, repo: Option<PathBuf>) -> IdeResult<PathBuf> {
     let project = state.project(window.label())?;
+    if !project.git_enabled() {
+        return Err(IdeError::unavailable("Git integration is disabled in Settings › Version Control › Git"));
+    }
     let repos = project.repos();
     match repo {
         Some(at) => match repos.at_root(&at) {
