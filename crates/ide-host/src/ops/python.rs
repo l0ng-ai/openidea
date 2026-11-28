@@ -52,12 +52,12 @@ pub(super) fn debug_python(config: &LaunchConfig) -> Option<String> {
     extra.get("python")?.as_str().map(str::to_owned)
 }
 
-/// Adds the project's import paths, and the Plots tool window's backend (`plots`), to a debugpy
-/// launch's environment.
+/// Adds the project's import paths, and the Plots tool window's backend (`plots`, with the folder
+/// the debuggee starts in), to a debugpy launch's environment.
 pub(super) fn prepare_debug(
     config: &mut LaunchConfig,
     paths: &[PathBuf],
-    plots: Option<&ide_run::plots::Plots>,
+    plots: Option<(&ide_run::plots::Plots, &Path)>,
 ) -> IdeResult<()> {
     // Adapter-specific env takes precedence over the common launch fields in DAP.
     let mut extra: Option<serde_json::Value> = config.extra_json.as_deref().and_then(|s| serde_json::from_str(s).ok());
@@ -77,8 +77,8 @@ pub(super) fn prepare_debug(
             object.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned()))).collect();
         let inherit = !vars.contains_key("PYTHONPATH");
         ide_run::python_path::extend(&mut vars, paths, inherit)?;
-        if let Some(plots) = plots {
-            ide_run::plots::add(&mut vars, plots, true)?;
+        if let Some((plots, dir)) = plots {
+            ide_run::plots::add(&mut vars, plots, Some(dir))?;
         }
         for (key, value) in vars {
             object.insert(key, serde_json::json!(value));
@@ -86,8 +86,8 @@ pub(super) fn prepare_debug(
         config.extra_json = extra.map(|e| e.to_string());
     } else {
         ide_run::python_path::extend(&mut config.env, paths, true)?;
-        if let Some(plots) = plots {
-            ide_run::plots::add(&mut config.env, plots, true)?;
+        if let Some((plots, dir)) = plots {
+            ide_run::plots::add(&mut config.env, plots, Some(dir))?;
         }
     }
     Ok(())
@@ -146,5 +146,51 @@ mod tests {
             };
             assert_eq!(std::env::split_paths(&vars["PYTHONPATH"]).collect::<Vec<_>>(), [root, vendor]);
         }
+    }
+
+    #[test]
+    fn debug_adds_the_plots_backend_to_the_launch_env_unless_it_sets_one() {
+        let root = std::env::temp_dir().join("project");
+        if ide_core::process::host_var_os_in(&root, "MPLBACKEND").is_some() {
+            eprintln!("skipped: this machine sets MPLBACKEND");
+            return;
+        }
+        let plots = ide_run::plots::Plots { backend: root.join("backend"), dir: root.join("plots") };
+        let launch = |extra: serde_json::Value, env: BTreeMap<String, String>| LaunchConfig {
+            name: "Python".into(),
+            adapter: "debugpy".into(),
+            request: "launch".into(),
+            program: Some("main.py".into()),
+            args: vec![],
+            cwd: None,
+            env,
+            extra_json: Some(extra.to_string()),
+        };
+        let env_of = |config: &LaunchConfig| -> serde_json::Value {
+            serde_json::from_str::<serde_json::Value>(config.extra_json.as_deref().unwrap()).unwrap()["env"].clone()
+        };
+
+        // The launch's own variables stay as they are, other values included.
+        let mut config = launch(serde_json::json!({"env": {"DEBUG": "1", "LEVEL": 3}}), BTreeMap::new());
+        prepare_debug(&mut config, std::slice::from_ref(&root), Some((&plots, &root))).unwrap();
+        let env = env_of(&config);
+        assert_eq!((env["DEBUG"].as_str(), env["LEVEL"].as_i64()), (Some("1"), Some(3)));
+        assert_eq!(env["MPLBACKEND"], "module://openidea_matplotlib_backend");
+        assert_eq!(env["OPENIDEA_PLOTS_DIR"], plots.dir.to_string_lossy().as_ref());
+        let path: Vec<_> = std::env::split_paths(env["PYTHONPATH"].as_str().unwrap()).collect();
+        // A PYTHONPATH this machine sets follows.
+        assert_eq!(path[..2], [plots.backend.clone(), root.clone()]);
+
+        // A backend the launch names, in either environment field, is kept.
+        let mut config = launch(serde_json::json!({"env": {"MPLBACKEND": "Agg"}}), BTreeMap::new());
+        prepare_debug(&mut config, std::slice::from_ref(&root), Some((&plots, &root))).unwrap();
+        let env = env_of(&config);
+        assert_eq!(env["MPLBACKEND"], "Agg");
+        assert!(env.get("OPENIDEA_PLOTS_DIR").is_none());
+        let own = BTreeMap::from([("MPLBACKEND".into(), "TkAgg".into())]);
+        let mut config = launch(serde_json::json!({}), own);
+        prepare_debug(&mut config, std::slice::from_ref(&root), Some((&plots, &root))).unwrap();
+        assert_eq!(config.env["MPLBACKEND"], "TkAgg");
+        assert!(!config.env.contains_key("OPENIDEA_PLOTS_DIR"));
     }
 }

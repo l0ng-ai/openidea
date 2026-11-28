@@ -62,8 +62,10 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
             python.as_deref(),
             config.cwd.as_deref(),
         );
-        let plots = super::plots::prepare(host, &project);
-        super::python::prepare_debug(&mut config, &paths, plots.as_ref())?;
+        let plots = super::plots::prepare(host, &project).await;
+        // The debuggee inherits the IDE's environment as a run started in its folder does.
+        let dir = config.cwd.as_deref().map(|c| c.to_path_buf()).unwrap_or_else(|| project.root.clone());
+        super::python::prepare_debug(&mut config, &paths, plots.as_ref().map(|p| (p, dir.as_path())))?;
     }
     let label = window;
     let (sink, flush_output) = output::coalescing_sink(host.window_sink(label));

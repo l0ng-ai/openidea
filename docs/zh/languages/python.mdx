@@ -140,6 +140,14 @@ Ruff 只为位于 Ruff 配置之下的文件启动：`ruff.toml`、`.ruff.toml`�
 
 Jupyter Notebook（`.ipynb`）在 Python 解释器上运行，见 [Notebook](/zh/guide/notebook)。
 
+### 绘图
+
+运行、调试会话和 Python 控制台中的 matplotlib 图形会显示在右侧的 **绘图** 工具窗口，而不是 matplotlib 自己的窗口：`plt.show()` 添加所有打开的图形，`Figure.show()` 添加该图形。窗口保留最新的 100 张图，可以另存为 PNG、复制到剪贴板或删除。
+
+- 运行自行设置了 `MPLBACKEND` 时保留它的后端，包括从登录 shell 或项目 `.envrc` 继承的值。`matplotlibrc` 中的 `backend:` 会被覆盖。
+- IDE 的后端通过 `PYTHONPATH` 找到。子进程去掉 `PYTHONPATH` 却保留 `MPLBACKEND` 时（`python -I`，或 `subprocess` 传入替换过的 `env`）无法导入它；请为该进程取消设置 `MPLBACKEND`。
+- 在 **设置 › 语言和框架 › Python 解释器** 中关闭 **在工具窗口中显示绘图**。
+
 ## 调试
 
 Python 调试使用 debugpy。开始调试时如果缺少 debugpy，OpenIDEA 会提示安装。IDE 在自己的工具文件夹里保存一份 debugpy，并把它加载到运行程序的解释器中，所以项目环境里不需要安装 debugpy。
