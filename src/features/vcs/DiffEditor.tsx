@@ -563,6 +563,7 @@ function TwoPaneDiff({
   const version = useVcs((s) => s.version);
   const heads = useVcs((s) => s.heads);
   const contextKey = JSON.stringify(data.context ?? null);
+  const annotationsKey = JSON.stringify(data.annotations ?? null);
   const dataRef = useRef(data);
   dataRef.current = data;
   /** Diff viewer providers' contributions for this diff (`registerDiffViewerProvider`). */
@@ -1121,12 +1122,14 @@ function TwoPaneDiff({
     setViewer(built);
     setViewsGen((g) => g + 1);
     requestAnimationFrame(() => updateChunkInfo());
+    // The request by content, not identity: a host that rebuilds an equal request on each render
+    // (the Commit preview on every status refresh) keeps the views, with their caret and selection.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     contribs,
     attached,
     staticA,
     staticB,
-    edited,
     lang,
     viewMode,
     single,
@@ -1143,15 +1146,13 @@ function TwoPaneDiff({
     canStageIndex,
     canUnstage,
     updateChunkInfo,
-    data.annotations,
+    annotationsKey,
     includable,
-    path,
     indexSide,
     indexDoc,
     indexReady,
     unifiedOnLeft,
-    left,
-    right,
+    sidesKey,
     swapped,
     reload,
     viewState,
