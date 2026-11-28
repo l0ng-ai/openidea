@@ -41,6 +41,7 @@ import {
   rowKey,
   vcsRequirement,
   withoutMedia,
+  isPypiPage,
   type Row,
 } from "./model";
 import styles from "./PythonPackages.module.css";
@@ -705,8 +706,6 @@ function openLink(e: MouseEvent) {
   void openExternalUrl(a.getAttribute("href") ?? "");
 }
 
-const sameUrl = (a: string, b: string) => a.replace(/\/+$/, "").toLowerCase() === b.replace(/\/+$/, "").toLowerCase();
-
 /**
  * The project's links and its description from PyPI: rendered when Markdown, else as text. Its
  * images come from other sites (badges, GitHub), so they load only when asked for.
@@ -717,7 +716,7 @@ function Docs({ found }: { found: PypiPackage }) {
   const html = useMarkupHtml({ kind: "markdown", value: found.markdown ? found.description : "" });
   const shown = useMemo(() => (media ? { html, count: 0 } : withoutMedia(html)), [media, html]);
   const pypi = `https://pypi.org/project/${found.name}/`;
-  const links = [{ label: "PyPI", url: pypi }, ...found.links.filter((l) => !sameUrl(l.url, pypi))];
+  const links = [{ label: "PyPI", url: pypi }, ...found.links.filter((l) => !isPypiPage(l.url, found.name))];
   return (
     <>
       <nav className={styles.links} aria-label={tx("Project links")} onClick={openLink}>

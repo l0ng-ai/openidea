@@ -10,6 +10,7 @@ import {
   isArchive,
   isVcsUrl,
   withoutMedia,
+  isPypiPage,
 } from "./model";
 
 const INSTALLED = [
@@ -140,5 +141,35 @@ describe("withoutMedia", () => {
     expect(html).toBe("<p>build ok</p>");
     expect(count).toBe(3);
     expect(withoutMedia("<p>text</p>")).toEqual({ html: "<p>text</p>", count: 0 });
+  });
+
+  it("holds back what the sanitizer lets through: image inputs and background attributes", async () => {
+    const { markdownToSafeHtml } = await import("@/editor/lsp/markdownParser");
+    const safe = markdownToSafeHtml(
+      '<input type="image" src="https://t/x.png"><table><tr><td background="https://t/y.png">c</td></tr></table>',
+    );
+    expect(safe).toContain("https://t/");
+    const { html, count } = withoutMedia(safe);
+    expect(html).not.toContain("https://t/");
+    expect(count).toBe(2);
+  });
+});
+
+describe("isPypiPage", () => {
+  it("knows a project's PyPI page however it is spelled", () => {
+    for (const url of [
+      "https://pypi.org/project/zope.interface/",
+      "http://pypi.org/project/zope-interface",
+      "https://www.pypi.org/project/Zope_Interface/",
+    ])
+      expect(isPypiPage(url, "zope.interface")).toBe(true);
+    for (const url of [
+      "https://pypi.org/project/zope.interface/#files",
+      "https://pypi.org/project/zope.interface/1.0/",
+      "https://pypi.org/project/zope.schema/",
+      "https://github.com/zopefoundation/zope.interface",
+      "not a url",
+    ])
+      expect(isPypiPage(url, "zope.interface")).toBe(false);
   });
 });
