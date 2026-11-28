@@ -383,7 +383,17 @@ fn create_conda_env(
         None => query_in(base, &["--version"], None, &[], Duration::from_secs(15))
             .and_then(|v| v.strip_prefix("Python ").map(str::to_owned)),
     };
-    stream(&conda, &conda_create_args(location, version.as_deref()), None, &env, cancel, on_line)?;
+    let output = std::cell::RefCell::new(Vec::new());
+    let on_line = |line: String| {
+        output.borrow_mut().push(line.clone());
+        on_line(line);
+    };
+    stream(&conda, &conda_create_args(location, version.as_deref()), None, &env, cancel, &on_line).map_err(|e| {
+        match conda_error(&output.borrow()) {
+            Some(summary) => IdeError::new(e.kind, summary),
+            None => e,
+        }
+    })?;
     let prefix = match name {
         Some(name) => prefixes()
             .into_iter()
@@ -398,6 +408,23 @@ fn create_conda_env(
         .unwrap_or_else(|| prefix.join(bin_dir()).join(exe("python")));
     crate::discover::python_sdk(&python, "conda", prefix.parent().and_then(Path::parent))
         .ok_or_else(|| IdeError::internal(format!("{} was not created", python.display())))
+}
+
+/// conda's own error from its output: the `…Error:` line and what follows, up to the channel
+/// list and search hints, which would otherwise fill the end of the output (`- python=3.99`
+/// is what the user needs to see, not `https://anaconda.org`).
+pub(crate) fn conda_error(lines: &[String]) -> Option<String> {
+    let start = lines.iter().position(|l| {
+        l.split_once(':').is_some_and(|(name, _)| name.ends_with("Error") && !name.contains(char::is_whitespace))
+    })?;
+    let block: Vec<&str> = lines[start..]
+        .iter()
+        .map(|l| l.trim_end())
+        .take_while(|l| !l.starts_with("Current channels:") && !l.starts_with("To search for alternate channels"))
+        .filter(|l| !l.is_empty())
+        .take(12)
+        .collect();
+    Some(block.join("\n"))
 }
 
 /// `base` when it is a Python version (`3.12`) rather than an interpreter's path.

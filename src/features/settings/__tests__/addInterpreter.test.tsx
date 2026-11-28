@@ -148,6 +148,21 @@ describe("Add Python Interpreter", () => {
     await act(async () => finish(ok(VENV)));
   });
 
+  it("defaults conda to a well-supported version only once detection has settled", async () => {
+    let detected: (v: unknown) => void = () => {};
+    mocks.detect.mockReturnValue(new Promise((r) => (detected = r)));
+    open();
+    fireEvent.click(screen.getByRole("button", { name: "Conda Environment" }));
+    // While detecting, nothing is picked and OK stays disabled.
+    expect(screen.getByRole("button", { name: "OK" })).toBeDisabled();
+    await act(async () => detected(ok([])));
+    // No local Python: not the newest listed version, but one with wide package support.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Python version" })).toHaveTextContent("Python 3.13"),
+    );
+    expect(screen.getByRole("button", { name: "OK" })).toBeEnabled();
+  });
+
   it("passes each tool and Poetry hides the location field", async () => {
     let finish: (v: unknown) => void = () => {};
     mocks.createVenv.mockImplementation(() => new Promise((r) => (finish = r)));
