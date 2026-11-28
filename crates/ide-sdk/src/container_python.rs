@@ -84,6 +84,16 @@ pub fn local_folder(dir: &Path, container: &str) -> PathBuf {
     container.split('/').filter(|c| !c.is_empty() && *c != "." && *c != "..").fold(dir.join("fs"), |p, c| p.join(c))
 }
 
+/// Where a snapshot in `dir` keeps the file `container_path` of its container (a
+/// traceback's `site-packages` module); `None` outside the folders it copied.
+pub fn snapshot_file(dir: &Path, snapshot: &Snapshot, container_path: &str) -> Option<PathBuf> {
+    let copied = snapshot
+        .folders
+        .iter()
+        .any(|f| container_path.strip_prefix(f.trim_end_matches('/')).is_some_and(|rest| rest.starts_with('/')));
+    (copied && !container_path.split('/').any(|c| c == "..")).then(|| local_folder(dir, container_path))
+}
+
 /// `snapshot.json` of a snapshot folder.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -310,6 +320,22 @@ mod tests {
         );
         assert_eq!(dir_name("sha256:0123456789abcdef0123"), "0123456789abcdef");
         assert_eq!(dir_name("target/../x y"), "target____x_y");
+    }
+
+    #[test]
+    fn finds_files_of_copied_folders_only() {
+        let snapshot =
+            Snapshot { folders: vec!["/usr/local/lib/python3.12/site-packages/".into()], ..Snapshot::default() };
+        let dir = Path::new("snap");
+        let api = "/usr/local/lib/python3.12/site-packages/requests/api.py";
+        assert_eq!(snapshot_file(dir, &snapshot, api), Some(local_folder(dir, api)));
+        for outside in [
+            "/usr/local/lib/python3.12/os.py",
+            "/usr/local/lib/python3.12/site-packages-old/x.py",
+            "/usr/local/lib/python3.12/site-packages/../os.py",
+        ] {
+            assert_eq!(snapshot_file(dir, &snapshot, outside), None, "{outside}");
+        }
     }
 
     fn snapshot_in(dir: &Path, neutral: Option<PathBuf>) -> Snapshot {

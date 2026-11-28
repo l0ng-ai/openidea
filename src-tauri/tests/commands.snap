@@ -616,6 +616,7 @@ run_apply_settings                           trusted            project_host bin
 run_attach                                   always             project_host bindings async
 run_close_stdin                              trusted            project_host bindings sync
 run_configs                                  trusted            project_host bindings async
+run_container_path                           trusted            project_host bindings async
 run_dotnet_resolve                           trusted            project_host bindings async
 run_env_files                                trusted            project_host bindings async
 run_gradle_init_script                       trusted            project_host bindings async

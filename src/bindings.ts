@@ -1743,6 +1743,12 @@ export const commands = {
 	runCloseStdin: (id: RunId) => typedError<null, IdeError>(__TAURI_INVOKE("run_close_stdin", { id })),
 	/**  Detected configs followed by user-defined ones (user ids win on conflict). */
 	runConfigs: () => typedError<RunConfig_Serialize[], IdeError>(__TAURI_INVOKE("run_configs")),
+	/**
+	 *  The file here of a path a container printed (`/app/main.py`, a `site-packages` module
+	 *  in a traceback): in the project a Docker or Compose run target mounts, or in the copy
+	 *  of the container interpreter's libraries. `None`: no such file.
+	 */
+	runContainerPath: (path: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("run_container_path", { path })),
 	runDotnetResolve: (config: RunConfig_Deserialize, debug: boolean) => typedError<RunConfig_Serialize, IdeError>(__TAURI_INVOKE("run_dotnet_resolve", { config, debug })),
 	/**  Variables of the `.env` files a debug launch names, for the debugger to start with. */
 	runEnvFiles: (files: string[]) => typedError<{ [key in string]: string }, IdeError>(__TAURI_INVOKE("run_env_files", { files })),

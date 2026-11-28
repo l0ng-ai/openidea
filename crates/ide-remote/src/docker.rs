@@ -61,6 +61,14 @@ pub fn default_container_root(root: &Path) -> String {
     format!("/workspaces/{}", if name.is_empty() { "project" } else { &name })
 }
 
+/// The file on this machine of `container_path`, a path inside the project folder
+/// `container_root` of a container (a traceback line); `None` outside it.
+pub fn project_file(container_path: &str, container_root: &str, root: &Path) -> Option<std::path::PathBuf> {
+    let rest = container_path.strip_prefix(container_root.trim_end_matches('/'))?.strip_prefix('/')?;
+    let parts: Vec<&str> = rest.split('/').filter(|c| !c.is_empty() && *c != ".").collect();
+    (!parts.is_empty() && !parts.contains(&"..")).then(|| parts.iter().fold(root.to_path_buf(), |p, c| p.join(c)))
+}
+
 /// A container name for a run of `config_id`: Docker allows `[a-zA-Z0-9][a-zA-Z0-9_.-]*`.
 pub fn container_name(config_id: &str, unique: &str) -> String {
     let id: String = config_id
@@ -568,6 +576,16 @@ mod tests {
             Some(ContainerDebug { port: 41234, bootstrap_dir: Path::new("/data/container-debug"), debugpy: None });
         let args = container_config(&config("python3", &["main.py"]), &r).unwrap().args.join(" ");
         assert!(args.contains("openidea/debug:ro python:3.12") && !args.contains("debugpy-lib"), "{args}");
+    }
+
+    #[test]
+    fn maps_project_files_printed_in_the_container() {
+        let root = Path::new("project");
+        assert_eq!(project_file("/app/pkg/main.py", "/app/", root), Some(root.join("pkg").join("main.py")));
+        assert_eq!(project_file("/app/./main.py", "/app", root), Some(root.join("main.py")));
+        for outside in ["/application/main.py", "/app", "/app/", "/app/../etc/passwd", "/usr/lib/x.py"] {
+            assert_eq!(project_file(outside, "/app", root), None, "{outside}");
+        }
     }
 
     #[cfg(unix)]

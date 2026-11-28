@@ -8,6 +8,8 @@ const files: Record<string, string> = {
   "/p/src/main/java/com/acme/Util.java": "package com.acme;\nclass Util {}",
   "/p/other/Util.java": "package org.other;\nclass Util {}",
   "/p/src/main/kotlin/Orders.kt": "package com.acme.orders\nfun main() {}",
+  "/p/aaa/main.py": "print('another main.py')",
+  "/p/pkg/main.py": "raise SystemExit(1)",
   "/p/cypress/e2e/cart.cy.ts":
     'describe("cart", () => {\n  it("adds", () => {});\n  context("totals", () => {\n    it("adds", () => {});\n  });\n});',
 };
@@ -28,6 +30,11 @@ vi.mock("@/platform/ipc", () => ({
         .slice(0, limit)
         .map((path) => ({ path, relPath: path.slice(3) })),
     lspWorkspaceSymbols: async () => symbols.list,
+    runContainerPath: async (path: string) =>
+      ({
+        "/app/pkg/main.py": "/p/pkg/main.py",
+        "/usr/lib/site-packages/requests/api.py": "/snap/fs/usr/lib/site-packages/requests/api.py",
+      })[path] ?? null,
   },
 }));
 
@@ -40,6 +47,16 @@ describe("JS tests without a line", () => {
     expect(await declarationLine("/p/cypress/e2e/cart.cy.ts", ["cart", "gone"])).toBeUndefined();
     // The first call loads the run targets' parsers.
   }, 60_000);
+});
+
+describe("paths printed in a container", () => {
+  it("open the mounted project file or the copied library, not any file of that name", async () => {
+    const at = (path: string) => ({ path, line: 3, resolve: "path" as const });
+    expect(await resolveTarget(at("/app/pkg/main.py"), "/p")).toBe("/p/pkg/main.py");
+    expect(await resolveTarget(at("/usr/lib/site-packages/requests/api.py"), "/p")).toBe(
+      "/snap/fs/usr/lib/site-packages/requests/api.py",
+    );
+  });
 });
 
 describe("JVM stack frame resolution", () => {

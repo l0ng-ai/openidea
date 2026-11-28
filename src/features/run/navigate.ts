@@ -106,6 +106,12 @@ export async function resolveTarget(target: FileTarget, cwd: string, module?: st
       const fromRoot = joinPath(root, target.path);
       if (fromRoot !== candidate && (await exists(fromRoot))) return fromRoot;
     }
+    // Printed in a container of a Docker / Compose run target: the mounted project or the
+    // copy of the container interpreter's libraries.
+    if (target.path.startsWith("/")) {
+      const local = await call(commands.runContainerPath(target.path)).catch(() => null);
+      if (local) return local;
+    }
   }
   return (await findByName(target, module)) ?? (target.className ? findLibraryClass(target.className) : null);
 }
