@@ -284,6 +284,8 @@ describe("catalogs", () => {
   /** Product names intentionally kept as written in every locale. */
   const SAME_AS_ENGLISH = new Set([
     "Flutter DevTools",
+    // The package index's name, as a project link in the Python Packages tool window.
+    "PyPI",
     // Pub / Flutter command names on the pubspec.yaml banner.
     "Pub get",
     "Pub upgrade",

@@ -1576,6 +1576,12 @@ export const commands = {
 	latest: string,
 	/**  Releases with files to install, most recently uploaded first; yanked ones left out. */
 	versions: string[],
+	/**  The project's long description (usually its README). */
+	description: string,
+	/**  Whether `description` is Markdown; otherwise reStructuredText or plain text. */
+	markdown: boolean,
+	/**  The project's web links (Homepage, Documentation, Source, …); `http(s)` only. */
+	links: PypiLink[],
 } | null, IdeError>(__TAURI_INVOKE("pypi_package", { name, request })),
 	/**
 	 *  PyPI project names containing `query`, best match first, 51 at most (50 are shown). Answers from a cached copy of
@@ -12250,6 +12256,11 @@ export type PushTargetChoices = {
 
 export type PushTargetState = "ready" | "diverged" | "fetchRequired";
 
+export type PypiLink = {
+	label: string,
+	url: string,
+};
+
 export type PypiPackage = {
 	/**  The name as PyPI spells it. */
 	name: string,
@@ -12258,6 +12269,12 @@ export type PypiPackage = {
 	latest: string,
 	/**  Releases with files to install, most recently uploaded first; yanked ones left out. */
 	versions: string[],
+	/**  The project's long description (usually its README). */
+	description: string,
+	/**  Whether `description` is Markdown; otherwise reStructuredText or plain text. */
+	markdown: boolean,
+	/**  The project's web links (Homepage, Documentation, Source, …); `http(s)` only. */
+	links: PypiLink[],
 };
 
 export type PytestFixtureAt = {

@@ -3,10 +3,12 @@
  * looked up by exact name, and install / upgrade / uninstall through pip or uv.
  */
 import { Channel } from "@tauri-apps/api/core";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type MouseEvent } from "react";
+import { useMarkupHtml } from "@/editor/lsp/markdown";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
 import { call, commands, isCancelled, nextRequestId, type PypiPackage, type PythonPackage } from "@/platform/ipc";
+import { openExternalUrl } from "@/platform/openUrl";
 import { dirname, useProject } from "@/platform/project";
 import { usePythonPackages } from "@/platform/pythonPackages";
 import {
@@ -576,6 +578,47 @@ function Details({
           )}
         </div>
       )}
+      {asked && info.found && <Docs found={info.found} />}
     </div>
+  );
+}
+
+/** Links open in the browser; a relative one has nothing to open and must not navigate the app. */
+function openLink(e: MouseEvent) {
+  const a = (e.target as HTMLElement).closest("a");
+  if (!a) return;
+  e.preventDefault();
+  void openExternalUrl(a.getAttribute("href") ?? "");
+}
+
+/** The project's links and its description from PyPI: rendered when Markdown, else as text. */
+function Docs({ found }: { found: PypiPackage }) {
+  const tx = useTx();
+  const html = useMarkupHtml({ kind: "markdown", value: found.markdown ? found.description : "" });
+  const links = [{ label: "PyPI", url: `https://pypi.org/project/${found.name}/` }, ...found.links];
+  return (
+    <>
+      <nav className={styles.links} aria-label={tx("Project links")} onClick={openLink}>
+        {links.map((l) => (
+          <a key={l.url} href={l.url} title={l.url}>
+            {l.label}
+          </a>
+        ))}
+      </nav>
+      {found.description.trim() &&
+        (found.markdown ? (
+          <div
+            className={styles.doc}
+            role="document"
+            aria-label={tx("Package description")}
+            onClick={openLink}
+            dangerouslySetInnerHTML={{ __html: html }}
+          />
+        ) : (
+          <pre className={styles.plainDoc} aria-label={tx("Package description")}>
+            {found.description}
+          </pre>
+        ))}
+    </>
   );
 }
