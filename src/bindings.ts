@@ -1186,6 +1186,8 @@ export const commands = {
 	mcpRegenerateToken: () => typedError<null, IdeError>(__TAURI_INVOKE("mcp_regenerate_token")),
 	mcpReportProblems: (reset: boolean, files: FileProblems[]) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_report_problems", { reset, files })),
 	mcpRespond: (id: number, allow: boolean, error: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_respond", { id, allow, error })),
+	/**  Like `mcp_respond`, with a value for requests that ask for one (the started debug session id). */
+	mcpRespondWith: (id: number, allow: boolean, error: string | null, value: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_respond_with", { id, allow, error, value })),
 	mcpServerStatus: () => typedError<McpServerStatus, IdeError>(__TAURI_INVOKE("mcp_server_status")),
 	mcpSetFocusedEditor: (editor: {
 	path: IpcPath,
@@ -10376,6 +10378,15 @@ export type McpBackgroundProjects =
 /**  Only the folders in [`McpServerSettings::background_project_paths`] (and below them). */
 "listed";
 
+/**  A line breakpoint in an MCP request, with a 1-based line like every other MCP tool. */
+export type McpBreakpoint = {
+	line: number,
+	enabled: boolean,
+	condition: string | null,
+	hitCondition: string | null,
+	logMessage: string | null,
+};
+
 /**  Summary of one server discovered inside an external MCP configuration file. */
 export type McpDiscoveredServer = {
 	name: string,
@@ -10604,9 +10615,25 @@ export type McpTransport = "stdio" | "http" | "sse";
  *  line) in the Run tool window's agent tab `name`, on pipes, answered once the process
  *  started or failed to. `RunConfiguration` starts a run configuration (a serialized
  *  `RunConfig`, its before launch tasks already done) in the Run tool window as the user's
- *  Run would, answered the same way.
+ *  Run would, answered the same way. `DebugConfiguration` does the same in Debug mode, so
+ *  the window's own Debug action builds the launch. `Breakpoints` replaces the window's
+ *  breakpoints, which the editor owns, persists and mirrors to the backend.
  */
-export type McpUiRequest = { type: "confirm"; client: string; tool: string; subject: string; project: string; detail: string | null } | { type: "openFile"; path: IpcPath; line: number | null; column: number | null } | { type: "agentRun"; name: string; command: string; cwd: IpcPath; env: { [key in string]: string } } | { type: "runConfiguration"; config: unknown };
+export type McpUiRequest = { type: "confirm"; client: string; tool: string; subject: string; project: string; detail: string | null } | { type: "openFile"; path: IpcPath; line: number | null; column: number | null } | { type: "agentRun"; name: string; command: string; cwd: IpcPath; env: { [key in string]: string } } | { type: "runConfiguration"; config: unknown } | 
+/**  Start a run configuration in Debug mode as the IDE's Debug action would. */
+{ type: "debugConfiguration"; config: unknown } | 
+/**
+ *  Sets one line breakpoint in the window's own list, by absolute editor path. The window
+ *  applies the edit to its current list, so a user's pending edit is not overwritten.
+ */
+{ type: "setBreakpoint"; path: string; breakpoint: McpBreakpoint } | 
+/**
+ *  Removes breakpoints from the window's own list. With no path, removes every line
+ *  breakpoint; with a path but no line, removes all of that file's breakpoints.
+ */
+{ type: "removeBreakpoints"; path: string | null; line: number | null } | 
+/**  Flushes the editor's pending breakpoint syncs before an agent reads the backend list. */
+{ type: "flushBreakpoints" };
 
 export type MemoryCategory = 
 /**  The backend and its WebView processes. */

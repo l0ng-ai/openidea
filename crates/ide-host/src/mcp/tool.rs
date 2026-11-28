@@ -70,6 +70,10 @@ impl Call {
     pub async fn ask(&self, request: ide_core::event::McpUiRequest) -> IdeResult<()> {
         self.host.mcp_requests.ask(self, request).await
     }
+    /// A window request that answers with a value, e.g. the debug session it started.
+    pub async fn ask_value(&self, request: ide_core::event::McpUiRequest) -> IdeResult<Option<String>> {
+        self.host.mcp_requests.ask_value(self, request).await
+    }
     /// Whether the project has a window to show what the tool starts (not one loaded for MCP alone).
     pub fn has_window(&self) -> bool {
         self.host.mcp_requests.window_ready(&self.window)

@@ -3,12 +3,16 @@ import { create } from "zustand";
 import { executeActionOrThrow } from "@/platform/actions";
 import { call, commands, type McpUiRequest } from "@/platform/ipc";
 import { editorService } from "@/workbench/contributions";
+import { takeMcpDebugSession } from "./session";
 
 type Confirm = Extract<McpUiRequest, { type: "confirm" }> & { id: number; error?: string };
 export const useMcpConfirms = create<{ queue: Confirm[] }>(() => ({ queue: [] }));
 export type Respond = (id: number, allow: boolean, error?: string) => Promise<void>;
 const respond: Respond = async (id, allow, error) => {
   await call(commands.mcpRespond(id, allow, error ?? null));
+};
+const respondValue = async (id: number, allow: boolean, error: string | null, value: string | null) => {
+  await call(commands.mcpRespondWith(id, allow, error, value));
 };
 const sending = new Set<number>();
 export function dropConfirm(id: number) {
@@ -48,6 +52,43 @@ export async function handleMcpRequest(
     // A run configuration an agent started: a Run tool window tab, as if the user pressed Run.
     try {
       await executeActionOrThrow("run.mcpStart", request.config);
+      await send(id, true);
+    } catch (error) {
+      await send(id, false, error instanceof Error ? error.message : String(error)).catch(() => {});
+    }
+    return;
+  }
+  if (request.type === "debugConfiguration") {
+    // The IDE's Debug action builds the launch; the answer carries the session it started.
+    try {
+      await executeActionOrThrow("debug.mcpStart", request.config);
+      await respondValue(id, true, null, String(takeMcpDebugSession() ?? ""));
+    } catch (error) {
+      await respondValue(id, false, error instanceof Error ? error.message : String(error), null).catch(() => {});
+    }
+    return;
+  }
+  if (request.type === "setBreakpoint") {
+    try {
+      await executeActionOrThrow("debug.mcpSetBreakpoint", request);
+      await send(id, true);
+    } catch (error) {
+      await send(id, false, error instanceof Error ? error.message : String(error)).catch(() => {});
+    }
+    return;
+  }
+  if (request.type === "removeBreakpoints") {
+    try {
+      await executeActionOrThrow("debug.mcpRemoveBreakpoints", request);
+      await send(id, true);
+    } catch (error) {
+      await send(id, false, error instanceof Error ? error.message : String(error)).catch(() => {});
+    }
+    return;
+  }
+  if (request.type === "flushBreakpoints") {
+    try {
+      await executeActionOrThrow("debug.mcpFlushBreakpoints", undefined);
       await send(id, true);
     } catch (error) {
       await send(id, false, error instanceof Error ? error.message : String(error)).catch(() => {});

@@ -3,8 +3,9 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 
 const mocks = vi.hoisted(() => ({
   respond: vi.fn(async () => ({ status: "ok", data: null })),
+  respondValue: vi.fn(async () => ({ status: "ok", data: null })),
   open: vi.fn(),
-  execute: vi.fn(async (_id: string, _arg?: unknown) => {}),
+  execute: vi.fn(async (_id: string, _arg?: unknown): Promise<unknown> => undefined),
 }));
 vi.mock("@/platform/actions", async (original) => ({
   ...(await original<object>()),
@@ -12,11 +13,12 @@ vi.mock("@/platform/actions", async (original) => ({
 }));
 vi.mock("@/platform/ipc", async (original) => ({
   ...(await original<object>()),
-  commands: { mcpRespond: mocks.respond },
+  commands: { mcpRespond: mocks.respond, mcpRespondWith: mocks.respondValue },
 }));
 vi.mock("@/workbench/contributions", () => ({ editorService: () => ({ openFile: mocks.open }) }));
 import { McpConfirmHost } from "./ConfirmDialog";
 import { answerConfirm, denyAll, dropConfirm, handleMcpRequest, useMcpConfirms } from "./requests";
+import { setMcpDebugSession } from "./session";
 
 const confirm = {
   type: "confirm",
@@ -105,5 +107,30 @@ describe("MCP confirmations", () => {
     mocks.execute.mockRejectedValueOnce(new Error("The run did not start"));
     await handleMcpRequest(12, { type: "runConfiguration", config });
     expect(mocks.respond).toHaveBeenCalledWith(12, false, "The run did not start");
+  });
+  it("starts an agent's configuration in Debug mode and answers with the session id", async () => {
+    const config = { id: "server", name: "Server", kind: "shell", command: "npm run dev" };
+    setMcpDebugSession(42);
+    await handleMcpRequest(13, { type: "debugConfiguration", config });
+    expect(mocks.execute).toHaveBeenCalledWith("debug.mcpStart", config);
+    expect(mocks.respondValue).toHaveBeenCalledWith(13, true, null, "42");
+    mocks.execute.mockRejectedValueOnce(new Error("The debug session did not start"));
+    await handleMcpRequest(14, { type: "debugConfiguration", config });
+    expect(mocks.respondValue).toHaveBeenCalledWith(14, false, "The debug session did not start", null);
+  });
+  it("applies breakpoint edits in the window and reports errors", async () => {
+    const breakpoint = { line: 3, enabled: true, condition: null, hitCondition: null, logMessage: null };
+    const set = { type: "setBreakpoint", path: "/project/src/main.py", breakpoint } as const;
+    await handleMcpRequest(15, set);
+    expect(mocks.execute).toHaveBeenCalledWith("debug.mcpSetBreakpoint", set);
+    expect(mocks.respond).toHaveBeenCalledWith(15, true, null);
+    const remove = { type: "removeBreakpoints", path: "/project/src/main.py", line: 3 } as const;
+    await handleMcpRequest(16, remove);
+    expect(mocks.execute).toHaveBeenCalledWith("debug.mcpRemoveBreakpoints", remove);
+    mocks.execute.mockRejectedValueOnce(new Error("No project window"));
+    await handleMcpRequest(17, set);
+    expect(mocks.respond).toHaveBeenCalledWith(17, false, "No project window");
+    await handleMcpRequest(18, { type: "flushBreakpoints" });
+    expect(mocks.execute).toHaveBeenCalledWith("debug.mcpFlushBreakpoints", undefined);
   });
 });

@@ -205,6 +205,14 @@ impl Suspension {
         stops.all.is_some() || !stops.threads.is_empty()
     }
 
+    /// The most recently stopped individual thread, when the stop named one. A stop of every
+    /// thread (`allThreadsStopped`) names none, so callers fall back to the adapter's first thread.
+    pub fn stopped_thread(&self) -> Option<i64> {
+        let stops = self.0.lock();
+        let latest = stops.latest()?;
+        stops.threads.iter().find(|&&(_, ticket)| ticket == latest).map(|&(id, _)| id)
+    }
+
     /// A `stopped` event; `all`: its `allThreadsStopped`.
     pub fn stopped(&self, thread: Option<i64>, all: bool) {
         let mut stops = self.0.lock();

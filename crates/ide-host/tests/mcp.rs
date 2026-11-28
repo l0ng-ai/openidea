@@ -1744,3 +1744,169 @@ async fn a_run_started_without_confirmation_works_in_a_background_project_and_ho
     let loaded = h.host.mcp_background.snapshot(&h.host, std::time::Instant::now()).remove(0);
     assert_eq!(loaded.kept_open_by, None, "the call is over and the run has exited");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn debugger_tools_are_registered_with_their_expected_metadata() {
+    let h = Harness::new();
+    h.trust().await;
+    let tools = Registry::new(h.host.clone()).tools(&h.root).unwrap();
+    let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    for name in [
+        "xdebug_get_debugger_status",
+        "xdebug_start_debugger_session",
+        "xdebug_control_session",
+        "xdebug_list_breakpoints",
+        "xdebug_set_breakpoint",
+        "xdebug_remove_breakpoint",
+        "xdebug_run_to_line",
+        "xdebug_get_threads",
+        "xdebug_get_stack",
+        "xdebug_get_frame_values",
+        "xdebug_get_value_by_path",
+        "xdebug_evaluate_expression",
+        "xdebug_set_variable",
+    ] {
+        assert!(names.contains(&name), "{name} is not registered");
+    }
+    let status = tools.iter().find(|t| t.name == "xdebug_get_debugger_status").unwrap();
+    assert!(status.read_only && !status.destructive);
+    let start = tools.iter().find(|t| t.name == "xdebug_start_debugger_session").unwrap();
+    assert!(!start.read_only && !start.destructive);
+    let control = tools.iter().find(|t| t.name == "xdebug_control_session").unwrap();
+    assert_eq!(control.input_schema["required"], json!(["action"]));
+    let set = tools.iter().find(|t| t.name == "xdebug_set_breakpoint").unwrap();
+    assert_eq!(set.input_schema["required"], json!([]));
+}
+
+/// Answers the debugger's breakpoint requests the way the editor does: it applies the edit to
+/// its current list and mirrors it to the backend.
+fn debugger_window(h: &Harness) {
+    use ide_core::event::McpUiRequest;
+    h.host.mcp_requests.set_ready("main", true);
+    let (host, events) = (h.host.clone(), h.events.clone());
+    tokio::spawn(async move {
+        let mut handled = std::collections::HashSet::new();
+        loop {
+            let request = events.lock().unwrap().iter().find_map(|e| match e {
+                IdeEvent::McpRequest { id, request }
+                    if !handled.contains(id)
+                        && matches!(
+                            request,
+                            McpUiRequest::SetBreakpoint { .. }
+                                | McpUiRequest::RemoveBreakpoints { .. }
+                                | McpUiRequest::FlushBreakpoints
+                        ) =>
+                {
+                    Some((*id, request.clone()))
+                }
+                _ => None,
+            });
+            let Some((id, request)) = request else {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                continue;
+            };
+            handled.insert(id);
+            let owner = host.owner_window("main").to_owned();
+            let (mut files, _, _) = host.debugger.breakpoints(&owner);
+            match request {
+                McpUiRequest::SetBreakpoint { path, breakpoint } => {
+                    let path = PathBuf::from(path);
+                    let line = breakpoint.line - 1;
+                    let bps = files.entry(path).or_default();
+                    bps.retain(|b| b.line != line);
+                    bps.push(ide_dap::Breakpoint {
+                        line,
+                        condition: breakpoint.condition,
+                        hit_condition: breakpoint.hit_condition,
+                        log_message: breakpoint.log_message,
+                        enabled: breakpoint.enabled,
+                    });
+                    bps.sort_by_key(|b| b.line);
+                }
+                McpUiRequest::RemoveBreakpoints { path, line } => match path {
+                    Some(path) => {
+                        if let Some(bps) = files.get_mut(&PathBuf::from(path)) {
+                            match line {
+                                Some(line) => bps.retain(|b| b.line != line - 1),
+                                None => bps.clear(),
+                            }
+                        }
+                    }
+                    None => files.clear(),
+                },
+                McpUiRequest::FlushBreakpoints => {}
+                _ => unreachable!(),
+            }
+            host.debugger.replace_breakpoints(&owner, files).await.unwrap();
+            let _ = host.mcp_requests.answer("main", id, true, None);
+        }
+    });
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn debugger_status_and_session_calls_without_a_session() {
+    let h = Harness::new();
+    h.trust().await;
+    assert_eq!(h.json("xdebug_get_debugger_status", json!({})).await, json!({"sessions": [], "activeSessionId": null}));
+    let err = h.error("xdebug_control_session", json!({"action": "RESUME"})).await;
+    assert!(err.contains("no active debug session"), "{err}");
+    let err = h.error("xdebug_start_debugger_session", json!({})).await;
+    assert!(err.contains("Pass either configurationName or filePath + line"), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn debugger_breakpoints_can_be_set_listed_and_removed() {
+    let h = Harness::new();
+    h.trust().await;
+    debugger_window(&h);
+    std::fs::write(h.root.join("src/main.py"), "first\nsecond\nthird\n").unwrap();
+    let set =
+        h.json("xdebug_set_breakpoint", json!({"filePath": "src/main.py", "line": 2, "condition": "x > 1"})).await;
+    assert_eq!(set["id"], "line:src/main.py:2");
+    assert_eq!(set["line"], 2);
+    assert_eq!(set["lineText"], "second");
+    assert_eq!(set["verified"], false);
+    let listed = h.json("xdebug_list_breakpoints", json!({"filePath": "src/main.py"})).await;
+    let breakpoints = listed["breakpoints"].as_array().unwrap();
+    assert_eq!(breakpoints.len(), 1);
+    assert_eq!(breakpoints[0]["condition"], "x > 1");
+    assert_eq!(breakpoints[0]["enabled"], true);
+    // Updating one field leaves the others alone.
+    h.json("xdebug_set_breakpoint", json!({"breakpointId": "line:src/main.py:2", "enabled": false})).await;
+    let listed = h.json("xdebug_list_breakpoints", json!({"filePath": "src/main.py"})).await;
+    let breakpoints = listed["breakpoints"].as_array().unwrap();
+    assert_eq!(breakpoints[0]["condition"], "x > 1");
+    assert_eq!(breakpoints[0]["enabled"], false);
+    let removed = h.json("xdebug_remove_breakpoint", json!({"breakpointId": "line:src/main.py:2"})).await;
+    assert_eq!(removed["removed"], true);
+    assert_eq!(removed["count"], 1);
+    let listed = h.json("xdebug_list_breakpoints", json!({})).await;
+    assert_eq!(listed["breakpoints"].as_array().unwrap().len(), 0);
+    // Removing a missing breakpoint is idempotent.
+    let removed = h.json("xdebug_remove_breakpoint", json!({"breakpointId": "line:src/main.py:2"})).await;
+    assert_eq!(removed["removed"], false);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn debugger_breakpoints_update_by_id_and_clear_by_file() {
+    let h = Harness::new();
+    h.trust().await;
+    debugger_window(&h);
+    std::fs::write(h.root.join("src/main.py"), "first\nsecond\nthird\n").unwrap();
+    h.json("xdebug_set_breakpoint", json!({"filePath": "src/main.py", "line": 1})).await;
+    h.json("xdebug_set_breakpoint", json!({"filePath": "src/main.py", "line": 3})).await;
+    let updated = h
+        .json(
+            "xdebug_set_breakpoint",
+            json!({"breakpointId": "line:src/main.py:3", "enabled": false, "condition": null}),
+        )
+        .await;
+    assert_eq!(updated["line"], 3);
+    let listed = h.json("xdebug_list_breakpoints", json!({"filePath": "src/main.py"})).await;
+    let breakpoints = listed["breakpoints"].as_array().unwrap();
+    assert_eq!(breakpoints.len(), 2);
+    assert_eq!(breakpoints[1]["enabled"], false);
+    assert_eq!(breakpoints[1]["condition"], Value::Null);
+    let removed = h.json("xdebug_remove_breakpoint", json!({"owner": "agent"})).await;
+    assert_eq!(removed["count"], 2);
+}

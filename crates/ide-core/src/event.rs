@@ -15,7 +15,9 @@ use std::sync::Arc;
 /// line) in the Run tool window's agent tab `name`, on pipes, answered once the process
 /// started or failed to. `RunConfiguration` starts a run configuration (a serialized
 /// `RunConfig`, its before launch tasks already done) in the Run tool window as the user's
-/// Run would, answered the same way.
+/// Run would, answered the same way. `DebugConfiguration` does the same in Debug mode, so
+/// the window's own Debug action builds the launch. `Breakpoints` replaces the window's
+/// breakpoints, which the editor owns, persists and mirrors to the backend.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum McpUiRequest {
@@ -41,6 +43,36 @@ pub enum McpUiRequest {
         #[specta(type = specta_typescript::Unknown)]
         config: serde_json::Value,
     },
+    /// Start a run configuration in Debug mode as the IDE's Debug action would.
+    DebugConfiguration {
+        #[specta(type = specta_typescript::Unknown)]
+        config: serde_json::Value,
+    },
+    /// Sets one line breakpoint in the window's own list, by absolute editor path. The window
+    /// applies the edit to its current list, so a user's pending edit is not overwritten.
+    SetBreakpoint {
+        path: String,
+        breakpoint: McpBreakpoint,
+    },
+    /// Removes breakpoints from the window's own list. With no path, removes every line
+    /// breakpoint; with a path but no line, removes all of that file's breakpoints.
+    RemoveBreakpoints {
+        path: Option<String>,
+        line: Option<u32>,
+    },
+    /// Flushes the editor's pending breakpoint syncs before an agent reads the backend list.
+    FlushBreakpoints,
+}
+
+/// A line breakpoint in an MCP request, with a 1-based line like every other MCP tool.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpBreakpoint {
+    pub line: u32,
+    pub enabled: bool,
+    pub condition: Option<String>,
+    pub hit_condition: Option<String>,
+    pub log_message: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
