@@ -9899,6 +9899,7 @@
   "Sign commits with SSH": "使用 SSH 为提交签名",
   "No SSH public keys found in ssh-agent or ~/.ssh.": "在 ssh-agent 和 ~/.ssh 中未找到 SSH 公钥。",
   "ssh-agent doesn't hold this key. If it has a passphrase, add it with ssh-add first.": "ssh-agent 中没有这个密钥。如果它设置了密码，请先用 ssh-add 添加。",
+  "To show SSH-signed commits as verified in the log, list the key in the file that gpg.ssh.allowedSignersFile names.": "要在日志中把 SSH 签名的提交显示为已验证，请把该密钥写入 gpg.ssh.allowedSignersFile 指定的文件。",
   "Select a signing key": "选择签名密钥",
   "No OpenPGP signing keys found.": "未找到 OpenPGP 签名密钥。",
   "Changes are saved to this repository's Git config.": "更改将保存到此仓库的 Git 配置。",

@@ -300,6 +300,14 @@ function RepositorySigning({
                   searchable
                 />
               </Row>
+              {ssh && (
+                <div className={styles.signingHint}>
+                  <T>
+                    To show SSH-signed commits as verified in the log, list the key in the file that
+                    gpg.ssh.allowedSignersFile names.
+                  </T>
+                </div>
+              )}
               {dirty && (
                 <div className={styles.signingHint}>
                   <T>Changes are saved to this repository's Git config.</T>

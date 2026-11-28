@@ -3355,6 +3355,7 @@
   "Sign commits with SSH": "Sign commits with SSH",
   "No SSH public keys found in ssh-agent or ~/.ssh.": "No SSH public keys found in ssh-agent or ~/.ssh.",
   "ssh-agent doesn't hold this key. If it has a passphrase, add it with ssh-add first.": "ssh-agent doesn't hold this key. If it has a passphrase, add it with ssh-add first.",
+  "To show SSH-signed commits as verified in the log, list the key in the file that gpg.ssh.allowedSignersFile names.": "To show SSH-signed commits as verified in the log, list the key in the file that gpg.ssh.allowedSignersFile names.",
   "Select a signing key": "Select a signing key",
   "No OpenPGP signing keys found.": "No OpenPGP signing keys found.",
   "Changes are saved to this repository's Git config.": "Changes are saved to this repository's Git config.",

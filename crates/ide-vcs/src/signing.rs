@@ -145,6 +145,16 @@ impl Repo {
                 )?;
             }
         }
+        // A new format without a new key: the old key belongs to the other format.
+        if edit.format.as_deref().is_some_and(|format| format != current) && edit.key.is_none() {
+            let path = staged.path().to_str().ok_or_else(|| IdeError::invalid("non-UTF-8 Git config path"))?;
+            let args = ["config", "--file", path, "--unset-all", "user.signingkey"];
+            let out = cli::run_cancellable_raw(self.root(), &args, &CancellationToken::default())?;
+            // 5: the key was not set in this file.
+            if !matches!(out.code, Some(0 | 5)) {
+                return Err(cli::failure(&args, &out.stderr, &out.stdout, out.code));
+            }
+        }
         // Git's config writer replaces the staging file, so reopen its final path.
         let mut updated = std::fs::File::open(staged.path())?;
         lock.with_mut(|file| {
@@ -356,6 +366,13 @@ mod tests {
         assert_eq!(config.key.as_deref(), Some("key::ssh-ed25519 AAAA"));
         let bad = GitSigningEdit { enabled: None, key: Some("a\nb".into()), format: None };
         assert!(repo.edit_signing(bad).is_err());
+
+        // Switching the format with signing off must not leave the other format's key behind.
+        repo.edit_signing(GitSigningEdit { enabled: Some(false), key: None, format: Some("openpgp".into()) }).unwrap();
+        repo.edit_signing(GitSigningEdit { enabled: Some(false), key: Some(FINGERPRINT.into()), format: None })
+            .unwrap();
+        repo.edit_signing(GitSigningEdit { enabled: None, key: None, format: Some("ssh".into()) }).unwrap();
+        assert_eq!(repo.signing_config().unwrap().key, None);
 
         git(&["config", "--local", "gpg.format", "x509"]);
         assert!(repo.edit_signing(enable()).is_err());
