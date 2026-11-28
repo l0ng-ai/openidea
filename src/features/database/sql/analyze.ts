@@ -147,22 +147,23 @@ class Parens {
   }
 }
 
+/** Half-open token range of the statement containing the editor offset. */
+export function statementTokenRange(tokens: readonly Token[], pos: number) {
+  let start = 0;
+  for (let i = 0; i < tokens.length; i++) {
+    if (!isP(tokens[i], ";")) continue;
+    if (tokens[i]!.to > pos) return { start, end: i };
+    start = i + 1;
+  }
+  return { start, end: tokens.length };
+}
+
 export function analyze(text: string, pos: number, driver: SqlDriver, lexed: Lexed = lex(text, driver)): Analysis {
   const word = WORD_BEFORE.exec(text.slice(Math.max(0, pos - 256), pos))![0];
   const prefix = { from: pos - word.length, text: word };
   const all = lexed.tokens;
 
-  // The statement: between the `;` before the caret word and the next one.
-  let a = 0;
-  let b = all.length;
-  for (let i = 0; i < all.length; i++) {
-    if (!isP(all[i], ";")) continue;
-    if (all[i]!.to <= prefix.from) a = i + 1;
-    else {
-      b = i;
-      break;
-    }
-  }
+  const { start: a, end: b } = statementTokenRange(all, prefix.from);
   const st = all.slice(a, b);
   const sFrom = a > 0 ? all[a - 1]!.to : 0;
   const sTo = b < all.length ? all[b]!.from : text.length;

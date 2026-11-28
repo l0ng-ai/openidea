@@ -19,8 +19,9 @@ import {
   type TableCommandTarget,
 } from "./tableEditorFocus";
 import { useProject } from "@/platform/project";
-import { useRemote } from "@/platform/remote";
+import { projectLocation, useRemote } from "@/platform/remote";
 import {
+  editorService,
   registerEditorKind,
   registerOverlay,
   registerProjectViewRoot,
@@ -247,6 +248,14 @@ export function activate(): () => void {
     registerDatabaseWindow(),
     registerResultsDestination(),
     registerEditorKind({
+      kind: "db-workspace",
+      singleton: true,
+      component: lazyComponent(() => import("./WorkspaceEditor").then((m) => m.WorkspaceEditor)),
+      title: () => tx("Query Workspace"),
+      icon: () => "database",
+      keepAlive: true,
+    }),
+    registerEditorKind({
       kind: TABLE_KIND,
       component: lazyComponent(() => import("./TableEditor").then((m) => m.TableEditor)),
       title: tableTitle,
@@ -321,6 +330,7 @@ export function activate(): () => void {
         executions: {},
         dialog: null,
         newMenuOpen: false,
+        workspaceSettingsRequest: null,
       });
     }),
     useDatabase.subscribe((s, prev) => {
@@ -366,6 +376,22 @@ export function activate(): () => void {
         keywords: ["data sources", "sql", "tables"],
         when: "projectOpen",
         run: () => toolWindowService().show(DB_TOOL_WINDOW, true),
+      },
+      {
+        id: "db.queryWorkspace",
+        title: "Query Workspace",
+        category: "Tools",
+        icon: "database",
+        keywords: ["cross-database", "join", "workspace"],
+        when: "projectOpen",
+        run: async ({ arg }) => {
+          const location = projectLocation(useProject.getState().project?.root);
+          if (!location) return;
+          const key = "db-workspace:" + location;
+          const current = projectRequest();
+          await editorService().openInput({ kind: "db-workspace", key }, { focus: true });
+          if (arg === "configure" && current()) useDatabase.setState({ workspaceSettingsRequest: key });
+        },
       },
       {
         id: "db.newDataSource",

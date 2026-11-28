@@ -278,34 +278,39 @@ async fn duckdb_named_memory_lives_until_disconnect() -> IdeResult<()> {
         vendor: "duckdb".into(),
         global: true,
         jdbc_driver: "duck".into(),
-        url: "jdbc:duckdb:".into(),
         ..Default::default()
     };
     let cancel = CancellationToken::new();
-    db.save_sources(vec![source.clone()]).await?;
-    db.execute("test", "create table session_items as select 42 as id", 1, &cancel).await?;
-    assert_eq!(db.execute("test", "select id from session_items", 1, &cancel).await?.rows, [vec![Some("42".into())]]);
-    let join = "SELECT a.id FROM session_items a JOIN session_items b ON a.id = b.id";
-    let nodes = db.explain("test", join, &cancel, None).await?;
-    let join_node = nodes.iter().position(|n| n.operation == "HASH_JOIN").expect("physical join");
-    assert_eq!(nodes.iter().filter(|n| n.parent == Some(join_node as u32)).count(), 2);
-    assert!(nodes[join_node].properties.iter().any(|p| p.name == "Conditions" && p.value.contains("id")));
-    let batch = db.explain("test", "SELECT 1; SELECT 2", &cancel, None).await.unwrap_err();
-    assert!(batch.message.contains("one statement"));
-    assert!(!db.explain("test", "SELECT ';' AS delimiter", &cancel, None).await?.is_empty());
-    db.execute("test", "SET explain_output = 'optimized_only'", 1, &cancel).await?;
-    assert!(!db.explain("test", "SELECT id FROM session_items", &cancel, None).await?.is_empty());
-    db.explain("test", "INSERT INTO session_items VALUES (43)", &cancel, None).await?;
-    assert_eq!(
-        db.execute("test", "SELECT count(*) FROM session_items", 1, &cancel).await?.rows,
-        [vec![Some("1".into())]]
-    );
-    db.disconnect("test").await;
-    assert!(!db.tables("test", "main").await?.iter().any(|table| table.name == "session_items"));
-    db.disconnect("test").await;
+    for url in ["jdbc:duckdb:", "jdbc:duckdb:memory:default"] {
+        source.url = url.into();
+        db.save_sources(vec![source.clone()]).await?;
+        db.execute("test", "create table session_items as select 42 as id", 1, &cancel).await?;
+        assert_eq!(
+            db.execute("test", "select id from session_items", 1, &cancel).await?.rows,
+            [vec![Some("42".into())]]
+        );
+        let join = "SELECT a.id FROM session_items a JOIN session_items b ON a.id = b.id";
+        let nodes = db.explain("test", join, &cancel, None).await?;
+        let join_node = nodes.iter().position(|n| n.operation == "HASH_JOIN").expect("physical join");
+        assert_eq!(nodes.iter().filter(|n| n.parent == Some(join_node as u32)).count(), 2);
+        assert!(nodes[join_node].properties.iter().any(|p| p.name == "Conditions" && p.value.contains("id")));
+        let batch = db.explain("test", "SELECT 1; SELECT 2", &cancel, None).await.unwrap_err();
+        assert!(batch.message.contains("one statement"));
+        assert!(!db.explain("test", "SELECT ';' AS delimiter", &cancel, None).await?.is_empty());
+        db.execute("test", "SET explain_output = 'optimized_only'", 1, &cancel).await?;
+        assert!(!db.explain("test", "SELECT id FROM session_items", &cancel, None).await?.is_empty());
+        db.explain("test", "INSERT INTO session_items VALUES (43)", &cancel, None).await?;
+        assert_eq!(
+            db.execute("test", "SELECT count(*) FROM session_items", 1, &cancel).await?.rows,
+            [vec![Some("1".into())]]
+        );
+        db.disconnect("test").await;
+        assert!(!db.tables("test", "main").await?.iter().any(|table| table.name == "session_items"));
+        db.disconnect("test").await;
+    }
 
     source.read_only = true;
-    for url in ["jdbc:duckdb:", "jdbc:duckdb::memory:"] {
+    for url in ["jdbc:duckdb:", "jdbc:duckdb::memory:", "jdbc:duckdb:memory:default"] {
         source.url = url.into();
         let err = db.test(&source, None, None).await.unwrap_err();
         assert!(err.message.contains("existing database file"), "{}", err.message);

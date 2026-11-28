@@ -287,19 +287,56 @@ impl ClickhousePool {
     }
 
     /// `max_rows`: the rows the server may send (the skipped ones included).
-    fn request(&self, client: &Client, query_id: &str, max_rows: usize, session: &Session) -> RequestBuilder {
+    fn request(
+        &self,
+        client: &Client,
+        query_id: &str,
+        max_rows: usize,
+        session: &Session,
+        workspace_bytes: Option<usize>,
+    ) -> RequestBuilder {
         let mut request = client
             .post(self.0.endpoint.clone())
             .basic_auth(&self.0.user, Some(&self.0.password))
             .header(reqwest::header::CONTENT_TYPE, "text/plain; charset=utf-8")
-            .query(&self.0.settings)
             .query(&[("query_id", query_id), ("default_format", FORMAT)]);
+        if workspace_bytes.is_some() && !session.strict_read_only {
+            let settings: Vec<_> = self
+                .0
+                .settings
+                .iter()
+                .filter(|(name, _)| !matches!(name.as_str(), "read_overflow_mode" | "timeout_overflow_mode"))
+                .collect();
+            request = request.query(&settings);
+        } else {
+            request = request.query(&self.0.settings);
+        }
         if !session.strict_read_only {
-            request = request.query(&[
-                ("output_format_json_quote_denormals", "1".into()),
-                ("max_result_rows", max_rows.saturating_add(1).to_string()),
-                ("result_overflow_mode", "break".into()),
-            ]);
+            if let Some(bytes) = workspace_bytes {
+                request = request.query(&[
+                    ("max_result_rows", max_rows.to_string()),
+                    ("result_overflow_mode", "throw".into()),
+                    ("read_overflow_mode", "throw".into()),
+                    ("timeout_overflow_mode", "throw".into()),
+                ]);
+                for (name, value) in [
+                    ("max_result_bytes", bytes),
+                    ("max_execution_time", 20),
+                    ("cancel_http_readonly_queries_on_client_close", 1),
+                    ("max_rows_to_read", 1_000_000),
+                    ("max_bytes_to_read", 268_435_456),
+                ] {
+                    if !self.0.settings.iter().any(|(setting, _)| setting == name) {
+                        request = request.query(&[(name, value)]);
+                    }
+                }
+            } else {
+                request = request.query(&[
+                    ("output_format_json_quote_denormals", "1".into()),
+                    ("max_result_rows", max_rows.saturating_add(1).to_string()),
+                    ("result_overflow_mode", "break".into()),
+                ]);
+            }
         }
         if let Some(session_id) = &session.id {
             request = request.query(&[("session_id", session_id.as_str()), ("session_timeout", "3600")]);
@@ -376,7 +413,8 @@ impl ClickhousePool {
             ));
         }
         let query_id = uuid::Uuid::new_v4().to_string();
-        let request = self.request(&client, &query_id, skip.saturating_add(max_rows), session).body(sql.to_owned());
+        let request =
+            self.request(&client, &query_id, skip.saturating_add(max_rows), session, None).body(sql.to_owned());
         let started = Instant::now();
         let request_error = |error: reqwest::Error| {
             if error.is_timeout() && !error.is_connect() {
@@ -402,7 +440,7 @@ impl ClickhousePool {
                         .and_then(|n| n.as_str().and_then(|n| n.parse::<u64>().ok()).or_else(|| n.as_u64()))
                 });
             if !status.is_success() || exception_code.as_deref().is_some_and(|code| code != "0") {
-                let body = response.bytes().await.map_err(request_error)?;
+                let body = response_prefix(response).await.map_err(request_error)?;
                 return Err(self.server_error(status, exception_code.as_deref(), &body));
             }
             let (columns, rows, has_more) = if format.as_deref().is_some_and(|f| f != FORMAT) {
@@ -458,6 +496,66 @@ impl ClickhousePool {
         }
     }
 
+    /// Dedicated workspace sessions consume the response before any grid truncation or formatting.
+    pub(crate) async fn workspace_rows(
+        &self,
+        sql: &str,
+        max_rows: usize,
+        max_bytes: usize,
+        cancel: &CancellationToken,
+        mut consume: impl FnMut(&[u8]) -> IdeResult<()>,
+    ) -> IdeResult<()> {
+        let mut slot = self.session(&self.0.session, cancel).await?;
+        let state = slot.as_mut().expect("session was initialized");
+        let mut stateless;
+        let session = if self.0.use_http_session {
+            state
+        } else {
+            stateless = state.clone();
+            drop(slot);
+            &mut stateless
+        };
+        let client = self.client()?;
+        let query_id = uuid::Uuid::new_v4().to_string();
+        let request = self.request(&client, &query_id, max_rows, session, Some(max_bytes)).body(sql.to_owned());
+        let fetch = async {
+            let mut response = request.send().await.map_err(http_error)?;
+            let status = response.status();
+            let metadata = |name: &str| response.headers().get(name).and_then(|v| v.to_str().ok());
+            let code = metadata("X-ClickHouse-Exception-Code").map(str::to_owned);
+            if !status.is_success() || code.as_deref().is_some_and(|code| code != "0") {
+                let body = response_prefix(response).await.map_err(http_error)?;
+                return Err(self.server_error(status, code.as_deref(), &body));
+            }
+            if metadata("X-ClickHouse-Format").is_some_and(|format| format != FORMAT) {
+                return Err(IdeError::invalid("ClickHouse did not return the workspace response format"));
+            }
+            let mut received = 0;
+            while let Some(chunk) = response.chunk().await.map_err(http_error)? {
+                received += chunk.len();
+                if received > max_bytes {
+                    return Err(IdeError::invalid("Workspace input exceeds the source byte limit"));
+                }
+                consume(&chunk)?;
+            }
+            Ok(())
+        };
+        let result = tokio::select! {
+            biased;
+            () = cancel.cancelled() => Err(IdeError::cancelled()),
+            () = self.0.closed.cancelled() => Err(IdeError::cancelled()),
+            () = tokio::time::sleep(Duration::from_secs(25)) =>
+                Err(IdeError::new(ErrorKind::TimedOut, "Workspace ClickHouse source read timed out")),
+            result = fetch => result,
+        };
+        if result.is_ok() {
+            session.initialized = true;
+        } else {
+            let _ = self.kill(&client, &query_id, session).await;
+        }
+        result.map_err(|e| self.redact_error(e))
+    }
+
     async fn kill(&self, client: &Client, query_id: &str, session: &Session) -> IdeResult<()> {
         let mut request = client
             .post(self.0.endpoint.clone())
@@ -474,7 +572,7 @@ impl ClickhousePool {
             .get("X-ClickHouse-Exception-Code")
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
-        let body = response.bytes().await.map_err(http_error)?;
+        let body = response_prefix(response).await.map_err(http_error)?;
         if status.is_success() && !code.as_deref().is_some_and(|code| code != "0") && !body.starts_with(b"Code:") {
             Ok(())
         } else {
@@ -501,6 +599,17 @@ impl ClickhousePool {
             format!("ClickHouse HTTP {}: {detail}", status.as_u16()),
         ))
     }
+}
+
+async fn response_prefix(mut response: reqwest::Response) -> Result<Vec<u8>, reqwest::Error> {
+    const LIMIT: usize = 16_384;
+    let mut body = Vec::new();
+    while body.len() < LIMIT {
+        let Some(chunk) = response.chunk().await? else { break };
+        let remaining = LIMIT - body.len();
+        body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+    }
+    Ok(body)
 }
 
 type DecodedResult = (Vec<ResultColumn>, Vec<Vec<Option<String>>>, bool);
@@ -1448,6 +1557,15 @@ mod tests {
 
     #[tokio::test]
     async fn stateless_queries_do_not_wait_for_a_shared_session() {
+        assert_stateless_requests_overlap(false).await;
+    }
+
+    #[tokio::test]
+    async fn stateless_workspace_reads_do_not_block_queries() {
+        assert_stateless_requests_overlap(true).await;
+    }
+
+    async fn assert_stateless_requests_overlap(workspace: bool) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let (started, received) = tokio::sync::oneshot::channel();
@@ -1465,9 +1583,15 @@ mod tests {
             (first_request, second_request)
         });
         let source = DataSource { properties: vec![property("use_http_session", "false")], ..source(port) };
-        let pool = Pool::connect(&source, None, None).await.unwrap();
+        let Pool::Clickhouse(pool) = Pool::connect(&source, None, None).await.unwrap() else { unreachable!() };
         let cancel = CancellationToken::new();
-        let first = pool.execute("SELECT 1", 1, &cancel);
+        let first = async {
+            if workspace {
+                pool.workspace_rows("SELECT 1", 1, 1024, &cancel, |_| Ok(())).await
+            } else {
+                pool.execute("SELECT 1", 1, &cancel).await.map(drop)
+            }
+        };
         let second = async {
             received.await.unwrap();
             pool.execute("SELECT 2", 1, &cancel).await

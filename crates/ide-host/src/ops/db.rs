@@ -7,6 +7,7 @@ use crate::Host;
 use ide_command::command;
 use ide_core::{CancellationToken, IdeError, IdeResult, IpcPath, RequestId};
 use ide_db::split::SqlStatement;
+use ide_db::workspace::WorkspaceJoinPlan;
 use ide_db::{
     CompletionModel, ConsoleId, DataSource, Databases, DbObjectKind, DbRowEdit, DbSourceFolder, DbVisibilityChange,
     HistoryEntry, PlanNode, QueryResult, SchemaObjects, SortKey, TableDetails, TableGrant, TableInfo, TablePage,
@@ -14,6 +15,27 @@ use ide_db::{
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::PathBuf;
+
+#[command(trust = trusted)]
+pub async fn db_workspace_join(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    driver: String,
+    plan: WorkspaceJoinPlan,
+) -> IdeResult<QueryResult> {
+    let cancel = host.begin_project_request(window, request);
+    let result = async {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        let db = host.project(window)?.db.clone();
+        db.workspace_join(&driver, plan, &cancel).await
+    }
+    .await;
+    host.end_request(request);
+    result
+}
 
 /// One statement of a console run.
 #[derive(Clone, Serialize, Deserialize, Type)]
@@ -829,6 +851,7 @@ pub async fn server_version(host: &Host, window: &str, id: &str) -> IdeResult<u3
 ide_command::domain!(
     db:
     db_apply_edits,
+    db_workspace_join,
     db_completion,
     db_connect,
     db_connected,
@@ -909,6 +932,118 @@ mod tests {
         .unwrap();
 
         host
+    }
+
+    fn workspace_test_plan() -> WorkspaceJoinPlan {
+        use ide_db::workspace::{WorkspaceJoinColumn, WorkspaceJoinCondition, WorkspaceJoinRelation};
+        let relation = |id: &str| WorkspaceJoinRelation {
+            source_id: id.into(),
+            database: "default".into(),
+            schema: "default".into(),
+            table: "items".into(),
+        };
+        WorkspaceJoinPlan {
+            tables: vec![relation("left"), relation("right")],
+            joins: vec![WorkspaceJoinCondition {
+                left: WorkspaceJoinColumn { relation: 0, column: "id".into() },
+                right_column: "id".into(),
+            }],
+            projection: None,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn workspace_join_respects_an_early_cancel() {
+        let temp = tempfile::tempdir().unwrap();
+        let host = host_with_sqlite(&temp).await;
+        let request = RequestId(1);
+        host.cancel_request(request);
+        let error = db_workspace_join(&host, "main", request, "no driver installed".into(), workspace_test_plan())
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind, ide_core::error::ErrorKind::Cancelled);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn workspace_join_cannot_resolve_a_project_after_its_requests_are_drained() {
+        use std::time::{Duration, Instant};
+
+        let temp = tempfile::tempdir().unwrap();
+        let host = host_with_sqlite(&temp).await;
+        let window = "main";
+        let active = host.begin_project_request(window, RequestId(1));
+        std::thread::scope(|threads| {
+            // Hold close at heap cleanup, which follows cancellation of registered requests.
+            let heap = host.heap_windows.lock();
+            let close = threads.spawn(|| host.close_project_detached(window));
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !active.is_cancelled() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let drained = active.is_cancelled();
+            let detached = host.project(window).is_err();
+            drop(heap);
+            close.join().unwrap();
+
+            assert!(drained, "close did not reach the cancellation step");
+            assert!(detached, "close drained its requests while the old project was still available");
+        });
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires DUCKDB_JDBC_JAR and Java 17+"]
+    async fn workspace_join_stops_when_its_project_closes() {
+        use std::time::Duration;
+
+        let temp = tempfile::tempdir().unwrap();
+        let host = host_with_sqlite(&temp).await;
+        let window = "main";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let sources = ["left", "right"].map(|id| DataSource {
+            id: id.into(),
+            name: format!("ClickHouse fixture {id}"),
+            driver: DbDriver::Clickhouse,
+            host: "127.0.0.1".into(),
+            port: Some(listener.local_addr().unwrap().port()),
+            ..Default::default()
+        });
+        db_save_sources(&host, window, sources.into()).await.unwrap();
+        host.project(window)
+            .unwrap()
+            .db
+            .save_jdbc_driver(ide_db::DbJdbcDriver {
+                id: "duck".into(),
+                name: "DuckDB".into(),
+                vendor: Some("duckdb".into()),
+                jars: vec![std::env::var("DUCKDB_JDBC_JAR").expect("official JDBC fixture")],
+                class_name: "org.duckdb.DuckDBDriver".into(),
+                url_template: "jdbc:duckdb:".into(),
+            })
+            .unwrap();
+
+        for (request, close_project) in [(RequestId(2), false), (RequestId(3), true)] {
+            let join = db_workspace_join(&host, window, request, "duck".into(), workspace_test_plan());
+            tokio::pin!(join);
+            // Accept the source connection and leave it open without replying.
+            let (socket, _) = tokio::select! {
+                result = &mut join => panic!("workspace ended before reaching the source: {result:?}"),
+                peer = tokio::time::timeout(Duration::from_secs(15), listener.accept()) => peer.unwrap().unwrap(),
+            };
+            if close_project {
+                host.close_project_detached(window);
+            } else {
+                host.cancel_request(request);
+            }
+            let stopped = tokio::time::timeout(Duration::from_secs(3), &mut join).await;
+            if stopped.is_err() {
+                host.cancel_request(request);
+                let _ = tokio::time::timeout(Duration::from_secs(5), &mut join).await;
+            }
+            let error = stopped.expect("workspace JOIN did not stop after cancellation").unwrap_err();
+            assert_eq!(error.kind, ide_core::error::ErrorKind::Cancelled);
+            assert!(!host.project_requests.read().values().flatten().any(|entry| *entry == request));
+            drop(socket);
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

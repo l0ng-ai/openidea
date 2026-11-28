@@ -82,6 +82,7 @@ async function sourceFromClipboard() {
 export function newMenu(): MenuItem[] {
   return [
     { kind: "action", action: "db.newConsole", label: "Query Console" },
+    { kind: "action", action: "db.queryWorkspace", label: "Query Workspace" },
     sep,
     ...dataSourceItems(),
     sep,
@@ -172,6 +173,11 @@ function batchSourceMenu(sources: Extract<DbNode, { kind: "source" }>[]): MenuIt
 /** Context menu of a tree node (`null`: the empty area). */
 export function nodeMenu(n: DbNode | null, selection: readonly DbNode[] = []): MenuItem[] {
   if (!n) return [{ label: "New", icon: "plus", submenu: newMenu() }];
+  if (n.kind === "workspace")
+    return [
+      { kind: "action", action: "db.queryWorkspace", label: "Query Workspace", icon: "db-console" },
+      { kind: "action", action: "db.queryWorkspace", label: "Workspace Settings…", icon: "settings", arg: "configure" },
+    ];
   if (n.kind === "source") {
     const sources = selection.filter((node): node is Extract<DbNode, { kind: "source" }> => node.kind === "source");
     if (sources.length > 1) return batchSourceMenu(sources);

@@ -387,12 +387,19 @@ impl Host {
         self.mcp_agent_runs.forget_window(window);
         self.debugger.forget_breakpoints(self.owner_window(window));
         self.external_logs.write().remove(self.owner_window(window));
-        for request in self.project_requests.write().remove(self.owner_window(window)).unwrap_or_default() {
+        let owner = self.owner_window(window);
+        let (project, requests) = {
+            // A request registering after the drain must not resolve the old project.
+            let mut project_requests = self.project_requests.write();
+            let mut projects = self.projects.write();
+            (projects.remove(window), project_requests.remove(owner).unwrap_or_default())
+        };
+        for request in requests {
             self.cancel_request(request);
         }
         // After the cancels: a capture or open still running then discards what it registers.
         ops::heap::close_window_snapshots(self, window);
-        let project = self.projects.write().remove(window)?;
+        let project = project?;
         project.closed.cancel();
         if let Some(plugins) = self.plugin_host() {
             if self.windows_for_root(&project.root).is_empty() {

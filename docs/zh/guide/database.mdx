@@ -200,6 +200,26 @@ FROM sales_archive.main.orders;
 
 如果控制台查询是对单表的简单 select 且包含主键，结果同样可以编辑。没有主键的表、连接查询、聚合、`UNION` 查询、只读数据源和 ClickHouse 的结果都是只读的。
 
+## 跨数据源联接表
+
+在受信任的项目中，从数据库树打开**查询工作区**。输入 `#` 可查看已保存的 PostgreSQL 和 ClickHouse 连接、SQLite 文件及 DuckDB JDBC 文件。选定数据源后，输入 `.` 可补全表名。如果两个连接重名，可在**工作区设置 › SQL 别名**中分别指定别名。工作区使用项目主机上[已安装的 DuckDB JDBC 驱动](#duckdb)。
+
+```sql
+SELECT a.id, a.join_key, g.region, t.channel
+FROM #accounts.public.customers AS a
+JOIN #events.events.purchases AS e ON a.id = e.customer_id
+JOIN #geo.main.region_map AS g ON a.id = g.id
+JOIN #labels.main.tags AS t ON g.zone = t.zone;
+```
+
+一条 SELECT 可以联接两到八张表。每个内联接的条件是该表的一列与先前引入的某张表的一列相等。可以指定要返回的列，也可以使用 `alias.*` 或 `*`。指定列时，只从源表读取这些列和联接键。整数键允许位宽和符号不同。其他类型的键必须匹配，十进制数的精度和小数位数也要一致。
+
+按 **⌘Enter**（macOS）或 **Ctrl+Enter**（Windows 和 Linux）运行光标所在的语句。选中多条完整语句可依次运行。也可以使用**执行脚本**运行整个编辑器中的语句。每条已完成的语句都有独立的耗时和结果标签页。停止批次后，仍可翻页查看已完成的结果。
+
+每条语句通过独立的只读连接读取源表，并在项目主机上的临时内存 DuckDB 中执行联接。运行结束时会删除暂存文件。配置了启动脚本的数据源不可用。要在普通控制台中跨语句保留临时表，请创建 [DuckDB 数据源](#duckdb)并选择**内存**。
+
+每个输入最多允许 100,000 行、128 列和 16 MiB 数据，单个值上限为 1 MiB。每条语句的所有输入合计最多允许 200,000 行和 32 MiB。结果最多允许 100,000 行、256 列，JDBC 响应上限为 16 MiB。超出限制时，该语句会报错，批次随即停止。
+
 ## 导出与导入
 
 导出按钮提供 **导出数据…** 以及快速复制：**Copy as CSV**、**Copy as TSV**、**Copy as JSON**、**Copy as SQL Inserts**、**Copy as Markdown** 和 **Copy as One-Row**。**导出数据** 对话框还支持 **转置**、列标题和行标题、预览、**复制到剪贴板** 和 **导出到文件**。导出范围是已加载的行（当前页）。

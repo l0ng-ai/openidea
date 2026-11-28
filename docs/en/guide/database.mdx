@@ -201,6 +201,26 @@ Closing a selected result activates its left neighbor, or its right neighbor if 
 
 Console results are editable the same way when the query is a plain select from one table that includes the primary key. Tables without a primary key, joins, aggregates, `UNION` queries, read-only data sources and ClickHouse results are read-only.
 
+## Join tables across data sources
+
+In a trusted project, open **Query Workspace** in the Database tree. Type `#` to see saved PostgreSQL and ClickHouse connections, SQLite files and DuckDB JDBC files. Choose a source and type `.` to complete a table. If two connections share a name, give them distinct names under **Workspace Settings › SQL aliases**. The workspace uses an [installed DuckDB JDBC driver](#duckdb) on the project host.
+
+```sql
+SELECT a.id, a.join_key, g.region, t.channel
+FROM #accounts.public.customers AS a
+JOIN #events.events.purchases AS e ON a.id = e.customer_id
+JOIN #geo.main.region_map AS g ON a.id = g.id
+JOIN #labels.main.tags AS t ON g.zone = t.zone;
+```
+
+A SELECT can join two to eight tables. Each inner JOIN compares one column from its table with one column from an earlier table. Select individual columns, `alias.*`, or `*`. Specifying columns limits the source reads to those columns and the JOIN keys. Integer keys can have different sizes and signs. Other key types must match, including precision and scale for decimals.
+
+Press **⌘Enter** (macOS) or **Ctrl+Enter** (Windows and Linux) to run the statement at the caret. Select several complete statements to run them in order, or use **Execute Script** for the whole editor. Each completed statement gets its own elapsed time and result tab. You can stop a batch and page through the completed results.
+
+Each statement reads its inputs through independent read-only connections and joins them in a fresh in-memory DuckDB on the project host. Temporary staging files are removed when the run ends. A source with a startup script is ineligible. To keep temporary tables between statements in a regular console, create a [DuckDB data source](#duckdb) and select **In memory**.
+
+Each input allows up to 100,000 rows, 128 columns, 16 MiB of data and 1 MiB per value. Combined inputs allow up to 200,000 rows and 32 MiB per statement. A result allows up to 100,000 rows, 256 columns and a 16 MiB JDBC reply. If a limit is exceeded, the statement fails and the batch stops.
+
 ## Export and import
 
 The export button offers **Export Data…** and quick copies: **Copy as CSV**, **Copy as TSV**, **Copy as JSON**, **Copy as SQL Inserts**, **Copy as Markdown** and **Copy as One-Row**. The **Export Data** dialog adds **Transpose**, column and row headers, a preview, **Copy to Clipboard** and **Export to File**. Export covers the rows that are loaded (the current page).

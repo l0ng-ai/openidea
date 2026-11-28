@@ -69,7 +69,7 @@ import {
 import { DB_VIEW_FOCUS, databaseTree, openTableData } from "./treeActions";
 import { newMenu, nodeMenu } from "./treeMenu";
 import styles from "./Database.module.css";
-import { formatMessage, tx } from "@/platform/i18n";
+import { formatMessage, tx, useTx } from "@/platform/i18n";
 import { databaseRequest } from "./requests";
 
 const GROUP_LABELS: Record<Group, string> = {
@@ -147,6 +147,7 @@ function groupSize(d: DbTableDetails, g: Group): number {
 }
 
 export function DatabaseView() {
+  const t = useTx();
   const st = useDatabase();
   const folders = st.separateProceduresAndFunctions ? SEPARATE_FOLDERS : FOLDERS;
   const tree = useRef<TreeHandle>(null);
@@ -206,6 +207,7 @@ export function DatabaseView() {
       ...st.sources
         .filter((source) => !grouped.has(source.id ?? ""))
         .map((source): Node => ({ kind: "source", key: source.id ?? "", source })),
+      { kind: "workspace", key: ":query-workspace" },
     ];
   }, [st.folders, st.sources]);
 
@@ -549,6 +551,8 @@ export function DatabaseView() {
 
   const label = (n: Node): string => {
     switch (n.kind) {
+      case "workspace":
+        return t("Query Workspace");
       case "source":
         return n.source.pluginOwner ? `${n.source.name} (${n.source.pluginOwner})` : (n.source.name ?? "");
       case "sourceFolder":
@@ -632,6 +636,8 @@ export function DatabaseView() {
 
   const icon = (n: Node): string | undefined => {
     switch (n.kind) {
+      case "workspace":
+        return "db-console";
       case "source":
         return sourceIcon(n.source);
       case "sourceFolder":
@@ -668,25 +674,11 @@ export function DatabaseView() {
     }
   };
 
-  if (st.loaded && st.foldersLoaded && !st.sources.length && !st.folders.length)
-    return (
-      <div className={styles.dbView}>
-        <DatabaseToolbar />
-        <EmptyState title="No data sources">
-          <Button variant="ghost" onClick={() => void executeAction("db.newDataSource")}>
-            <T>New Data Source…</T>
-          </Button>
-          <Button variant="ghost" onClick={() => void executeAction("db.newSourceFolder")}>
-            <T>New Folder…</T>
-          </Button>
-        </EmptyState>
-      </div>
-    );
-
+  const empty = st.loaded && st.foldersLoaded && !st.sources.length && !st.folders.length;
   return (
     <div className={styles.dbView}>
       <DatabaseToolbar />
-      <div className={styles.treeHost} ref={treeHost}>
+      <div className={styles.treeHost} ref={treeHost} data-empty={empty ? "" : undefined}>
         <Tree<Node>
           aria-label="Data sources"
           focusContext={DB_VIEW_FOCUS}
@@ -785,7 +777,8 @@ export function DatabaseView() {
             })
           }
           onActivate={(n) => {
-            if (n.kind === "table") openTableData(n.id, n.schema, n.table.name, n.catalog);
+            if (n.kind === "workspace") void executeAction("db.queryWorkspace");
+            else if (n.kind === "table") openTableData(n.id, n.schema, n.table.name, n.catalog);
             else if (n.kind === "source") void openConsole(n.source.id ?? "");
             else if (n.kind === "database" && n.catalog === undefined) void openConsole(n.id);
             else {
@@ -800,6 +793,16 @@ export function DatabaseView() {
           }}
           speedSearch
         />
+        {empty && (
+          <EmptyState title="No data sources">
+            <Button variant="ghost" onClick={() => void executeAction("db.newDataSource")}>
+              <T>New Data Source…</T>
+            </Button>
+            <Button variant="ghost" onClick={() => void executeAction("db.newSourceFolder")}>
+              <T>New Folder…</T>
+            </Button>
+          </EmptyState>
+        )}
       </div>
     </div>
   );

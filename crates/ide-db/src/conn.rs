@@ -1330,6 +1330,71 @@ impl Pool {
         Ok(conn.finish_read_only(owned, result).await?.1)
     }
 
+    pub(crate) async fn read_workspace_postgres(
+        &self,
+        request: &crate::workspace_input::WorkspaceInputRequest,
+        selection: Option<&[&str]>,
+        cancel: &CancellationToken,
+    ) -> IdeResult<crate::workspace_input::WorkspaceInput> {
+        let Pool::Postgres(pool) = self else {
+            return Err(IdeError::internal("Expected a PostgreSQL workspace connection"));
+        };
+        let mut conn = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(IdeError::cancelled()),
+            result = pool.get() => result?,
+        };
+        let mut backend = None;
+        let read = async {
+            if conn.options.read_only == PgReadOnly::Transaction {
+                conn.start_read_only().await?;
+            } else {
+                sqlx::raw_sql("BEGIN READ ONLY").execute(&mut **conn).await.map_err(db_err)?;
+            }
+            let row = sqlx::raw_sql(
+                "SELECT pg_catalog.pg_backend_pid(), pg_catalog.current_setting('transaction_read_only') = 'on'",
+            )
+            .fetch_one(&mut **conn)
+            .await
+            .map_err(db_err)?;
+            backend = Some(row.try_get::<i32, _>(0).map_err(db_err)?);
+            if !row.try_get::<bool, _>(1).map_err(db_err)? {
+                return Err(IdeError::new(
+                    ErrorKind::PermissionDenied,
+                    "Workspace PostgreSQL transaction is not read-only",
+                ));
+            }
+            crate::workspace_input::read_postgres(&mut conn, request, selection).await
+        };
+        let result = tokio::select! {
+            biased;
+            () = cancel.cancelled() => Err(IdeError::cancelled()),
+            () = tokio::time::sleep(Duration::from_secs(30)) =>
+                Err(IdeError::new(ErrorKind::TimedOut, "Workspace PostgreSQL source read timed out")),
+            result = read => result,
+        };
+        if result.is_ok() {
+            // Do not send a PID-based cancel once a pooler may have released this backend.
+            let rollback =
+                tokio::time::timeout(Duration::from_secs(3), sqlx::raw_sql("ROLLBACK").execute(&mut **conn)).await;
+            if matches!(rollback, Ok(Ok(_))) {
+                conn.in_transaction = false;
+            } else {
+                conn.conn.take();
+            }
+        } else {
+            if let Some(pid) = backend {
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(3),
+                    self.cancel_query(format!("SELECT pg_catalog.pg_cancel_backend({pid})")),
+                )
+                .await;
+            }
+            conn.conn.take();
+        }
+        result
+    }
+
     /// Runs one statement and keeps at most `max_rows` rows. Cancelling stops
     /// the statement on the server (PostgreSQL, MySQL) and drops the connection.
     pub async fn execute(&self, sql: &str, max_rows: usize, cancel: &CancellationToken) -> IdeResult<QueryResult> {
