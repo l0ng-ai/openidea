@@ -10,12 +10,18 @@ import { useLiveRst } from "./live";
 import { RstEditor } from "./RstEditor";
 import { rstModes } from "./RstLayoutActions";
 
+const cancelled = vi.hoisted(() => [] as number[]);
 vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
   return {
     ...real,
     call: vi.fn(),
-    commands: { ...real.commands, rstPreview: (path: string, text: string) => ({ rstPreview: [path, text] }) },
+    commands: {
+      ...real.commands,
+      rstPreview: (request: number, path: string, text: string) => ({ rstPreview: [path, text], request }),
+      cancelRequest: async (request: number) => void cancelled.push(request),
+      fsReadImage: (path: string) => ({ fsReadImage: path }),
+    },
   };
 });
 vi.mock("@/platform/openUrl", () => ({ openExternalUrl: vi.fn(async () => {}) }));
@@ -53,6 +59,7 @@ describe("reStructuredText editor", () => {
   afterEach(() => {
     cleanup();
     vi.mocked(call).mockReset();
+    cancelled.length = 0;
   });
 
   it("shows docutils' HTML beside the source, sanitized and with nothing loaded from other hosts", async () => {
@@ -63,7 +70,7 @@ describe("reStructuredText editor", () => {
         '<math xmlns="http://www.w3.org/1998/Math/MathML"><mi>e</mi></math></main>',
     });
     await show();
-    expect(call).toHaveBeenCalledWith({ rstPreview: [PATH, "Title\n=====\n"] });
+    expect(call).toHaveBeenCalledWith(expect.objectContaining({ rstPreview: [PATH, "Title\n=====\n"] }));
     expect(screen.getByTestId("source")).toBeInTheDocument();
     const root = preview();
     expect(root.querySelector("h1")?.textContent).toBe("Title");
@@ -81,6 +88,35 @@ describe("reStructuredText editor", () => {
     fireEvent.click(screen.getByText("top"));
     expect(scrolled).toHaveBeenCalled();
     expect(openExternalUrl).not.toHaveBeenCalled();
+  });
+
+  it("takes image and link paths as docutils writes them, without percent-decoding errors", async () => {
+    docutils({
+      html: '<img alt="sale" src="50%off.png" /><p>after</p><pre class="code python literal-block"><code>x = 1</code></pre>',
+    });
+    await show();
+    // jsdom never loads the image; the preview went on past it.
+    expect(preview().querySelector("img")?.dataset.src).toBe("50%off.png");
+    expect(preview().textContent).toContain("after");
+  });
+
+  it("stops the render of text that has changed since", async () => {
+    let finish: (html: string) => void = () => {};
+    vi.mocked(call).mockImplementation(
+      (request: unknown) =>
+        new Promise((resolve) => {
+          if ((request as { rstPreview: string[] }).rstPreview[1] === "Title\n=====\n") finish = resolve;
+          else resolve("<p>second</p>");
+        }) as never,
+    );
+    await show();
+    const first = (vi.mocked(call).mock.calls[0]![0] as unknown as { request: number }).request;
+    await act(async () => useLiveRst.setState({ [PATH]: "second\n" }));
+    expect(cancelled).toEqual([first]);
+    expect(preview().textContent).toBe("second");
+    // A late answer for the old text doesn't replace the new preview.
+    await act(async () => finish("<p>old</p>"));
+    expect(preview().textContent).toBe("second");
   });
 
   it("opens external links in the browser, only on a click", async () => {

@@ -1730,8 +1730,9 @@ export const commands = {
 	/**
 	 *  `text`, the reStructuredText file `path` as edited, as the HTML body of its preview, with
 	 *  docutils' problems inline. Runs the project's Python interpreter, so needs a trusted project.
+	 *  Cancelling `request` (the text changed again) stops the interpreter.
 	 */
-	rstPreview: (path: string, text: string) => typedError<string, IdeError>(__TAURI_INVOKE("rst_preview", { path, text })),
+	rstPreview: (request: RequestId, path: string, text: string) => typedError<string, IdeError>(__TAURI_INVOKE("rst_preview", { request, path, text })),
 	/**  Apply Ruff's safe lint fixes (`ruff check --fix-only`) to the current unsaved Python document. */
 	ruffFix: (doc: DocId) => typedError<TextEdit[], IdeError>(__TAURI_INVOKE("ruff_fix", { doc })),
 	/**  Apply Ruff's safe lint fixes to a Python text snapshot without writing the file. */

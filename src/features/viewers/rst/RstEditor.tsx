@@ -6,7 +6,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type Rea
 import clsx from "clsx";
 import { editorsFor } from "@/editor/api";
 import { highlightInto } from "@/editor/lsp/markdown";
-import { call, commands } from "@/platform/ipc";
+import { call, commands, isCancelled, nextRequestId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
 import { maybeEditorService } from "@/workbench/contributions";
@@ -64,11 +64,18 @@ function RstPreview({ path }: { path: string }) {
   useEffect(() => {
     if (text === undefined) return;
     let live = true;
-    call(commands.rstPreview(path, text)).then(
-      (html) => live && setRendered({ html }),
-      (e: unknown) => live && setRendered({ error: String((e as Error)?.message ?? e) }),
-    );
+    const request = nextRequestId();
+    call(commands.rstPreview(request, path, text))
+      .then(
+        (html) => live && setRendered({ html }),
+        (e: unknown) => live && !isCancelled(e) && setRendered({ error: String((e as Error)?.message ?? e) }),
+      )
+      .finally(() => {
+        live = false;
+      });
     return () => {
+      // Newer text replaces this render: stop its interpreter rather than let it finish.
+      if (live) void commands.cancelRequest(request);
       live = false;
     };
   }, [path, text]);

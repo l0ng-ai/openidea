@@ -370,6 +370,9 @@ describe("markdown preview rendering", () => {
       anchor: "intro",
     });
     expect(resolveLink(file, "javascript:alert(1)")).toBeNull();
+    // Not percent-encoding (raw HTML, docutils): taken as written.
+    expect(resolveLink(file, "50%off.png")).toEqual({ kind: "file", path: "/repo/docs/50%off.png" });
+    expect(resolveLink(file, "#100%")).toEqual({ kind: "anchor", id: "100%" });
     expect(joinPath("C:/repo/docs", "../a.md")).toBe("C:/repo/a.md");
     expect(joinPath("C:/repo/docs", "D:/shared/a.md")).toBe("D:/shared/a.md");
     expect(joinPath("/repo", "../../a.md")).toBe("/a.md");
