@@ -27,7 +27,15 @@ vi.mock("@/platform/ipc", () => ({
 
 import { useProject } from "@/platform/project";
 import { rest } from "../api/client";
-import { connectedRoot, connectedRemotes, connect, disconnect, refreshConnection, useGhRepository } from "./repository";
+import {
+  connectedRoot,
+  connectedRemotes,
+  connect,
+  disconnect,
+  refreshConnection,
+  resetConnection,
+  useGhRepository,
+} from "./repository";
 
 afterEach(() => {
   ghApi.mockReset();
@@ -35,6 +43,7 @@ afterEach(() => {
   localStorage.clear();
   layout = FOLDER;
   useProject.setState({ project: null });
+  resetConnection();
 });
 
 describe("a folder holding several git repositories", () => {
@@ -158,16 +167,36 @@ describe("GitHub Enterprise Server hosts beside github.com", () => {
     expect(ghApi).toHaveBeenLastCalledWith("/w/app", expect.objectContaining({ host: "ghe.example.com" }));
   });
 
+  it("reads a choice saved without a host as the origin remote's repository", async () => {
+    layout = {
+      "/w/app": [
+        { name: "public", url: "https://github.com/acme/app.git" },
+        { name: "origin", url: "git@ghe.example.com:acme/app.git" },
+      ],
+    };
+    useProject.setState({ project: { root: "/w" } as never });
+    localStorage.setItem("openidea.github.repository.v1:/w", "acme/app");
+    ghAvailability.mockReturnValue(ready("https://ghe.example.com/acme/app"));
+    ghApi.mockImplementation(answer);
+    await refreshConnection();
+    expect(useGhRepository.getState().connection?.coordinates).toMatchObject({ host: "ghe.example.com" });
+  });
+
   it("recognises SSH remotes of a server whose web address has a port", async () => {
     layout = {
       "/w/app": [
         { name: "origin", url: "git@ghe.example.com:acme/app.git" },
         { name: "fork", url: "ssh://git@ghe.example.com/al/app.git" },
+        { name: "mirror", url: "https://ghe.example.com:8443/acme/app-mirror.git" },
       ],
     };
     ghAvailability.mockReturnValue(ready("https://ghe.example.com:8443/acme/app"));
     ghApi.mockImplementation(answer);
     await refreshConnection();
-    expect(remotesOf()).toEqual(["origin=ghe.example.com:8443/acme/app", "fork=ghe.example.com:8443/al/app"]);
+    expect(remotesOf()).toEqual([
+      "origin=ghe.example.com:8443/acme/app",
+      "fork=ghe.example.com:8443/al/app",
+      "mirror=ghe.example.com:8443/acme/app-mirror",
+    ]);
   });
 });

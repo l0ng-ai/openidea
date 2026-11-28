@@ -100,6 +100,12 @@ export function trackedHead(
   return head.kind === "remote" ? head : upstreamOf(branches, head.name, remotes);
 }
 
+/** The repositories a head can be in: the remotes on the base repository's host (forks there included). */
+export function headRepositories(remotes: readonly GHRemote[], base: GHRemote): GHRemote[] {
+  const host = (r: GHRemote) => (r.host ?? "github.com").toLowerCase();
+  return remotes.filter((r) => host(r) === host(base));
+}
+
 /**
  * The default direction: base the default branch of the connected repository's remote,
  * head the current branch in the repository of its tracked remote (else the base one).
@@ -114,7 +120,8 @@ export function defaultDirection(opts: {
   const { baseRepo, remotes, branches, currentBranch } = opts;
   const names = remotes.map((r) => r.remote);
   const tracked = currentBranch ? upstreamOf(branches, currentBranch, names) : null;
-  const headRepo = (tracked && remotes.find((r) => r.remote === tracked.remote)) || baseRepo;
+  const heads = headRepositories(remotes, baseRepo);
+  const headRepo = (tracked && heads.find((r) => r.remote === tracked.remote)) || baseRepo;
   return {
     baseRepo,
     baseBranch: defaultBaseBranch(branches, baseRepo.remote, opts.defaultBranch),

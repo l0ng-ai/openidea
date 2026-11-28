@@ -233,10 +233,14 @@ export async function refreshConnection(): Promise<void> {
     disconnect({ forget: false });
     return;
   }
+  // A choice saved without its host (before hosts were recorded): the origin remote's, when it is one of them.
+  const chosen = saved?.host
+    ? saved
+    : (remotes.find((r) => r.remote === "origin" && sameRepository(r, saved)) ?? saved);
   const target =
     remotes.length === 1
       ? remotes[0]!
-      : (remotes.find((r) => sameRepository(r, current)) ?? remotes.find((r) => sameRepository(r, saved)) ?? null);
+      : (remotes.find((r) => sameRepository(r, current)) ?? remotes.find((r) => sameRepository(r, chosen)) ?? null);
   // Only a choice among several repositories is remembered.
   if (target) await connect(target, { remember: remotes.length > 1 });
   else disconnect({ forget: false });

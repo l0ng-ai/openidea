@@ -434,6 +434,13 @@ describe("pull request helpers", () => {
     ])
       expect(parseGitHubRemote(url, hosts), url).toEqual({ owner: "acme", name: "app", host: "ghe.example.com" });
     expect(parseGitHubRemote("https://ghe.example.com/acme/app.git")).toBeNull();
+    // gh names a server on another port `host:port`; its remotes match whatever port they use.
+    for (const url of ["https://ghe.example.com:8443/acme/app.git", "git@ghe.example.com:acme/app.git"])
+      expect(parseGitHubRemote(url, ["ghe.example.com:8443"]), url).toEqual({
+        owner: "acme",
+        name: "app",
+        host: "ghe.example.com:8443",
+      });
     expect(parseGitHubRemote("https://gheXexample.com/acme/app.git", hosts)).toBeNull();
     expect(
       githubRemotes(

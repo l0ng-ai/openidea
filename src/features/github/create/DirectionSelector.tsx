@@ -7,11 +7,12 @@
 import { useMemo, useState, type KeyboardEvent } from "react";
 import { HighlightedText, Icon, List, Popup, SearchField, Select, T, fuzzyMatch, listNavigate } from "@/ui";
 import { useTx } from "@/platform/i18n";
-import { NO_REMOTES, nameWithOwner, sameRepository, useGhRepository, type GHRemote } from "../data/repository";
+import { NO_REMOTES, nameWithOwner, repositoryKey, useGhRepository, type GHRemote } from "../data/repository";
 import { ChooserPopup } from "../ui/ChooserPopup";
 import {
   baseText,
   headBranchName,
+  headRepositories,
   headText,
   localBranchesOf,
   remoteBranchesOf,
@@ -78,6 +79,7 @@ export function DirectionSelector() {
       {open?.which === "head" && (
         <HeadPopup
           anchor={open.anchor}
+          base={direction.baseRepo}
           initialRepo={direction.headRepo ?? direction.baseRepo}
           onClose={() => setOpen(null)}
         />
@@ -89,9 +91,10 @@ export function DirectionSelector() {
 type HeadRow = { section: string } | { branch: HeadBranch; text: string; match: number[] | null };
 
 /** The head: the repository (several GitHub remotes only), then its branches, local first. */
-function HeadPopup(props: { anchor: HTMLElement; initialRepo: GHRemote; onClose: () => void }) {
+function HeadPopup(props: { anchor: HTMLElement; base: GHRemote; initialRepo: GHRemote; onClose: () => void }) {
   const tx = useTx();
-  const remotes = useGhRepository((s) => s.connection?.remotes ?? NO_REMOTES);
+  const connected = useGhRepository((s) => s.connection?.remotes ?? NO_REMOTES);
+  const remotes = useMemo(() => headRepositories(connected, props.base), [connected, props.base]);
   const branches = useCreatePr((s) => s.branches);
   const current = useCreatePr((s) => s.direction?.headBranch ?? null);
   const [repo, setRepo] = useState(props.initialRepo);
@@ -144,11 +147,11 @@ function HeadPopup(props: { anchor: HTMLElement; initialRepo: GHRemote; onClose:
             <T>Repository:</T>
           </span>
           <Select
-            value={nameWithOwner(repo)}
-            options={remotes.map((r) => ({ value: nameWithOwner(r), label: `${nameWithOwner(r)} (${r.remote})` }))}
+            value={repositoryKey(repo)}
+            options={remotes.map((r) => ({ value: repositoryKey(r), label: `${nameWithOwner(r)} (${r.remote})` }))}
             onChange={(v) => {
-              const next = remotes.find((r) => nameWithOwner(r) === v);
-              if (next && !sameRepository(next, repo)) setRepo(next);
+              const next = remotes.find((r) => repositoryKey(r) === v);
+              if (next && repositoryKey(next) !== repositoryKey(repo)) setRepo(next);
             }}
             aria-label="Head repository"
           />
