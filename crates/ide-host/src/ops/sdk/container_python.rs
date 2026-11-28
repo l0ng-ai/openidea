@@ -93,6 +93,12 @@ pub(crate) fn configure_server(
     snapshots::configure_server(cfg, current.as_ref().map(|(d, s)| (d.as_path(), s)));
 }
 
+/// The folder of `target`'s snapshots, when `target` is the project interpreter's
+/// (no file is read: [`snapshots::current`] reads it).
+pub(crate) fn snapshots_of(host: &Host, root: &Path, settings: &Settings, target: &str) -> Option<PathBuf> {
+    (settings.languages.python.run_target() == Some(target)).then(|| Dirs::of(host).target(root, target))
+}
+
 /// External Libraries: the snapshot's folders, named after the run target.
 pub(crate) fn library_group(host: &Host, root: &Path, settings: &Settings) -> Option<ide_sdk::libraries::LibraryGroup> {
     let target = settings.languages.python.run_target()?;

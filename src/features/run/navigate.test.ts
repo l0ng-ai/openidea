@@ -8,6 +8,9 @@ const files: Record<string, string> = {
   "/p/src/main/java/com/acme/Util.java": "package com.acme;\nclass Util {}",
   "/p/other/Util.java": "package org.other;\nclass Util {}",
   "/p/src/main/kotlin/Orders.kt": "package com.acme.orders\nfun main() {}",
+  "/p/aaa/main.py": "print('another main.py')",
+  "/p/pkg/main.py": "raise SystemExit(1)",
+  "/p/pkg/__init__.py": "",
   "/p/cypress/e2e/cart.cy.ts":
     'describe("cart", () => {\n  it("adds", () => {});\n  context("totals", () => {\n    it("adds", () => {});\n  });\n});',
 };
@@ -18,7 +21,9 @@ vi.mock("@/platform/ipc", () => ({
   nextRequestId: () => 1,
   call: async (v: unknown) => v,
   commands: {
-    fsReadDir: async () => [],
+    // A host file at a container path (Homebrew's Python on an Intel Mac has this folder too).
+    fsReadDir: async (dir: string) =>
+      dir === "/usr/lib/site-packages/requests" ? [{ name: "api.py", kind: "file" }] : [],
     fsReadText: async (path: string) => files[path] ?? "",
     findFilesNamed: async (name: string) => Object.keys(files).filter((p) => p.endsWith(`/${name}`)),
     indexStatus: async () => ({ files: Object.keys(files).length }),
@@ -28,6 +33,13 @@ vi.mock("@/platform/ipc", () => ({
         .slice(0, limit)
         .map((path) => ({ path, relPath: path.slice(3) })),
     lspWorkspaceSymbols: async () => symbols.list,
+    runContainerPath: async (path: string, target: string) =>
+      (target === "web"
+        ? {
+            "/app/pkg/main.py": "/p/pkg/main.py",
+            "/usr/lib/site-packages/requests/api.py": "/snap/fs/usr/lib/site-packages/requests/api.py",
+          }
+        : {})[path as "/app/pkg/main.py"] ?? null,
   },
 }));
 
@@ -40,6 +52,28 @@ describe("JS tests without a line", () => {
     expect(await declarationLine("/p/cypress/e2e/cart.cy.ts", ["cart", "gone"])).toBeUndefined();
     // The first call loads the run targets' parsers.
   }, 60_000);
+});
+
+describe("paths printed in a container", () => {
+  const at = (path: string) => ({ path, line: 3, resolve: "path" as const });
+
+  it("open the mounted project file or the copied library, not any file of that name", async () => {
+    expect(await resolveTarget(at("/app/pkg/main.py"), "/p", null, "web")).toBe("/p/pkg/main.py");
+    expect(await resolveTarget(at("/usr/lib/site-packages/requests/api.py"), "/p", null, "web")).toBe(
+      "/snap/fs/usr/lib/site-packages/requests/api.py",
+    );
+  });
+
+  it("never open a host file or a same-named project file instead", async () => {
+    // Not copied (the standard library), or another target's run: nothing, not /p/pkg/__init__.py.
+    expect(await resolveTarget(at("/usr/local/lib/python3.12/json/__init__.py"), "/p", null, "web")).toBeNull();
+    expect(await resolveTarget(at("/app/pkg/main.py"), "/p", null, "worker")).toBeNull();
+    // A local run keeps the host file and the name search.
+    expect(await resolveTarget(at("/usr/lib/site-packages/requests/api.py"), "/p")).toBe(
+      "/usr/lib/site-packages/requests/api.py",
+    );
+    expect(await resolveTarget(at("/usr/local/lib/python3.12/json/__init__.py"), "/p")).toBe("/p/pkg/__init__.py");
+  });
 });
 
 describe("JVM stack frame resolution", () => {

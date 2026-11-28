@@ -158,6 +158,7 @@ describe("Up / Down the Stack Trace in the console", () => {
       "/home/me/app",
       false,
       undefined,
+      undefined,
     );
     expect(onFollowChange).toHaveBeenCalledWith(false);
     expect(scrolled.at(-1)).toBe(4);
@@ -170,6 +171,7 @@ describe("Up / Down the Stack Trace in the console", () => {
       expect.objectContaining({ path: "/home/me/app/main.go", line: 7 }),
       "/home/me/app",
       true,
+      undefined,
       undefined,
     );
     expect(current().map((a) => a.textContent)).toEqual(["/home/me/app/main.go:7"]);
@@ -195,6 +197,7 @@ describe("Up / Down the Stack Trace in the console", () => {
       expect.objectContaining({ path: "/home/me/app/main.go" }),
       "/home/me/app",
       false,
+      undefined,
       undefined,
     );
   });
@@ -226,6 +229,7 @@ describe("Up / Down the Stack Trace in the console", () => {
       "/home/me/app",
       false,
       undefined,
+      undefined,
     );
   });
 
@@ -240,6 +244,7 @@ describe("Up / Down the Stack Trace in the console", () => {
       "/home/me/app",
       true,
       "app",
+      undefined,
     );
   });
 

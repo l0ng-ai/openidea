@@ -45,6 +45,7 @@ const Line = memo(
     rules,
     cwd,
     module,
+    container,
     currentLink,
   }: {
     line: ConsoleLine;
@@ -54,6 +55,8 @@ const Line = memo(
     cwd: string;
     /** The run's owning module, which picks between same-named files of a multi-module build. */
     module?: string | null;
+    /** The Docker / Compose run target the run is in: its absolute paths are the container's. */
+    container?: string | null;
     /** Start of the link Previous / Next Occurrence stepped to on this line. */
     currentLink?: number;
   }) {
@@ -63,7 +66,7 @@ const Line = memo(
     const activate = (e: MouseEvent, link: OutputLink) => {
       e.preventDefault();
       if (window.getSelection()?.toString()) return;
-      if (link.kind !== "url") void openTarget(link.target, cwd, true, module);
+      if (link.kind !== "url") void openTarget(link.target, cwd, true, module, container);
       else if (!debugConsoleUrl(e, link.url)) void openUrl(link.url);
     };
     // A blank line is an empty row: its height comes from CSS, never from a character in the text.
@@ -114,6 +117,7 @@ const Line = memo(
     a.length === b.length &&
     a.cwd === b.cwd &&
     a.module === b.module &&
+    a.container === b.container &&
     a.marks === b.marks &&
     a.rules === b.rules &&
     a.currentLink === b.currentLink,
@@ -241,6 +245,8 @@ export interface ConsoleViewProps {
   cwd: string;
   /** The run's owning module (`RunConfig` module), when it has one. */
   module?: string | null;
+  /** The Docker / Compose run target the run is in (`containerTarget`). */
+  container?: string | null;
   onClear?: () => void;
   /** Set while the process accepts input. */
   input?: ConsoleInput;
@@ -260,6 +266,7 @@ export function ConsoleView({
   onFollowChange,
   cwd,
   module,
+  container,
   onClear,
   input,
   findOpen: controlledFindOpen,
@@ -518,7 +525,7 @@ export function ConsoleView({
     programmatic.current = true;
     virtualizer.scrollToIndex(rowOfLine.get(hit.line)!, { align: "center" });
     requestAnimationFrame(() => (programmatic.current = false));
-    void openTarget(hit.link.target, cwd, focus, module);
+    void openTarget(hit.link.target, cwd, focus, module, container);
     return { index: index + 1, total: links.length };
   });
 
@@ -790,6 +797,7 @@ export function ConsoleView({
                   length={line.text.length}
                   cwd={cwd}
                   module={module}
+                  container={container}
                   currentLink={currentLink?.lineId === line.id ? currentLink.start : undefined}
                 />
                 {row.fold && !row.fold.expanded && foldButton(row.fold, true)}

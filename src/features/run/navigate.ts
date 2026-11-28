@@ -10,6 +10,7 @@ import { joinPath, type FileTarget } from "./links";
 import { scopeToRunModule } from "./moduleScope";
 import { findRubyTest } from "./rubyTests";
 import { tx } from "@/platform/i18n";
+import { openCodeLocation } from "@/editor/api";
 
 async function exists(path: string): Promise<boolean> {
   const slash = path.lastIndexOf("/");
@@ -96,7 +97,17 @@ export function runDirectory(cwd: string | null | undefined): string {
  * `cwd` resolves relative paths; `module` is the run configuration's owning module (RunConfig
  * `module`), which picks between same-named files of a multi-module build.
  */
-export async function resolveTarget(target: FileTarget, cwd: string, module?: string | null): Promise<string | null> {
+export async function resolveTarget(
+  target: FileTarget,
+  cwd: string,
+  module?: string | null,
+  container?: string | null,
+): Promise<string | null> {
+  // An absolute path a container printed: the project folder it mounts or the copy of its
+  // libraries. A file of this machine or of the same name elsewhere would be another file.
+  if (container && target.resolve === "path" && target.path.startsWith("/")) {
+    return call(commands.runContainerPath(target.path, container)).catch(() => null);
+  }
   if (target.resolve === "path") {
     const candidate = joinPath(cwd, target.path);
     if (await exists(candidate)) return candidate;
@@ -142,7 +153,14 @@ export async function declarationLine(path: string, test: string[]): Promise<num
   }
 }
 
-export async function openTarget(target: FileTarget, cwd: string, focus = true, module?: string | null): Promise<void> {
+/** `container`: the Docker / Compose run target the output came from (`containerTarget`). */
+export async function openTarget(
+  target: FileTarget,
+  cwd: string,
+  focus = true,
+  module?: string | null,
+  container?: string | null,
+): Promise<void> {
   if (!isTauri()) return;
   if (target.resolve === "rubyTest") {
     const site = target.className
@@ -161,7 +179,7 @@ export async function openTarget(target: FileTarget, cwd: string, focus = true, 
     await editorService().openFile(site.path, { selection: { line: site.line - 1, col: 0 }, focus });
     return;
   }
-  const path = await resolveTarget(target, cwd, module);
+  const path = await resolveTarget(target, cwd, module, container);
   if (!path && target.className) {
     // A library or JDK frame without sources: nothing to open, which is no error.
     notifications().notify({
@@ -185,7 +203,9 @@ export async function openTarget(target: FileTarget, cwd: string, focus = true, 
   }
   const line = target.line ?? (target.test ? await declarationLine(path, target.test) : undefined);
   const selection = line ? { line: line - 1, col: Math.max(0, (target.col ?? 1) - 1) } : undefined;
-  await editorService().openFile(path, { selection, focus });
+  // The copy of a container's library opens read-only, like External Libraries.
+  if (container) await openCodeLocation(path, selection, { focus });
+  else await editorService().openFile(path, { selection, focus });
 }
 
 /**

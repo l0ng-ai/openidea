@@ -873,6 +873,43 @@ mod ownership_tests {
     }
 }
 
+/// The file here of a path a run in a container of `target` printed (`/app/main.py`, a
+/// `site-packages` module in a traceback): in a folder of the project the container mounts,
+/// or, when `target` is the project interpreter's, in the copy of its libraries. `None`: no
+/// such file.
+#[command(trust = trusted)]
+pub async fn run_container_path(
+    host: &Host,
+    window: &str,
+    path: String,
+    target: String,
+) -> IdeResult<Option<ide_core::IpcPath>> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let settings = project.settings.effective();
+    let Some(run_target) =
+        settings.run_targets.iter().find(|t| t.id == target && t.kind != RunTargetKind::Ssh).cloned()
+    else {
+        return Ok(None);
+    };
+    let snapshots = crate::ops::sdk::container_python::snapshots_of(host, &project.root, &settings, &target);
+    let (root, data_dir) = (project.root.clone(), host.data_dir.clone());
+    host.blocking(move || {
+        if !path.starts_with('/') {
+            return Ok(None);
+        }
+        let library = snapshots
+            .and_then(|dir| ide_sdk::container_python::current(&dir))
+            .and_then(|(dir, snapshot)| ide_sdk::container_python::snapshot_file(&dir, &snapshot, &path));
+        let file = library.filter(|f| f.is_file()).or_else(|| {
+            let mounts = container::mounts(&data_dir, &root, &run_target).ok()?;
+            ide_remote::docker::mounted_file(&path, &mounts).filter(|f| f.is_file())
+        });
+        Ok(file.map(Into::into))
+    })
+    .await
+}
+
 /// The project's source roots on `PYTHONPATH` in a container, as a local run gets them:
 /// they are mounted with the project, and `container::prepare` maps their paths. The
 /// container's separator is `:`, whatever this machine's is.
@@ -892,6 +929,7 @@ ide_command::domain!(
     run_attach,
     run_close_stdin,
     run_configs,
+    run_container_path,
     run_list,
     run_resize,
     run_save_configs,

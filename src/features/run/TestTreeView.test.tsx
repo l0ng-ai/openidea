@@ -86,6 +86,7 @@ describe("TestTreeView", () => {
       "/p",
       true,
       undefined,
+      undefined,
     );
   });
 
@@ -277,6 +278,7 @@ describe("Previous / Next Failed Test", () => {
       expect.objectContaining({ path: "DbTest.java", line: 20 }),
       "/p",
       false,
+      undefined,
       undefined,
     );
     go(-1, true);
