@@ -118,7 +118,9 @@ impl server::Handler for Conn {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        let command = String::from_utf8_lossy(data);
+        // The client wraps every command for the login shell; tests see the script it runs.
+        let raw = String::from_utf8_lossy(data);
+        let command = crate::shell::posix_script(&raw).unwrap_or_else(|| raw.into_owned());
         let Exec::Reply(exec) = &self.exec else {
             let Exec::Process(spawn) = &self.exec else { unreachable!() };
             let Some(ch) = self.channels.lock().await.remove(&channel) else {

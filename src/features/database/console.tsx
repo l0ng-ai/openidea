@@ -86,7 +86,9 @@ import { WHOLE_FILE, sqlSupport, type SqlText } from "./sqlSupport";
 import { snowflakeLanguage } from "./sql/snowflakeHighlight";
 import {
   allowsPassiveConsoleMetadata,
-  bindConsole,
+  consoleHasPending,
+  consoleUsesManualCommit,
+  rebindConsole,
   cancelConsole,
   closeInlineResults,
   inEditorResults,
@@ -873,8 +875,8 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
   const bound = useDatabase(() => consoleSource(path));
   const running = useDatabase((s) => !!s.running[path]);
   const maxRows = useDatabase((s) => s.maxRows);
-  const manual = useDatabase((s) => !!bound && s.manualCommit.has(bound));
-  const pending = useDatabase((s) => !!bound && s.pendingTx.has(bound));
+  const manual = useDatabase((s) => !!bound && consoleUsesManualCommit(s, bound, path));
+  const pending = useDatabase((s) => !!bound && consoleHasPending(s, bound, path));
   const inEditor = useProject((s) => inEditorResults(s.settings));
   // SQL resolution scopes in the settings can move the console to another data source.
   useProject((s) => s.settings);
@@ -975,8 +977,8 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
             { value: "auto", label: "Tx: Auto" },
             { value: "manual", label: "Tx: Manual" },
           ]}
-          onChange={(v) => bound && void setManualCommit(bound, v === "manual")}
-          disabled={!bound}
+          onChange={(v) => bound && void setManualCommit(bound, v === "manual", path)}
+          disabled={!bound || running}
         />
       )}
       {supportsTransactions && manual && (
@@ -985,13 +987,13 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
             icon="commit"
             title="Commit"
             disabled={!pending || running}
-            onClick={() => bound && void finishTransaction(bound, true)}
+            onClick={() => bound && void finishTransaction(bound, true, path)}
           />
           <IconButton
             icon="revert"
             title="Roll Back"
             disabled={!pending || running}
-            onClick={() => bound && void finishTransaction(bound, false)}
+            onClick={() => bound && void finishTransaction(bound, false, path)}
           />
         </>
       )}
@@ -1018,8 +1020,10 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
         placeholder={sources.length ? "<data source>" : "None configured"}
         options={sourceOptions}
         searchable
-        onChange={(id) => id !== boundId && bindConsole(path, id)}
-        disabled={!sources.length}
+        onChange={(id) => {
+          if (id !== boundId) void rebindConsole(path, id);
+        }}
+        disabled={!sources.length || running}
       />
       {bound && boundId && switchable && listsDatabases(sourceById(boundId)) ? (
         <DatabaseSchemaSwitcher path={path} bound={bound} sourceId={boundId} schema={schema} />
@@ -1132,8 +1136,11 @@ function DatabaseSchemaSwitcher({
           return;
         }
         const target = targetFor(pick.database);
-        if (target !== bound) bindConsole(path, target);
-        setConsoleSchema(path, pick.schema);
+        if (target === bound) setConsoleSchema(path, pick.schema);
+        else
+          void rebindConsole(path, target).then((rebound) => {
+            if (rebound) setConsoleSchema(path, pick.schema);
+          });
       }}
     />
   );
