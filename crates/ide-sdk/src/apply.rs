@@ -2421,6 +2421,11 @@ pub fn terminal_activation(root: &Path, s: &Settings, shell: &str) -> Option<Str
     script(target).is_file().then_some(line)
 }
 
+/// The prefix of the conda environment `python` belongs to (it holds `conda-meta/`).
+pub fn conda_env_prefix(python: &Path) -> Option<PathBuf> {
+    crate::discover::conda_env_home(python).filter(|env| env.join("conda-meta").is_dir())
+}
+
 /// `conda activate <prefix>` for a conda interpreter, as PyCharm does for a Conda project
 /// interpreter: conda envs have no activate script of their own, and the shells' conda hook
 /// comes from the installation (the env itself for `base`, the parent of `envs/`, else

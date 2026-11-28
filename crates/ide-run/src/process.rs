@@ -145,6 +145,8 @@ pub struct StartOptions {
     pub plots: Option<crate::plots::Plots>,
     /// Capture the existing JUnit XML before this build-tool test run starts.
     pub capture_junit_reports: bool,
+    /// The conda environment of a Python run's interpreter, activated for the run.
+    pub conda_prefix: Option<PathBuf>,
 }
 
 #[derive(Clone, Default)]
@@ -434,6 +436,10 @@ impl ProcessManager {
         let mut env = launch_env(root, config)?;
         if matches!(config.kind.as_str(), "python" | "pytest" | "unittest" | "doctest" | "django-test") {
             crate::python_path::extend(&mut env.vars, &options.python_paths, !env.clear)?;
+            if let Some(prefix) = &options.conda_prefix {
+                let user_set = |key: &str| config.env.contains_key(key);
+                crate::python_path::activate_conda(&mut env.vars, prefix, !env.clear, user_set)?;
+            }
             if let Some(plots) = &options.plots {
                 crate::plots::add(&mut env.vars, plots, (!env.clear).then_some(cwd.as_path()))?;
             }
