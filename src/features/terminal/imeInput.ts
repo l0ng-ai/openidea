@@ -33,7 +33,7 @@
  * - the letters committed by that switch keep the spaces the IME showed between syllables
  *   (`awd` arrives as `aw d`), so the textarea is rewritten to what was typed.
  */
-import { isImeKey } from "@/platform/ime";
+import { isImeKey, typedImeCommit } from "@/platform/ime";
 
 const MODIFIERS = new Set(["Shift", "Control", "Alt", "Meta"]);
 
@@ -45,16 +45,6 @@ export interface TerminalInputOptions {
   host: HTMLElement;
   textarea: HTMLTextAreaElement;
   send: (data: string) => void;
-}
-
-/**
- * The text a composition commits, without the syllable spaces an IME displays when it commits
- * its raw letters (the commit is the composition text itself and plain ASCII). The user never
- * typed those spaces: Space picks a candidate while composing.
- */
-function typedCommit(commit: string, composition: string): string {
-  if (commit !== composition || !/^[\x20-\x7e]+$/.test(commit)) return commit;
-  return commit.replaceAll(" ", "");
 }
 
 /**
@@ -133,7 +123,7 @@ export function ownTerminalInput({ host, textarea, send }: TerminalInputOptions)
   // Runs before xterm reads the commit from the textarea, which it defers by a task.
   const onCompositionEnd = (e: CompositionEvent) => {
     composing = false;
-    const commit = typedCommit(e.data, composition);
+    const commit = typedImeCommit(e.data, composition);
     if (commit !== e.data && textarea.value.endsWith(e.data)) {
       textarea.value = textarea.value.slice(0, -e.data.length) + commit;
     }

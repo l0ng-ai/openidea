@@ -5,6 +5,7 @@ import { PageContext } from "../components/context";
 import { DEFAULT_SETTINGS } from "../model/schema";
 import { openSettings } from "../model/staging";
 import { MCP_SERVER_PAGE } from "../pages/mcpServer";
+import { BEHAVIOR_PAGES } from "../pages/behavior";
 import { OptionsPage } from "../pages/OptionsPage";
 import { optionLabels, pageLabels } from "../pages/registry";
 import type { PageSpec } from "../pages/spec";
@@ -90,5 +91,32 @@ describe("dependent options of a checkbox", () => {
     expect(fixedPort).toMatchObject({ kind: "toggle", children: [{ key: "mcpServer.port", label: "Port" }] });
     expect(pageLabels(MCP_SERVER_PAGE.id)).toContain("Port");
     expect(optionLabels(MCP_SERVER_PAGE.id)).toContain("Port");
+  });
+
+  it("adjusts project color strength via slider and disables it when toolbar project colors are off", () => {
+    const appearance = BEHAVIOR_PAGES.find((p) => p.id === "appearance")!;
+    expect(pageLabels(appearance.id)).toContain("Project color strength");
+
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    useProject.setState({ settings, project: null });
+    openSettings(appearance.id);
+    render(
+      <PageContext.Provider value={{ pageId: appearance.id, scope: "global" }}>
+        <OptionsPage spec={appearance} />
+      </PageContext.Provider>,
+    );
+
+    const slider = screen.getByRole("slider", { name: "Project color strength" });
+    const input = screen.getByRole("textbox", { name: "Project color strength" });
+    expect(slider).toBeEnabled();
+    expect(slider).toHaveValue("22");
+    expect(input).toHaveValue("22");
+
+    fireEvent.change(slider, { target: { value: "40" } });
+    expect(input).toHaveValue("40");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Use project colors in main toolbar" }));
+    expect(slider).toBeDisabled();
+    expect(input).toBeDisabled();
   });
 });

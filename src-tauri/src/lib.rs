@@ -394,7 +394,10 @@ fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED | StateFlags::FULLSCREEN
+        // No FULLSCREEN on macOS: state is kept per window label, and `project-N` labels are reused
+        // by other projects, so a stale flag put later windows into full screen, each claiming a
+        // Space, some while still hidden and blank. A full-screen window comes back maximized.
+        StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED
     }
 }
 

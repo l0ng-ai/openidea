@@ -52,6 +52,9 @@ export function applyAppearanceOptions(s: ValidSettings, root: HTMLElement = doc
   flag(root, "reduceMotion", a.reduceMotion);
   flag(root, "toolWindowBg", a.differentToolWindowBackground, "different");
   flag(root, "projectColors", !a.projectColorsInToolbar, "off");
+  if (a.projectColorStrength === DEFAULT_SETTINGS.appearance.projectColorStrength)
+    root.style.removeProperty("--project-gradient-strength");
+  else root.style.setProperty("--project-gradient-strength", `${a.projectColorStrength}%`);
   flag(root, "menuIcons", !a.menuIcons, "off");
   // "Use smaller indents in trees": `ui/Tree` reads the variable as its per-level indent.
   if (a.smallTreeIndents) root.style.setProperty("--tree-indent", SMALL_TREE_INDENT);

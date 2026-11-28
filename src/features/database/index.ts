@@ -34,6 +34,7 @@ import {
 import { installCellActions } from "./cellActions";
 import { installValueEditorActions } from "./valueEditorActions";
 import { registerResultTabActions } from "./resultTabActions";
+import { supportsExplain } from "./model";
 import { SQL_LANGUAGE } from "./sqlLanguage";
 import { TABLE_KIND, tableTitle } from "./tableInput";
 import { DIAGRAM_KIND, diagramTitle } from "./erDiagram";
@@ -61,7 +62,7 @@ import {
   openHistory,
   openSourceDialog,
   useDatabase,
-  watchClickhouseConsoles,
+  watchConsoleSessions,
   watchIdleConnections,
 } from "./store";
 
@@ -283,6 +284,8 @@ export function activate(): () => void {
         treeReveal: null,
         manualCommit: new Set(),
         pendingTx: new Set(),
+        consoleModes: new Map(),
+        consolePendingTx: new Set(),
         running: {},
         executions: {},
         dialog: null,
@@ -295,7 +298,7 @@ export function activate(): () => void {
         setFileDecorations("database", consoleDecorations(s));
     }),
     () => setFileDecorations("database", new Map()),
-    watchClickhouseConsoles(),
+    watchConsoleSessions(),
     watchIdleConnections(),
     installTableEditorFocus(),
     installValueEditorActions(),
@@ -499,7 +502,7 @@ export function activate(): () => void {
         icon: "db-plan",
         keywords: ["query plan", "explain", "sql"],
         when: `editorTextFocus && editorLangId == ${SQL_LANGUAGE}`,
-        enabled: () => sourceById(consoleSource(activeEditor()?.ctx.path ?? ""))?.driver !== "jdbc",
+        enabled: () => supportsExplain(sourceById(consoleSource(activeEditor()?.ctx.path ?? ""))),
         run: async () => {
           const current = projectRequest();
           const e = activeEditor();

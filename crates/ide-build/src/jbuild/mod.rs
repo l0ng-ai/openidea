@@ -46,6 +46,16 @@ fn subdir(root: &Path, rel: &str) -> PathBuf {
     root.join(rel).components().collect()
 }
 
+/// The `-pl` value selecting `projects` in their Maven reactor, by `groupId:artifactId`. Their
+/// directories are the absolute `basedir`s Maven reported, which need not share a spelling with the
+/// opened folder (drive letter case, separators, links), so a path selector could miss the reactor.
+fn maven_project_selection<'a>(projects: impl Iterator<Item = &'a ProjectModel>) -> String {
+    let mut selection: Vec<String> = projects.map(|p| format!("{}:{}", p.group_id, p.artifact_id)).collect();
+    selection.sort();
+    selection.dedup();
+    selection.join(",")
+}
+
 /// The resident part of the build: javac servers and one lock per reactor.
 #[derive(Default)]
 pub struct JavaBuildService {
@@ -691,17 +701,8 @@ impl JavaBuild<'_> {
         let out = model::output_root(self.cache, &top.key());
         let step = match top {
             Reactor::Maven(top) => {
-                let top_dir = subdir(self.root, &top.dir);
-                let mut selection: Vec<String> = changed
-                    .iter()
-                    .map(|(p, _, _)| {
-                        let rel = p.dir.strip_prefix(&top_dir).unwrap_or(&p.dir).to_string_lossy().replace('\\', "/");
-                        if rel.is_empty() { ".".to_owned() } else { rel }
-                    })
-                    .collect();
-                selection.sort();
-                selection.dedup();
-                let mut extra = vec!["-q".to_owned(), "-pl".to_owned(), selection.join(",")];
+                let selection = maven_project_selection(changed.iter().map(|(p, _, _)| *p));
+                let mut extra = vec!["-q".to_owned(), "-pl".to_owned(), selection];
                 extra.push("resources:resources".into());
                 if changed.iter().any(|(_, test, _)| *test) {
                     extra.push("resources:testResources".into());

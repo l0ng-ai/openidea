@@ -59,7 +59,7 @@ impl server::Handler for Sshd {
         Ok(())
     }
 
-    /// `ran: <command>` on stdout, `oops` on stderr, exit status 3. `linger` exits but keeps
+    /// `ran: <command as sent>` on stdout, `oops` on stderr, exit status 3. `linger` exits but keeps
     /// the channel open, as when a child it started still holds stdout.
     async fn exec_request(
         &mut self,
@@ -71,7 +71,7 @@ impl server::Handler for Sshd {
         session.data(channel, format!("ran: {}", String::from_utf8_lossy(data)).into_bytes())?;
         session.extended_data(channel, 1, b"oops".to_vec())?;
         session.exit_status_request(channel, 3)?;
-        if data != b"linger" {
+        if data != b"sh -c 'linger'" {
             session.eof(channel)?;
             session.close(channel)?;
         }
@@ -260,7 +260,7 @@ async fn command_tunnel_runs_the_command_per_connection() {
         let mut s = TcpStream::connect(("127.0.0.1", tunnel.port())).await.unwrap();
         let mut out = String::new();
         s.read_to_string(&mut out).await.unwrap();
-        assert_eq!(out, "ran: docker system dial-stdio");
+        assert_eq!(out, "ran: sh -c 'docker system dial-stdio'");
     }
 }
 
@@ -346,7 +346,10 @@ async fn runs_commands_and_streams_processes() {
     let env = env().await;
     let session = env.connect_trusted(&env.target(SshAuth::Password), Some("secret")).await.ok().unwrap();
     let out = session.exec("uname -a", None).await.unwrap();
-    assert_eq!((out.code, out.stdout_str().as_str(), out.stderr.as_slice()), (Some(3), "ran: uname -a", &b"oops"[..]));
+    assert_eq!(
+        (out.code, out.stdout_str().as_str(), out.stderr.as_slice()),
+        (Some(3), "ran: sh -c 'uname -a'", &b"oops"[..])
+    );
     assert!(out.into_stdout("uname").unwrap_err().message.contains("oops"));
 
     let seen: Arc<Mutex<(String, String)>> = Arc::default();
@@ -363,7 +366,7 @@ async fn runs_commands_and_streams_processes() {
         .await
         .unwrap();
     assert_eq!(process.wait().await, Some(3));
-    assert_eq!(*seen.lock(), ("ran: python3 main.py".to_owned(), "oops".to_owned()));
+    assert_eq!(*seen.lock(), ("ran: sh -c 'python3 main.py'".to_owned(), "oops".to_owned()));
 }
 
 #[tokio::test]
@@ -387,7 +390,7 @@ async fn a_process_that_exits_finishes_even_while_its_channel_stays_open() {
     let code = tokio::time::timeout(std::time::Duration::from_secs(10), process.wait())
         .await
         .expect("the exit status must end the process");
-    assert_eq!((code, seen.lock().as_str()), (Some(3), "ran: linger"));
+    assert_eq!((code, seen.lock().as_str()), (Some(3), "ran: sh -c 'linger'"));
 }
 
 #[tokio::test]
@@ -400,7 +403,7 @@ async fn a_command_that_exits_returns_even_while_its_channel_stays_open() {
         .unwrap();
     assert_eq!(
         (out.code, out.stdout.as_slice(), out.stderr.as_slice()),
-        (Some(3), b"ran: linger".as_slice(), b"oops".as_slice())
+        (Some(3), b"ran: sh -c 'linger'".as_slice(), b"oops".as_slice())
     );
 }
 
@@ -450,7 +453,7 @@ async fn openssh_proxy_command_and_none_authentication() {
     };
     let session = env.connect(&target, None).await.expect("ProxyCommand + none auth should connect");
     let out = session.exec("uname -srm", None).await.unwrap();
-    assert_eq!(out.stdout_str(), "ran: uname -srm");
+    assert_eq!(out.stdout_str(), "ran: sh -c 'uname -srm'");
 }
 
 #[tokio::test]

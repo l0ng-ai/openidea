@@ -180,6 +180,10 @@ export function fileSourceName(file: string): string {
   return base.replace(/\.[^.]+$/, "") || base;
 }
 
+export function supportsExplain(source?: Pick<DataSource, "vendor" | "driver"> | null): boolean {
+  return source?.driver !== "jdbc" || source.vendor === "duckdb";
+}
+
 /** The tree / menu icon of a data source (IDEA shows the vendor's mark). */
 export function sourceIcon(s: Pick<DataSource, "vendor" | "driver">): string {
   return vendorOf(s).icon;

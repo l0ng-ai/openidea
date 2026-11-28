@@ -16,6 +16,9 @@ export function activateDiffViewer(): () => void {
   const single = registerEditorKind({
     kind: DIFF_KIND,
     standalone: true,
+    // Switching back shows the diff where it was left (scroll, caret, expanded lines),
+    // without reloading the revisions.
+    keepAlive: true,
     component: lazyComponent(() => import("./diff-editor-tab").then((m) => m.DiffEditorTab)),
     title: (input) => diffTitle(input.data as DiffData),
     icon: () => "diff",
@@ -25,6 +28,7 @@ export function activateDiffViewer(): () => void {
   const combined = registerEditorKind({
     kind: COMBINED_DIFF_KIND,
     standalone: true,
+    keepAlive: true,
     component: lazyComponent(() => import("./CombinedDiff").then((m) => m.CombinedDiffTab)),
     title: (input) => (input.data as CombinedDiffData).title ?? tx("Combined Changes Diff"),
     document: (input) => ((input.data as CombinedDiffData).items.some(stagedDiffPath) ? combinedStaged : undefined),
