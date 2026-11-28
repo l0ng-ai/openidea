@@ -35,7 +35,7 @@ From that declaration `src-tauri` derives the Tauri adapter and its bindings ent
 A command only the desktop can run, because it needs a Tauri type such as `AppHandle`, a window or a dialog, stays a hand-written Tauri fn in `src-tauri/src/commands/<domain>.rs` with `#[desktop_command(trust = …)]`, listed in that module's `ide_command::desktop_domain!` (a new module also goes into `catalogue()` in `src-tauri/src/commands/mod.rs`):
 
 ```rust src-tauri/src/commands/clipboard.rs
-#[desktop_command(trust = trusted)]
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn clipboard_text(app: AppHandle) -> IdeResult<Option<String>> {
