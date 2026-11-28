@@ -14,8 +14,13 @@ use specta::Type;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Duration;
 use tokio::sync::Mutex as AsyncMutex;
+
+/// A read of the variables running longer is interrupted. Its kernel is kept even if it does
+/// not drain; an Interrupt then stops it like a run.
+const READ_LIMIT: Duration = Duration::from_secs(5);
 
 pub(super) type StatusCallback = Arc<dyn Fn(&Path, KernelState, Option<String>) + Send + Sync>;
 pub(super) type OutputCallback = Arc<dyn Fn(KernelOutput) + Send + Sync>;
@@ -65,8 +70,12 @@ struct Slot {
     interrupt: Mutex<Option<CancellationToken>>,
     stop: Mutex<Option<CancellationToken>>,
     closed: AtomicBool,
-    /// A silent inspection holds `operation`; a run waits for it instead of failing as busy.
-    inspecting: AtomicBool,
+    /// Inspections in flight. One holds `operation`; a run waits for it instead of failing as busy.
+    inspecting: AtomicUsize,
+    /// Interrupts the inspection holding `operation`.
+    inspection: Mutex<Option<CancellationToken>>,
+    /// Counts `cancel()` calls, so an inspection sees one that came before its token was set.
+    interrupts: AtomicUsize,
 }
 
 impl Slot {
@@ -76,12 +85,19 @@ impl Slot {
             interrupt: Mutex::new(None),
             stop: Mutex::new(None),
             closed: AtomicBool::new(false),
-            inspecting: AtomicBool::new(false),
+            inspecting: AtomicUsize::new(0),
+            inspection: Mutex::new(None),
+            interrupts: AtomicUsize::new(0),
         }
     }
 
     fn cancel(&self) {
+        self.interrupts.fetch_add(1, Ordering::SeqCst);
         if let Some(token) = self.interrupt.lock().as_ref() {
+            token.cancel();
+        }
+        // A run waiting behind a stuck inspection is interrupted through it.
+        if let Some(token) = self.inspection.lock().as_ref() {
             token.cancel();
         }
     }
@@ -106,7 +122,7 @@ impl Drop for ActiveExecution<'_> {
 struct Inspecting<'a>(&'a Slot);
 impl Drop for Inspecting<'_> {
     fn drop(&mut self) {
-        self.0.inspecting.store(false, Ordering::Release);
+        self.0.inspecting.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -154,7 +170,7 @@ impl KernelManager {
         // A second caller must not sit in a queue and execute stale source later.
         let mut running = match slot.operation.try_lock() {
             Ok(running) => running,
-            Err(_) if slot.inspecting.load(Ordering::Acquire) => slot.operation.lock().await,
+            Err(_) if slot.inspecting.load(Ordering::Acquire) > 0 => slot.operation.lock().await,
             Err(_) => return Err(IdeError::unavailable("notebook kernel is busy")),
         };
         if slot.closed.load(Ordering::Acquire) {
@@ -218,27 +234,33 @@ impl KernelManager {
         if slot.interrupt.lock().is_some() {
             return Err(IdeError::unavailable("notebook kernel is busy"));
         }
-        // Flagged before locking, so a run arriving meanwhile waits rather than failing.
-        slot.inspecting.store(true, Ordering::Release);
+        let interrupts = slot.interrupts.load(Ordering::SeqCst);
+        // Counted before locking, so a run arriving meanwhile waits rather than failing.
+        slot.inspecting.fetch_add(1, Ordering::AcqRel);
         let _inspecting = Inspecting(&slot);
         let running = slot.operation.try_lock().map_err(|_| IdeError::unavailable("notebook kernel is busy"))?;
         let Some(kernel) = running.as_ref().filter(|r| !r.is_finished() && !slot.closed.load(Ordering::Acquire)) else {
             return Ok(None);
         };
-        // A fixed bound; a wedged `__repr__` is interrupted when the reply is dropped.
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            kernel.execute(
-                code,
-                Some(expressions),
-                CancellationToken::new(),
-                CancellationToken::new(),
-                Arc::new(|_| {}),
-            ),
-        )
-        .await
-        .map_err(|_| IdeError::unavailable("kernel did not answer within 10 seconds"))??;
-        Ok(result.user_expressions)
+        // Interrupt, restart and close reach it through `inspection` and the stop token.
+        let interrupt = CancellationToken::new();
+        *slot.inspection.lock() = Some(interrupt.clone());
+        if slot.interrupts.load(Ordering::SeqCst) != interrupts {
+            interrupt.cancel();
+        }
+        // Interrupted at the limit, never dropped: the waiting run needs the kernel drained.
+        let limit = CancellationToken::new();
+        let timer = tokio::spawn({
+            let limit = limit.clone();
+            async move {
+                tokio::time::sleep(READ_LIMIT).await;
+                limit.cancel();
+            }
+        });
+        let result = kernel.execute(code, Some(expressions), limit, interrupt, Arc::new(|_| {})).await;
+        timer.abort();
+        slot.inspection.lock().take();
+        Ok(result?.user_expressions)
     }
 
     /// Cancels the active request, including startup. The execution future drains
