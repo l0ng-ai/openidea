@@ -85,21 +85,7 @@ import { wheelZoomStep } from "@/platform/wheelZoom";
 import { iconNode } from "@/ui/iconNode";
 import { isMarkdownPath } from "../fileKinds";
 import { attachPanZoom } from "../panZoom";
-
-/** Loaded local images by absolute path (data URLs), shared by all previews. */
-const imageCache = new Map<string, Promise<string>>();
-const IMAGE_CACHE_LIMIT = 64;
-
-function imageUrl(path: string): Promise<string> {
-  let p = imageCache.get(path);
-  if (!p) {
-    p = call(commands.fsReadImage(path));
-    p.catch(() => imageCache.delete(path));
-    if (imageCache.size >= IMAGE_CACHE_LIMIT) imageCache.delete(imageCache.keys().next().value!);
-    imageCache.set(path, p);
-  }
-  return p;
-}
+import { imageUrl } from "../previewImages";
 
 /**
  * Line of the heading `anchor` in the Markdown file `path`, from an open editor's text (unsaved

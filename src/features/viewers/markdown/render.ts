@@ -249,6 +249,14 @@ const sanitizeWhole = (all: readonly MarkdownBlock[]) =>
   purify().sanitize(all.map((b) => wrap(b.line, b.endLine, b.html)).join(""), SANITIZE);
 
 /**
+ * HTML another renderer made (docutils), sanitized like the Markdown preview's, MathML kept:
+ * nothing loads from other hosts, images keep their source in `data-src`, and ids and names get
+ * {@link ANCHOR_PREFIX} (the preview shares the IDE's document).
+ */
+export const sanitizePreviewHtml = (html: string) =>
+  purify().sanitize(html, { ...SANITIZE, USE_PROFILES: { html: true, mathMl: true }, SANITIZE_NAMED_PROPS: true });
+
+/**
  * 0-based source line of the heading the preview gives the anchor `anchor` (with or without
  * {@link ANCHOR_PREFIX}), or null when no heading has it. Lets a link to another file open at
  * that heading.

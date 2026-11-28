@@ -10,6 +10,7 @@ export const BINARY_KIND = "binary";
 
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "bmp", "avif"]);
 const MARKDOWN_EXTENSIONS = new Set(["md", "markdown", "mdown", "mkd", "mkdn", "mdwn"]);
+const RST_EXTENSIONS = new Set(["rst"]);
 const MARKDOWN_SOURCE_EXTENSIONS = new Set([...MARKDOWN_EXTENSIONS, "mdx", "ronn", "workbook"]);
 
 function extension(path: string): string {
@@ -29,6 +30,12 @@ export function isMarkdownPath(path: string, mode: "preview" | "source" = "previ
   const { settings, project } = useProject.getState();
   const extensions = mode === "source" ? MARKDOWN_SOURCE_EXTENSIONS : MARKDOWN_EXTENSIONS;
   return hasFileType(path, ["markdown"], extensions, settings?.files, project?.root ?? null);
+}
+
+/** Whether `path` gets the reStructuredText preview under Settings › File Types. */
+export function isRstPath(path: string): boolean {
+  const { settings, project } = useProject.getState();
+  return hasFileType(path, ["restructuredtext"], RST_EXTENSIONS, settings?.files, project?.root ?? null);
 }
 
 /** Whether the file's name matches one of `patterns` (`*.xlsx`); Windows/macOS match case-insensitively. */
