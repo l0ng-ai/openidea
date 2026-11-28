@@ -223,6 +223,12 @@ export const EDITOR_EXTRA_DEFAULTS = {
     semicolonAtStatementEnd: true,
     simultaneousTagEditing: true,
     reformatOnPaste: "indentEachLine",
+    /** Advanced Settings: Copy/Cut with no selection copies the caret lines. */
+    copyLineWhenNoSelection: true,
+    /** Advanced Settings: Copy selects the lines it copied. */
+    selectCopiedLine: true,
+    /** Advanced Settings: linewise paste above the caret, at the caret, or trimmed at mid-line. */
+    linePasteMode: "above" as LinePasteMode,
     escapeOnPaste: true,
     smartIndent: true,
     insertDocStub: true,
@@ -282,6 +288,13 @@ export const EDITOR_EXTRA_DEFAULTS = {
 
 export type EditorExtras = typeof EDITOR_EXTRA_DEFAULTS;
 
+/** JetBrains Advanced Settings: behavior when pasting text copied linewise. */
+export type LinePasteMode = "above" | "caret" | "trim";
+export type LineClipboardOptions = Pick<
+  EditorExtras["smartKeys"],
+  "copyLineWhenNoSelection" | "selectCopiedLine" | "linePasteMode"
+>;
+
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => !!v && typeof v === "object" && !Array.isArray(v);
 
@@ -339,6 +352,7 @@ export function validateEditorExtras(raw: unknown): EditorExtras {
   const out = coerceLike(raw, EDITOR_EXTRA_DEFAULTS);
   if (!["active", "all"].includes(out.general.wheelZoomScope)) out.general.wheelZoomScope = "active";
   if (!["ask", "always", "never"].includes(out.autoImport.importsOnPaste)) out.autoImport.importsOnPaste = "ask";
+  if (!["above", "caret", "trim"].includes(out.smartKeys.linePasteMode)) out.smartKeys.linePasteMode = "above";
   if (!["hover", "always"].includes(out.folding.outlineVisibility)) out.folding.outlineVisibility = "hover";
   if (!DOCSTRING_FORMATS.includes(out.docstringFormat)) out.docstringFormat = "rest";
   for (const k of ["codeVisionUsagesPosition", "codeVisionAuthorPosition"] as const)

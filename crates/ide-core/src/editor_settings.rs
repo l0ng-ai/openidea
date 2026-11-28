@@ -302,6 +302,12 @@ pub struct SmartKeysSettings {
     pub simultaneous_tag_editing: bool,
     /// Reformat on paste: `none` | `indentBlock` | `indentEachLine`.
     pub reformat_on_paste: String,
+    /// Advanced Settings: Copy/Cut without a selection copies the whole caret lines.
+    pub copy_line_when_no_selection: bool,
+    /// Advanced Settings: Copy selects the lines copied without a selection.
+    pub select_copied_line: bool,
+    /// Advanced Settings: linewise paste `above` the caret | `caret` | `trim` at mid-line.
+    pub line_paste_mode: String,
     pub escape_on_paste: bool,
     pub smart_indent: bool,
     /// Enter › Insert documentation comment stub: Enter after `/**` closes the comment.
@@ -322,6 +328,9 @@ impl Default for SmartKeysSettings {
             semicolon_at_statement_end: true,
             simultaneous_tag_editing: true,
             reformat_on_paste: "indentEachLine".into(),
+            copy_line_when_no_selection: true,
+            select_copied_line: true,
+            line_paste_mode: "above".into(),
             escape_on_paste: true,
             smart_indent: true,
             insert_doc_stub: true,

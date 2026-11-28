@@ -13889,6 +13889,12 @@ export type SmartKeysSettings = {
 	simultaneousTagEditing?: boolean,
 	/**  Reformat on paste: `none` | `indentBlock` | `indentEachLine`. */
 	reformatOnPaste?: string,
+	/**  Advanced Settings: Copy/Cut without a selection copies the whole caret lines. */
+	copyLineWhenNoSelection?: boolean,
+	/**  Advanced Settings: Copy selects the lines copied without a selection. */
+	selectCopiedLine?: boolean,
+	/**  Advanced Settings: linewise paste `above` the caret | `caret` | `trim` at mid-line. */
+	linePasteMode?: string,
 	escapeOnPaste?: boolean,
 	smartIndent?: boolean,
 	/**  Enter › Insert documentation comment stub: Enter after `/**` closes the comment. */

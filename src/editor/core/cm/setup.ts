@@ -60,7 +60,6 @@ import { imeSyllableSpaces } from "./imeCommit";
 import { stickySelectionField } from "./stickySelection";
 import { relativeLineNumbers } from "./relativeLineNumbers";
 import { clipboardDocumentPath, clipboardFilesExtension } from "./clipboard";
-import { clipboardHistoryExtension } from "../clipboardHistory";
 import type { LanguageInfo } from "../backend";
 import { tx } from "@/platform/i18n";
 
@@ -405,7 +404,6 @@ export function baseExtensions(o: SetupOptions): Extension {
     imeSyllableSpaces,
     stickySelectionField,
     gutterLineDrag,
-    clipboardHistoryExtension,
     clipboardDocumentPath.of(o.ctx.path),
     clipboardFilesExtension,
     indentOnInput(),

@@ -90,6 +90,10 @@ Brackets and quotes are paired as you type, and typing a quote or bracket over a
 
 Copying from the editor puts rich text (with syntax colours) on the clipboard as well; turn this off in **Settings › Editor › General › Rich-Text Copy**. **Copy as Plain Text** and **Copy as Rich Text** copy the selection once in the other format without changing the setting; the editor's **Copy / Paste Special** menu shows the one the setting does not already give. They have no default shortcut.
 
+With no selection, `⌘C` / `Ctrl+C` copies the whole line at each distinct caret, and `⌘X` / `Ctrl+X` cuts those lines. Copy also selects the copied lines. Change these defaults in **Settings › Editor › General › Smart Keys**, section **Line Copy and Paste**: turn off line copying or turn off selection after copying.
+
+A line copied without a selection is pasted above the caret line by default, keeping the caret on its original text. **When pasting a line copied with no selection** can instead paste at the caret, or trim leading and trailing whitespace from the copied text when pasting in the middle of a line. At the start or end of a line, the trim mode still pastes above the line. With several carets, linewise paste inserts above each distinct caret line; at-caret and mid-line modes keep the usual one clipboard line per caret behavior.
+
 ## Folding
 
 | Action                                            | macOS               | Windows / Linux                 |

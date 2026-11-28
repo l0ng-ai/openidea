@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { EditorSelection, EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import {
   MAX_CLIPBOARD_ENTRIES,
   clearClipboardHistory,
@@ -49,6 +50,12 @@ describe("clipboard history (Paste from History)", () => {
       ]),
     });
     expect(copiedText(carets)).toBe("one\ntwo");
+    const filtered = EditorState.create({
+      doc,
+      extensions: [ext, EditorView.clipboardOutputFilter.of((text) => text.toUpperCase())],
+      selection: carets.selection,
+    });
+    expect(copiedText(filtered)).toBe("ONE\nTWO");
   });
 
   it("keeps a line-wise flag with older history entries and restores it when promoted", () => {
