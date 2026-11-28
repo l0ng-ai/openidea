@@ -93,6 +93,19 @@ export function activate(): () => void {
         run: () => connectJupyterServer(),
       },
       {
+        id: "notebook.debugCell",
+        title: "Debug Cell",
+        category: "Run",
+        when: "projectOpen",
+        run: () => {
+          const path = editorService().activePath();
+          const session = path ? existingNotebookSession(path) : undefined;
+          const cell = session?.selectedCell ?? session?.cells().find((c) => c.cellType === "code")?.id;
+          if (session && cell)
+            void import("./debugCell").then((m) => m.debugCell(session, cell)).catch((e) => session.report(e));
+        },
+      },
+      {
         id: "notebook.removeJupyterServer",
         title: "Remove Jupyter Server…",
         category: "Tools",

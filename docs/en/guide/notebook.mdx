@@ -118,6 +118,16 @@ The script uses `# %%` cell markers, the format VS Code and Jupytext read:
 
 The list is read from the kernel without a visible run: it adds no output, history entry or execution count. It never starts a kernel; run a cell first.
 
+## Debug a cell
+
+Click a code cell's gutter to set a breakpoint, as in a file. Then choose **Debug Cell** in the notebook toolbar, the cell's toolbar (the bug icon) or Find Action. The cell runs on the notebook's kernel under the kernel's own debugger:
+
+- It stops at breakpoints in that cell and in the cells whose functions it calls.
+- The **Debug** tool window shows the frames and variables. Stepping, Evaluate Expression and the inline values work as in a Python debug session, and a stop opens its cell at the line.
+- The session ends when the cell finishes. **Stop** interrupts the cell; the kernel and its variables are kept.
+
+This works the same for a kernel on a Jupyter server. The kernel needs debugpy (ipykernel 6 or later with `debugpy` installed); without it, Debug Cell says so.
+
 ## Limits
 
 - Local kernels are Python only. A Jupyter server's other kernels can run cells, but code intelligence is for Python.

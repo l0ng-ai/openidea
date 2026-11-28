@@ -1,7 +1,7 @@
 //! A kernel on a Jupyter server (`jupyter server`, JupyterLab, a JupyterHub user server):
 //! REST calls start, interrupt and delete it, and its messages go over the kernel's
 //! channels WebSocket as JSON text frames.
-use super::{Channel, Failure, Frame, MAX_MESSAGE_BYTES, SEND_TIMEOUT, protocol};
+use super::{Channel, DebugPort, Failure, Frame, MAX_MESSAGE_BYTES, SEND_TIMEOUT, protocol};
 use crate::kernel::RemoteKernel;
 use futures::SinkExt;
 use futures::stream::StreamExt;
@@ -184,6 +184,7 @@ pub(super) async fn connect(
     tx: mpsc::Sender<Frame>,
     failure: Failure,
     queued: Arc<Semaphore>,
+    debug: DebugPort,
 ) -> IdeResult<(Link, JoinHandle<()>)> {
     let RemoteKernel { base, token, spec } = kernel.clone();
     // Not cancelled with the caller: a kernel the server starts after that is deleted.
@@ -200,12 +201,13 @@ pub(super) async fn connect(
     let session = uuid::Uuid::new_v4().to_string();
     let socket = open_channels(&kernel, &session).await?;
     let (outgoing, messages) = mpsc::channel(16);
-    let pump = tokio::spawn(pump(kernel.clone(), session, socket, messages, tx, failure, queued));
+    let pump = tokio::spawn(pump(kernel.clone(), session, socket, messages, tx, failure, queued, debug));
     Ok((Link { kernel, outgoing }, pump))
 }
 
 /// Moves messages between the socket and the session until the link goes. A socket that
 /// drops is reopened with the same session id, so the server replays what it buffered.
+#[allow(clippy::too_many_arguments)]
 async fn pump(
     kernel: Arc<Kernel>,
     session: String,
@@ -214,6 +216,7 @@ async fn pump(
     tx: mpsc::Sender<Frame>,
     failure: Failure,
     queued: Arc<Semaphore>,
+    debug: DebugPort,
 ) {
     loop {
         tokio::select! {
@@ -236,7 +239,7 @@ async fn pump(
                     },
                     Some(Ok(_)) => continue,
                 };
-                match frame(text.as_str(), &queued) {
+                match frame(text.as_str(), &queued, &debug) {
                     Ok(Some(frame)) => {
                         if tx.try_send(frame).is_err() {
                             return failure.fail(IdeError::unavailable(
@@ -303,12 +306,15 @@ async fn open_channels(kernel: &Kernel, session: &str) -> IdeResult<Socket> {
 }
 
 /// One JSON message from the channels socket; `None` for channels notebooks do not use.
-fn frame(text: &str, queued: &Arc<Semaphore>) -> IdeResult<Option<Frame>> {
+fn frame(text: &str, queued: &Arc<Semaphore>, debug: &DebugPort) -> IdeResult<Option<Frame>> {
     let bytes = text.len();
     if bytes > MAX_MESSAGE_BYTES {
         return Err(IdeError::unavailable("kernel message exceeds 8 MiB limit; execution stopped"));
     }
     let mut value: Value = serde_json::from_str(text).map_err(protocol)?;
+    if debug.route(value["header"]["msg_type"].as_str().unwrap_or_default(), &value["content"]) {
+        return Ok(None);
+    }
     let channel = match value["channel"].as_str() {
         Some("shell") => Channel::Shell,
         Some("iopub") => Channel::Iopub,
@@ -327,12 +333,33 @@ fn frame(text: &str, queued: &Arc<Semaphore>) -> IdeResult<Option<Frame>> {
     Ok(Some(Frame { channel, parent, kind, content: value["content"].take(), bytes, _permit: Some(permit) }))
 }
 
+/// A message as the channels socket carries it: JSON text naming its channel.
+fn encode(mut message: JupyterMessage, channel: jupyter_protocol::Channel) -> IdeResult<String> {
+    message.channel = Some(channel);
+    let mut value = serde_json::to_value(&message).map_err(protocol)?;
+    value["buffers"] = json!([]);
+    Ok(value.to_string())
+}
+
 impl Link {
-    pub(super) async fn send(&mut self, mut message: JupyterMessage) -> IdeResult<()> {
-        message.channel = Some(jupyter_protocol::Channel::Shell);
-        let mut value = serde_json::to_value(&message).map_err(protocol)?;
-        value["buffers"] = json!([]);
-        tokio::time::timeout(SEND_TIMEOUT, self.outgoing.send(value.to_string()))
+    /// A sender for the kernel's control channel, over the same socket.
+    pub(super) fn control(&self) -> (mpsc::Sender<JupyterMessage>, JoinHandle<()>) {
+        let (tx, mut messages) = mpsc::channel::<JupyterMessage>(16);
+        let outgoing = self.outgoing.clone();
+        let task = tokio::spawn(async move {
+            while let Some(message) = messages.recv().await {
+                let Ok(text) = encode(message, jupyter_protocol::Channel::Control) else { continue };
+                if outgoing.send(text).await.is_err() {
+                    break;
+                }
+            }
+        });
+        (tx, task)
+    }
+
+    pub(super) async fn send(&mut self, message: JupyterMessage) -> IdeResult<()> {
+        let text = encode(message, jupyter_protocol::Channel::Shell)?;
+        tokio::time::timeout(SEND_TIMEOUT, self.outgoing.send(text))
             .await
             .map_err(|_| IdeError::unavailable("kernel request send timed out; delivery uncertain, not retried"))?
             .map_err(|_| IdeError::unavailable("the connection to the Jupyter server closed"))
@@ -411,13 +438,13 @@ mod tests {
         let queued = Arc::new(Semaphore::new(1 << 20));
         let reply = json!({"channel": "shell", "header": {"msg_type": "execute_reply"},
             "parent_header": {"msg_id": "run-1"}, "content": {"status": "ok"}});
-        let frame = frame(&reply.to_string(), &queued).unwrap().unwrap();
+        let frame = frame(&reply.to_string(), &queued, &DebugPort::default()).unwrap().unwrap();
         assert!(frame.channel == Channel::Shell && frame.parent == "run-1" && frame.kind == "execute_reply");
         assert_eq!(frame.content["status"], "ok");
         let stdin = json!({"channel": "stdin", "header": {"msg_type": "input_request"}});
-        assert!(super::frame(&stdin.to_string(), &queued).unwrap().is_none());
+        assert!(super::frame(&stdin.to_string(), &queued, &DebugPort::default()).unwrap().is_none());
         let died = json!({"channel": "iopub", "header": {"msg_type": "status"}, "parent_header": {},
             "content": {"execution_state": "restarting"}});
-        assert!(super::frame(&died.to_string(), &queued).is_err());
+        assert!(super::frame(&died.to_string(), &queued, &DebugPort::default()).is_err());
     }
 }

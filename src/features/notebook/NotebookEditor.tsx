@@ -16,6 +16,7 @@ import { useProject } from "@/platform/project";
 import { Button, Dialog, EmptyState, IconButton, Select, Spinner, type SelectOption } from "@/ui";
 import type { EditorInput } from "@/workbench/contributions";
 import { CellEditor } from "./CellEditor";
+import { debugCell } from "./debugCell";
 import { CONNECT, connectJupyterServer, REMOVE, remoteKernel, removeJupyterServer } from "./jupyterServer";
 import { CellOutputs, MarkdownCell } from "./OutputView";
 import { notebookSession, type CellReveal, type NotebookSession } from "./session";
@@ -166,6 +167,14 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
           onClick={() => active && invoke(session.execute([active.id]))}
         >
           Run Cell
+        </Button>
+        <Button
+          size="small"
+          icon="debug"
+          disabled={disabled || state.running || active?.cellType !== "code"}
+          onClick={() => active && invoke(debugCell(session, active.id))}
+        >
+          Debug Cell
         </Button>
         <Button
           size="small"
@@ -461,6 +470,17 @@ function NotebookCellView({
             disabled={frozen || running}
             onClick={() => {
               void session.execute([cell.id]).catch((error) => session.report(error));
+            }}
+          />
+        )}
+        {cell.cellType === "code" && (
+          <IconButton
+            icon="debug"
+            size="small"
+            title="Debug Cell"
+            disabled={frozen || running}
+            onClick={() => {
+              void debugCell(session, cell.id).catch((error) => session.report(error));
             }}
           />
         )}

@@ -159,6 +159,8 @@ export function activate(): () => void {
         smartStepTargets(ctx),
         exceptionBreakpointIntention(ctx),
       ],
+      // Notebook code cells: breakpoints and the execution line (Debug Cell).
+      cellExtensions: (ctx) => [breakpointGutter(ctx), executionPoint(ctx)],
     }),
     installSmartStepPicking(),
     installFlutterHotReloadOnSave(),

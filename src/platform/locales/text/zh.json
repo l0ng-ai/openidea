@@ -6826,6 +6826,7 @@
   "Retry Pending Edits": "重试待提交更改",
   "Run All": "运行全部",
   "Run Cell": "运行单元格",
+  "Debug Cell": "调试单元格",
   "Select Python interpreter": "选择 Python 解释器",
   "Static notebook HTML output": "笔记本静态 HTML 输出",
   "This notebook has no cells": "此笔记本没有单元格",

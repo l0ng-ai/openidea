@@ -24,7 +24,7 @@ mod session;
 mod stream_trace;
 pub mod unity;
 
-use adapter::{AdapterLauncher, AdapterSpec, ProcessLauncher};
+use adapter::{AdapterIo, AdapterLauncher, AdapterSpec, ProcessLauncher};
 use connection::{Connection, DapError};
 pub use exception_classes::{ExceptionClassBreakpoint, ExceptionClassSupport};
 use futures::future::join_all;
@@ -44,6 +44,11 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 pub use stream_trace::{TracePhase, TraceProgress, TraceRun, TraceUnavailable};
+
+/// The adapter name of a notebook kernel's own debugger (see [`DebugManager::start_over`]).
+pub const NOTEBOOK_ADAPTER: &str = "jupyter-kernel";
+/// How a notebook cell's breakpoints are keyed: `vscode-notebook-cell:<notebook>#<cell>`.
+pub const NOTEBOOK_CELL_SCHEME: &str = "vscode-notebook-cell:";
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -1078,6 +1083,49 @@ impl DebugManager {
             port,
             exception_classes,
             cancel,
+            None,
+        )
+        .await
+    }
+
+    /// Starts an `attach` session named `name` over `io`: a debugger reached without an
+    /// adapter process, such as a notebook kernel's over its control channel
+    /// ([`NOTEBOOK_ADAPTER`]). `arguments` is the `attach` request's.
+    pub async fn start_over(
+        &self,
+        io: AdapterIo,
+        name: String,
+        adapter: String,
+        arguments: Value,
+        owner: SessionOwner,
+    ) -> IdeResult<DebugSessionId> {
+        let spec = AdapterSpec {
+            adapter: adapter.clone(),
+            command: String::new(),
+            args: Vec::new(),
+            transport: adapter::Transport::Stdio,
+            install_hint: None,
+            cwd: PathBuf::new(),
+            env: Vec::new(),
+            server_host: None,
+            connect: None,
+            pinned: None,
+            resolve_lazy_variables: false,
+        };
+        let cancel = ide_core::CancellationToken::new();
+        self.start_session(
+            DebugSessionId::next(),
+            owner,
+            name,
+            adapter,
+            None,
+            "attach".into(),
+            arguments,
+            spec,
+            None,
+            None,
+            cancel,
+            Some(io),
         )
         .await
     }
@@ -1113,6 +1161,7 @@ impl DebugManager {
             port,
             None,
             ide_core::CancellationToken::new(),
+            None,
         )
         .await
         .map(|_| ())
@@ -1132,6 +1181,7 @@ impl DebugManager {
         reuse_port: Option<u16>,
         exception_classes: Option<Arc<dyn ide_jvm_inspect::ExceptionClassBreakpoints>>,
         cancel: ide_core::CancellationToken,
+        connected: Option<AdapterIo>,
     ) -> IdeResult<DebugSessionId> {
         if request != "launch" && request != "attach" {
             return Err(IdeError::invalid(format!("request must be `launch` or `attach`, got `{request}`")));
@@ -1139,10 +1189,13 @@ impl DebugManager {
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }
-        let io = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => return Err(IdeError::cancelled()),
-            io = self.launcher.launch(spec.clone(), reuse_port) => io?,
+        let io = match connected {
+            Some(io) => io,
+            None => tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err(IdeError::cancelled()),
+                io = self.launcher.launch(spec.clone(), reuse_port) => io?,
+            },
         };
         let launch_after_configuration = io.launch_after_configuration && request == "launch";
         let stderr = io.stderr.clone();
@@ -1378,6 +1431,7 @@ impl DebugManager {
             .map(|b| b.lines.iter().map(|(p, b)| (p.clone(), b.clone())).collect::<Vec<_>>())
             .unwrap_or_default()
             .into_iter()
+            .filter(|(path, _)| s.takes(path))
             .partition(|(_, b)| b.iter().any(|b| b.enabled));
         let sent = join_all(files.iter().map(|(path, bps)| s.send_breakpoints(path, bps, None))).await;
         // Breakpoint states follow the owner's first session.
@@ -1607,7 +1661,7 @@ impl DebugManager {
         breakpoints: Vec<Breakpoint>,
     ) -> IdeResult<Vec<BreakpointState>> {
         let mut result: Option<Vec<BreakpointState>> = None;
-        for s in self.configured_sessions(owner) {
+        for s in self.configured_sessions(owner).into_iter().filter(|s| s.takes(&path)) {
             match s.send_breakpoints(&path, &breakpoints, None).await {
                 Ok(states) => {
                     result.get_or_insert(states);

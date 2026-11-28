@@ -2,7 +2,7 @@ use super::process::Process;
 use super::{ExecutionResult, KernelOutput, KernelState, KernelTarget, OutputCallback, StatusCallback};
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use jupyter_protocol::{ExecuteRequest, JupyterMessage, KernelInfoRequest, ShutdownRequest};
-use jupyter_zmq_client::{ClientControlConnection, Connection, DealerSendConnection, RawMessage};
+use jupyter_zmq_client::{Connection, DealerSendConnection, RawMessage};
 use parking_lot::Mutex;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -61,11 +61,13 @@ impl Running {
         notebook: PathBuf,
         target: KernelTarget,
         status: StatusCallback,
+        debug: DebugPort,
     ) -> (Self, oneshot::Receiver<IdeResult<()>>) {
         let stop = CancellationToken::new();
         let (requests, receiver) = mpsc::channel(1);
         let (ready, ready_rx) = oneshot::channel();
-        let task = tokio::spawn(supervise(runtime, notebook, target.clone(), status, stop.clone(), receiver, ready));
+        let task =
+            tokio::spawn(supervise(runtime, notebook, target.clone(), status, stop.clone(), receiver, ready, debug));
         (Self { target, stop, requests, task: Some(task), busy: Arc::new(AtomicBool::new(false)) }, ready_rx)
     }
 
@@ -120,6 +122,70 @@ impl Drop for Running {
 enum Channel {
     Shell,
     Iopub,
+    Control,
+}
+
+/// A kernel's debugger, in the Jupyter debugger protocol: DAP messages go out as
+/// `debug_request` on the control channel and come back as `debug_reply` there and
+/// `debug_event` on IOPub. Kept per notebook across kernel generations.
+#[derive(Clone, Default)]
+pub(super) struct DebugPort {
+    /// The running generation's control channel.
+    control: Arc<Mutex<Option<mpsc::Sender<JupyterMessage>>>>,
+    /// The open debug session's inbox, if any.
+    sink: Arc<Mutex<Option<mpsc::UnboundedSender<Value>>>>,
+}
+
+impl DebugPort {
+    /// Hands a debug reply or event to the open session; false for any other message.
+    fn route(&self, kind: &str, content: &Value) -> bool {
+        if kind != "debug_reply" && kind != "debug_event" {
+            return false;
+        }
+        if let Some(sink) = self.sink.lock().as_ref() {
+            let _ = sink.send(content.clone());
+        }
+        true
+    }
+
+    pub fn attached(&self) -> bool {
+        self.control.lock().as_ref().is_some_and(|control| !control.is_closed())
+    }
+
+    fn attach(&self, control: mpsc::Sender<JupyterMessage>) {
+        *self.control.lock() = Some(control);
+    }
+
+    /// The control channel to send DAP requests on and the inbox of DAP replies and events.
+    /// One session at a time.
+    pub fn open(&self) -> IdeResult<(mpsc::Sender<JupyterMessage>, mpsc::UnboundedReceiver<Value>)> {
+        let control = self
+            .control
+            .lock()
+            .clone()
+            .filter(|control| !control.is_closed())
+            .ok_or_else(|| IdeError::unavailable("the notebook's kernel is not running"))?;
+        let mut sink = self.sink.lock();
+        if sink.as_ref().is_some_and(|sink| !sink.is_closed()) {
+            return Err(IdeError::unavailable("the notebook is already being debugged"));
+        }
+        let (tx, inbox) = mpsc::unbounded_channel();
+        *sink = Some(tx);
+        Ok((control, inbox))
+    }
+}
+
+/// Sends what arrives on the returned channel over `connection`, until either closes.
+fn control_writer(mut connection: DealerSendConnection) -> (mpsc::Sender<JupyterMessage>, JoinHandle<()>) {
+    let (tx, mut messages) = mpsc::channel::<JupyterMessage>(16);
+    let task = tokio::spawn(async move {
+        while let Some(message) = messages.recv().await {
+            if send(&mut connection, message).await.is_err() {
+                break;
+            }
+        }
+    });
+    (tx, task)
 }
 
 struct Frame {
@@ -164,11 +230,14 @@ fn reader<S: SocketRecv + Send + 'static>(
     tx: mpsc::Sender<Frame>,
     failure: Failure,
     queued: Arc<Semaphore>,
+    debug: DebugPort,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             let result = receive(&mut connection, channel, &queued).await;
             match result {
+                // The debugger's messages, and the control channel's other replies, are not a run's.
+                Ok(frame) if debug.route(&frame.kind, &frame.content) || channel == Channel::Control => {}
                 Ok(frame) => {
                     if tx.try_send(frame).is_err() {
                         failure.fail(IdeError::unavailable(
@@ -232,7 +301,7 @@ fn protocol(error: impl std::fmt::Display) -> IdeError {
 /// How messages reach the kernel: ZeroMQ to a process the IDE owns, or a Jupyter server.
 #[expect(clippy::large_enum_variant, reason = "one per running kernel")]
 enum Link {
-    Local { process: Process, shell: DealerSendConnection, control: ClientControlConnection },
+    Local { process: Process, shell: DealerSendConnection, control: mpsc::Sender<JupyterMessage> },
     Remote(remote::Link),
 }
 
@@ -275,15 +344,22 @@ struct Session {
 }
 
 impl Session {
-    async fn connect(runtime: &std::path::Path, notebook: &std::path::Path, target: &KernelTarget) -> IdeResult<Self> {
+    async fn connect(
+        runtime: &std::path::Path,
+        notebook: &std::path::Path,
+        target: &KernelTarget,
+        debug: &DebugPort,
+    ) -> IdeResult<Self> {
         let python = match target {
             KernelTarget::Local(python) => python,
             KernelTarget::Remote(kernel) => {
                 let (tx, frames) = mpsc::channel(QUEUED_MESSAGES);
                 let failure = Failure::new();
                 let queued = Arc::new(Semaphore::new(QUEUED_BYTES));
-                let (link, reader) = remote::connect(kernel, tx, failure.clone(), queued).await?;
-                return Ok(Self { link: Link::Remote(link), frames, failure, _readers: Readers(vec![reader]) });
+                let (link, reader) = remote::connect(kernel, tx, failure.clone(), queued, debug.clone()).await?;
+                let (control, writer) = link.control();
+                debug.attach(control);
+                return Ok(Self { link: Link::Remote(link), frames, failure, _readers: Readers(vec![reader, writer]) });
             }
         };
         let (process, info) = Process::spawn(runtime, notebook, python).await?;
@@ -296,12 +372,17 @@ impl Session {
         )
         .map_err(protocol)?;
         let (shell, shell_recv) = shell.split();
+        let (control, control_recv) = control.split();
+        let (control, writer) = control_writer(control);
+        debug.attach(control.clone());
         let (tx, frames) = mpsc::channel(QUEUED_MESSAGES);
         let failure = Failure::new();
         let queued = Arc::new(Semaphore::new(QUEUED_BYTES));
         let readers = Readers(vec![
-            reader(iopub, Channel::Iopub, tx.clone(), failure.clone(), queued.clone()),
-            reader(shell_recv, Channel::Shell, tx, failure.clone(), queued),
+            reader(iopub, Channel::Iopub, tx.clone(), failure.clone(), queued.clone(), debug.clone()),
+            reader(shell_recv, Channel::Shell, tx.clone(), failure.clone(), queued.clone(), debug.clone()),
+            reader(control_recv, Channel::Control, tx, failure.clone(), queued, debug.clone()),
+            writer,
         ]);
         Ok(Self { link: Link::Local { process, shell, control }, frames, failure, _readers: readers })
     }
@@ -447,7 +528,7 @@ impl Session {
         // Stop is separate from user interrupt: graceful shutdown, then kill only
         // our process group/job. It must remain bounded even for wedged Python.
         let request: JupyterMessage = ShutdownRequest { restart: false }.into();
-        let _ = tokio::time::timeout(Duration::from_millis(500), control.send(request)).await;
+        let _ = control.send_timeout(request, Duration::from_millis(500)).await;
         let deadline = Instant::now() + Duration::from_millis(750);
         while Instant::now() < deadline {
             match process.death() {
@@ -541,6 +622,7 @@ impl Budget {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn supervise(
     runtime: PathBuf,
     notebook: PathBuf,
@@ -549,6 +631,7 @@ async fn supervise(
     stop: CancellationToken,
     mut requests: mpsc::Receiver<Execution>,
     ready: oneshot::Sender<IdeResult<()>>,
+    debug: DebugPort,
 ) {
     status(&notebook, KernelState::Starting, None);
     // Starting a remote kernel also waits for the server's REST answer.
@@ -557,7 +640,7 @@ async fn supervise(
         KernelTarget::Remote(_) => REMOTE_STARTUP_TIMEOUT + Duration::from_secs(15),
     };
     let startup = async {
-        let mut session = Session::connect(&runtime, &notebook, &target).await?;
+        let mut session = Session::connect(&runtime, &notebook, &target, &debug).await?;
         session.ready(&stop).await?;
         IdeResult::Ok(session)
     };

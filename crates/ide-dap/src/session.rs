@@ -425,6 +425,12 @@ impl Session {
 
     /// Sends the breakpoints of one file (disabled ones omitted, plus an optional
     /// temporary line) and returns verification states aligned with `breakpoints`.
+    /// Whether this session gets the breakpoints of `path`: a notebook cell's go only to the
+    /// notebook kernel's debugger, which knows the cell's code.
+    pub(crate) fn takes(&self, path: &Path) -> bool {
+        self.adapter == crate::NOTEBOOK_ADAPTER || !path.to_string_lossy().starts_with(crate::NOTEBOOK_CELL_SCHEME)
+    }
+
     pub async fn send_breakpoints(
         &self,
         path: &Path,

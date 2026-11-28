@@ -553,3 +553,202 @@ async fn a_dropped_connection_to_the_server_reconnects_and_keeps_the_kernel() {
     accepting.abort();
     assert_eq!(server_kernels(&server, &token).await, before, "closing the notebook deletes its one kernel");
 }
+
+/// Sends DAP request `command` on `debugger` and waits for its response, keeping the events.
+async fn dap(
+    debugger: &mut ide_notebook::kernel::KernelDebugger,
+    seq: &mut i64,
+    events: &mut Vec<Value>,
+    command: &str,
+    arguments: Value,
+) -> Value {
+    *seq += 1;
+    let request = serde_json::json!({"type": "request", "seq": *seq, "command": command, "arguments": arguments});
+    debugger.send(request).await.unwrap();
+    loop {
+        let message = tokio::time::timeout(Duration::from_secs(20), debugger.receive()).await.unwrap().unwrap();
+        if message["type"] == "response" && message["request_seq"] == *seq {
+            assert_eq!(message["success"], true, "{command}: {message}");
+            return message;
+        }
+        events.push(message);
+    }
+}
+
+/// Runs a cell under the kernel's debugger: stops at a breakpoint in another cell's function,
+/// shows its locals, continues, and the kernel keeps its state after the session.
+async fn debug_a_cell(manager: Arc<KernelManager>, notebook: PathBuf, target: ide_notebook::kernel::KernelTarget) {
+    let helper = "def double(x):\n    y = x * 2\n    return y\n";
+    let (result, _) = run(&manager, &notebook, target.clone(), helper).await;
+    assert_eq!(result.unwrap().status, "ok");
+    let mut debugger = manager.debugger(&notebook).unwrap();
+    assert!(manager.debugger(&notebook).is_err(), "one debug session at a time");
+    let (mut seq, mut events) = (0, Vec::new());
+    dap(
+        &mut debugger,
+        &mut seq,
+        &mut events,
+        "initialize",
+        serde_json::json!({"adapterID": "python", "pathFormat": "path", "linesStartAt1": true}),
+    )
+    .await;
+    dap(&mut debugger, &mut seq, &mut events, "attach", serde_json::json!({})).await;
+    let dumped = dap(&mut debugger, &mut seq, &mut events, "dumpCell", serde_json::json!({"code": helper})).await;
+    let path = dumped["body"]["sourcePath"].as_str().unwrap().to_owned();
+    let set = dap(
+        &mut debugger,
+        &mut seq,
+        &mut events,
+        "setBreakpoints",
+        serde_json::json!({"source": {"path": path}, "breakpoints": [{"line": 3}]}),
+    )
+    .await;
+    assert_eq!(set["body"]["breakpoints"][0]["verified"], true);
+    dap(&mut debugger, &mut seq, &mut events, "configurationDone", serde_json::json!({})).await;
+    let running = {
+        let (manager, notebook, target) = (manager.clone(), notebook.clone(), target.clone());
+        tokio::spawn(async move { run(&manager, &notebook, target, "b = double(21)").await })
+    };
+    let stopped = loop {
+        if let Some(stopped) = events.iter().find(|e| e["event"] == "stopped") {
+            break stopped.clone();
+        }
+        events.push(tokio::time::timeout(Duration::from_secs(20), debugger.receive()).await.unwrap().unwrap());
+    };
+    let thread = stopped["body"]["threadId"].clone();
+    let frames = dap(&mut debugger, &mut seq, &mut events, "stackTrace", serde_json::json!({"threadId": thread})).await;
+    let top = &frames["body"]["stackFrames"][0];
+    assert_eq!(
+        (top["name"].as_str(), top["source"]["path"].as_str(), top["line"].as_i64()),
+        (Some("double"), Some(path.as_str()), Some(3))
+    );
+    let scopes = dap(&mut debugger, &mut seq, &mut events, "scopes", serde_json::json!({"frameId": top["id"]})).await;
+    let reference = scopes["body"]["scopes"][0]["variablesReference"].clone();
+    let locals =
+        dap(&mut debugger, &mut seq, &mut events, "variables", serde_json::json!({"variablesReference": reference}))
+            .await;
+    assert!(locals["body"]["variables"].as_array().unwrap().iter().any(|v| v["name"] == "y" && v["value"] == "42"));
+    dap(&mut debugger, &mut seq, &mut events, "continue", serde_json::json!({"threadId": thread})).await;
+    let (result, _) = tokio::time::timeout(Duration::from_secs(20), running).await.unwrap().unwrap();
+    assert_eq!(result.unwrap().status, "ok");
+    dap(
+        &mut debugger,
+        &mut seq,
+        &mut events,
+        "disconnect",
+        serde_json::json!({"restart": false, "terminateDebuggee": false}),
+    )
+    .await;
+    drop(debugger);
+    let (result, outputs) = run(&manager, &notebook, target, "b").await;
+    assert_eq!(result.unwrap().status, "ok");
+    assert!(outputs.iter().any(|o| o.kind == "execute_result" && o.content["data"]["text/plain"] == "42"));
+    assert!(manager.debugger(&notebook).is_ok(), "a new session can open once the last one is dropped");
+}
+
+#[tokio::test]
+#[ignore = "requires OPENIDEA_TEST_PYTHON with real ipykernel (and debugpy)"]
+async fn a_cell_runs_under_the_kernels_debugger() {
+    let root = tempfile::tempdir().unwrap();
+    let manager = manager(root.path());
+    let notebook = root.path().join("debug.ipynb");
+    debug_a_cell(manager.clone(), notebook, ide_notebook::kernel::KernelTarget::Local(python())).await;
+    manager.shutdown().await;
+}
+
+#[tokio::test]
+#[ignore = "requires OPENIDEA_TEST_JUPYTER_URL (and OPENIDEA_TEST_JUPYTER_TOKEN) of a running Jupyter server"]
+async fn a_cell_runs_under_a_remote_kernels_debugger() {
+    let (_, _, target) = remote(None).await;
+    let root = tempfile::tempdir().unwrap();
+    let manager = manager(root.path());
+    let notebook = root.path().join("debug-remote.ipynb");
+    debug_a_cell(manager.clone(), notebook.clone(), target).await;
+    manager.shutdown_kernel(&notebook).await.unwrap();
+}
+
+/// One DAP message from `read` (Content-Length framing).
+async fn dap_read(read: &mut (impl tokio::io::AsyncBufReadExt + Unpin)) -> Value {
+    use tokio::io::AsyncReadExt;
+    let mut length = 0;
+    loop {
+        let mut line = String::new();
+        read.read_line(&mut line).await.unwrap();
+        let line = line.trim_end();
+        if line.is_empty() {
+            break;
+        }
+        length = line.split_once(':').unwrap().1.trim().parse().unwrap();
+    }
+    let mut body = vec![0; length];
+    read.read_exact(&mut body).await.unwrap();
+    serde_json::from_slice(&body).unwrap()
+}
+
+#[tokio::test]
+#[ignore = "requires OPENIDEA_TEST_PYTHON with real ipykernel (and debugpy)"]
+async fn the_dap_bridge_speaks_in_cell_uris_and_disconnects_when_closed() {
+    use tokio::io::AsyncWriteExt;
+    let root = tempfile::tempdir().unwrap();
+    let manager = manager(root.path());
+    let notebook = root.path().join("bridge.ipynb");
+    let python = python();
+    let helper = "def double(x):\n    y = x * 2\n    return y\n";
+    let (helper_uri, cell_uri) =
+        ("vscode-notebook-cell:/p/bridge.ipynb#helper", "vscode-notebook-cell:/p/bridge.ipynb#call");
+    assert_eq!(run(&manager, &notebook, &python, helper).await.0.unwrap().status, "ok");
+    let cells = vec![(helper_uri.to_owned(), helper.to_owned()), (cell_uri.to_owned(), "b = double(21)\n".to_owned())];
+    let stream = ide_notebook::kernel::debug::dap_stream(manager.debugger(&notebook).unwrap(), cells);
+    let (read, mut write) = tokio::io::split(stream);
+    let mut read = tokio::io::BufReader::new(read);
+    let mut seq = 0;
+    let mut request = async |write: &mut tokio::io::WriteHalf<_>, command: &str, arguments: Value| {
+        seq += 1;
+        let body =
+            serde_json::json!({"type": "request", "seq": seq, "command": command, "arguments": arguments}).to_string();
+        write.write_all(format!("Content-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        seq
+    };
+    async fn until(read: &mut (impl tokio::io::AsyncBufReadExt + Unpin), found: impl Fn(&Value) -> bool) -> Value {
+        loop {
+            let message = tokio::time::timeout(Duration::from_secs(20), dap_read(read)).await.unwrap();
+            if found(&message) {
+                return message;
+            }
+        }
+    }
+    let n = request(&mut write, "initialize", serde_json::json!({"adapterID": "python", "pathFormat": "path"})).await;
+    until(&mut read, |m| m["request_seq"] == n).await;
+    request(&mut write, "attach", serde_json::json!({"justMyCode": true})).await;
+    until(&mut read, |m| m["event"] == "initialized").await;
+    let n = request(
+        &mut write,
+        "setBreakpoints",
+        serde_json::json!({"source": {"path": helper_uri}, "breakpoints": [{"line": 3}]}),
+    )
+    .await;
+    let set = until(&mut read, |m| m["request_seq"] == n).await;
+    assert_eq!(set["body"]["breakpoints"][0]["verified"], true, "{set}");
+    let n = request(&mut write, "configurationDone", serde_json::json!({})).await;
+    until(&mut read, |m| m["request_seq"] == n).await;
+    let running = {
+        let (manager, notebook, python) = (manager.clone(), notebook.clone(), python.clone());
+        tokio::spawn(async move { run(&manager, &notebook, &python, "b = double(21)\n").await })
+    };
+    let stopped = until(&mut read, |m| m["event"] == "stopped").await;
+    let n = request(&mut write, "stackTrace", serde_json::json!({"threadId": stopped["body"]["threadId"]})).await;
+    let frames = until(&mut read, |m| m["request_seq"] == n).await;
+    let paths: Vec<_> =
+        frames["body"]["stackFrames"].as_array().unwrap().iter().map(|f| f["source"]["path"].clone()).collect();
+    assert_eq!(paths[..2], [serde_json::json!(helper_uri), serde_json::json!(cell_uri)], "{frames}");
+    let n = request(&mut write, "continue", serde_json::json!({"threadId": stopped["body"]["threadId"]})).await;
+    until(&mut read, |m| m["request_seq"] == n).await;
+    assert_eq!(running.await.unwrap().0.unwrap().status, "ok");
+    // Closed without a disconnect: the bridge sends one, so the breakpoint no longer stops runs.
+    drop((read, write));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let (result, outputs) = run(&manager, &notebook, &python, "double(5)").await;
+    assert_eq!(result.unwrap().status, "ok");
+    assert!(outputs.iter().any(|o| o.kind == "execute_result" && o.content["data"]["text/plain"] == "10"));
+    manager.shutdown().await;
+}

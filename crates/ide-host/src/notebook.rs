@@ -363,6 +363,31 @@ impl NotebookService {
         }
     }
 
+    /// Opens the debugger of the notebook's kernel, starting `target` when none runs, and the
+    /// notebook's code cells as (URI, source): what Debug Cell needs (see `ide_notebook::kernel::debug`).
+    pub(crate) async fn debugger(
+        &self,
+        id: &str,
+        target: KernelTarget,
+        cancel: CancellationToken,
+    ) -> IdeResult<(ide_notebook::kernel::KernelDebugger, Vec<(String, String)>)> {
+        let document = self.resolve(id)?;
+        if document.state.lock().active.is_some() {
+            return Err(IdeError::unavailable("notebook is running"));
+        }
+        if !self.kernels.running(&document.path) {
+            self.kernels.execute(&document.path, target, "", cancel, Arc::new(|_| {})).await?;
+        }
+        let debugger = self.kernels.debugger(&document.path)?;
+        let cells = snapshot(&document)?
+            .cells
+            .into_iter()
+            .filter(|cell| cell.cell_type == "code")
+            .map(|cell| (ide_lsp::cell_uri(&document.path, &cell.id), cell.source))
+            .collect();
+        Ok((debugger, cells))
+    }
+
     pub(crate) fn admit(
         &self,
         id: &str,

@@ -1287,6 +1287,12 @@ export const commands = {
 	navResolveModule: (name: string, from: IpcPath) => typedError<string | null, IdeError>(__TAURI_INVOKE("nav_resolve_module", { name, from })),
 	notebookCellDocs: (id: string) => typedError<NotebookCellDoc[], IdeError>(__TAURI_INVOKE("notebook_cell_docs", { id })),
 	notebookClose: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("notebook_close", { id })),
+	/**
+	 *  Debug Cell: a debug session named `name` on the notebook's kernel, starting the kernel
+	 *  when none runs. The caller then runs the cell; ending the session leaves the kernel and
+	 *  its state running.
+	 */
+	notebookDebugStart: (id: string, python: string | null, name: string, justMyCode: boolean) => typedError<DebugSessionId, IdeError>(__TAURI_INVOKE("notebook_debug_start", { id, python, name, justMyCode })),
 	notebookEdit: (id: string, version: number, edit: NotebookEdit) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_edit", { id, version, edit })),
 	notebookExecute: (id: string, cells: string[], python: string | null, request: RequestId, onOutput: Channel<NotebookOutputEvent>) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_execute", { id, cells, python, request, onOutput })),
 	notebookGet: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_get", { id })),
