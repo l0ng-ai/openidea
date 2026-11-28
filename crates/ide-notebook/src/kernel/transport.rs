@@ -346,7 +346,8 @@ impl Session {
                     interrupted = true;
                     interrupt_deadline = Some(Instant::now() + INTERRUPT_TIMEOUT);
                 },
-                _ = execution.interrupt.cancelled(), if !interrupted => {
+                // Also after a read's time limit, which leaves no deadline.
+                _ = execution.interrupt.cancelled(), if interrupt_deadline.is_none() => {
                     self.process.interrupt()?;
                     interrupted = true;
                     interrupt_deadline = Some(Instant::now() + INTERRUPT_TIMEOUT);
@@ -358,7 +359,11 @@ impl Session {
                         interrupt_deadline = Some(Instant::now() + INTERRUPT_TIMEOUT);
                     }
                     if interrupt_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                        return Err(IdeError::unavailable("kernel did not drain within 5 seconds of interrupt; owned kernel stopped"));
+                        // A read interrupted for its time limit keeps its kernel; Interrupt stops it.
+                        if !silent || execution.interrupt.is_cancelled() {
+                            return Err(IdeError::unavailable("kernel did not drain within 5 seconds of interrupt; owned kernel stopped"));
+                        }
+                        interrupt_deadline = None;
                     }
                     if let Some(message) = self.process.death()? { return Err(IdeError::unavailable(message)); }
                 },

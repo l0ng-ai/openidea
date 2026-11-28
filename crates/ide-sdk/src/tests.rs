@@ -1920,6 +1920,32 @@ fn editable_installs_put_e_right_before_the_path() {
 }
 
 #[test]
+fn a_missing_local_path_is_reported_before_pip_runs() {
+    let root = tempfile::tempdir().unwrap();
+    let install = |requirement: &str| {
+        crate::python::install_package(
+            Path::new("/nonexistent/python"),
+            requirement,
+            false,
+            false,
+            Some(root.path()),
+            &CancellationToken::new(),
+            &|_| {},
+        )
+        .unwrap_err()
+        .to_string()
+    };
+    assert!(install("./mylib").contains("does not exist"), "{}", install("./mylib"));
+    assert!(install("./mylib[dev]").contains("does not exist"));
+    // An existing folder gets as far as looking for pip.
+    std::fs::create_dir(root.path().join("mylib")).unwrap();
+    assert!(!install("./mylib[dev]").contains("does not exist"));
+    // A folder whose name has brackets is a folder, not extras.
+    std::fs::create_dir(root.path().join("lib[1]")).unwrap();
+    assert!(!install("./lib[1]").contains("does not exist"), "{}", install("./lib[1]"));
+}
+
+#[test]
 fn only_a_local_directory_is_installed_in_editable_mode() {
     let err = crate::python::install_package(
         Path::new("/nonexistent/python"),

@@ -25,3 +25,7 @@
   text-overflow: ellipsis;
   color: var(--fg-editor);
 }
+
+.error {
+  overflow-wrap: anywhere;
+}

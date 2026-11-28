@@ -638,8 +638,15 @@ export function notebookSession(path: string): NotebookSession {
 export function existingNotebookSession(path: string) {
   return sessions.get(path);
 }
+/** Open sessions, the notebook made active last at the end. */
 export function notebookSessions(): Iterable<NotebookSession> {
   return sessions.values();
+}
+export function markNotebookActive(path: string) {
+  const session = sessions.get(path);
+  if (!session) return;
+  sessions.delete(path);
+  sessions.set(path, session);
 }
 export async function closeNotebook(path: string) {
   const session = sessions.get(path);

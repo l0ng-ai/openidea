@@ -37,8 +37,8 @@ pub use outline::{merge_kinds, merge_visibility};
 pub use php_align::PhpAlignment;
 pub use python_facts::{MethodBody, PythonClassFacts, PythonFacts, PythonMethodFacts, PythonSuppression};
 pub use python_fixtures::{
-    PytestFixture, PytestFixtureSlot, PytestFixtureUse, PytestFixtureUseKind, PytestModule, resolve_fixture,
-    visible_fixtures,
+    PytestFixture, PytestFixtureSlot, PytestFixtureUse, PytestFixtureUseKind, PytestImport, PytestModule,
+    resolve_fixture, visible_fixtures,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;

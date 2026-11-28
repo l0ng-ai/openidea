@@ -431,7 +431,7 @@ impl ProcessManager {
         if matches!(config.kind.as_str(), "python" | "pytest" | "unittest" | "doctest" | "django-test") {
             crate::python_path::extend(&mut env.vars, &options.python_paths, !env.clear)?;
             if let Some(plots) = &options.plots {
-                crate::plots::add(&mut env.vars, plots, !env.clear)?;
+                crate::plots::add(&mut env.vars, plots, (!env.clear).then_some(cwd.as_path()))?;
             }
         }
         if let Some(dir) = options.ruby_reporter.as_deref().filter(|_| crate::ruby_reporter::applies(config)) {

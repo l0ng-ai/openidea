@@ -5,6 +5,7 @@ import { basename } from "@/platform/project";
 import { lazyComponent } from "@/ui";
 import {
   editorService,
+  maybeEditorService,
   registerEditorKind,
   registerFileEditorProvider,
   registerToolWindow,
@@ -15,7 +16,14 @@ import {
 import { isTauri } from "@/platform/ipc";
 import { ProviderAcquisitions } from "@/workbench/providerAcquisition";
 import { registerConversions } from "./convert";
-import { closeNotebook, existingNotebookSession, notebookBackend, notebookSession, notebookSessions } from "./session";
+import {
+  closeNotebook,
+  existingNotebookSession,
+  markNotebookActive,
+  notebookBackend,
+  notebookSession,
+  notebookSessions,
+} from "./session";
 
 const acquisitions = new ProviderAcquisitions<NotebookSnapshot>(
   (snapshot) => existingNotebookSession(snapshot.path)?.getState().snapshot?.id === snapshot.id,
@@ -129,6 +137,8 @@ export function activate(): () => void {
         }
       },
     }),
+    // Jupyter Variables falls back to the notebook active last.
+    maybeEditorService()?.onActiveInputChange?.((input) => input?.path && markNotebookActive(input.path)) ?? (() => {}),
   ];
   return () => disposers.reverse().forEach((dispose) => dispose());
 }

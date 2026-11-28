@@ -1,4 +1,6 @@
 //! Immutable Maven outputs retained in the project cache, including across close/reopen.
+mod delegation;
+
 use ide_build::compile::{self, BuildEvent, LaunchFingerprint};
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use ide_run::BuildPolicy;
@@ -127,8 +129,14 @@ fn record_path(root: &Path, cache: &Path, module: &Path, test: bool) -> Option<P
     }))
 }
 
-pub(super) fn has_record(root: &Path, cache: &Path, module: &Path) -> bool {
-    [false, true].into_iter().any(|test| record_path(root, cache, module, test).is_some_and(|record| record.is_file()))
+pub(super) fn needs_cleanup(
+    root: &Path,
+    cache: &Path,
+    model: &ide_build::BuildModel,
+    module: &Path,
+    test: bool,
+) -> bool {
+    delegation::required(root, cache, model, module, test)
 }
 
 /// Where the build of a launch streams its console, messages and progress: the run
@@ -233,6 +241,8 @@ struct Pending {
     record: PathBuf,
     before: Option<LaunchFingerprint>,
     previous: Option<Outputs>,
+    non_java: bool,
+    cleanup: bool,
 }
 
 /// Owned by Project: running JVMs may still load superseded outputs until it drops.
@@ -296,13 +306,13 @@ impl Session {
         // clean rebuild that replaces JDT's error-stub classes.
         let policy = if rebuild_on_jdt_errors { BuildPolicy::Rebuild } else { policy };
         let mut joined = Vec::new();
-        let mut rebuild = policy == BuildPolicy::Rebuild;
+        let mut rebuild = policy == BuildPolicy::Rebuild || lead.cleanup;
         let mut sinks: Vec<LaunchEvents> = events.into_iter().collect();
         for member in members {
             if let Err(pending) =
                 self.prepare(root, model, &member.module, test, BuildPolicy::Make, &local_repo, cancel)?
             {
-                rebuild |= member.rebuild_on_jdt_errors;
+                rebuild |= member.rebuild_on_jdt_errors || pending.cleanup;
                 sinks.extend(member.events);
                 joined.push(pending);
             }
@@ -366,6 +376,9 @@ impl Session {
         let snapshots = self.cache.join("java-launch/snapshots");
         let mut before = fingerprint(root, model, module, test, local_repo, cancel)?;
         let previous = fs::read(&record).ok().and_then(|bytes| serde_json::from_slice::<Outputs>(&bytes).ok());
+        let non_java = compile::launch_has_non_java_sources(root, model, module, test);
+        let needs_cleanup = needs_cleanup(root, &self.cache, model, module, test);
+        let cleanup = needs_cleanup && !non_java;
         // Timestamp-incremental builders (Maven, the Kotlin plugin) skip sources whose
         // mtime did not advance. An external edit that preserves both length and mtime
         // invalidates the fingerprint but would still compile to nothing below, and the
@@ -388,6 +401,7 @@ impl Session {
         }
         if let Some(outputs) = previous.as_ref()
             && policy != BuildPolicy::Rebuild
+            && !cleanup
             && let Some(maven) = &model.maven
             && outputs.reusable(
                 &before,
@@ -405,14 +419,18 @@ impl Session {
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }
-        // Retain a non-reusable record even on failure, so removing the final mixed
-        // source still delegates to Maven to clean its old classes on the next launch.
-        fs::create_dir_all(record.parent().unwrap())?;
-        fs::write(&record, b"null")?;
+        // Preserve build ownership independently of the reusable snapshot. In particular,
+        // a plain Java build that fails must not force delegation after the user disables it.
+        delegation::remember(root, &self.cache, module, test, non_java || needs_cleanup)?;
+        match fs::remove_file(&record) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
         if let Some(previous) = &previous {
             self.unreferenced.push(previous.snapshot.clone());
         }
-        Ok(Err(Pending { module: module.to_path_buf(), record, before, previous }))
+        Ok(Err(Pending { module: module.to_path_buf(), record, before, previous, non_java, cleanup }))
     }
 
     /// Copies the built outputs of a prepared module into a new snapshot and records it
@@ -487,6 +505,10 @@ impl Session {
             write_record(&pending.record, &outputs)?;
             self.unreferenced.retain(|path| path != &outputs.snapshot);
         }
+        if outputs.failure.is_none() && authoritative {
+            let mixed = pending.non_java || compile::launch_has_non_java_sources(root, model, &pending.module, test);
+            delegation::cleaned(root, &self.cache, &pending.module, test, mixed)?;
+        }
         Ok(outputs)
     }
 }
@@ -509,7 +531,7 @@ fn fingerprint(
     }
 }
 
-fn write_record(record: &Path, outputs: &Outputs) -> IdeResult<()> {
+fn write_record(record: &Path, outputs: &impl Serialize) -> IdeResult<()> {
     fs::create_dir_all(record.parent().unwrap())?;
     let mut file = tempfile::NamedTempFile::new_in(record.parent().unwrap())?;
     serde_json::to_writer(file.as_file_mut(), outputs).map_err(|e| IdeError::internal(e.to_string()))?;
@@ -530,7 +552,7 @@ impl Drop for Session {
 }
 
 /// Clears the fingerprint of every launch record under `cache`, so no snapshot matches the
-/// sources any more. The records stay: their modules keep delegating to Maven.
+/// sources any more. Delegation ownership is stored separately and is not invalidated.
 fn forget_reusable_snapshots(cache: &Path) -> std::io::Result<()> {
     let records = cache.join("java-launch/records");
     if !records.try_exists()? {
@@ -607,6 +629,231 @@ fn sweep(cache: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod delegation_tests {
+    use super::*;
+
+    fn fixture(root: &Path, mixed: bool) -> ide_build::BuildModel {
+        fs::write(
+            root.join("pom.xml"),
+            r#"<project><groupId>sample</groupId><artifactId>app</artifactId><version>1</version></project>"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("src/main/java")).unwrap();
+        fs::write(root.join("src/main/java/Main.java"), "java-source").unwrap();
+        if mixed {
+            fs::create_dir_all(root.join("src/main/kotlin")).unwrap();
+            fs::write(root.join("src/main/kotlin/Extra.kt"), "mixed-source").unwrap();
+        }
+        // A synthetic Maven wrapper: no JDK, Maven installation or network required.
+        #[cfg(windows)]
+        fs::write(root.join("mvnw.cmd"), concat!(
+            "@echo off\r\necho %*>>calls\r\n",
+            "if exist fail-build exit /b 1\r\n",
+            "for %%a in (%*) do if \"%%a\"==\"clean\" if exist target rmdir /s /q target\r\n",
+            "if not exist target\\classes mkdir target\\classes\r\n",
+            "copy /y src\\main\\java\\Main.java target\\classes\\Main.class >nul\r\n",
+            "if exist src\\main\\kotlin\\Extra.kt copy /y src\\main\\kotlin\\Extra.kt target\\classes\\Extra.class >nul\r\n",
+            "if exist edit-during-build echo changed>>src\\main\\java\\Main.java\r\n",
+            "if exist block-record (\r\n",
+            "if not exist cache\\java-launch\\records mkdir cache\\java-launch\\records\r\n",
+            "if exist cache\\java-launch\\records\\main.json del /q cache\\java-launch\\records\\main.json\r\n",
+            "mkdir cache\\java-launch\\records\\main.json\r\n",
+            ")\r\n",
+            "exit /b 0\r\n",
+        )).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let script = root.join("mvnw");
+            fs::write(&script, concat!(
+                "#!/bin/sh\nset -e\nprintf '%s\\n' \"$*\" >> calls\n",
+                "if [ -f fail-build ]; then exit 1; fi\n",
+                "for arg in \"$@\"; do if [ \"$arg\" = clean ]; then rm -rf target; fi; done\n",
+                "mkdir -p target/classes\ncp src/main/java/Main.java target/classes/Main.class\n",
+                "if [ -f src/main/kotlin/Extra.kt ]; then cp src/main/kotlin/Extra.kt target/classes/Extra.class; fi\n",
+                "if [ -f edit-during-build ]; then echo changed >> src/main/java/Main.java; fi\n",
+                "if [ -f block-record ]; then\n",
+                "mkdir -p cache/java-launch/records\nrm -f cache/java-launch/records/main.json\n",
+                "mkdir cache/java-launch/records/main.json\nfi\n",
+            )).unwrap();
+            fs::set_permissions(script, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        ide_build::load(root, &root.join("cache"), None)
+    }
+
+    fn legacy(root: &Path, test: bool, bytes: &[u8]) {
+        let record = record_path(root, &root.join("cache"), root, test).unwrap();
+        fs::create_dir_all(record.parent().unwrap()).unwrap();
+        fs::write(record, bytes).unwrap();
+    }
+
+    fn calls(root: &Path) -> Vec<String> {
+        fs::read_to_string(root.join("calls")).unwrap_or_default().lines().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn failed_record_publication_keeps_new_and_previous_snapshots_until_session_drop() {
+        for has_previous in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            let model = fixture(root, false);
+            let cache = root.join("cache");
+            let cancel = CancellationToken::new();
+            let mut session = Session::new(cache.clone());
+            if has_previous {
+                session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
+            }
+            fs::write(root.join("src/main/java/Main.java"), "edited-java-source").unwrap();
+            fs::write(root.join("block-record"), "").unwrap();
+            let error = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap_err();
+            // Reach publication, rather than accepting an earlier wrapper/build failure.
+            assert!(!error.message.starts_with("Build failed:"), "{error:?}");
+            assert!(cache.join("java-launch/records/main.json").is_dir());
+            assert_eq!(session.unreferenced.len(), if has_previous { 2 } else { 1 });
+            let snapshots = session.unreferenced.clone();
+            assert_eq!(
+                fs::read_to_string(snapshots.last().unwrap().join("0/Main.class")).unwrap(),
+                "edited-java-source"
+            );
+            assert!(snapshots.iter().all(|p| p.join("0/Main.class").is_file()));
+            drop(session);
+            assert!(snapshots.iter().all(|p| !p.exists()));
+        }
+    }
+
+    #[test]
+    fn null_record_without_outputs_does_not_keep_delegation() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let cache = root.join("cache");
+        let model = fixture(root, false);
+        legacy(root, false, b"null");
+        assert!(!needs_cleanup(root, &cache, &model, root, false));
+        // The IDE's Java builder may produce outputs afterwards: migration must stick.
+        fs::create_dir_all(root.join("target/classes")).unwrap();
+        fs::write(root.join("target/classes/Main.class"), "java-output").unwrap();
+        assert!(!needs_cleanup(root, &cache, &model, root, false));
+        assert!(calls(root).is_empty());
+    }
+
+    #[test]
+    fn plain_java_failures_and_unpublished_snapshots_do_not_require_maven() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = fixture(root, false);
+        let cache = root.join("cache");
+        let cancel = CancellationToken::new();
+        let mut session = Session::new(cache.clone());
+        fs::write(root.join("fail-build"), "").unwrap();
+        assert!(session.build(root, &model, root, BuildOptions::default(), None, &cancel).is_err());
+        assert!(!needs_cleanup(root, &cache, &model, root, false));
+        fs::remove_file(root.join("fail-build")).unwrap();
+        fs::write(root.join("edit-during-build"), "").unwrap();
+        let outputs = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
+        assert!(outputs.fingerprint.is_none());
+        assert!(!cache.join("java-launch/records/main.json").exists());
+        assert!(!needs_cleanup(root, &cache, &model, root, false));
+        // A valid snapshot is also not a reason to override the user's build preference.
+        fs::remove_file(root.join("edit-during-build")).unwrap();
+        session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
+        assert!(cache.join("java-launch/records/main.json").is_file());
+        assert!(!needs_cleanup(root, &cache, &model, root, false));
+    }
+
+    #[test]
+    fn legacy_null_or_damaged_records_with_outputs_are_cleaned_once() {
+        for bytes in [b"null".as_slice(), b"{invalid".as_slice()] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            let model = fixture(root, false);
+            let cache = root.join("cache");
+            legacy(root, false, bytes);
+            fs::create_dir_all(root.join("target/classes")).unwrap();
+            fs::write(root.join("target/classes/Old.class"), "unknown-old-output").unwrap();
+            assert!(needs_cleanup(root, &cache, &model, root, false));
+            let mut session = Session::new(cache.clone());
+            session.build(root, &model, root, BuildOptions::default(), None, &CancellationToken::new()).unwrap();
+            drop(session);
+            assert!(!root.join("target/classes/Old.class").exists());
+            assert!(!needs_cleanup(root, &cache, &model, root, false));
+            assert_eq!(calls(root).len(), 1);
+            assert!(calls(root)[0].contains("clean"));
+        }
+    }
+
+    #[test]
+    fn a_legacy_reusable_snapshot_cannot_skip_pending_cleanup() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = fixture(root, false);
+        let cache = root.join("cache");
+        let cancel = CancellationToken::new();
+        let mut session = Session::new(cache.clone());
+        let before = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
+        // Simulate a successful record written before ownership was tracked separately.
+        fs::remove_file(cache.join("java-launch/delegation/main.json")).unwrap();
+        assert!(needs_cleanup(root, &cache, &model, root, false));
+        let after = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
+        assert_ne!(before.snapshot, after.snapshot);
+        assert_eq!(calls(root).len(), 2);
+        assert!(calls(root)[1].contains("clean"));
+        assert!(!needs_cleanup(root, &cache, &model, root, false));
+    }
+
+    #[test]
+    fn mixed_cleanup_survives_failure_and_reopen_then_releases_delegation() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = fixture(root, true);
+        let cache = root.join("cache");
+        let cancel = CancellationToken::new();
+        let mut session = Session::new(cache.clone());
+        session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
+        assert!(root.join("target/classes/Extra.class").is_file());
+        fs::remove_file(root.join("src/main/kotlin/Extra.kt")).unwrap();
+        fs::write(root.join("fail-build"), "").unwrap();
+        assert!(session.build(root, &model, root, BuildOptions::default(), None, &cancel).is_err());
+        drop(session);
+        assert!(needs_cleanup(root, &cache, &model, root, false));
+        fs::remove_file(root.join("fail-build")).unwrap();
+        let mut session = Session::new(cache.clone());
+        session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
+        assert!(!root.join("target/classes/Extra.class").exists());
+        assert!(!needs_cleanup(root, &cache, &model, root, false));
+        assert_eq!(calls(root).len(), 3);
+        assert!(calls(root)[1..].iter().all(|call| call.contains("clean")));
+    }
+
+    #[test]
+    fn test_cleanup_does_not_force_a_main_launch_and_a_clean_test_build_releases_both_modes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = fixture(root, false);
+        let cache = root.join("cache");
+        legacy(root, true, b"null");
+        fs::create_dir_all(root.join("target/test-classes")).unwrap();
+        fs::write(root.join("target/test-classes/OldTest.class"), "old-test-output").unwrap();
+        assert!(!needs_cleanup(root, &cache, &model, root, false));
+        assert!(needs_cleanup(root, &cache, &model, root, true));
+        delegation::remember(root, &cache, root, false, true).unwrap();
+        let mut session = Session::new(cache.clone());
+        session
+            .build(
+                root,
+                &model,
+                root,
+                BuildOptions { test: true, ..Default::default() },
+                None,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert!(!needs_cleanup(root, &cache, &model, root, false));
+        assert!(!needs_cleanup(root, &cache, &model, root, true));
+        assert!(!root.join("target/test-classes/OldTest.class").exists());
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -864,7 +1111,7 @@ mod tests {
         // Build › Rebuild cleans the outputs and compiles again.
         fs::remove_file(root.join("target/classes/Stale.class")).unwrap();
         session.forget_reusable_snapshots();
-        assert!(has_record(root, &root.join("cache"), root));
+        assert!(needs_cleanup(root, &root.join("cache"), &model, root, false));
         let next = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
         assert_ne!(next.snapshot, first.snapshot);
         assert!(!next.snapshot.join("0/Stale.class").exists());
@@ -943,7 +1190,7 @@ mod tests {
         assert_ne!(rebuilt.snapshot, updated.snapshot);
         fs::write(root.join("src/main/kotlin/broken"), "broken").unwrap();
         assert!(build().is_err());
-        assert_eq!(fs::read(cache.join("java-launch/records/main.json")).unwrap(), b"null");
+        assert!(!cache.join("java-launch/records/main.json").exists());
         fs::remove_file(root.join("src/main/kotlin/broken")).unwrap();
         assert_ne!(rebuilt.snapshot, build().unwrap().snapshot, "a failed build invalidates success");
         cancel.cancel();
@@ -1097,11 +1344,16 @@ mod tests {
         let model = fixture(root);
         let script = root.join("mvnw");
         let mut text = fs::read_to_string(&script).unwrap();
-        text.push_str("rm cache/java-launch/records/main.json\nmkdir cache/java-launch/records/main.json\n");
+        // Snapshot invalidation no longer writes a null record or creates its parent.
+        // Arrange a publish failure independently of that earlier implementation detail.
+        text.push_str("mkdir -p cache/java-launch/records\nrm -f cache/java-launch/records/main.json\nmkdir cache/java-launch/records/main.json\n");
         fs::write(script, text).unwrap();
         let cache = root.join("cache");
         let mut session = Session::new(cache.clone());
-        assert!(session.build(root, &model, root, BuildOptions::default(), None, &CancellationToken::new()).is_err());
+        let error =
+            session.build(root, &model, root, BuildOptions::default(), None, &CancellationToken::new()).unwrap_err();
+        assert!(!error.message.starts_with("Build failed:"), "{error:?}");
+        assert!(cache.join("java-launch/records/main.json").is_dir());
         assert_eq!(session.unreferenced.len(), 1);
         let snapshot = session.unreferenced[0].clone();
         assert!(snapshot.join("0/Main.class").is_file());
@@ -1123,7 +1375,7 @@ mod tests {
         let outputs =
             session.build(root, &model, root, BuildOptions::default(), None, &CancellationToken::new()).unwrap();
         assert!(outputs.fingerprint.is_none());
-        assert_eq!(fs::read(cache.join("java-launch/records/main.json")).unwrap(), b"null");
+        assert!(!cache.join("java-launch/records/main.json").exists());
         assert!(outputs.snapshot.join("0/Main.class").is_file());
         drop(session);
         assert!(!outputs.snapshot.exists());
@@ -1265,9 +1517,9 @@ mod tests {
         let first = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
         fs::remove_file(root.join("src/main/kotlin/Main.kt")).unwrap();
         assert!(!compile::launch_has_non_java_sources(root, &model, root, false));
-        assert!(has_record(root, &cache, root));
+        assert!(needs_cleanup(root, &cache, &model, root, false));
         assert!(session.build(root, &model, root, BuildOptions::default(), None, &cancel).is_err());
-        assert!(has_record(root, &cache, root));
+        assert!(needs_cleanup(root, &cache, &model, root, false));
         fs::write(root.join("src/main/kotlin/Main.kt"), "restored").unwrap();
         let restored = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
         assert_ne!(first.snapshot, restored.snapshot);

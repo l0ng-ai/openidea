@@ -49,7 +49,7 @@ pub async fn clipboard_write_image(app: AppHandle, window: WebviewWindow, png: S
 /// The clipboard's plain text, read natively as [`clipboard_write_text`] writes it: a Paste
 /// from a menu has no paste event, and WebKitGTK gives `navigator.clipboard.readText()` no
 /// text there (#3041); WebView2 asks the user before letting the page read it.
-#[desktop_command(trust = trusted)]
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn clipboard_text(app: AppHandle) -> IdeResult<Option<String>> {

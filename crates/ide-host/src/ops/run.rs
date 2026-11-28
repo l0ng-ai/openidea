@@ -553,7 +553,7 @@ async fn start_inner(
         encoding: Some(encoding).filter(|e| !e.trim().is_empty()),
         python_paths,
         ruby_reporter: ruby_reporter_dir(host, &config),
-        plots: if is_python { super::plots::prepare(host, &project) } else { None },
+        plots: if is_python { super::plots::prepare(host, &project).await } else { None },
     };
     project.require_trust()?;
     if config.kind == "go" && matches!(config.args.first().map(String::as_str), Some("mod" | "work")) {

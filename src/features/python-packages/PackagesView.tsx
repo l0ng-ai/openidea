@@ -546,7 +546,11 @@ function InstallFromDialog({
               source === "vcs" ? "git+https://github.com/owner/project.git" : tx("Project directory or archive")
             }
             aria-label={source === "vcs" ? "Repository URL" : "Path"}
-            onChange={(e) => setValue(e.target.value)}
+            onChange={(e) => {
+              setValue(e.target.value);
+              // An archive can't be editable; a directory typed after it starts unticked.
+              if (isArchive(e.target.value)) setEditable(false);
+            }}
             onKeyDown={(e) => e.key === "Enter" && install()}
           />
           {source === "disk" && (
@@ -562,12 +566,7 @@ function InstallFromDialog({
           )}
         </div>
         {source === "disk" && (
-          <Checkbox
-            checked={canEdit && editable}
-            onChange={setEditable}
-            disabled={!canEdit}
-            label="Install as editable (-e)"
-          />
+          <Checkbox checked={editable} onChange={setEditable} disabled={!canEdit} label="Install as editable (-e)" />
         )}
       </div>
     </Dialog>

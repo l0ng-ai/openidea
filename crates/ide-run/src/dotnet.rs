@@ -86,12 +86,15 @@ pub fn parse_project(xml: &str) -> Option<Project> {
         return None;
     }
     let property = |name: &str| tags.iter().rev().find(|t| t.name == name && !t.conditional).map(|t| t.text.trim());
-    let web = tags.iter().any(|t| {
-        t.attrs
-            .get("Sdk")
-            .or_else(|| (t.name == "Sdk").then(|| t.attrs.get("Name")).flatten())
-            .is_some_and(|s| s.split(';').any(|sdk| sdk.split('/').next() == Some("Microsoft.NET.Sdk.Web")))
-    });
+    let uses_sdk = |name: &str| {
+        tags.iter().any(|t| {
+            t.attrs
+                .get("Sdk")
+                .or_else(|| (t.name == "Sdk").then(|| t.attrs.get("Name")).flatten())
+                .is_some_and(|s| s.split(';').any(|sdk| sdk.split('/').next().is_some_and(|n| n.trim() == name)))
+        })
+    };
+    let web = uses_sdk("Microsoft.NET.Sdk.Web");
     let executable = match property("OutputType") {
         Some(output) => output.eq_ignore_ascii_case("exe") || output.eq_ignore_ascii_case("winexe"),
         None => web,
@@ -105,14 +108,36 @@ pub fn parse_project(xml: &str) -> Option<Project> {
         .filter(|v| !v.is_empty())
         .map(str::to_owned)
         .collect();
-    let test = tags.iter().any(|t| {
-        t.name == "PackageReference"
-            && t.attrs
-                .get("Include")
-                .or_else(|| t.attrs.get("Update"))
-                .is_some_and(|v| v.eq_ignore_ascii_case("Microsoft.NET.Test.Sdk"))
-    });
+    let packages: Vec<&str> = tags
+        .iter()
+        .filter(|t| t.name == "PackageReference")
+        .filter_map(|t| t.attrs.get("Include").or_else(|| t.attrs.get("Update")))
+        .map(|v| v.trim())
+        .collect();
+    let flag = |name: &str| property(name).map(|v| v.eq_ignore_ascii_case("true"));
+    // Microsoft.Testing.Platform test projects (xUnit v3, MSTest runner, TUnit) are executables
+    // that need not reference Microsoft.NET.Test.Sdk.
+    let testing_platform = [
+        "IsTestingPlatformApplication",
+        "TestingPlatformDotnetTestSupport",
+        "EnableMSTestRunner",
+        "UseMicrosoftTestingPlatformRunner",
+    ]
+    .into_iter()
+    .any(|name| flag(name) == Some(true))
+        || packages.iter().any(|p| p.to_ascii_lowercase().starts_with("xunit.v3.mtp"));
+    let test = flag("IsTestProject") == Some(true)
+        || testing_platform
+        || (flag("IsTestProject") != Some(false)
+            && (uses_sdk("MSTest.Sdk") || packages.iter().any(|p| is_test_framework_package(p))));
     Some(Project { executable, frameworks, test })
+}
+
+/// A package only a test project references: the test SDK, or a test framework's main package.
+fn is_test_framework_package(id: &str) -> bool {
+    ["Microsoft.NET.Test.Sdk", "MSTest", "NUnit", "xunit", "xunit.v3", "TUnit"]
+        .iter()
+        .any(|p| id.eq_ignore_ascii_case(p))
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
