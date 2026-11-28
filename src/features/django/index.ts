@@ -5,7 +5,7 @@ import { executeAction, registerActions } from "@/platform/actions";
 import { onIdeEvent, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { notifications, registerEditorBanner, registerRunAnythingProvider } from "@/workbench/contributions";
-import { loadManage, locateManage, manageRunAnything, resetManage, useManage } from "./manage";
+import { loadCommands, locateManage, manageRunAnything, resetManage } from "./manage";
 import { forgetModels, lookupCompletionExtension } from "./models";
 import { checkStubs, resetStubs, useStubs, useStubsBanner } from "./stubs";
 import { forgetUrlNames, urlCompletionExtension, urlNavigation } from "./urls";
@@ -32,11 +32,13 @@ export function activate(): () => void {
         keywords: ["django", "manage.py", "migrate", "makemigrations"],
         when: "projectOpen",
         run: async () => {
-          await loadManage();
-          if (!useManage.getState().manage) {
+          const { manage, python } = await locateManage();
+          if (!manage) {
             notifications().notify({ level: "info", title: "No manage.py in this project" });
             return;
           }
+          // The commands complete once `manage.py help` answers; a failed one is tried again.
+          if (python) void loadCommands(manage, python, true);
           await executeAction("runAnything.show", "manage.py ");
         },
       },
@@ -45,7 +47,9 @@ export function activate(): () => void {
       const doc = docOf(view);
       if (!doc || doc.virtual || doc.language !== "python") return null;
       const line = view.state.doc.lineAt(offset);
-      return urlNavigation(line.text, line.from, offset);
+      // With what comes before the line: `reverse(` may end the one above.
+      const base = Math.max(0, line.from - 200);
+      return urlNavigation(view.state.doc.sliceString(base, line.to), base, offset);
     }),
     registerEditorContribution({ id: "django.urlNames", extensions: urlCompletionExtension }),
     registerEditorContribution({ id: "django.lookups", extensions: lookupCompletionExtension }),
@@ -58,12 +62,12 @@ export function activate(): () => void {
     // A fresh open races the index: manage.py, urls.py and models.py may be there once indexing ends.
     onIdeEvent("indexState", (e) => {
       if (e.indexing) return;
-      const { loaded, manage } = useManage.getState();
-      if (loaded === "yes" && !manage) resetManage();
       forgetUrlNames();
       forgetModels();
       if (!useStubs.getState().python) void checkProject();
     }),
+    // Another interpreter for the project.
+    onIdeEvent("settingsChanged", (e) => e.key.startsWith("languages.python") && void checkProject()),
     useProject.subscribe((s, prev) => {
       if (s.project?.root === prev.project?.root) return;
       resetManage();

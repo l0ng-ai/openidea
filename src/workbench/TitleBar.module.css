@@ -185,7 +185,7 @@
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
 }
-/* Preserve the menu's natural width while allowing its slot to yield to toolbar controls. */
+/* The slot is sized by the visible presentation; the hidden copy only reports the full menu width. */
 /* Ends where the stripe column below it does, the bar's padding being the
    stripe's own. */
 .mainMenuSlot {
@@ -199,14 +199,14 @@
   flex-shrink: 0;
 }
 .menuMeasure {
+  position: absolute;
+  top: 0;
+  left: 0;
   width: max-content;
   visibility: hidden;
   pointer-events: none;
 }
 .menuPresentation {
-  position: absolute;
-  top: 0;
-  left: 0;
   height: 100%;
   display: flex;
   align-items: center;

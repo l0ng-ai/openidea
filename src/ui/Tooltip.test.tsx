@@ -180,7 +180,41 @@ it("shows a tab's cut-off title whole, with the tab's own tooltip beside it", ()
   act(() => {
     vi.advanceTimersByTime(TOOLTIP_DELAY);
   });
-  expect(screen.getByRole("tooltip").textContent).toBe("历史记录: PscPrinted.js/repo/src/history/PscPrinted.js");
+  const tip = screen.getByRole("tooltip");
+  expect(tip.textContent).toBe("历史记录: PscPrinted.js/repo/src/history/PscPrinted.js");
+  expect(tip).toHaveClass(styles.withNote!);
+  expect(tip.querySelector(`.${styles.note!}`)?.textContent).toBe("/repo/src/history/PscPrinted.js");
+  expect(tip.querySelector(`.${styles.shortcut!}`)).toBeNull();
+  cleanup();
+  vi.useRealTimers();
+});
+
+it("respects data-no-tooltip on a tooltip owner so truncated children show only the owner's own tooltip", () => {
+  vi.useFakeTimers();
+  render(
+    <>
+      <TooltipHost />
+      <button
+        type="button"
+        data-no-tooltip=""
+        {...tooltipAttrs("CPU 1.8% · Memory 2.4 GB / 56 GB · RTT 128 ms", undefined, true)}
+      >
+        <span style={{ textOverflow: "ellipsis" }} data-testid="pill-text">
+          1.8% · 2.4G
+        </span>
+      </button>
+    </>,
+  );
+  const pillText = screen.getByTestId("pill-text");
+  Object.defineProperty(pillText, "scrollWidth", { configurable: true, value: 120 });
+  Object.defineProperty(pillText, "clientWidth", { configurable: true, value: 60 });
+  fireEvent.pointerOver(pillText);
+  act(() => {
+    vi.advanceTimersByTime(TOOLTIP_DELAY);
+  });
+  const tip = screen.getByRole("tooltip");
+  expect(tip.textContent).toBe("CPU 1.8% · Memory 2.4 GB / 56 GB · RTT 128 ms");
+  expect(tip.querySelector(`.${styles.note!}`)).toBeNull();
   cleanup();
   vi.useRealTimers();
 });

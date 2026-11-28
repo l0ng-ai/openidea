@@ -1,11 +1,11 @@
 import clsx from "clsx";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Branch } from "@/bindings";
 import { HighlightedText, Icon, List, Popup, SearchField, T, firstSelectable, fuzzyMatch, listNavigate } from "@/ui";
 import { useRowHeight } from "@/ui/density";
 import { tx } from "@/platform/i18n";
-import { isFavoriteBranch, sortLocal, sortRemote } from "./branches";
-import { loadFavoriteBranches, useFavoriteBranches } from "./branchOps";
+import { favoritesInAny, isFavoriteBranch, sortLocal, sortRemote } from "./branches";
+import { useFavoriteBranchesOf } from "./branchOps";
 import styles from "./GitLog.module.css";
 
 type Group = "local" | "remote";
@@ -83,6 +83,7 @@ const isSection = (r: Row) => r.type === "section";
 export function BranchFilterPopup({
   anchor,
   branches,
+  repos = [],
   selected,
   onSelect,
   onSelectMany,
@@ -90,6 +91,8 @@ export function BranchFilterPopup({
 }: {
   anchor: HTMLElement;
   branches: readonly Branch[];
+  /** The repositories `branches` come from; none: the selected one. */
+  repos?: readonly string[];
   selected: readonly string[];
   onSelect: (branch: string) => void;
   onSelectMany: () => void;
@@ -99,8 +102,17 @@ export function BranchFilterPopup({
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const [expanded, setExpanded] = useState<ReadonlySet<Group>>(new Set());
-  const favorites = useFavoriteBranches((s) => s.names);
-  useEffect(() => loadFavoriteBranches(), []);
+  const favoritesOf = useFavoriteBranchesOf();
+  const favorites = useMemo(
+    () =>
+      repos.length > 1
+        ? favoritesInAny(
+            branches,
+            repos.map((r) => favoritesOf(r)),
+          )
+        : favoritesOf(repos[0]),
+    [branches, repos, favoritesOf],
+  );
   const rows = useMemo(() => buildRows(branches, favorites, query, expanded), [branches, favorites, query, expanded]);
   const activeIndex = rows[active] && !isSection(rows[active]!) ? active : firstSelectable(rows, isSection);
   const toggle = (group: Group, open: boolean) =>

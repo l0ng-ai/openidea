@@ -54,6 +54,13 @@ describe("syntaxHighlightField", () => {
     expect(marks(state)).toEqual([{ text: "def", cls: command }]);
   });
 
+  it("maps t.namespace to Package reference, not Class name", () => {
+    const namespaceClass = openideaHighlightStyle.style([t.namespace]);
+    const typeClass = openideaHighlightStyle.style([t.typeName]);
+    expect(namespaceClass).toBeTruthy();
+    expect(namespaceClass).not.toBe(typeClass);
+  });
+
   it("lets Kotlin declaration roles override the stream lexer's generic definition style", async () => {
     const support = await loadSupport(findLanguageDescription("Kotlin", "demo.kt")!);
     const view = new EditorView({

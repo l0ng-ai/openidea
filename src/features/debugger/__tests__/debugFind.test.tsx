@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ContextMenuHost } from "@/ui";
 import { usePlatform } from "@/platform/platformInfo";
 import { adoptSession, appendConsole, useDebug } from "../state";
@@ -66,6 +66,74 @@ describe("Debug console find", () => {
     const marks = [...log.querySelectorAll("[data-find-current]")];
     expect(marks.map((m) => m.textContent).join("")).toBe("t3boundary");
     expect(marks.map((m) => m.closest("[data-index]")?.getAttribute("data-index"))).toEqual(["0", "1"]);
+  });
+
+  it("scrolls the current match on a wide line into view sideways", () => {
+    const reveal = vi.spyOn(Element.prototype, "scrollIntoView");
+    try {
+      const { log } = setup(`short\n${"x".repeat(3_000)} needle\n`);
+      openFind(log);
+      type("needle");
+      expect(reveal).toHaveBeenCalledTimes(1);
+      expect(reveal).toHaveBeenLastCalledWith({ block: "nearest", inline: "nearest" });
+      expect((reveal.mock.contexts[0] as Element).textContent).toBe("needle");
+    } finally {
+      reveal.mockRestore();
+    }
+  });
+
+  it("reveals the match again as typing grows it from the same start", () => {
+    const reveal = vi.spyOn(Element.prototype, "scrollIntoView");
+    try {
+      const { log } = setup(`${"x".repeat(3_000)} farneedle\n`);
+      openFind(log);
+      type("f");
+      expect(reveal).toHaveBeenCalledTimes(1);
+      type("farneedle");
+      expect(reveal).toHaveBeenCalledTimes(2);
+      expect((reveal.mock.contexts[1] as Element).textContent).toBe("farneedle");
+    } finally {
+      reveal.mockRestore();
+    }
+  });
+
+  it("does not reveal again when output grows the matched open line", () => {
+    const reveal = vi.spyOn(Element.prototype, "scrollIntoView");
+    try {
+      const { log } = setup("short\nDownloading...");
+      openFind(log);
+      fireEvent.click(screen.getByRole("button", { name: "Regex" }));
+      type("Downloading.*");
+      expect(reveal).toHaveBeenCalledTimes(1);
+      act(() => appendConsole(1, "stdout", "...."));
+      expect(log.querySelector("[data-find-current]")?.textContent).toBe("Downloading.......");
+      expect(reveal).toHaveBeenCalledTimes(1);
+    } finally {
+      reveal.mockRestore();
+    }
+  });
+
+  it("does not turn Scroll to End back on when the reveal scrolls sideways", async () => {
+    const reveal = vi.spyOn(Element.prototype, "scrollIntoView");
+    try {
+      const { log } = setup(`${"x".repeat(3_000)} farneedle\n`);
+      // Let the initial pin to the end settle (it ignores scroll events for two frames).
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const scrollToEnd = screen.getByRole("button", { name: "Scroll to End" });
+      openFind(log);
+      type("farneedle");
+      expect(reveal).toHaveBeenCalledTimes(1);
+      expect(scrollToEnd).toHaveAttribute("aria-pressed", "false");
+      // The output fits, so the console is at the end; only scrollLeft moved.
+      fireEvent.scroll(log);
+      expect(scrollToEnd).toHaveAttribute("aria-pressed", "false");
+      // A vertical scroll in the same frame still counts, as before.
+      Object.defineProperty(log, "scrollTop", { get: () => 40, set: () => {}, configurable: true });
+      fireEvent.scroll(log);
+      expect(scrollToEnd).toHaveAttribute("aria-pressed", "true");
+    } finally {
+      reveal.mockRestore();
+    }
   });
 
   it("opens on ⌘F, searches as you type and highlights every match", () => {

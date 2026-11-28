@@ -4,7 +4,7 @@ use ide_command::command;
 use ide_core::remote_settings::RunTargetKind;
 use ide_core::{IdeError, IdeResult, RunId};
 use ide_run::{OutputChunk, RunAttach, RunConfig, RunInfo, StartOptions};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -449,6 +449,10 @@ async fn start_inner(
         if target.kind != RunTargetKind::Ssh {
             // A local run of the docker CLI: the command is resolved in the container, and
             // this machine's toolchains and `PYTHONPATH` don't apply.
+            let mut config = config;
+            if matches!(config.kind.as_str(), "python" | "pytest" | "unittest" | "doctest" | "django-test") {
+                container_python_path(&mut config.env, &super::python::paths(&project), &project.root);
+            }
             let config = container::prepare(host, &project.root, target, config).await?;
             let encoding = settings.console.encoding;
             let options = StartOptions {
@@ -695,6 +699,18 @@ pub use commands::*;
 #[cfg(test)]
 mod ownership_tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn source_roots_go_on_the_container_pythonpath() {
+        let root = Path::new("/p");
+        let mut env = std::collections::BTreeMap::from([("PYTHONPATH".to_owned(), "/opt/extra".to_owned())]);
+        container_python_path(&mut env, &[root.into(), root.join("src"), "/home/u/lib".into()], root);
+        assert_eq!(env["PYTHONPATH"], "/p:/p/src:/opt/extra", "outside the project: not mounted");
+        let mut none = std::collections::BTreeMap::new();
+        container_python_path(&mut none, &["/elsewhere".into()], root);
+        assert!(none.is_empty());
+    }
     #[test]
     fn unlinked_builds_do_not_reappear_as_detected_application_configs() {
         let temp = tempfile::tempdir().unwrap();
@@ -892,6 +908,19 @@ pub async fn run_container_path(
         Ok(file.map(Into::into))
     })
     .await
+}
+
+/// The project's source roots on `PYTHONPATH` in a container, as a local run gets them:
+/// they are mounted with the project, and `container::prepare` maps their paths. The
+/// container's separator is `:`, whatever this machine's is.
+fn container_python_path(env: &mut std::collections::BTreeMap<String, String>, roots: &[PathBuf], root: &Path) {
+    let mut paths: Vec<String> =
+        roots.iter().filter(|p| p.starts_with(root)).map(|p| p.to_string_lossy().into_owned()).collect();
+    if paths.is_empty() {
+        return;
+    }
+    paths.extend(env.get("PYTHONPATH").cloned());
+    env.insert("PYTHONPATH".into(), paths.join(":"));
 }
 
 ide_command::domain!(

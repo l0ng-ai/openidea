@@ -36,7 +36,7 @@ import {
   useSettingsDialog,
 } from "./model/staging";
 import { trackRuntimeSettings } from "./runtime";
-import { installActionProxies } from "./window/bridge";
+import { installActionProxies, installEditorProxy } from "./window/bridge";
 
 /** Same event as `windows::LAUNCH_EVENT`: a pending launch (page) is waiting. */
 const LAUNCH_EVENT = "openidea://launch";
@@ -205,6 +205,7 @@ export function activateSettingsWindow(parent: string): () => void {
     installMouseShortcuts(),
     installHistoryShortcuts(),
     installActionProxies(parent),
+    installEditorProxy(parent),
     listenLaunch(bootstrap),
     installWindowKeys(),
     useSettingsDialog.subscribe((s, prev) => {

@@ -9,7 +9,9 @@ import type {
   ProjectInfo,
   RemoteSkillPreview,
 } from "@/bindings";
+import { closeSettings, openSettings, stage, useSettingsDialog } from "@/features/settings/model/staging";
 import { useProject } from "@/platform/project";
+import { maybeEditorService, provideEditorService, type EditorService } from "@/workbench/contributions";
 import { SkillsPage, type SkillsBackend } from "./SkillsPage";
 
 const state = (
@@ -57,7 +59,10 @@ function pick(triggerLabel: string, option: string) {
   fireEvent.click(within(screen.getByRole("listbox", { name: triggerLabel })).getByText(option));
 }
 
-afterEach(() => useProject.setState({ project: null }));
+afterEach(() => {
+  useProject.setState({ project: null, lightEdit: false });
+  closeSettings();
+});
 
 describe("SkillsPage", () => {
   it("groups skills by source with their mode and validation tags", async () => {
@@ -291,5 +296,50 @@ describe("SkillsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /^verify-ux/ }));
     expect(await screen.findByText("src/**/*.tsx, e2e/*.spec.ts")).toBeInTheDocument();
     expect(screen.getByText(/context: fork/)).toBeInTheDocument();
+  });
+
+  it("opens SKILL.md in the editor and closes a clean in-page Settings dialog", async () => {
+    const openFile = vi.fn(async () => {});
+    const previous = maybeEditorService();
+    provideEditorService({ openFile } as unknown as EditorService);
+    const items = [
+      state("azure-storage", "copilotUser", "auto", { path: "/Users/dev/.copilot/skills/azure-storage/" }),
+    ];
+    try {
+      openSettings("agents.skills");
+      render(<SkillsPage backend={{ list: vi.fn(async () => items), setMode: vi.fn(async () => items) }} />);
+
+      await waitFor(() => expect(screen.getByText("azure-storage")).toBeInTheDocument());
+      fireEvent.click(screen.getByRole("button", { name: /^azure-storage/ }));
+      fireEvent.click(await screen.findByRole("button", { name: "Open SKILL.md" }));
+
+      await waitFor(() =>
+        expect(openFile).toHaveBeenCalledWith("/Users/dev/.copilot/skills/azure-storage/SKILL.md", { focus: true }),
+      );
+      await waitFor(() => expect(useSettingsDialog.getState().open).toBe(false));
+    } finally {
+      provideEditorService(previous as EditorService);
+    }
+  });
+
+  it("keeps the in-page Settings dialog open when staged edits exist", async () => {
+    const openFile = vi.fn(async () => {});
+    const previous = maybeEditorService();
+    provideEditorService({ openFile } as unknown as EditorService);
+    const items = [state("azure-storage", "copilotUser")];
+    try {
+      openSettings("agents.skills");
+      stage("editor.general", "global", "editor.tabSize", 8);
+      render(<SkillsPage backend={{ list: vi.fn(async () => items), setMode: vi.fn(async () => items) }} />);
+
+      await waitFor(() => expect(screen.getByText("azure-storage")).toBeInTheDocument());
+      fireEvent.click(screen.getByRole("button", { name: /^azure-storage/ }));
+      fireEvent.click(await screen.findByRole("button", { name: "Open SKILL.md" }));
+
+      await waitFor(() => expect(openFile).toHaveBeenCalledWith("/skills/azure-storage/SKILL.md", { focus: true }));
+      expect(useSettingsDialog.getState().open).toBe(true);
+    } finally {
+      provideEditorService(previous as EditorService);
+    }
   });
 });

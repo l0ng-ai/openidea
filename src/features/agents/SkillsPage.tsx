@@ -7,6 +7,9 @@
 import clsx from "clsx";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AgentSkillMode, AgentSkillState, McpScope } from "@/bindings";
+import { closeSettings, pendingChanges, useSettingsDialog } from "@/features/settings/model/staging";
+import { settingsWindowParent } from "@/features/settings/window/bridge";
+import { executeAction, getAction } from "@/platform/actions";
 import { revealInFileManager, revealInFileManagerLabel } from "@/platform/fileManager";
 import { formatMessage, useTx } from "@/platform/i18n";
 import { isTauri, onIdeEvent } from "@/platform/ipc";
@@ -137,6 +140,30 @@ export function SkillsPage({ backend = defaultSkillsBackend }: { backend?: Skill
   const scopeOf = (state: AgentSkillState): McpScope =>
     scopes[state.skill.name] ?? (state.origin === "workspace" || state.origin === "trust" ? "workspace" : "user");
 
+  const openSkillFile = useCallback((skillPath: string) => {
+    const filePath = `${skillPath.replace(/[\\/]+$/, "")}/SKILL.md`;
+    const { project, lightEdit } = useProject.getState();
+    const inSeparateWindow = !!settingsWindowParent();
+    setError(null);
+    void (async () => {
+      if (!project && !lightEdit && !inSeparateWindow && getAction("file.openPaths")) {
+        await executeAction("file.openPaths", [filePath]);
+      } else {
+        await editorService().openFile(filePath, { focus: true });
+      }
+      const dialog = useSettingsDialog.getState();
+      if (
+        dialog.open &&
+        !inSeparateWindow &&
+        pendingChanges(dialog).length === 0 &&
+        Object.keys(dialog.stagedSecrets).length === 0 &&
+        Object.keys(dialog.stagedExternal).length === 0
+      ) {
+        closeSettings();
+      }
+    })().catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+  }, []);
+
   return (
     <div className={page.page}>
       <p className={page.lead}>
@@ -258,6 +285,7 @@ export function SkillsPage({ backend = defaultSkillsBackend }: { backend?: Skill
                         }))
                       }
                       onModeChange={(mode) => void setMode(state, scopeOf(state), mode)}
+                      onOpenSkillFile={() => openSkillFile(state.skill.path)}
                     />
                   ))}
                 </div>
@@ -297,6 +325,7 @@ function SkillCard({
   onToggleExpand,
   onScopeChange,
   onModeChange,
+  onOpenSkillFile,
 }: {
   state: AgentSkillState;
   scope: McpScope;
@@ -306,6 +335,7 @@ function SkillCard({
   onToggleExpand: () => void;
   onScopeChange: (scope: McpScope) => void;
   onModeChange: (mode: AgentSkillMode) => void;
+  onOpenSkillFile: () => void;
 }) {
   const tx = useTx();
   const { skill } = state;
@@ -423,14 +453,7 @@ function SkillCard({
 
           <div className={page.drawerFooter}>
             <div className={page.drawerButtons}>
-              <Button
-                size="small"
-                onClick={() =>
-                  void editorService().openFile(`${skill.path}/SKILL.md`, {
-                    focus: true,
-                  })
-                }
-              >
+              <Button size="small" onClick={onOpenSkillFile}>
                 <T>Open SKILL.md</T>
               </Button>
               <Button size="small" onClick={() => void revealInFileManager(skill.path)}>

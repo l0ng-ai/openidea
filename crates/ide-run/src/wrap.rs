@@ -149,9 +149,10 @@ pub fn python_command(config: &RunConfig) -> Option<PythonCommand> {
         if is_python(t) {
             let mut interpreter = tokens[..=k].to_vec();
             let mut rest = &tokens[k + 1..];
-            // Interpreter options stay with the interpreter (`-u`, `-X utf8`); `-m` starts the target.
+            // Interpreter options stay with the interpreter (`-u`, `-X utf8`); `-m` and `-c`
+            // start the target.
             while let Some(first) = rest.first() {
-                if first == "-m" || !first.starts_with('-') {
+                if first == "-m" || first == "-c" || !first.starts_with('-') {
                     break;
                 }
                 let takes_value = matches!(first.as_str(), "-X" | "-W");
@@ -348,6 +349,11 @@ mod tests {
 
         let p = python_command(&cfg("python3", &["main.py", "a"])).unwrap();
         assert_eq!(p.target, ["main.py", "a"]);
+        let p = python_command(&cfg("python3", &["-u", "-c", "print(1)", "a"])).unwrap();
+        assert_eq!(
+            (p.interpreter, p.target),
+            (vec!["python3".to_owned(), "-u".into()], vec!["-c".into(), "print(1)".into(), "a".into()])
+        );
 
         if cfg!(unix) {
             let p = python_command(&cfg("/v/bin/pytest", &[])).unwrap();

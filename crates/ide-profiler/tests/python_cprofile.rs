@@ -1,11 +1,10 @@
 //! Profiling `fixtures/python-profiling` under cProfile with a real Python 3, to the end and
-//! when Stop interrupts it. Without `python3` (`python` on Windows) on the search path the
+//! when Stop interrupts it; exit codes, `-c` code and `-m` modules run as Python runs them. Without `python3` (`python` on Windows) on the search path the
 //! tests return early.
 
 use ide_profiler::{Profile, ProfileMode, ProfilePrepared, collect, prepare};
 use ide_run::RunConfig;
 use std::collections::BTreeMap;
-#[cfg(unix)]
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -92,4 +91,91 @@ fn a_stopped_run_still_writes_its_profile() {
     let p = collect(&spec).unwrap();
     // One completed fib(22) followed by one completed fib(18).
     assert!(method(&p, "fib").calls.unwrap() >= 65_674.0, "both completed passes were profiled");
+}
+
+/// Waits up to a minute: a run that hangs fails the test instead of the whole suite.
+fn finish(mut child: std::process::Child) -> std::process::ExitStatus {
+    for _ in 0..600 {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    child.kill().unwrap();
+    panic!("the profiled run did not end");
+}
+
+#[test]
+fn the_runs_exit_code_and_c_code_are_kept() {
+    let Some(python) = python() else { return };
+    let out = tempfile::tempdir().unwrap();
+    let (mut cmd, spec) =
+        plan(&python, &["-c", "import sys\ndef work(): return sum(range(9))\nwork()\nsys.exit(3)"], out.path());
+    assert_eq!(finish(cmd.spawn().unwrap()).code(), Some(3));
+    let p = collect(&spec).unwrap();
+    assert_eq!(method(&p, "work (<string>:2)").calls, Some(1.0));
+}
+
+#[test]
+fn a_module_stays_main_so_multiprocessing_and_atexit_find_its_functions() {
+    let Some(python) = python() else { return };
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(
+        project.path().join("pooled.py"),
+        "import atexit, multiprocessing as mp, pickle\n\ndef square(x):\n    return x * x\n\nif __name__ == '__main__':\n    with mp.get_context('spawn').Pool(2) as pool:\n        print(pool.map(square, [1, 2, 3]))\n    atexit.register(lambda: print(len(pickle.dumps(square)) > 0))\n",
+    )
+    .unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let (mut cmd, spec) = plan(&python, &["-m", "pooled"], out.path());
+    // A free-threaded CPython (3.14t) hangs a Pool under cProfile, with `-m cProfile` too.
+    cmd.current_dir(project.path()).env("PYTHON_GIL", "1");
+    let mut child = cmd.spawn().unwrap();
+    let mut printed = String::new();
+    std::io::Read::read_to_string(&mut child.stdout.take().unwrap(), &mut printed).unwrap();
+    // The module is still `__main__` when atexit callbacks pickle its functions.
+    assert_eq!(printed.lines().collect::<Vec<_>>(), ["[1, 4, 9]", "True"]);
+    assert!(finish(child).success());
+    collect(&spec).unwrap();
+}
+
+/// What Stop does on Windows: its stop command opens the pipe the launcher waits on (a FIFO
+/// elsewhere). The profile is saved and the run interrupted; the watcher thread that waited
+/// for Stop stays out of the profile.
+#[test]
+fn the_stop_pipe_ends_the_run_and_keeps_its_profile() {
+    let Some(python) = python() else { return };
+    let out = tempfile::tempdir().unwrap();
+    let code = "print('started', flush=True)\nwhile True:\n    sum(range(1000))";
+    let c = config(&python, &["-c", code]);
+    let ProfilePrepared::Ready { mut launch, spec, .. } =
+        prepare(&fixture(), &c, out.path(), ProfileMode::Cpu, "cprofile")
+    else {
+        panic!("not ready");
+    };
+    let fifo = out.path().join("stop");
+    if launch.extras.stop_command.is_none() {
+        let at = launch.args.iter().position(|a| a == "-c").unwrap();
+        launch.args.splice(at..at, ["--stop".to_owned(), fifo.to_string_lossy().into_owned()]);
+    }
+    let mut cmd = Command::new(&launch.command);
+    cmd.args(&launch.args).current_dir(fixture()).stdout(Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+    assert_eq!(line.trim(), "started");
+    // A watcher that polled would be profiled meanwhile, charged to the program's frames.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    match &launch.extras.stop_command {
+        #[cfg(windows)]
+        Some(stop) => {
+            use std::os::windows::process::CommandExt;
+            assert!(Command::new("cmd").arg("/C").raw_arg(stop).status().unwrap().success());
+        }
+        _ => drop(std::fs::OpenOptions::new().write(true).open(&fifo).unwrap()),
+    }
+    assert!(!finish(child).success());
+    let p = collect(&spec).unwrap();
+    let names: Vec<_> = p.methods.iter().map(|m| p.frames[m.frame as usize].name.as_str()).collect();
+    assert!(names.iter().any(|n| n.contains("sum")), "{names:?}");
+    assert!(!names.iter().any(|n| ["sleep", "exists", "watch"].iter().any(|w| n.contains(w))), "{names:?}");
 }

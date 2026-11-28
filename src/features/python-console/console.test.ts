@@ -71,23 +71,71 @@ it.skipIf(!IPYTHON)("ends at exit() under IPython", () => {
   expect([text, messages.length, status]).toEqual(["", 2, 0]);
 });
 
-it.skipIf(!DJANGO)("sets Django up and imports the models like manage.py shell", () => {
-  const cwd = mkdtempSync(join(tmpdir(), "console-django-"));
-  writeFileSync(
-    join(cwd, "site_settings.py"),
-    'SECRET_KEY = "x"\nINSTALLED_APPS = ["django.contrib.contenttypes", "django.contrib.auth"]\n' +
-      'DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}}\n',
-  );
-  // As the IDE runs it: `-c`, so the working directory (manage.py's) is on sys.path.
-  const result = spawnSync(DJANGO!, ["-u", "-c", readFileSync(DRIVER, "utf8")], {
-    cwd,
-    input: request("User._meta.label, settings.SECRET_KEY"),
+it.skipIf(!DJANGO)(
+  "sets Django up and imports the models like manage.py shell",
+  () => {
+    const site = mkdtempSync(join(tmpdir(), "console-django-"));
+    writeFileSync(
+      join(site, "site_settings.py"),
+      'SECRET_KEY = "x"\nINSTALLED_APPS = ["django.contrib.contenttypes", "django.contrib.auth"]\n' +
+        'DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}}\n',
+    );
+    // As the IDE runs it: `-c`, in the project root, with manage.py's folder given apart.
+    const result = spawnSync(DJANGO!, ["-u", "-c", readFileSync(DRIVER, "utf8")], {
+      cwd: tmpdir(),
+      input: [
+        "User._meta.label",
+        "import django\ndjango.VERSION >= (6,) and settings.SECRET_KEY",
+        "x = 1",
+        "User = 'mine'",
+      ]
+        .map(request)
+        .join(""),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        OPENIDEA_DJANGO_DIR: site,
+        OPENIDEA_DJANGO_SETTINGS: "site_settings",
+        DJANGO_SETTINGS_MODULE: "",
+      },
+    });
+    const { text, messages } = stdoutParser()(result.stdout);
+    expect(result.stderr).toBe("");
+    expect(messages[0]).toMatchObject({ ready: { django: expect.stringMatching(/^\d/) } });
+    // 5.2+ imports the models; 6.0+ also `settings` (False on 5.2).
+    expect(text).toMatch(/^'auth\.User'\n('x'|False)\n/);
+    // The imports are the console's own, not the user's variables, until the user assigns one.
+    expect(variables(messages)[2]).toEqual(["x: int = 1"]);
+    expect(variables(messages)[3]).toEqual(["User: str = 'mine'", "x: int = 1"]);
+  },
+  30_000,
+);
+
+it.skipIf(!DJANGO)(
+  "uses DJANGO_SETTINGS_MODULE from the environment when manage.py names none",
+  () => {
+    const site = mkdtempSync(join(tmpdir(), "console-django-"));
+    writeFileSync(join(site, "env_settings.py"), 'SECRET_KEY = "x"\nINSTALLED_APPS = []\n');
+    const ready = (env: Record<string, string>) => {
+      const result = spawnSync(DJANGO!, ["-u", "-c", readFileSync(DRIVER, "utf8")], {
+        cwd: tmpdir(),
+        input: "",
+        encoding: "utf8",
+        env: { ...process.env, OPENIDEA_DJANGO_DIR: site, ...env },
+      });
+      return stdoutParser()(result.stdout).messages[0];
+    };
+    expect(ready({ DJANGO_SETTINGS_MODULE: "env_settings" })).toMatchObject({ ready: { django: expect.any(String) } });
+    expect(ready({ DJANGO_SETTINGS_MODULE: "" })).not.toHaveProperty("ready.django");
+  },
+  30_000,
+);
+it.skipIf(!PYTHON)("exits on SIGTERM itself, also as a container's PID 1, which ignores it without a handler", () => {
+  const result = spawnSync(PYTHON!, ["-I", "-S", "-u", DRIVER], {
+    input: request("import os, signal, time\nos.kill(os.getpid(), signal.SIGTERM)\ntime.sleep(5)"),
     encoding: "utf8",
-    env: { ...process.env, OPENIDEA_DJANGO_SETTINGS: "site_settings", DJANGO_SETTINGS_MODULE: "" },
+    timeout: 4000,
   });
-  const { text, messages } = stdoutParser()(result.stdout);
-  expect(messages[0]).toMatchObject({ ready: { django: expect.stringMatching(/^\d/) } });
-  expect(text).toContain("('auth.User', 'x')");
-  // The imports are the console's own, not the user's variables.
-  expect(variables(messages)[0]).toEqual([]);
+  expect(result.signal).toBeNull();
+  expect(result.status).toBe(143);
 });

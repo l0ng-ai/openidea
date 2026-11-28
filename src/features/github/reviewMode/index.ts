@@ -24,7 +24,7 @@ import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { registerMenuGroup } from "@/workbench/contributions";
 import { subscribePullRequestData } from "../data/pullRequest";
-import { refreshConnection, useGhRepository } from "../data/repository";
+import { refreshConnection, reviewRoot, useGhRepository } from "../data/repository";
 import { provideGithubHandler } from "../toolwindow/handlers";
 import { openPullRequest } from "../toolwindow/open";
 import { activeReviewFile, reviewModeEditorExtension, trackActiveReviewEditor } from "./editor";
@@ -43,7 +43,10 @@ function branchExtension(): () => void {
       stopData = n === null ? null : subscribePullRequestData(n, sync);
       dataFor = n;
     }
-    if (n === null || !branch) {
+    const vcs = useVcs.getState();
+    // The widget presents the selected repository's branch: only while the pull request is reviewed there.
+    const shown = reviewRoot(vcs) === (vcs.repo ?? vcs.roots[0] ?? vcs.root);
+    if (n === null || !branch || !shown) {
       dispose?.();
       dispose = null;
       return;
@@ -82,7 +85,16 @@ function branchExtension(): () => void {
     dispose?.();
     dispose = next;
   };
-  const unsubs = [useReviewBranch.subscribe(sync), useReviewModeSettings.subscribe(sync)];
+  const unsubs = [
+    useReviewBranch.subscribe(sync),
+    useReviewModeSettings.subscribe(sync),
+    useVcs.subscribe((s, prev) => {
+      if (s.repo !== prev.repo || s.roots !== prev.roots) sync();
+    }),
+    useGhRepository.subscribe((s, prev) => {
+      if (s.connection !== prev.connection || s.remotes !== prev.remotes) sync();
+    }),
+  ];
   sync();
   return () => {
     unsubs.forEach((u) => u());

@@ -203,7 +203,8 @@ function withNerdFonts(family: string): string {
  * Font from Settings › Tools › Terminal: the editor font (Editor › Font, with its
  * fallback and Typography Settings weights) or the terminal's own family / size. The line
  * height (a multiple of the cell height) is always the terminal's: the editor's roomier
- * spacing would stretch box drawing and ASCII art. The family resolves like the editor's (`monoFontFamily`), so the
+ * spacing would stretch box drawing and ASCII art. It is at least 1, xterm's minimum: a new
+ * terminal ignores a smaller value and setting one live throws. The family resolves like the editor's (`monoFontFamily`), so the
  * bundled JetBrains Mono is used where it isn't installed; `base` is the resolved
  * `--font-mono` stack, since xterm measures on a canvas and can't use `var()`.
  * The column width (a multiple of the cell width) becomes xterm's letter spacing,
@@ -226,7 +227,7 @@ export function terminalFont(
   return {
     family: withNerdFonts(chosen.family),
     size,
-    lineHeight: t.lineHeight,
+    lineHeight: Math.max(1, t.lineHeight),
     letterSpacing,
     weight,
     boldWeight,

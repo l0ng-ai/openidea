@@ -6,6 +6,9 @@ const ipc = vi.hoisted(() => ({
   exited: (_e: { run: number; code: number | null }) => {},
   started: null as null | { resolve: (id: number) => void; channel: { onmessage?: (c: OutputChunk) => void } },
   stdin: vi.fn(),
+  python: "/venv/bin/python" as string | null,
+  container: null as null | { target: string },
+  command: "",
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ Channel: class {} }));
@@ -25,10 +28,12 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     },
     commands: {
       runList: () => Promise.resolve([]),
-      sdkPythonEffective: () => ok("/venv/bin/python"),
+      sdkPythonEffective: () => ok(ipc.python),
+      sdkContainerPython: () => ok(ipc.container),
       findFilesNamed: () => ok([]),
-      runStart: (_config: unknown, channel: NonNullable<typeof ipc.started>["channel"]) =>
+      runStart: (config: { command: string }, channel: NonNullable<typeof ipc.started>["channel"]) =>
         new Promise((resolve) => {
+          ipc.command = config.command;
           ipc.started = { channel, resolve: (id) => resolve({ status: "ok", data: { id } }) };
         }),
       runStdin: (id: number, data: string) => {
@@ -54,6 +59,8 @@ beforeEach(() => {
   stopConsole();
   ipc.started = null;
   ipc.stdin.mockClear();
+  ipc.python = "/venv/bin/python";
+  ipc.container = null;
 });
 
 it("runs code sent while starting once the driver is ready, even before the start call returns", async () => {
@@ -89,5 +96,29 @@ it("reads the settings module manage.py sets", () => {
   expect(settingsModule(`    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")`)).toBe(
     "config.settings",
   );
+  expect(settingsModule(`os.environ['DJANGO_SETTINGS_MODULE'] = 'site.settings'`)).toBe("site.settings");
+  expect(
+    settingsModule(
+      `# os.environ.setdefault("DJANGO_SETTINGS_MODULE", "old")\nos.environ.setdefault("DJANGO_SETTINGS_MODULE", "new")`,
+    ),
+  ).toBe("new");
+  expect(settingsModule(`os.environ.setdefault("DJANGO_SETTINGS_MODULE", f"{SITE}.settings")`)).toBeNull();
   expect(settingsModule("print('hi')")).toBeNull();
+});
+
+it("runs in the container when the project interpreter is a Docker or Compose target's", async () => {
+  ipc.python = null;
+  ipc.container = { target: "web" };
+  execute("x = 1");
+  await settle();
+  expect(ipc.command).toBe("python");
+  expect(useConsole.getState().noInterpreter).toBe(false);
+});
+
+it("asks for an interpreter when there is none, local or in a container", async () => {
+  ipc.python = null;
+  execute("x = 1");
+  await settle();
+  expect(ipc.started).toBeNull();
+  expect(useConsole.getState().noInterpreter).toBe(true);
 });

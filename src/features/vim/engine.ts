@@ -262,14 +262,18 @@ const imeCleanup = ViewPlugin.define((view) => ({
 
 /**
  * IdeaVim's Escape: an open popup, lookup, find bar or template closes first
- * (the editor's Escape key bindings); Vim only gets Escape that nothing else
- * wanted. In Visual mode Escape always leaves Visual mode.
+ * (the editor's Escape key bindings). In Insert mode one Escape also leaves
+ * Insert mode. In Visual mode Escape always leaves Visual mode.
  */
 const escapeClosesPopupsFirst = EditorView.domEventHandlers({
   keydown(e, view) {
     if (e.key !== "Escape" || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return false;
-    if (getCM(view)?.state.vim?.visualMode) return false;
-    return runScopeHandlers(view, e, "editor");
+    const vim = getCM(view)?.state.vim;
+    if (vim?.visualMode) return false;
+    const handled = runScopeHandlers(view, e, "editor");
+    // In Insert mode Vim gets this Escape even after a popup closes.
+    if (vim?.insertMode) return false;
+    return handled;
   },
 });
 
