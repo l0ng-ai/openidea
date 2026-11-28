@@ -126,7 +126,10 @@ export async function startConsole() {
   try {
     // The interpreter the status bar shows: in a workspace, the one of the member the active file is in.
     const active = editorService().activePath();
-    const python = await call(commands.sdkPythonEffective(active ? dirname(active) : null));
+    const python =
+      (await call(commands.sdkPythonEffective(active ? dirname(active) : null))) ??
+      // A Docker / Compose interpreter: Run swaps `python` for the target's and starts the container.
+      ((await call(commands.sdkContainerPython()).catch(() => null)) ? "python" : null);
     if (mine !== generation) return;
     if (!python) {
       queue.length = 0;
