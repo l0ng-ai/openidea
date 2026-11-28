@@ -2,15 +2,59 @@
   "properties": {
     "owner": {
       "type": "string",
-      "title": "Copyright holder",
+      "title": "Copyright holder ($author)",
       "description": "Written after the year, e.g. \"ACME Inc.\"; empty for none.",
       "default": ""
     },
     "license": {
       "type": "string",
-      "title": "License (SPDX identifier)",
-      "description": "e.g. Apache-2.0, MIT, GPL-3.0-or-later; empty for no SPDX line.",
+      "title": "License, SPDX identifier ($license)",
+      "description": "e.g. Apache-2.0, MIT, GPL-3.0-or-later; empty for no SPDX line in the default header.",
       "default": "Apache-2.0"
+    },
+    "profile": {
+      "type": "string",
+      "title": "Active profile",
+      "description": "The name of a profile below. Empty, or a name that is not there: \"Copyright (c) $year $author\" and an SPDX line. Set it for This project to give a project its own profile.",
+      "default": ""
+    },
+    "profiles": {
+      "type": "array",
+      "title": "Copyright profiles",
+      "description": "Notice templates, one line per header line. Variables: $year (this year, or first-this when the existing header starts earlier), $author, $license, $project (the project folder) and $file.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "title": "Name", "default": "" },
+          "notice": { "type": "string", "title": "Notice", "multiline": true, "default": "Copyright (c) $year $author" }
+        }
+      }
+    },
+    "commentStyles": {
+      "type": "array",
+      "title": "Comment styles",
+      "description": "How files with these extensions comment, overriding the built-in table; also gives a header to file types it lacks.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "extensions": { "type": "string", "title": "Extensions", "default": "" },
+          "style": { "type": "string", "title": "Style", "enum": ["line", "block"], "default": "line" },
+          "prefix": { "type": "string", "title": "Line prefix or block start", "default": "//" },
+          "suffix": { "type": "string", "title": "Block end", "default": "*/" }
+        }
+      }
+    },
+    "excludedFolders": {
+      "type": "string",
+      "title": "Excluded folders",
+      "description": "Folder names Update Copyright and Find Files Without a Header skip inside the folder they run on (vendored code keeps its own notices), comma-separated.",
+      "default": "vendor, third_party, third-party, external"
+    },
+    "addToNewFiles": {
+      "type": "boolean",
+      "title": "Add the header to new files",
+      "description": "An empty file created in the IDE (New File) gets the active profile's header when it opens.",
+      "default": false
     },
     "reportOnOpen": {
       "type": "boolean",

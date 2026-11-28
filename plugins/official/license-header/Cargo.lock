@@ -108,6 +108,7 @@ name = "openidea-plugin-openidea-license-header"
 version = "0.1.0"
 dependencies = [
  "openidea-plugin",
+ "serde_json",
 ]
 
 [[package]]
