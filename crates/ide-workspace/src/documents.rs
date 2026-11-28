@@ -1162,14 +1162,14 @@ impl Documents {
             }
         }
         let slot = self.slot(doc)?;
-        let mut st = slot.lock();
+        let st = slot.lock();
         if st.closed {
             return Err(IdeError::not_found(format!("document {doc} is not open")));
         }
         if st.uri.is_some() || ide_vfs::is_archive_path(&st.path) {
             return Err(IdeError::invalid("only a file document can be copied to a new path"));
         }
-        Self::write_to(&mut st, &target).map(|_| true)
+        Self::write_to(&st, &target).map(|_| true)
     }
 
     pub fn has_unsaved_changes(&self) -> bool {
