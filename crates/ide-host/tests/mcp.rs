@@ -1778,45 +1778,66 @@ async fn debugger_tools_are_registered_with_their_expected_metadata() {
     assert_eq!(set.input_schema["required"], json!([]));
 }
 
-/// Answers the debugger's breakpoint requests the way the editor does: it replaces its own
-/// list, persists it, and mirrors it to the backend.
+/// Answers the debugger's breakpoint requests the way the editor does: it applies the edit to
+/// its current list and mirrors it to the backend.
 fn debugger_window(h: &Harness) {
+    use ide_core::event::McpUiRequest;
     h.host.mcp_requests.set_ready("main", true);
-    let (host, events, root) = (h.host.clone(), h.events.clone(), h.root.clone());
+    let (host, events) = (h.host.clone(), h.events.clone());
     tokio::spawn(async move {
         let mut handled = std::collections::HashSet::new();
         loop {
             let request = events.lock().unwrap().iter().find_map(|e| match e {
-                IdeEvent::McpRequest { id, request: ide_core::event::McpUiRequest::Breakpoints { files } }
-                    if !handled.contains(id) =>
+                IdeEvent::McpRequest { id, request }
+                    if !handled.contains(id)
+                        && matches!(
+                            request,
+                            McpUiRequest::SetBreakpoint { .. }
+                                | McpUiRequest::RemoveBreakpoints { .. }
+                                | McpUiRequest::FlushBreakpoints
+                        ) =>
                 {
-                    Some((*id, files.clone()))
+                    Some((*id, request.clone()))
                 }
                 _ => None,
             });
-            let Some((id, files)) = request else {
+            let Some((id, request)) = request else {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 continue;
             };
             handled.insert(id);
-            let backend = files
-                .into_iter()
-                .map(|(path, bps)| {
-                    (
-                        root.join(path),
-                        bps.into_iter()
-                            .map(|b| ide_dap::Breakpoint {
-                                line: b.line - 1,
-                                condition: b.condition,
-                                hit_condition: b.hit_condition,
-                                log_message: b.log_message,
-                                enabled: b.enabled,
-                            })
-                            .collect(),
-                    )
-                })
-                .collect();
-            host.debugger.replace_breakpoints(host.owner_window("main"), backend).await.unwrap();
+            let owner = host.owner_window("main").to_owned();
+            let (mut files, _, _) = host.debugger.breakpoints(&owner);
+            match request {
+                McpUiRequest::SetBreakpoint { path, breakpoint } => {
+                    let path = PathBuf::from(path);
+                    let line = breakpoint.line - 1;
+                    let bps = files.entry(path).or_default();
+                    bps.retain(|b| b.line != line);
+                    bps.push(ide_dap::Breakpoint {
+                        line,
+                        condition: breakpoint.condition,
+                        hit_condition: breakpoint.hit_condition,
+                        log_message: breakpoint.log_message,
+                        enabled: breakpoint.enabled,
+                    });
+                    bps.sort_by_key(|b| b.line);
+                }
+                McpUiRequest::RemoveBreakpoints { path, line } => match path {
+                    Some(path) => {
+                        if let Some(bps) = files.get_mut(&PathBuf::from(path)) {
+                            match line {
+                                Some(line) => bps.retain(|b| b.line != line - 1),
+                                None => bps.clear(),
+                            }
+                        }
+                    }
+                    None => files.clear(),
+                },
+                McpUiRequest::FlushBreakpoints => {}
+                _ => unreachable!(),
+            }
+            host.debugger.replace_breakpoints(&owner, files).await.unwrap();
             let _ = host.mcp_requests.answer("main", id, true, None);
         }
     });

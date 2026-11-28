@@ -1186,6 +1186,8 @@ export const commands = {
 	mcpRegenerateToken: () => typedError<null, IdeError>(__TAURI_INVOKE("mcp_regenerate_token")),
 	mcpReportProblems: (reset: boolean, files: FileProblems[]) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_report_problems", { reset, files })),
 	mcpRespond: (id: number, allow: boolean, error: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_respond", { id, allow, error })),
+	/**  Like `mcp_respond`, with a value for requests that ask for one (the started debug session id). */
+	mcpRespondWith: (id: number, allow: boolean, error: string | null, value: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_respond_with", { id, allow, error, value })),
 	mcpServerStatus: () => typedError<McpServerStatus, IdeError>(__TAURI_INVOKE("mcp_server_status")),
 	mcpSetFocusedEditor: (editor: {
 	path: IpcPath,
@@ -10591,12 +10593,17 @@ export type McpUiRequest = { type: "confirm"; client: string; tool: string; subj
 /**  Start a run configuration in Debug mode as the IDE's Debug action would. */
 { type: "debugConfiguration"; config: unknown } | 
 /**
- *  Replaces the window's breakpoints with the agent's list, so the editor shows and
- *  persists exactly what the agent set and mirrors it back to the backend.
+ *  Sets one line breakpoint in the window's own list, by absolute editor path. The window
+ *  applies the edit to its current list, so a user's pending edit is not overwritten.
  */
-{ type: "breakpoints"; 
-/**  Project-relative file paths to their breakpoints (1-based lines). */
-files: { [key in string]: McpBreakpoint[] } };
+{ type: "setBreakpoint"; path: string; breakpoint: McpBreakpoint } | 
+/**
+ *  Removes breakpoints from the window's own list. With no path, removes every line
+ *  breakpoint; with a path but no line, removes all of that file's breakpoints.
+ */
+{ type: "removeBreakpoints"; path: string | null; line: number | null } | 
+/**  Flushes the editor's pending breakpoint syncs before an agent reads the backend list. */
+{ type: "flushBreakpoints" };
 
 export type MemoryCategory = 
 /**  The backend and its WebView processes. */

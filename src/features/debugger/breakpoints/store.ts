@@ -253,14 +253,6 @@ export function setFileBreakpoints(path: string, list: BreakpointEntry[]) {
   setFile(path, list);
 }
 
-/** Replaces every file's list with what an MCP agent set, persisting and mirroring it to the backend. */
-export async function replaceAllBreakpoints(files: Record<string, BreakpointEntry[]>) {
-  await flushBreakpoints();
-  useBreakpoints.setState({ byFile: files, status: {} });
-  persist();
-  await replaceBreakpoints();
-}
-
 /**
  * A suspend at `path:line` hit the temporary breakpoint there: remove it, like IDEA.
  * Returns whether one was removed.

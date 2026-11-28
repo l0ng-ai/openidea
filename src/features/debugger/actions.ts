@@ -9,6 +9,7 @@ import {
   type AttachableProcess,
   type DebugSessionId,
   type LaunchConfig,
+  type McpBreakpoint,
   type RunConfig,
   type RunId,
 } from "@/platform/ipc";
@@ -25,16 +26,18 @@ import { lineHasCode } from "./breakpoints/codeLines";
 import { canPlaceBreakpoint, templateBreakpoints } from "./breakpoints/languages";
 import {
   breakpointsOf,
+  flushBreakpoints,
   removeAllBreakpoints,
+  removeBreakpoint,
   removeFileBreakpoints,
-  replaceAllBreakpoints,
+  setFileBreakpoints,
   setMuted,
   toggleBreakpoint,
   toggleTemporaryBreakpoint,
   updateBreakpoint,
   useBreakpoints,
 } from "./breakpoints/store";
-import { makeBreakpoint } from "./breakpoints/model";
+import { makeBreakpoint, sortByLine } from "./breakpoints/model";
 import {
   removeAllSpecial,
   removeSpecialIn,
@@ -99,6 +102,7 @@ import {
 } from "./state";
 import { focusedDebugView } from "./ui/focusedView";
 import { browseFocusedConsoleHistory } from "./ui/expressionHistory";
+import { setMcpDebugSession } from "@/features/mcp/session";
 import { expressionAt, showQuickValue } from "./editor/valueTooltip";
 import { mouseEvaluateTarget } from "./editor/quickEvaluate";
 import { showHint } from "@/editor/lsp/hint";
@@ -564,54 +568,80 @@ export function registerDebugActions(): () => void {
       id: "debug.mcpStart",
       title: "Debug Configuration for an Agent",
       description:
-        "Starts the configuration chosen by the MCP server's xdebug_start_debugger_session with this IDE's Debug action; throws when no session starts.",
+        "Starts the configuration chosen by the MCP server's xdebug_start_debugger_session with the IDE's Debug action; returns the started session id.",
       category: "Debug",
       hidden: true,
       when: "projectOpen",
       run: async ({ arg }) => {
         const before = new Set(Object.keys(useDebug.getState().sessions));
-        await startConfig(arg);
+        // The Run feature's Debug action runs before-launch tasks and prepares the launch;
+        // fall back to the debugger's own start when Run is not loaded.
+        if (getAction("run.debugConfig")) await executeAction("run.debugConfig", arg);
+        else await startConfig(arg);
         const name = arg && typeof arg === "object" && "name" in arg ? String(arg.name) : undefined;
         const started = Object.values(useDebug.getState().sessions).find(
           (s) => !before.has(String(s.id)) && (name == null || s.name === name),
         );
         if (!started) throw new Error("The debug session did not start");
+        setMcpDebugSession(started.id);
       },
     },
     {
-      id: "debug.mcpBreakpoints",
-      title: "Set Breakpoints for an Agent",
-      description:
-        "Replaces the editor's breakpoints with the MCP server's list, so they show in the gutter, are persisted and are mirrored back to the backend.",
+      id: "debug.mcpSetBreakpoint",
+      title: "Set a Breakpoint for an Agent",
+      description: "Applies one breakpoint edit to the editor's current list and mirrors it to the backend.",
       category: "Debug",
       hidden: true,
       when: "projectOpen",
       run: async ({ arg }) => {
-        const files = (arg ?? {}) as Record<
-          string,
-          Array<{
-            line: number;
-            enabled: boolean;
-            condition: string | null;
-            hitCondition: string | null;
-            logMessage: string | null;
-          }>
-        >;
-        const byFile = Object.fromEntries(
-          Object.entries(files).map(([path, list]) => [
-            path,
-            list.map((b) =>
-              makeBreakpoint(Math.max(0, b.line - 1), {
-                enabled: b.enabled !== false,
-                condition: b.condition ?? null,
-                hitCondition: b.hitCondition ?? null,
-                logMessage: b.logMessage ?? null,
-              }),
-            ),
+        const { path, breakpoint } = arg as { path: string; breakpoint: McpBreakpoint };
+        await flushBreakpoints();
+        const line = Math.max(0, breakpoint.line - 1);
+        const list = breakpointsOf(path).filter((b) => b.line !== line);
+        setFileBreakpoints(
+          path,
+          sortByLine([
+            ...list,
+            makeBreakpoint(line, {
+              enabled: breakpoint.enabled !== false,
+              condition: breakpoint.condition ?? null,
+              hitCondition: breakpoint.hitCondition ?? null,
+              logMessage: breakpoint.logMessage ?? null,
+              // A log message makes a logpoint (DAP never suspends for it).
+              suspend: breakpoint.logMessage ? false : undefined,
+            }),
           ]),
         );
-        await replaceAllBreakpoints(byFile);
+        await flushBreakpoints();
       },
+    },
+    {
+      id: "debug.mcpRemoveBreakpoints",
+      title: "Remove Breakpoints for an Agent",
+      description: "Removes one line, a file's breakpoints or all of them from the editor's current list.",
+      category: "Debug",
+      hidden: true,
+      when: "projectOpen",
+      run: async ({ arg }) => {
+        const { path, line } = arg as { path: string | null; line: number | null };
+        await flushBreakpoints();
+        if (path == null) removeAllBreakpoints();
+        else if (line == null) removeFileBreakpoints(path);
+        else {
+          const found = breakpointsOf(path).find((b) => b.line === line - 1);
+          if (found) removeBreakpoint(path, found.id);
+        }
+        await flushBreakpoints();
+      },
+    },
+    {
+      id: "debug.mcpFlushBreakpoints",
+      title: "Flush Agent Breakpoints",
+      description: "Mirrors the editor's pending breakpoint edits to the backend before an agent reads them.",
+      category: "Debug",
+      hidden: true,
+      when: "projectOpen",
+      run: () => flushBreakpoints(),
     },
     {
       id: "debug.attach",

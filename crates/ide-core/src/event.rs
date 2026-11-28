@@ -48,12 +48,20 @@ pub enum McpUiRequest {
         #[specta(type = specta_typescript::Unknown)]
         config: serde_json::Value,
     },
-    /// Replaces the window's breakpoints with the agent's list, so the editor shows and
-    /// persists exactly what the agent set and mirrors it back to the backend.
-    Breakpoints {
-        /// Project-relative file paths to their breakpoints (1-based lines).
-        files: BTreeMap<String, Vec<McpBreakpoint>>,
+    /// Sets one line breakpoint in the window's own list, by absolute editor path. The window
+    /// applies the edit to its current list, so a user's pending edit is not overwritten.
+    SetBreakpoint {
+        path: String,
+        breakpoint: McpBreakpoint,
     },
+    /// Removes breakpoints from the window's own list. With no path, removes every line
+    /// breakpoint; with a path but no line, removes all of that file's breakpoints.
+    RemoveBreakpoints {
+        path: Option<String>,
+        line: Option<u32>,
+    },
+    /// Flushes the editor's pending breakpoint syncs before an agent reads the backend list.
+    FlushBreakpoints,
 }
 
 /// A line breakpoint in an MCP request, with a 1-based line like every other MCP tool.

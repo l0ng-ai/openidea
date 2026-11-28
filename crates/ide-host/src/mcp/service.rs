@@ -299,6 +299,19 @@ pub fn mcp_respond(host: &Host, window: &str, id: u32, allow: bool, error: Optio
     host.mcp_requests.answer(host.owner_window(window), id, allow, error)
 }
 
+/// Like `mcp_respond`, with a value for requests that ask for one (the started debug session id).
+#[command(trust = trusted)]
+pub fn mcp_respond_with(
+    host: &Host,
+    window: &str,
+    id: u32,
+    allow: bool,
+    error: Option<String>,
+    value: Option<String>,
+) -> IdeResult<()> {
+    host.mcp_requests.answer_with(host.owner_window(window), id, allow, error, value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,6 +336,7 @@ ide_command::domain!(
     mcp_background_projects,
     mcp_regenerate_token,
     mcp_respond,
+    mcp_respond_with,
     mcp_server_status,
     mcp_ui_ready,
     mcp_unload_background_project,

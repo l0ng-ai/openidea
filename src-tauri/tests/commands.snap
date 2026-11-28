@@ -440,6 +440,7 @@ mcp_background_projects                      always             project_host bin
 mcp_regenerate_token                         outside_restricted project_host bindings sync
 mcp_report_problems                          trusted            project_host bindings sync
 mcp_respond                                  trusted            project_host bindings sync
+mcp_respond_with                             trusted            project_host bindings sync
 mcp_server_status                            outside_restricted project_host bindings sync
 mcp_set_focused_editor                       trusted            project_host bindings sync
 mcp_set_open_editors                         trusted            project_host bindings sync

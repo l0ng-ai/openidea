@@ -245,12 +245,17 @@ for a background project without one). Program output goes to the Debug console,
             let cwd = config.cwd.as_deref().map(|p| call.root().join(p)).unwrap_or_else(|| call.root().to_path_buf());
             let detail = confirmation_detail(&config, &call.display(&cwd), &stored_env, &overrides, &configs);
             call.confirm(&config.name, Some(detail)).await?;
-            let known: Vec<DebugSessionId> = sessions(&call)?.iter().map(|s| s.id).collect();
             let config_value = serde_json::to_value(&config).map_err(|e| IdeError::invalid(e.to_string()))?;
             let limit = super::run::timeout(&call, 60_000)?;
-            tokio::time::timeout(limit, call.ask(McpUiRequest::DebugConfiguration { config: config_value }))
-                .await
-                .map_err(|_| IdeError::invalid("timed out starting the debug session"))??;
+            let answer =
+                tokio::time::timeout(limit, call.ask_value(McpUiRequest::DebugConfiguration { config: config_value }))
+                    .await
+                    .map_err(|_| IdeError::invalid("timed out starting the debug session"))??;
+            let id = answer
+                .as_deref()
+                .and_then(|value| value.parse::<u32>().ok())
+                .map(DebugSessionId)
+                .ok_or_else(|| IdeError::invalid("the debug window did not report a session id"))?;
             let grace = Duration::from_millis(call.opt_i64("graceWaitMs")?.unwrap_or(2_000).max(0) as u64);
             if !grace.is_zero() {
                 tokio::select! {
@@ -259,17 +264,12 @@ for a background project without one). Program output goes to the Debug console,
                 }
             }
             let all = sessions(&call)?;
-            let fresh: Vec<_> = all.iter().filter(|s| !known.contains(&s.id)).collect();
-            let started = fresh
-                .iter()
-                .find(|s| s.name == config.name)
-                .or_else(|| fresh.first())
-                .ok_or_else(|| IdeError::invalid("the debug session did not start"))?;
+            let started = session_of(&all, id);
             Output::json(json!({
-                "sessionId": public_id(&all, started),
-                "id": started.id.0,
-                "name": started.name,
-                "status": session_status(&call, started.id),
+                "sessionId": started.map(|s| public_id(&all, s)),
+                "id": id.0,
+                "name": started.map(|s| s.name.as_str()).unwrap_or(config.name.as_str()),
+                "status": session_status(&call, id),
                 "runConfigurationName": config.name,
             }))
         },
@@ -422,39 +422,44 @@ fn parse_line_bp_id(id: &str) -> IdeResult<(String, u32)> {
     Ok((file.to_owned(), line - 1))
 }
 
-/// The window's breakpoints under the project-relative paths the editor uses.
+/// The editor's key for a breakpoint file: absolute, `/`-separated on every OS.
+fn editor_path(path: &Path) -> String {
+    ide_core::ipc_path::to_ipc(path)
+}
+
+/// The window's breakpoints under the keys its editor store uses.
 fn editor_breakpoints(call: &Call) -> BTreeMap<String, Vec<Breakpoint>> {
     let (lines, _, _) = ops::debug::debug_breakpoints(&call.host(), call.window());
-    lines.into_iter().map(|(path, bps)| (call.display(&path), bps)).collect()
+    lines.into_iter().map(|(path, bps)| (editor_path(&path), bps)).collect()
 }
 
-async fn ask_breakpoints(call: &Call, files: BTreeMap<String, Vec<Breakpoint>>) -> IdeResult<()> {
-    let files = files
-        .into_iter()
-        .map(|(path, bps)| {
-            (
-                path,
-                bps.into_iter()
-                    .map(|bp| ide_core::event::McpBreakpoint {
-                        line: bp.line + 1,
-                        enabled: bp.enabled,
-                        condition: bp.condition,
-                        hit_condition: bp.hit_condition,
-                        log_message: bp.log_message,
-                    })
-                    .collect(),
-            )
-        })
-        .collect();
-    call.ask(McpUiRequest::Breakpoints { files }).await
+async fn ask_set(call: &Call, path: &str, bp: &Breakpoint) -> IdeResult<()> {
+    call.ask(McpUiRequest::SetBreakpoint {
+        path: path.to_owned(),
+        breakpoint: ide_core::event::McpBreakpoint {
+            line: bp.line + 1,
+            enabled: bp.enabled,
+            condition: bp.condition.clone(),
+            hit_condition: bp.hit_condition.clone(),
+            log_message: bp.log_message.clone(),
+        },
+    })
+    .await
 }
 
-/// Last verification states of a project-relative file (aligned with its breakpoint list).
-fn verification(call: &Call, display: &str) -> Vec<ide_dap::BreakpointState> {
+async fn ask_remove(call: &Call, path: Option<String>, line: Option<u32>) -> IdeResult<()> {
+    call.ask(McpUiRequest::RemoveBreakpoints { path, line }).await
+}
+
+/// Last verification states of a breakpoint file, keyed by its editor path.
+fn verification(call: &Call, ui_path: &str) -> Vec<ide_dap::BreakpointState> {
     let host = call.host();
     let (lines, _, _) = ops::debug::debug_breakpoints(&host, call.window());
-    let path =
-        lines.keys().find(|path| call.display(path) == display).cloned().unwrap_or_else(|| call.root().join(display));
+    let path = lines
+        .keys()
+        .find(|path| editor_path(path) == ui_path)
+        .cloned()
+        .unwrap_or_else(|| std::path::PathBuf::from(ui_path));
     ops::debug::debug_breakpoint_states(&host, path).unwrap_or_default()
 }
 
@@ -485,6 +490,9 @@ optional `message` from the last verification. Function and data breakpoints are
 `function:` and `data:`. Call this before RESUME to check that an enabled breakpoint will be hit. Breakpoints set \
 with `xdebug_set_breakpoint` are the same ones the editor shows and persists.",
         |call| async move {
+            // The editor mirrors every change to the backend synchronously on request, so
+            // flushing its pending debounced syncs makes this the same list the editor shows.
+            call.ask(McpUiRequest::FlushBreakpoints).await?;
             let file_filter = call.opt_str("filePath")?;
             let filter = match file_filter.as_deref() {
                 Some(file) => Some(call.display(&call.resolve_inside(file)?)),
@@ -497,7 +505,7 @@ with `xdebug_set_breakpoint` are the same ones the editor shows and persists.",
                 if filter.as_ref().is_some_and(|f| f != &file) {
                     continue;
                 }
-                let states = verification(&call, &file);
+                let states = verification(&call, &editor_path(&path));
                 for bp in bps {
                     out.push(line_bp_json(&file, &bp, &states));
                 }
@@ -582,26 +590,25 @@ suspends the thread and does not implement one-shot or stack-logging breakpoints
 persists with the project; this needs a project window.",
         |call| async move {
             let _guard = BREAKPOINT_EDITS.lock().await;
-            let mut files = editor_breakpoints(&call);
-            let id = call.opt_str("breakpointId")?;
-            let (path, line0) = if let Some(id) = id {
+            let files = editor_breakpoints(&call);
+            let (path, line0, relocate_from) = if let Some(id) = call.opt_str("breakpointId")? {
                 if id.starts_with("function:") || id.starts_with("data:") {
                     return Err(IdeError::invalid("function and data breakpoints are managed in the IDE"));
                 }
                 let (old_file, old_line) = parse_line_bp_id(&id)?;
                 let (new_file, new_line) = (call.opt_str("filePath")?, call.opt_i64("line")?);
-                let (new_file, line0) = match (new_file, new_line) {
+                let (file, line0) = match (new_file, new_line) {
                     (None, None) => (old_file.clone(), old_line),
                     (file, Some(n)) if n >= 1 => (file.unwrap_or_else(|| old_file.clone()), (n - 1) as u32),
                     (Some(file), None) => (file, old_line),
                     _ => return Err(IdeError::invalid("line must be >= 1")),
                 };
-                if new_file != old_file || line0 != old_line {
-                    if let Some(bps) = files.get_mut(&old_file) {
-                        bps.retain(|b| b.line != old_line);
-                    }
-                }
-                (call.resolve_inside(&new_file)?, line0)
+                let relocate_from = if file != old_file || line0 != old_line {
+                    Some((call.resolve_inside(&old_file)?, old_line))
+                } else {
+                    None
+                };
+                (call.resolve_inside(&file)?, line0, relocate_from)
             } else {
                 let file = call.str("filePath")?;
                 let line = call
@@ -612,19 +619,16 @@ persists with the project; this needs a project window.",
                 if line < 1 {
                     return Err(IdeError::invalid("line must be >= 1"));
                 }
-                (call.resolve_inside(&file)?, line as u32 - 1)
+                (call.resolve_inside(&file)?, line as u32 - 1, None)
             };
+            if let Some((old_path, old_line)) = relocate_from {
+                ask_remove(&call, Some(editor_path(&old_path)), Some(old_line + 1)).await?;
+            }
+            let ui_path = editor_path(&path);
             let file = call.display(&path);
-            let bps = files.entry(file.clone()).or_default();
-            let index = bps.iter().position(|b| b.line == line0);
-            let mut bp = index.and_then(|i| bps.get(i).cloned()).unwrap_or(Breakpoint {
-                line: line0,
-                condition: None,
-                hit_condition: None,
-                log_message: None,
-                enabled: true,
-            });
-            bp.line = line0;
+            let mut bp = files.get(&ui_path).and_then(|bps| bps.iter().find(|b| b.line == line0)).cloned().unwrap_or(
+                Breakpoint { line: line0, condition: None, hit_condition: None, log_message: None, enabled: true },
+            );
             apply_optional_string(&call, "condition", &mut bp.condition)?;
             apply_optional_string(&call, "hitCondition", &mut bp.hit_condition)?;
             apply_optional_bool(&call, "enabled", &mut bp.enabled)?;
@@ -637,12 +641,8 @@ persists with the project; this needs a project window.",
             } else {
                 bp.log_message = None;
             }
-            match index {
-                Some(i) => bps[i] = bp,
-                None => bps.push(bp),
-            }
-            ask_breakpoints(&call, files).await?;
-            let state = verification(&call, &file).into_iter().find(|s| s.line == line0);
+            ask_set(&call, &ui_path, &bp).await?;
+            let state = verification(&call, &ui_path).into_iter().find(|s| s.line == line0);
             Output::json(json!({
                 "id": line_bp_id(&file, line0),
                 "file": file,
@@ -689,38 +689,26 @@ for compatibility. Function and data breakpoints are managed in the IDE; this ne
             if id.as_deref().is_some_and(|id| id.starts_with("function:") || id.starts_with("data:")) {
                 return Err(IdeError::invalid("function and data breakpoints are managed in the IDE"));
             }
-            let file_filter = call.opt_str("filePath")?;
-            let line = call.opt_i64("line")?.filter(|n| *n > 0).map(|n| n as u32 - 1);
-            let mut files = editor_breakpoints(&call);
-            let mut count = 0;
-            if let Some(id) = id {
+            let files = editor_breakpoints(&call);
+            let (path, line, count) = if let Some(id) = id {
                 let (file, line0) = parse_line_bp_id(&id)?;
-                if let Some(bps) = files.get_mut(&file) {
-                    let before = bps.len();
-                    bps.retain(|b| b.line != line0);
-                    count += before - bps.len();
-                }
-            } else if let Some(file) = file_filter {
-                let file = call.display(&call.resolve_inside(&file)?);
-                if let Some(bps) = files.get_mut(&file) {
-                    match line {
-                        Some(line0) => {
-                            let before = bps.len();
-                            bps.retain(|b| b.line != line0);
-                            count += before - bps.len();
-                        }
-                        None => {
-                            count += bps.len();
-                            bps.clear();
-                        }
-                    }
-                }
+                let path = call.resolve_inside(&file)?;
+                let count =
+                    files.get(&editor_path(&path)).map_or(0, |bps| bps.iter().filter(|b| b.line == line0).count());
+                (Some(path), Some(line0 + 1), count)
+            } else if let Some(file) = call.opt_str("filePath")? {
+                let path = call.resolve_inside(&file)?;
+                let line = call.opt_i64("line")?.filter(|n| *n > 0).map(|n| n as u32 - 1);
+                let count = files.get(&editor_path(&path)).map_or(0, |bps| match line {
+                    Some(line0) => bps.iter().filter(|b| b.line == line0).count(),
+                    None => bps.len(),
+                });
+                (Some(path), line.map(|n| n + 1), count)
             } else {
-                count = files.values().map(Vec::len).sum();
-                files.clear();
-            }
+                (None, None, files.values().map(Vec::len).sum())
+            };
             if count > 0 {
-                ask_breakpoints(&call, files).await?;
+                ask_remove(&call, path.as_ref().map(|p| editor_path(p)), line).await?;
             }
             Output::json(json!({ "removed": count > 0, "count": count }))
         },
@@ -929,7 +917,7 @@ fn value_tree<'a>(
                 .into_iter()
                 .take(MAX_CHILDREN)
             {
-                if budget.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1)).is_err() {
+                if budget.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1)).is_err() {
                     break;
                 }
                 children.push(value_tree(call, session, child, depth - 1, budget).await?);

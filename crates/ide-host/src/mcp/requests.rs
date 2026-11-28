@@ -15,6 +15,7 @@ struct State {
 struct Pending {
     window: String,
     answer: oneshot::Sender<Result<bool, String>>,
+    value: oneshot::Sender<Option<String>>,
 }
 impl Requests {
     pub fn set_ready(&self, window: &str, ready: bool) {
@@ -30,11 +31,23 @@ impl Requests {
         state.pending.retain(|_, p| p.window != window);
     }
     pub fn answer(&self, window: &str, id: u32, allow: bool, error: Option<String>) -> IdeResult<()> {
+        self.answer_with(window, id, allow, error, None)
+    }
+    /// A request can also answer with a value, e.g. the id of the debug session it started.
+    pub fn answer_with(
+        &self,
+        window: &str,
+        id: u32,
+        allow: bool,
+        error: Option<String>,
+        value: Option<String>,
+    ) -> IdeResult<()> {
         let mut state = self.0.lock();
         if !state.pending.get(&id).is_some_and(|p| p.window == window) {
             return Err(IdeError::invalid("MCP request expired or belongs to another window"));
         }
         let pending = state.pending.remove(&id).unwrap();
+        let _ = pending.value.send(value);
         let _ = pending.answer.send(error.map_or(Ok(allow), Err));
         Ok(())
     }
@@ -44,14 +57,23 @@ impl Requests {
     }
 
     pub(super) async fn ask(&self, call: &Call, request: McpUiRequest) -> IdeResult<()> {
+        self.ask_inner(call, request).await.map(|_| ())
+    }
+
+    pub(super) async fn ask_value(&self, call: &Call, request: McpUiRequest) -> IdeResult<Option<String>> {
+        self.ask_inner(call, request).await
+    }
+
+    async fn ask_inner(&self, call: &Call, request: McpUiRequest) -> IdeResult<Option<String>> {
         let id = super::tool::request_id().0;
         let (tx, rx) = oneshot::channel();
+        let (value_tx, value_rx) = oneshot::channel();
         {
             let mut state = self.0.lock();
             if !state.ready.contains(call.window()) {
                 return Err(IdeError::unavailable("MCP request denied: no project window is available"));
             }
-            state.pending.insert(id, Pending { window: call.window.clone(), answer: tx });
+            state.pending.insert(id, Pending { window: call.window.clone(), answer: tx, value: value_tx });
         }
         struct Close<'a>(&'a Requests, &'a Call, u32);
         impl Drop for Close<'_> {
@@ -68,7 +90,7 @@ impl Requests {
             _ = call.cancel.cancelled() => return Err(IdeError::cancelled()),
         };
         match result {
-            Ok(true) => Ok(()),
+            Ok(true) => Ok(value_rx.await.unwrap_or(None)),
             Ok(false) => Err(IdeError::invalid("MCP request denied by the user")),
             Err(message) => Err(IdeError::unavailable(message)),
         }
