@@ -176,11 +176,15 @@ pub struct BlockRevisionSummary {
     pub email: String,
     pub time_ms: f64,
     pub summary: String,
+    /// Line ranges `git log -L` followed in this commit, so its diff can be read starting
+    /// here instead of re-walking from the anchor; empty for diff-less commits (merges),
+    /// None when the path cannot be passed back to Git (not UTF-8).
+    pub ranges: Option<Vec<BlockSpotRange>>,
 }
 
 /// Where a selection history row's diff comes from: the line ranges `git log -L` followed
 /// in that commit, so its diff can be read starting there instead of walking down from the
-/// anchor. Listed in the same order as the revisions.
+/// anchor.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct BlockRevisionSpot {
@@ -1352,8 +1356,9 @@ impl Repo {
         let _scope = self.execution_scope();
         block_history::block_history(self, path, current_text, lines, encoding, cancel)
     }
-    /// History for Selection summary: revision headers plus the initial diff batch
-    /// (or all diffs in one pass when the selection or history is small).
+    /// History for Selection summary: streams `git log -L` once, returning the initial diff
+    /// batch (or all diffs while within the inline byte budget) plus headers and spots for
+    /// any remaining revisions.
     pub fn block_history_summary(
         &self,
         path: &Path,
@@ -1377,18 +1382,6 @@ impl Repo {
     ) -> IdeResult<Vec<BlockRevision>> {
         let _scope = self.execution_scope();
         block_history::revisions(self, path, anchor, index, commits, encoding.into(), cancel)
-    }
-    /// Where each revision's diff starts (see [`BlockRevisionSpot`]), newest first, in
-    /// chunks as Git walks the history.
-    pub fn block_history_spots(
-        &self,
-        path: &Path,
-        anchor: &BlockHistoryAnchor,
-        cancel: &CancellationToken,
-        on_spots: impl FnMut(Vec<BlockRevisionSpot>) + Send,
-    ) -> IdeResult<()> {
-        let _scope = self.execution_scope();
-        block_history::spots(self, path, anchor, cancel, on_spots)
     }
     /// Diffs for up to four revisions from their spots, each read starting at its own
     /// commit: the same diffs as [`Self::block_history_revisions`] in constant time.

@@ -12,21 +12,14 @@ use std::path::Path;
 /// Separates commits in the log output; fields of the header are separated by `\x1f`.
 const RECORD: u8 = 0x1e;
 const DIFF_BATCH: usize = 4;
-/// Spots sent per chunk while the background patch walk runs.
-const SPOT_CHUNK: usize = 256;
-/// Selections up to this size (HEAD bytes) fetch all diffs in one `git log -L` call:
-/// formatting small patches costs less than running a second git process.
-const INLINE_BLOCK_BYTES: usize = 2048;
-/// Repositories with at most this many commits reachable from HEAD and a block up to
-/// [`INLINE_SHORT_HISTORY_BLOCK_BYTES`] also finish in one call without a second spawn.
-const INLINE_SHORT_HISTORY_COMMITS: usize = 16;
-const INLINE_SHORT_HISTORY_BLOCK_BYTES: usize = 64 * 1024;
+/// Keeps additional diffs inline in [`summary`] while total diff text stays under this
+/// budget, so small selections and short histories finish in one reply without follow-up reads.
+const INLINE_DIFF_BYTES: usize = 512 * 1024;
 const FORMAT: &str = "--format=%x1e%H%x1f%h%x1f%an%x1f%ae%x1f%at%x1f%s";
 
 struct AnchorInfo {
     anchor: BlockHistoryAnchor,
     head: String,
-    inline: bool,
 }
 
 pub(crate) fn block_history(
@@ -38,12 +31,31 @@ pub(crate) fn block_history(
     cancel: &CancellationToken,
 ) -> IdeResult<BlockHistory> {
     let rel = r.rel_path(path)?;
-    let Some(info) = anchor(r, &rel, current_text, lines, encoding, cancel)? else {
+    let head = {
+        let repo = r.gix()?;
+        crate::repo::blob_at(&repo, &rel, "HEAD")?
+    };
+    let Some(head) = head else {
         return Ok(BlockHistory { head_lines: None, head: None, revisions: Vec::new() });
     };
-    let out = run(r, &rel, &info.anchor, &[], cancel)?;
+    let head = decode(&head, encoding);
+    let current = match current_text {
+        Some(text) => text.to_owned(),
+        None => decode(&std::fs::read(r.abs_path(&rel))?, encoding).into_owned(),
+    };
+    let Some((start, end)) = head_range(&crate::diff::line_hunks(&head, &current), lines) else {
+        return Ok(BlockHistory { head_lines: None, head: None, revisions: Vec::new() });
+    };
+    let range = format!("-L{},{}:{rel}", start + 1, end + 1);
+    let args = ["log", "--no-color", "--no-ext-diff", "--no-textconv", FORMAT, &range, "HEAD"];
+    let out = cli::run_cancellable(r.root(), &args, cancel)?;
+    // The newest row's block can't stand in for HEAD's: a merge row has none.
+    let mut block = String::new();
+    for line in head.lines().skip(start as usize).take((end - start) as usize + 1) {
+        push_line(&mut block, line);
+    }
     let revisions = parse_log(&out.stdout, encoding);
-    Ok(BlockHistory { head_lines: Some(info.anchor.lines), head: Some(info.head), revisions })
+    Ok(BlockHistory { head_lines: Some((start, end)), head: Some(block), revisions })
 }
 
 fn anchor(
@@ -60,8 +72,13 @@ fn anchor(
     let repo = r.gix()?;
     let Some(id) = repo.head().map_err(crate::repo::gx)?.id() else { return Ok(None) };
     let oid = id.detach();
-    let commit_obj = repo.find_object(oid).map_err(crate::repo::gx)?.peel_to_commit().map_err(crate::repo::gx)?;
-    let tree = commit_obj.tree().map_err(crate::repo::gx)?;
+    let tree = repo
+        .find_object(oid)
+        .map_err(crate::repo::gx)?
+        .peel_to_commit()
+        .map_err(crate::repo::gx)?
+        .tree()
+        .map_err(crate::repo::gx)?;
     let Some(entry) = tree.lookup_entry_by_path(Path::new(rel)).map_err(crate::repo::gx)? else {
         return Ok(None);
     };
@@ -85,92 +102,11 @@ fn anchor(
     };
     let Some((start, end)) = head_range(&hunks, lines) else { return Ok(None) };
     // The newest row's block can't stand in for HEAD's: a merge row has none.
-    let block = head_block(&head, start, end);
-    let inline = block.len() <= INLINE_BLOCK_BYTES
-        || (block.len() <= INLINE_SHORT_HISTORY_BLOCK_BYTES && short_history(&repo, commit_obj));
-    Ok(Some(AnchorInfo {
-        anchor: BlockHistoryAnchor { commit: oid.to_string(), lines: (start, end) },
-        head: block,
-        inline,
-    }))
-}
-
-fn head_block(head: &str, start: u32, end: u32) -> String {
     let mut block = String::new();
-    if !head.contains('\r') {
-        let mut from = 0usize;
-        if start > 0 {
-            let mut skipped = 0u32;
-            for (i, b) in head.bytes().enumerate() {
-                if b == b'\n' {
-                    skipped += 1;
-                    if skipped == start {
-                        from = i + 1;
-                        break;
-                    }
-                }
-            }
-            if skipped < start {
-                return block;
-            }
-        }
-        if from < head.len() {
-            let take = end - start + 1;
-            let mut count = 0u32;
-            let mut to = head.len();
-            for (i, b) in head[from..].bytes().enumerate() {
-                if b == b'\n' {
-                    count += 1;
-                    if count == take {
-                        to = from + i + 1;
-                        break;
-                    }
-                }
-            }
-            let slice = &head[from..to];
-            block.reserve(slice.len() + usize::from(!slice.ends_with('\n')));
-            block.push_str(slice);
-            if !slice.ends_with('\n') {
-                block.push('\n');
-            }
-        }
-        return block;
-    }
     for line in head.lines().skip(start as usize).take((end - start) as usize + 1) {
         push_line(&mut block, line);
     }
-    block
-}
-
-fn short_history<'a>(repo: &'a gix::Repository, mut commit: gix::Commit<'a>) -> bool {
-    for _ in 0..INLINE_SHORT_HISTORY_COMMITS {
-        let next_id = {
-            let mut parents = commit.parent_ids();
-            let Some(first) = parents.next() else {
-                return true;
-            };
-            if parents.next().is_some() {
-                return false;
-            }
-            first.detach()
-        };
-        let Ok(next) = repo.find_commit(next_id) else {
-            return false;
-        };
-        commit = next;
-    }
-    false
-}
-
-fn run(
-    r: &Repo,
-    rel: &str,
-    anchor: &BlockHistoryAnchor,
-    options: &[&str],
-    cancel: &CancellationToken,
-) -> IdeResult<cli::Output> {
-    let range = anchor_range(rel, anchor);
-    cli::run_cancellable(r.root(), &log_args(options, &[range], &anchor.commit), cancel)
+    Ok(Some(AnchorInfo { anchor: BlockHistoryAnchor { commit: oid.to_string(), lines: (start, end) }, head: block }))
 }
 
 fn anchor_range(rel: &str, anchor: &BlockHistoryAnchor) -> String {
@@ -182,10 +118,13 @@ fn log_args<'a>(options: &[&'a str], ranges: &'a [String], commit: &'a str) -> V
     let mut args = vec!["log", "--no-color", "--no-ext-diff", "--no-textconv", FORMAT];
     args.extend_from_slice(options);
     args.extend(ranges.iter().map(String::as_str));
-    args.extend(["--end-of-options", commit]);
+    args.push(commit);
     args
 }
 
+/// Streams one `git log -L` pass: keeps the initial diff batch (and any further diffs that
+/// fit within [`INLINE_DIFF_BYTES`]) inline, and keeps only each remaining commit's header
+/// and spot ranges so deep rows can be read directly via [`revisions_at`].
 pub(crate) fn summary(
     r: &Repo,
     path: &Path,
@@ -198,29 +137,125 @@ pub(crate) fn summary(
     let Some(info) = anchor(r, &rel, current_text, lines, encoding, cancel)? else {
         return Ok(BlockHistorySummary { anchor: None, head: None, diffs: Vec::new(), rest: Vec::new() });
     };
-    if info.inline {
-        let out = run(r, &rel, &info.anchor, &[], cancel)?;
-        let diffs = parse_log(&out.stdout, encoding);
-        return Ok(BlockHistorySummary { anchor: Some(info.anchor), head: Some(info.head), diffs, rest: Vec::new() });
-    }
-    // Git can emit the list without patches while another process prepares
-    // the first few diffs. Neither query depends on the other's output.
-    let limit = format!("-n{DIFF_BATCH}");
-    let (out, patches) = std::thread::scope(|scope| {
-        let patches = scope.spawn(|| {
-            let _execution = r.execution_scope();
-            run(r, &rel, &info.anchor, &[&limit], cancel)
-        });
-        let out = run(r, &rel, &info.anchor, &["--no-patch"], cancel);
-        let patches = patches.join().map_err(|_| IdeError::internal("selection history diff query panicked"))?;
-        Ok::<_, IdeError>((out?, patches?))
-    })?;
-    let mut summaries = records(&out.stdout).filter_map(|record| parse_summary(split_header(record).0));
-    let head_ids: Vec<String> = summaries.by_ref().take(DIFF_BATCH).map(|row| row.id).collect();
-    let rest: Vec<_> = summaries.collect();
-    let diffs = parse_log(&patches.stdout, encoding);
-    check_diffs(&diffs, head_ids.iter().map(String::as_str))?;
+    let range = anchor_range(&rel, &info.anchor);
+    let args = log_args(&[], std::slice::from_ref(&range), &info.anchor.commit);
+    let mut reader = SummaryReader::new(encoding);
+    cli::run_cancellable_lines(r.root(), &args, cancel, &mut |line| reader.line(line))?;
+    let (diffs, rest) = reader.finish();
     Ok(BlockHistorySummary { anchor: Some(info.anchor), head: Some(info.head), diffs, rest })
+}
+
+struct SummaryReader {
+    encoding: TextEncoding,
+    diffs: Vec<BlockRevision>,
+    rest: Vec<BlockRevisionSummary>,
+    inline_bytes: usize,
+    keep_inline: bool,
+    raw: Vec<u8>,
+    in_inline: bool,
+    pending: Option<BlockRevisionSummary>,
+    section: Section,
+}
+
+/// Where the spot reader is in a commit's diff.
+#[derive(Default)]
+enum Section {
+    /// The commit header, before any file.
+    #[default]
+    Header,
+    /// A file's header lines, with its `+++` path once read (None: not readable).
+    File(Option<Option<String>>),
+    /// A file's hunks.
+    Hunks(Option<String>),
+}
+
+impl SummaryReader {
+    fn new(encoding: TextEncoding) -> Self {
+        Self {
+            encoding,
+            diffs: Vec::new(),
+            rest: Vec::new(),
+            inline_bytes: 0,
+            keep_inline: true,
+            raw: Vec::new(),
+            in_inline: false,
+            pending: None,
+            section: Section::Header,
+        }
+    }
+
+    fn flush_inline(&mut self) {
+        if !self.in_inline {
+            return;
+        }
+        if let Some(rev) = parse_record(&self.raw, self.encoding) {
+            self.inline_bytes += rev.before.len() + rev.after.len();
+            self.diffs.push(rev);
+        }
+        self.raw.clear();
+        self.in_inline = false;
+        if self.diffs.len() >= DIFF_BATCH && self.inline_bytes >= INLINE_DIFF_BYTES {
+            self.keep_inline = false;
+            self.raw = Vec::new();
+        }
+    }
+
+    fn line(&mut self, line: &[u8]) {
+        if let Some(header) = line.strip_prefix(&[RECORD]) {
+            if self.in_inline {
+                self.flush_inline();
+            } else if let Some(summary) = self.pending.take() {
+                self.rest.push(summary);
+            }
+            if self.keep_inline {
+                self.raw.extend_from_slice(header);
+                self.in_inline = true;
+            } else {
+                let header = header.strip_suffix(b"\n").unwrap_or(header);
+                self.pending = parse_summary(header);
+                self.section = Section::Header;
+            }
+            return;
+        }
+        if self.in_inline {
+            self.raw.extend_from_slice(line);
+            return;
+        }
+        // Almost all lines in a patch are context/add/del lines inside a hunk.
+        if matches!(self.section, Section::Hunks(_)) && matches!(line.first(), Some(b' ' | b'+' | b'-' | b'\\') | None)
+        {
+            return;
+        }
+        let Some(summary) = self.pending.as_mut() else {
+            return;
+        };
+        let line = line.strip_suffix(b"\n").unwrap_or(line);
+        if line.starts_with(b"diff --git ") {
+            self.section = Section::File(None);
+        } else if let (Section::File(path @ None), Some(name)) = (&mut self.section, line.strip_prefix(b"+++ ")) {
+            *path = Some(unquote_path(name));
+        } else if let Some(hunk) = line.strip_prefix(b"@@ ") {
+            let path = match std::mem::take(&mut self.section) {
+                Section::File(path) => path.flatten(),
+                Section::Hunks(path) => path,
+                Section::Header => None,
+            };
+            match (&mut summary.ranges, path.clone().zip(post_image(hunk))) {
+                (Some(ranges), Some((path, (start, end)))) => ranges.push(BlockSpotRange { path, start, end }),
+                (ranges, _) => *ranges = None,
+            }
+            self.section = Section::Hunks(path);
+        }
+    }
+
+    fn finish(mut self) -> (Vec<BlockRevision>, Vec<BlockRevisionSummary>) {
+        if self.in_inline {
+            self.flush_inline();
+        } else if let Some(summary) = self.pending.take() {
+            self.rest.push(summary);
+        }
+        (self.diffs, self.rest)
+    }
 }
 
 pub(crate) fn revisions(
@@ -240,7 +275,9 @@ pub(crate) fn revisions(
     let ids: Vec<_> = commits.iter().map(String::as_str).collect();
     let skip = format!("--skip={index}");
     let limit = format!("-n{}", ids.len());
-    let out = run(r, &r.rel_path(path)?, anchor, &[&limit, &skip], cancel)?;
+    let range = anchor_range(&r.rel_path(path)?, anchor);
+    let args = log_args(&[&limit, &skip], std::slice::from_ref(&range), &anchor.commit);
+    let out = cli::run_cancellable(r.root(), &args, cancel)?;
     let diffs = parse_log(&out.stdout, encoding);
     check_diffs(&diffs, ids.iter().copied())?;
     Ok(diffs)
@@ -251,91 +288,6 @@ fn check_diffs<'a>(diffs: &[BlockRevision], ids: impl Iterator<Item = &'a str>) 
         return Err(IdeError::not_found("selection history revisions no longer match"));
     }
     Ok(())
-}
-
-/// Every revision's spot, in the order of the revision list (the same walk, with patches).
-/// Only the diff headers are kept: the patches of a large block add up to gigabytes.
-pub(crate) fn spots(
-    r: &Repo,
-    path: &Path,
-    anchor: &BlockHistoryAnchor,
-    cancel: &CancellationToken,
-    mut on_spots: impl FnMut(Vec<BlockRevisionSpot>) + Send,
-) -> IdeResult<()> {
-    gix::ObjectId::from_hex(anchor.commit.as_bytes())
-        .map_err(|_| IdeError::invalid("invalid selection history anchor"))?;
-    let range = anchor_range(&r.rel_path(path)?, anchor);
-    let args = log_args(&[], std::slice::from_ref(&range), &anchor.commit);
-    let mut reader = SpotReader::default();
-    let mut chunk = Vec::new();
-    cli::run_cancellable_lines(r.root(), &args, cancel, &mut |line| {
-        if let Some(spot) = reader.line(line) {
-            chunk.push(spot);
-            if chunk.len() == SPOT_CHUNK {
-                on_spots(std::mem::take(&mut chunk));
-            }
-        }
-    })?;
-    chunk.extend(reader.finish());
-    if !chunk.is_empty() {
-        on_spots(chunk);
-    }
-    Ok(())
-}
-
-/// Reads spots from `git log -L` output line by line.
-#[derive(Default)]
-struct SpotReader {
-    spot: Option<BlockRevisionSpot>,
-    section: Section,
-}
-
-/// Where the reader is in a commit's diff.
-#[derive(Default)]
-enum Section {
-    /// The commit header, before any file.
-    #[default]
-    Header,
-    /// A file's header lines, with its `+++` path once read (None: not readable).
-    File(Option<Option<String>>),
-    /// A file's hunks.
-    Hunks(Option<String>),
-}
-
-impl SpotReader {
-    /// Feeds one line; returns the previous commit's spot when `line` starts the next one.
-    fn line(&mut self, line: &[u8]) -> Option<BlockRevisionSpot> {
-        let line = line.strip_suffix(b"\n").unwrap_or(line);
-        if let Some(header) = line.strip_prefix(&[RECORD]) {
-            let id = header.split(|b| *b == 0x1f).next().unwrap_or_default();
-            let next = BlockRevisionSpot { id: String::from_utf8_lossy(id).into_owned(), ranges: Some(Vec::new()) };
-            self.section = Section::Header;
-            return self.spot.replace(next);
-        }
-        let spot = self.spot.as_mut()?;
-        // Patch lines start with ' ', '+', '-' or '\\', so these prefixes only match headers.
-        if line.starts_with(b"diff --git ") {
-            self.section = Section::File(None);
-        } else if let (Section::File(path @ None), Some(name)) = (&mut self.section, line.strip_prefix(b"+++ ")) {
-            *path = Some(unquote_path(name));
-        } else if let Some(hunk) = line.strip_prefix(b"@@ ") {
-            let path = match std::mem::take(&mut self.section) {
-                Section::File(path) => path.flatten(),
-                Section::Hunks(path) => path,
-                Section::Header => None,
-            };
-            match (&mut spot.ranges, path.clone().zip(post_image(hunk))) {
-                (Some(ranges), Some((path, (start, end)))) => ranges.push(BlockSpotRange { path, start, end }),
-                (ranges, _) => *ranges = None,
-            }
-            self.section = Section::Hunks(path);
-        }
-        None
-    }
-
-    fn finish(&mut self) -> Option<BlockRevisionSpot> {
-        self.spot.take()
-    }
 }
 
 /// The new side of a hunk header (`-12,3 +14,5 @@ …` → lines 14..=18); None for an empty side.
@@ -499,16 +451,11 @@ pub(crate) fn head_range(hunks: &[LineHunk], (start, end): (u32, u32)) -> Option
 
 /// Commits of `git log -L` output, newest first.
 pub(crate) fn parse_log(stdout: &[u8], encoding: TextEncoding) -> Vec<BlockRevision> {
-    records(stdout).filter_map(|record| parse_record(record, encoding)).collect()
-}
-
-fn records(stdout: &[u8]) -> impl Iterator<Item = &[u8]> {
-    stdout.split(|b| *b == RECORD).filter(|r| !r.is_empty())
-}
-
-fn split_header(record: &[u8]) -> (&[u8], &[u8]) {
-    let newline = record.iter().position(|b| *b == b'\n').unwrap_or(record.len());
-    (&record[..newline], record.get(newline + 1..).unwrap_or_default())
+    stdout
+        .split(|b| *b == RECORD)
+        .filter(|r| !r.is_empty())
+        .filter_map(|record| parse_record(record, encoding))
+        .collect()
 }
 
 fn parse_summary(header: &[u8]) -> Option<BlockRevisionSummary> {
@@ -521,13 +468,21 @@ fn parse_summary(header: &[u8]) -> Option<BlockRevisionSummary> {
         email: fields.next()?.to_owned(),
         time_ms: fields.next()?.trim().parse::<f64>().ok()? * 1000.0,
         summary: fields.next().unwrap_or_default().to_owned(),
+        ranges: Some(Vec::new()),
     })
 }
 
 fn parse_record(record: &[u8], encoding: TextEncoding) -> Option<BlockRevision> {
-    let (header, patch) = split_header(record);
-    let BlockRevisionSummary { id, short_id, author, email, time_ms, summary } = parse_summary(header)?;
-    let patch = decode(patch, encoding);
+    let newline = record.iter().position(|b| *b == b'\n').unwrap_or(record.len());
+    let header = String::from_utf8_lossy(&record[..newline]);
+    let mut fields = header.split('\x1f');
+    let id = fields.next()?.to_owned();
+    let short_id = fields.next()?.to_owned();
+    let author = fields.next()?.to_owned();
+    let email = fields.next()?.to_owned();
+    let time_ms = fields.next()?.trim().parse::<f64>().ok()? * 1000.0;
+    let summary = fields.next().unwrap_or_default().to_owned();
+    let patch = decode(record.get(newline + 1..).unwrap_or_default(), encoding);
     let mut revision = BlockRevision {
         id,
         short_id,
@@ -542,27 +497,14 @@ fn parse_record(record: &[u8], encoding: TextEncoding) -> Option<BlockRevision> 
         after_line: 0,
     };
     let mut in_hunk = false;
-    let base_ptr = patch.as_ptr() as usize;
     for line in patch.lines() {
         if let Some(path) = line.strip_prefix("+++ ") {
             revision.path = unquote(path).trim_start_matches("b/").to_owned();
         } else if let Some(ranges) = line.strip_prefix("@@ ") {
-            let mut parts = ranges.split_whitespace();
-            let before_side = parts.next().unwrap_or_default();
-            let after_side = parts.next().unwrap_or_default();
-            revision.before_line = hunk_start(before_side);
-            revision.after_line = hunk_start(after_side);
-            if !in_hunk {
-                let consumed = (line.as_ptr() as usize).saturating_sub(base_ptr) + line.len();
-                let remaining = patch.len().saturating_sub(consumed);
-                if hunk_count(before_side) > 0 {
-                    revision.before.reserve(remaining);
-                }
-                if hunk_count(after_side) > 0 {
-                    revision.after.reserve(remaining);
-                }
-            }
             in_hunk = true;
+            let mut parts = ranges.split_whitespace();
+            revision.before_line = hunk_start(parts.next().unwrap_or_default());
+            revision.after_line = hunk_start(parts.next().unwrap_or_default());
         } else if in_hunk {
             match line.as_bytes().first() {
                 Some(b' ') => {
@@ -582,11 +524,6 @@ fn parse_record(record: &[u8], encoding: TextEncoding) -> Option<BlockRevision> 
 fn hunk_start(side: &str) -> u32 {
     let n = side.trim_start_matches(['-', '+']).split(',').next().unwrap_or_default();
     n.parse::<u32>().unwrap_or(0).saturating_sub(1)
-}
-
-fn hunk_count(side: &str) -> u32 {
-    let side = side.trim_start_matches(['-', '+']);
-    side.split_once(',').map_or(1, |(_, count)| count.parse::<u32>().unwrap_or(1))
 }
 
 fn push_line(block: &mut String, line: &str) {
@@ -694,16 +631,5 @@ mod tests {
         assert_eq!(unquote_path(br#""b/\303\274.txt""#).as_deref(), Some("\u{fc}.txt"));
         assert_eq!(unquote_path(br#""b/\377.txt""#), None);
         assert_eq!(unquote_path(b"/dev/null"), None);
-    }
-
-    #[test]
-    fn slices_head_block_across_line_endings_and_bounds() {
-        assert_eq!(head_block("a\nb\nc\n", 1, 2), "b\nc\n");
-        assert_eq!(head_block("a\nb\nc", 1, 2), "b\nc\n");
-        assert_eq!(head_block("a\n\nc\n", 1, 1), "\n");
-        assert_eq!(head_block("a\nb\n", 0, 10), "a\nb\n");
-        assert_eq!(head_block("a\nb\n", 5, 6), "");
-        assert_eq!(head_block("a\r\nb\r\nc\r\n", 1, 2), "b\nc\n");
-        assert_eq!(head_block("", 0, 0), "");
     }
 }

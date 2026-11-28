@@ -5,7 +5,6 @@
  * uncommitted edits of the block come first as Local Changes.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Channel } from "@tauri-apps/api/core";
 import type {
   BlockHistorySummary,
   BlockRevision,
@@ -33,7 +32,8 @@ export type HistoryRow =
 const HEAD = "HEAD";
 const COLUMNS = ["Revision", "Date", "Author", "Message"] as const;
 const DIFF_BATCH = 4;
-const DIFF_CACHE_SIZE = DIFF_BATCH * 3;
+const PREFETCH_AHEAD = 2;
+const DIFF_CACHE_SIZE = 64;
 const NO_ROWS: HistoryRow[] = [];
 
 /** Lines `from..=to` of `text`, each ending with a line break (as Git prints a block). */
@@ -48,7 +48,11 @@ export function blockOf(text: string, [from, to]: readonly [number, number]): st
 /** The rows of the list: Local Changes when the block differs from HEAD, then the commits. */
 export function historyRows(history: BlockHistorySummary, current: string): HistoryRow[] {
   const rows: HistoryRow[] = [
-    ...history.diffs.map((revision, index) => ({ kind: "revision" as const, revision, index })),
+    ...history.diffs.map((revision, index) => ({
+      kind: "revision" as const,
+      revision: { ...revision, ranges: null },
+      index,
+    })),
     ...history.rest.map((revision, offset) => ({
       kind: "revision" as const,
       revision,
@@ -149,74 +153,129 @@ export function SelectionHistoryEditor({ input }: { input: EditorInput }) {
   );
   const current = rows[Math.min(active, rows.length - 1)];
 
-  // Where each revision's diff starts, filled in while Git walks the history again with
-  // patches: a row it has reached reads its diff in constant time instead of re-walking
-  // the history down to it (`--skip`). Kept out of state: arriving spots change nothing shown.
-  const spots = useRef<{ history: BlockHistorySummary; spots: BlockRevisionSpot[] } | null>(null);
-  useEffect(() => {
-    const anchor = history?.anchor;
-    if (!anchor || history.rest.length === 0) return;
-    const session = useRemote.getState().session;
-    if (
-      session &&
-      (!session.commands.includes("vcs_block_history_spots") ||
-        !session.commands.includes("vcs_block_history_revisions_at"))
-    )
-      return;
-    const found = { history, spots: [] as BlockRevisionSpot[] };
-    spots.current = found;
-    return historyRequest(
-      (request) => {
-        const channel = new Channel<BlockRevisionSpot[]>();
-        channel.onmessage = (chunk) => found.spots.push(...chunk);
-        return call(commands.vcsBlockHistorySpots(request, data.path, anchor, channel));
-      },
-      () => {},
-      // Rows keep loading their diffs the slower way.
-      () => {},
-    );
-  }, [history, data.path]);
-
   const [diffs, setDiffs] = useState<{ history: BlockHistorySummary; revisions: Map<string, BlockRevision> } | null>(
     null,
   );
   const [diffError, setDiffError] = useState<{ history: BlockHistorySummary; row: HistoryRow; message: string } | null>(
     null,
   );
+  const cached = diffs?.history === history ? diffs.revisions : undefined;
   const revision =
     current?.kind === "revision" && history
-      ? (history.diffs[current.index] ??
-        (diffs?.history === history ? diffs.revisions.get(current.revision.id) : undefined))
+      ? (history.diffs[current.index] ?? cached?.get(current.revision.id))
       : undefined;
 
+  const inFlight = useRef<{
+    history: BlockHistorySummary;
+    start: number;
+    end: number;
+    urgentRow: HistoryRow | null;
+    cancel: () => void;
+  } | null>(null);
+
+  useEffect(
+    () => () => {
+      inFlight.current?.cancel();
+      inFlight.current = null;
+    },
+    [],
+  );
+
   useEffect(() => {
-    if (!history?.anchor || current?.kind !== "revision" || revision) return;
+    const cancelInFlight = () => {
+      inFlight.current?.cancel();
+      inFlight.current = null;
+    };
+    if (!history?.anchor || history.rest.length === 0 || current?.kind !== "revision") {
+      cancelInFlight();
+      return;
+    }
     const { anchor } = history;
-    const index = current.index;
-    const offset = index - history.diffs.length;
-    const commits = history.rest.slice(offset, offset + DIFF_BATCH).map((row) => row.id);
-    const found = spots.current?.history === history ? spots.current.spots.slice(index, index + DIFF_BATCH) : [];
-    const at =
-      found.length === commits.length && found.every((spot, i) => spot.id === commits[i] && spot.ranges) ? found : null;
-    return historyRequest(
+    const total = history.diffs.length + history.rest.length;
+    const hasDiff = (index: number) => {
+      if (index < history.diffs.length) return true;
+      const row = history.rest[index - history.diffs.length];
+      return row != null && cached?.has(row.id) === true;
+    };
+
+    let target: number | null = null;
+    let urgentRow: HistoryRow | null = null;
+    if (!hasDiff(current.index)) {
+      target = current.index;
+      urgentRow = current;
+    } else {
+      const limit = Math.min(total - 1, current.index + PREFETCH_AHEAD);
+      for (let i = current.index + 1; i <= limit; i++) {
+        if (!hasDiff(i)) {
+          target = i;
+          break;
+        }
+      }
+    }
+
+    const activeFetch = inFlight.current;
+    if (
+      activeFetch &&
+      activeFetch.history === history &&
+      target !== null &&
+      target >= activeFetch.start &&
+      target < activeFetch.end
+    ) {
+      activeFetch.urgentRow = urgentRow;
+      return;
+    }
+
+    cancelInFlight();
+    if (target === null) return;
+
+    const offset = target - history.diffs.length;
+    const slice = history.rest.slice(offset, offset + DIFF_BATCH);
+    if (slice.length === 0) return;
+
+    const session = useRemote.getState().session;
+    const canReadAt = !session || session.commands.includes("vcs_block_history_revisions_at");
+    const spots: BlockRevisionSpot[] | null =
+      canReadAt && slice.every((row) => row.ranges !== null)
+        ? slice.map((row) => ({ id: row.id, ranges: row.ranges }))
+        : null;
+    const commits = slice.map((row) => row.id);
+    const start = target;
+    const end = target + slice.length;
+
+    const entry = {
+      history,
+      start,
+      end,
+      urgentRow,
+      cancel: () => {},
+    };
+    entry.cancel = historyRequest(
       (request) =>
         call(
-          at
-            ? commands.vcsBlockHistoryRevisionsAt(request, data.path, at)
-            : commands.vcsBlockHistoryRevisions(request, data.path, anchor, index, commits),
+          spots
+            ? commands.vcsBlockHistoryRevisionsAt(request, data.path, spots)
+            : commands.vcsBlockHistoryRevisions(request, data.path, anchor, start, commits),
         ),
       (batch) => {
+        if (inFlight.current === entry) inFlight.current = null;
         setDiffError(null);
         setDiffs((previous) => {
           const revisions = new Map(previous?.history === history ? previous.revisions : []);
-          for (const diff of batch) revisions.set(diff.id, diff);
+          for (const diff of batch) {
+            revisions.delete(diff.id);
+            revisions.set(diff.id, diff);
+          }
           while (revisions.size > DIFF_CACHE_SIZE) revisions.delete(revisions.keys().next().value!);
           return { history, revisions };
         });
       },
-      (message) => setDiffError({ history, row: current, message }),
+      (message) => {
+        if (inFlight.current === entry) inFlight.current = null;
+        if (entry.urgentRow) setDiffError({ history, row: entry.urgentRow, message });
+      },
     );
-  }, [history, current, revision, data.path]);
+    inFlight.current = entry;
+  }, [history, current, cached, data.path]);
 
   const [from, to] = data.lines;
   const range = `${baseName(data.path)}:${from + 1}-${to + 1}`;

@@ -815,31 +815,6 @@ pub async fn vcs_block_history_revisions(
     result
 }
 
-/// Every revision's spot, in chunks while Git walks the history (see
-/// [`Repo::block_history_spots`]). Cancelling `request` stops Git.
-#[command(trust = always)]
-pub async fn vcs_block_history_spots(
-    host: &Host,
-    window: &str,
-    request: RequestId,
-    path: PathBuf,
-    anchor: BlockHistoryAnchor,
-    on_spots: Channel<Vec<BlockRevisionSpot>>,
-) -> IdeResult<()> {
-    let project = host.project(window)?;
-    let cancel = host.begin_project_read_request(window, request);
-    let result = blocking(move || {
-        project.with_repo_of(&path, |r| {
-            r.block_history_spots(&path, &anchor, &cancel, |spots| {
-                let _ = on_spots.send(spots);
-            })
-        })
-    })
-    .await;
-    host.end_request(request);
-    result
-}
-
 /// The diffs of up to four revisions read from their spots ([`Repo::block_history_revisions_at`]).
 #[command(trust = always)]
 pub async fn vcs_block_history_revisions_at(
@@ -3273,7 +3248,6 @@ ide_command::domain!(
     vcs_block_history,
     vcs_block_history_summary,
     vcs_block_history_revisions,
-    vcs_block_history_spots,
     vcs_block_history_revisions_at,
     vcs_branch_info,
     vcs_check_incoming,

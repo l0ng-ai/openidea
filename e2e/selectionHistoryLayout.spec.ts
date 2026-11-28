@@ -52,13 +52,18 @@ test("selection history keeps a full-width diff above a keyboard-resizable revis
           email,
           timeMs,
           summary,
+          ranges: [{ path, start: 2, end: 2 }],
         })),
       });
       window.__ipc.handlers.vcs_block_history_revisions = (args: unknown) => {
         const { commits } = args as { commits: string[] };
         return revisions.filter((r) => commits.includes(r.id));
       };
-      window.__ipc.handlers.vcs_block_history_spots = () => null;
+      window.__ipc.handlers.vcs_block_history_revisions_at = (args: unknown) => {
+        const { spots } = args as { spots: { id: string }[] };
+        const ids = new Set(spots.map((s) => s.id));
+        return revisions.filter((r) => ids.has(r.id));
+      };
       const actions = "/src/platform/actions.ts";
       await (await import(/* @vite-ignore */ actions)).executeAction("vcs.showHistoryForSelection");
     },

@@ -1,12 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { EditorState } from "@codemirror/state";
-import type { BlockHistorySummary, BlockRevision, BlockRevisionSpot, BlockRevisionSummary } from "@/bindings";
+import type {
+  BlockHistorySummary,
+  BlockRevision,
+  BlockRevisionSpot,
+  BlockRevisionSummary,
+  BlockSpotRange,
+} from "@/bindings";
 
 const vcsBlockHistory = vi.fn();
 const vcsBlockHistorySummary = vi.fn();
 const vcsBlockHistoryRevisions = vi.fn();
-const vcsBlockHistorySpots = vi.fn();
 const vcsBlockHistoryRevisionsAt = vi.fn();
 const remoteSession = vi.fn<() => { commands: string[] } | null>(() => null);
 const cancelRequest = vi.fn();
@@ -20,19 +25,12 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       ...real.commands,
       vcsBlockHistorySummary: (...args: unknown[]) => vcsBlockHistorySummary(...args),
       vcsBlockHistoryRevisions: (...args: unknown[]) => vcsBlockHistoryRevisions(...args),
-      vcsBlockHistorySpots: (...args: unknown[]) => vcsBlockHistorySpots(...args),
       vcsBlockHistoryRevisionsAt: (...args: unknown[]) => vcsBlockHistoryRevisionsAt(...args),
       vcsBlockHistory: (...args: unknown[]) => vcsBlockHistory(...args),
       cancelRequest: (id: number) => cancelRequest(id),
     },
   };
 });
-vi.mock("@tauri-apps/api/core", async (original) => ({
-  ...(await original<typeof import("@tauri-apps/api/core")>()),
-  Channel: class {
-    onmessage: (message: unknown) => void = () => {};
-  },
-}));
 vi.mock("@/platform/remote", () => ({ useRemote: { getState: () => ({ session: remoteSession() }) } }));
 vi.mock("../DiffEditor", () => ({
   DiffEditor: ({
@@ -63,13 +61,24 @@ const revision = (id: string, summary: string, before: string, after: string): B
   afterLine: 1,
 });
 
-const summaryOf = ({ id, shortId, author, email, timeMs, summary }: BlockRevision): BlockRevisionSummary => ({
+const defaultRanges: BlockSpotRange[] = [{ path: "src/a.txt", start: 2, end: 3 }];
+
+const summaryOf = (
+  { id, shortId, author, email, timeMs, summary }: BlockRevision,
+  ranges: BlockSpotRange[] | null = defaultRanges,
+): BlockRevisionSummary => ({
   id,
   shortId,
   author,
   email,
   timeMs,
   summary,
+  ranges,
+});
+
+const spotOf = (r: BlockRevision, ranges: BlockSpotRange[] | null = defaultRanges): BlockRevisionSpot => ({
+  id: r.id,
+  ranges,
 });
 
 const TEXT = "one\nTWO\nTHREE\nfour\n";
@@ -92,7 +101,6 @@ beforeEach(() => {
   vcsBlockHistory.mockReset();
   vcsBlockHistorySummary.mockReset();
   vcsBlockHistoryRevisions.mockReset();
-  vcsBlockHistorySpots.mockReset().mockReturnValue(new Promise(() => {}));
   vcsBlockHistoryRevisionsAt.mockReset();
   remoteSession.mockReset().mockReturnValue(null);
   cancelRequest.mockReset().mockReturnValue(ok(null));
@@ -146,7 +154,7 @@ describe("rows", () => {
 describe("History for Selection tab", () => {
   it("asks for the selected lines of the editor's text and diffs each commit's block", async () => {
     vcsBlockHistorySummary.mockReturnValue(ok(history));
-    vcsBlockHistoryRevisions.mockReturnValue(ok([second]));
+    vcsBlockHistoryRevisionsAt.mockReturnValue(ok([second]));
     open({ path: "/p/src/a.txt", lines: [1, 2], text: "one\nTWO\nTHREE!\nfour\n" });
     await screen.findByText("Shout three");
     const [request, path, text, lines] = vcsBlockHistorySummary.mock.calls[0]!;
@@ -164,27 +172,34 @@ describe("History for Selection tab", () => {
         .getAllByRole("gridcell")
         .map((cell) => cell.textContent),
     ).toEqual(["bbbbbbb", expect.any(String), "Ada", "Shout two"]);
-    expect(vcsBlockHistoryRevisions).toHaveBeenCalledWith(expect.any(Number), "/p/src/a.txt", anchor, 1, [second.id]);
+    expect(vcsBlockHistoryRevisionsAt).toHaveBeenCalledWith(expect.any(Number), "/p/src/a.txt", [spotOf(second)]);
     fireEvent.click(screen.getByText("Shout three"));
     fireEvent.click(screen.getByText("Shout two"));
-    expect(vcsBlockHistoryRevisions).toHaveBeenCalledTimes(1);
+    expect(vcsBlockHistoryRevisionsAt).toHaveBeenCalledTimes(1);
   });
 
   it("ignores an older response after the user changes revision", async () => {
-    vcsBlockHistorySummary.mockReturnValue(ok(history));
+    const deep = ["c", "d", "e", "f"].map((id, i) => revision(id, `Edit ${i}`, `${id}\n`, `${id}!\n`));
+    const long: BlockHistorySummary = {
+      anchor,
+      head: "TWO\nTHREE\n",
+      diffs: [first, second, ...deep.slice(0, 2)],
+      rest: deep.slice(2).map((r) => summaryOf(r)),
+    };
+    vcsBlockHistorySummary.mockReturnValue(ok(long));
     let complete!: (result: { status: string; data: BlockRevision[] }) => void;
-    vcsBlockHistoryRevisions.mockReturnValue(
+    vcsBlockHistoryRevisionsAt.mockReturnValue(
       new Promise((resolve) => {
         complete = resolve;
       }),
     );
     open({ path: "/p/src/a.txt", lines: [1, 2], text: TEXT });
-    await screen.findByText("Shout two");
-    fireEvent.click(screen.getByText("Shout two"));
-    await waitFor(() => expect(vcsBlockHistoryRevisions).toHaveBeenCalledTimes(1));
+    await screen.findByText("Edit 3");
+    fireEvent.click(screen.getByText("Edit 3"));
+    await waitFor(() => expect(vcsBlockHistoryRevisionsAt).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByText("Shout three"));
-    expect(cancelRequest).toHaveBeenCalledWith(vcsBlockHistoryRevisions.mock.calls[0]![0]);
-    await act(async () => complete({ status: "ok", data: [second] }));
+    expect(cancelRequest).toHaveBeenCalledWith(vcsBlockHistoryRevisionsAt.mock.calls[0]![0]);
+    await act(async () => complete({ status: "ok", data: [deep[3]!] }));
     expect(screen.getByTestId("diff").textContent).toBe("aaaaaaa^: TWO\nthree\n| aaaaaaa: TWO\nTHREE\n");
   });
 
@@ -195,7 +210,7 @@ describe("History for Selection tab", () => {
     fireEvent.click(await screen.findByText("Shout two"));
     expect(screen.getByTestId("diff").textContent).toContain("bbbbbbb: TWO");
     expect(vcsBlockHistoryRevisions).not.toHaveBeenCalled();
-    expect(vcsBlockHistorySpots).not.toHaveBeenCalled();
+    expect(vcsBlockHistoryRevisionsAt).not.toHaveBeenCalled();
   });
 
   it("says why there is nothing to show", async () => {
@@ -223,74 +238,45 @@ describe("History for Selection tab", () => {
     expect(cancelRequest).toHaveBeenCalledWith(vcsBlockHistorySummary.mock.calls.at(-1)![0]);
   });
 
-  describe("deep rows", () => {
+  describe("deep rows and prefetching", () => {
     const deep = ["c", "d", "e", "f"].map((id, i) => revision(id, `Edit ${i}`, `${id}\n`, `${id}!\n`));
     const all = [first, second, ...deep];
     const long: BlockHistorySummary = {
       anchor,
       head: "TWO\nTHREE\n",
       diffs: [first, second, ...deep.slice(0, 2)],
-      rest: deep.slice(2).map(summaryOf),
+      rest: deep.slice(2).map((r) => summaryOf(r)),
     };
-    const spotOf = (r: BlockRevision): BlockRevisionSpot => ({
-      id: r.id,
-      ranges: [{ path: "src/a.txt", start: 2, end: 3 }],
-    });
 
-    it("reads a deep row's diff from its spot once Git has walked past it", async () => {
+    it("reads a deep row's diff immediately from its spot in the summary", async () => {
       vcsBlockHistorySummary.mockReturnValue(ok(long));
-      let send!: (spots: BlockRevisionSpot[]) => void;
-      vcsBlockHistorySpots.mockImplementation((_request, _path, _anchor, channel) => {
-        send = (spots) => channel.onmessage(spots);
-        return new Promise(() => {});
-      });
       vcsBlockHistoryRevisionsAt.mockReturnValue(ok(deep.slice(3)));
       open({ path: "/p/src/a.txt", lines: [1, 2], text: TEXT });
       await screen.findByText("Edit 3");
-      await waitFor(() =>
-        expect(vcsBlockHistorySpots).toHaveBeenCalledWith(
-          expect.any(Number),
-          "/p/src/a.txt",
-          anchor,
-          expect.anything(),
-        ),
-      );
-      act(() => send(all.slice(0, 3).map(spotOf)));
-      act(() => send(all.slice(3).map(spotOf)));
       fireEvent.click(screen.getByText("Edit 3"));
       await waitFor(() => expect(screen.getByTestId("diff").textContent).toBe("fffffff^: f\n| fffffff: f!\n"));
-      expect(vcsBlockHistoryRevisionsAt).toHaveBeenCalledWith(
-        expect.any(Number),
-        "/p/src/a.txt",
-        all.slice(5).map(spotOf),
-      );
+      expect(vcsBlockHistoryRevisionsAt).toHaveBeenCalledWith(expect.any(Number), "/p/src/a.txt", [spotOf(deep[3]!)]);
       expect(vcsBlockHistoryRevisions).not.toHaveBeenCalled();
     });
 
-    it("walks down to rows Git has not reached yet, and to rows whose spot is unusable", async () => {
-      vcsBlockHistorySummary.mockReturnValue(ok(long));
-      let send!: (spots: BlockRevisionSpot[]) => void;
-      vcsBlockHistorySpots.mockImplementation((_request, _path, _anchor, channel) => {
-        send = (spots) => channel.onmessage(spots);
-        return new Promise(() => {});
-      });
+    it("falls back to --skip for rows whose spot is unusable", async () => {
+      const unusable: BlockHistorySummary = {
+        ...long,
+        rest: [summaryOf(deep[2]!), summaryOf(deep[3]!, null)],
+      };
+      vcsBlockHistorySummary.mockReturnValue(ok(unusable));
       vcsBlockHistoryRevisions.mockReturnValue(ok(deep.slice(3)));
-      const pending = open({ path: "/p/src/a.txt", lines: [1, 2], text: TEXT });
+      open({ path: "/p/src/a.txt", lines: [1, 2], text: TEXT });
       await screen.findByText("Edit 3");
-      await waitFor(() => expect(vcsBlockHistorySpots).toHaveBeenCalled());
-      act(() => send([...all.slice(0, 5).map(spotOf), { id: deep[3]!.id, ranges: null }]));
       fireEvent.click(screen.getByText("Edit 3"));
       await waitFor(() => expect(screen.getByTestId("diff").textContent).toBe("fffffff^: f\n| fffffff: f!\n"));
       expect(vcsBlockHistoryRevisions).toHaveBeenCalledWith(expect.any(Number), "/p/src/a.txt", anchor, 5, [
         deep[3]!.id,
       ]);
       expect(vcsBlockHistoryRevisionsAt).not.toHaveBeenCalled();
-      // Closing the tab stops the walk.
-      pending.unmount();
-      expect(cancelRequest).toHaveBeenCalledWith(vcsBlockHistorySpots.mock.calls[0]![0]);
     });
 
-    it("does not ask a server without spots for them", async () => {
+    it("falls back to --skip when a remote server lacks vcs_block_history_revisions_at", async () => {
       remoteSession.mockImplementation(() => ({
         commands: ["vcs_block_history", "vcs_block_history_summary", "vcs_block_history_revisions"],
       }));
@@ -299,17 +285,73 @@ describe("History for Selection tab", () => {
       open({ path: "/p/src/a.txt", lines: [1, 2], text: TEXT });
       fireEvent.click(await screen.findByText("Edit 3"));
       await waitFor(() => expect(vcsBlockHistoryRevisions).toHaveBeenCalled());
-      expect(vcsBlockHistorySpots).not.toHaveBeenCalled();
+      expect(vcsBlockHistoryRevisionsAt).not.toHaveBeenCalled();
     });
 
-    it("does not start spots when all diffs arrived with the summary", async () => {
+    it("does not fetch when all diffs arrived with the summary", async () => {
       vcsBlockHistorySummary.mockReturnValue(ok({ anchor, head: "TWO\nTHREE\n", diffs: all, rest: [] }));
       open({ path: "/p/src/a.txt", lines: [1, 2], text: TEXT });
       fireEvent.click(await screen.findByText("Edit 3"));
       await waitFor(() => expect(screen.getByTestId("diff").textContent).toBe("fffffff^: f\n| fffffff: f!\n"));
-      expect(vcsBlockHistorySpots).not.toHaveBeenCalled();
       expect(vcsBlockHistoryRevisions).not.toHaveBeenCalled();
       expect(vcsBlockHistoryRevisionsAt).not.toHaveBeenCalled();
+    });
+
+    it("prefetches ahead while stepping down so no spinner appears, and keeps visited rows cached", async () => {
+      const makeRev = (i: number): BlockRevision => ({
+        id: i.toString(16).padStart(40, "0"),
+        shortId: i.toString(16).padStart(7, "0"),
+        author: "Ada",
+        email: "ada@example.com",
+        timeMs: 1_700_000_000_000 - i * 1000,
+        summary: `Commit ${i}`,
+        path: "src/a.txt",
+        before: `before ${i}\n`,
+        after: `after ${i}\n`,
+        beforeLine: 1,
+        afterLine: 1,
+      });
+      const revs = Array.from({ length: 20 }, (_, i) => makeRev(i));
+      const byId = new Map(revs.map((r) => [r.id, r]));
+      const paged: BlockHistorySummary = {
+        anchor,
+        head: "after 0\n",
+        diffs: revs.slice(0, 4),
+        rest: revs.slice(4).map((r) => summaryOf(r)),
+      };
+      vcsBlockHistorySummary.mockReturnValue(ok(paged));
+      vcsBlockHistoryRevisionsAt.mockImplementation((_req, _path, spots: BlockRevisionSpot[]) =>
+        ok(spots.map((s) => byId.get(s.id)!)),
+      );
+
+      open({ path: "/p/src/a.txt", lines: [0, 0], text: "after 0\n" });
+      await screen.findByText("Commit 0");
+      expect(screen.getByTestId("diff").textContent).toContain("after 0");
+      expect(vcsBlockHistoryRevisionsAt).not.toHaveBeenCalled();
+
+      // Step row-by-row through all 20 rows: prefetching fills each next batch before we land on it,
+      // so the diff is immediately visible on every step without ever showing a spinner.
+      const stepTo = async (i: number): Promise<void> => {
+        if (i >= revs.length) return;
+        fireEvent.click(screen.getByText(`Commit ${i}`));
+        expect(screen.getByTestId("diff").textContent).toContain(`after ${i}`);
+        // Let any background prefetch triggered by landing on row `i` settle before the next step.
+        await act(async () => {
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        return stepTo(i + 1);
+      };
+      await stepTo(1);
+      const callsAfterForward = vcsBlockHistoryRevisionsAt.mock.calls.length;
+      expect(callsAfterForward).toBe(4); // batches [4..8], [8..12], [12..16], [16..20]
+
+      // Stepping back across all 20 rows hits the cache with zero refetches.
+      for (let i = revs.length - 2; i >= 0; i--) {
+        fireEvent.click(screen.getByText(`Commit ${i}`));
+        expect(screen.getByTestId("diff").textContent).toContain(`after ${i}`);
+      }
+      expect(vcsBlockHistoryRevisionsAt).toHaveBeenCalledTimes(callsAfterForward);
     });
   });
 });

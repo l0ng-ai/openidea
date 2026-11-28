@@ -160,47 +160,65 @@ fn lazy_revisions_match_the_full_history_even_after_head_moves() {
 #[test]
 fn large_history_summary_fetches_only_initial_batch() {
     let fx = Fixture::new();
-    // > 2 KiB block and > 16 commits so summary takes the lazy --no-patch + -n4 path.
-    let mut lines: Vec<String> = (0..80).map(|i| format!("let value_{i:02} = compute_block_line({i});")).collect();
+    // Large enough (> 512 KiB of inline diff text after the first 4 diffs) that summary
+    // switches to header+spot mode for the remaining commits.
+    let mut lines: Vec<String> =
+        (0..1500).map(|i| format!("let value_{i:04} = compute_block_line_value({i}, \"padding\");")).collect();
     fx.write("large.txt", &(lines.join("\n") + "\n"));
     fx.commit("Add large");
-    for n in 1..20 {
-        let idx = n % lines.len();
-        lines[idx] = format!("let value_{idx:02} = compute_block_line({n} + 100);");
+    for n in 1..10 {
+        let idx = n * 100;
+        lines[idx] = format!("let value_{idx:04} = compute_block_line_value({n} + 100, \"updated\");");
         fx.write("large.txt", &(lines.join("\n") + "\n"));
         fx.commit(&format!("Edit {n}"));
     }
     let repo = fx.repo();
     let path = fx.path("large.txt");
     let cancel = CancellationToken::new();
-    let full = history(&repo, &path, None, (0, 79));
-    let summary = repo.block_history_summary(&path, None, (0, 79), encoding_rs::UTF_8, &cancel).unwrap();
-    let anchor = summary.anchor.unwrap();
+    let full = history(&repo, &path, None, (0, 1499));
+    let summary = repo.block_history_summary(&path, None, (0, 1499), encoding_rs::UTF_8, &cancel).unwrap();
     assert_eq!(summary.head, full.head);
     assert_eq!(summary.diffs.len(), 4);
-    assert_eq!(summary.rest.len(), 16);
+    assert_eq!(summary.rest.len(), 6);
     assert_eq!(serde_json::to_value(&summary.diffs).unwrap(), serde_json::to_value(&full.revisions[..4]).unwrap());
-    let mut spots = Vec::new();
-    repo.block_history_spots(&path, &anchor, &cancel, |chunk| spots.extend(chunk)).unwrap();
-    assert_eq!(spots.len(), 20);
-    let deep = repo.block_history_revisions_at(&spots[16..20], encoding_rs::UTF_8, &cancel).unwrap();
-    assert_eq!(serde_json::to_value(&deep).unwrap(), serde_json::to_value(&full.revisions[16..20]).unwrap());
+    let spots: Vec<_> =
+        summary.rest.iter().map(|row| BlockRevisionSpot { id: row.id.clone(), ranges: row.ranges.clone() }).collect();
+    let deep = repo.block_history_revisions_at(&spots[2..6], encoding_rs::UTF_8, &cancel).unwrap();
+    assert_eq!(serde_json::to_value(&deep).unwrap(), serde_json::to_value(&full.revisions[6..10]).unwrap());
 }
 
-/// renamed_history, then renamed to a non-ASCII name with a space, edited on two branches
-/// (one also moves the block down) and merged, then edited once more.
+/// renamed_history padded so summary exceeds the inline budget, then renamed to a non-ASCII
+/// name with a space, edited on two branches (one also moves the block down) and merged, then
+/// edited once more.
 fn merged_history() -> Fixture {
-    let fx = renamed_history();
+    let fx = Fixture::new();
+    let pad = |body: &str| {
+        let mut s = body.to_owned();
+        for i in 0..1600 {
+            s.push_str(&format!("let filler_{i:04} = \"constant_padding_line_for_spot_test\";\n"));
+        }
+        s
+    };
+    fx.write("a.txt", &pad("one\ntwo\nthree\nfour\nfive\n"));
+    fx.commit("Add a");
+    fx.write("a.txt", &pad("one\nTWO\nthree\nfour\nfive\n"));
+    fx.commit("Shout two");
+    fx.write("a.txt", &pad("one\nTWO\nthree\nfour\nFIVE\n"));
+    fx.commit("Shout five");
+    fx.git(&["mv", "a.txt", "b.txt"]);
+    fx.commit("Rename a to b");
+    fx.write("b.txt", &pad("one\nTWO\nTHREE\nfour\nFIVE\n"));
+    fx.commit("Shout three");
     fx.git(&["mv", "b.txt", "ü c.txt"]);
     fx.commit("Rename b to ü c");
     fx.git(&["checkout", "-q", "-b", "side"]);
-    fx.write("ü c.txt", "zero\nzero again\none\nTWO side\nTHREE\nfour\nFIVE\n");
+    fx.write("ü c.txt", &pad("zero\nzero again\none\nTWO side\nTHREE\nfour\nFIVE\n"));
     fx.commit("Side: lines above, two");
     fx.git(&["checkout", "-q", "main"]);
-    fx.write("ü c.txt", "one\nTWO\nTHREE\nfour main\nFIVE\n");
+    fx.write("ü c.txt", &pad("one\nTWO\nTHREE\nfour main\nFIVE\n"));
     fx.commit("Main: four");
     fx.git(&["merge", "-q", "--no-edit", "side"]);
-    fx.write("ü c.txt", "zero\nzero again\none\nTWO side\nTHREE merged\nfour main\nFIVE\n");
+    fx.write("ü c.txt", &pad("zero\nzero again\none\nTWO side\nTHREE merged\nfour main\nFIVE\n"));
     fx.commit("Three after the merge");
     fx
 }
@@ -211,18 +229,24 @@ fn spots_read_the_same_diffs_as_the_full_walk() {
     let repo = fx.repo();
     let path = fx.path("ü c.txt");
     let cancel = CancellationToken::new();
-    for lines in [(3, 5), (0, 6), (4, 4)] {
+    // Selecting the whole padded file forces summary past the inline budget after 4 commits so
+    // `rest` exercises spot extraction across a merge, a space+non-ASCII name, and both renames.
+    for lines in [(0, 1606), (3, 1606)] {
         let full = history(&repo, &path, None, lines);
-        let anchor =
-            repo.block_history_summary(&path, None, lines, encoding_rs::UTF_8, &cancel).unwrap().anchor.unwrap();
-        let mut spots = Vec::new();
-        repo.block_history_spots(&path, &anchor, &cancel, |chunk| spots.extend(chunk)).unwrap();
+        let summary = repo.block_history_summary(&path, None, lines, encoding_rs::UTF_8, &cancel).unwrap();
+        assert_eq!(summary.diffs.len() + summary.rest.len(), full.revisions.len(), "{lines:?}");
+        assert!(!summary.rest.is_empty(), "expected lazy rest rows for {lines:?}");
         assert_eq!(
-            spots.iter().map(|spot| spot.id.as_str()).collect::<Vec<_>>(),
-            full.revisions.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
-            "{lines:?}"
+            serde_json::to_value(&summary.diffs).unwrap(),
+            serde_json::to_value(&full.revisions[..summary.diffs.len()]).unwrap()
         );
-        for (spot, expected) in spots.iter().zip(&full.revisions) {
+        let spots: Vec<_> = summary
+            .rest
+            .iter()
+            .map(|row| BlockRevisionSpot { id: row.id.clone(), ranges: row.ranges.clone() })
+            .collect();
+        let expected_rest = &full.revisions[summary.diffs.len()..];
+        for (spot, expected) in spots.iter().zip(expected_rest) {
             let actual =
                 repo.block_history_revisions_at(std::slice::from_ref(spot), encoding_rs::UTF_8, &cancel).unwrap();
             assert_eq!(serde_json::to_value(&actual).unwrap(), serde_json::to_value([expected]).unwrap(), "{spot:?}");
@@ -234,14 +258,28 @@ fn spots_read_the_same_diffs_as_the_full_walk() {
                 batch.iter().map(|s| &s.id).collect::<Vec<_>>()
             );
         }
-        if lines == (3, 5) {
-            // The merge is listed without a diff, and the walk reaches across both renames.
-            assert!(spots.iter().any(|spot| spot.ranges.as_ref().is_some_and(Vec::is_empty)), "{spots:?}");
-            let paths: std::collections::BTreeSet<_> =
-                spots.iter().flat_map(|spot| spot.ranges.iter().flatten().map(|range| range.path.as_str())).collect();
-            assert_eq!(paths.into_iter().collect::<Vec<_>>(), ["a.txt", "b.txt", "ü c.txt"]);
-        }
+        let paths: std::collections::BTreeSet<_> =
+            spots.iter().flat_map(|spot| spot.ranges.iter().flatten().map(|range| range.path.as_str())).collect();
+        assert!(paths.contains("a.txt") && paths.contains("b.txt"), "{paths:?}");
     }
+    // Also check a merge row landing in `rest` (empty spot ranges -> `--no-patch` read).
+    let mut padded = "zero\nzero again\none\nTWO side\nTHREE merged\nfour main\nFIVE\n".to_owned();
+    for i in 0..1600 {
+        padded.push_str(&format!("let filler_{i:04} = \"constant_padding_line_for_spot_test\";\n"));
+    }
+    for n in 1..=4 {
+        fx.write("ü c.txt", &format!("extra_{n}\n{padded}"));
+        fx.commit(&format!("Post-merge edit {n}"));
+    }
+    let full = history(&repo, &path, None, (0, 1606));
+    let summary = repo.block_history_summary(&path, None, (0, 1606), encoding_rs::UTF_8, &cancel).unwrap();
+    let merge_row =
+        summary.rest.iter().find(|row| row.summary.starts_with("Merge")).expect("merge commit should land in rest");
+    assert_eq!(merge_row.ranges.as_deref(), Some(&[][..]));
+    let merge_spot = BlockRevisionSpot { id: merge_row.id.clone(), ranges: merge_row.ranges.clone() };
+    let actual = repo.block_history_revisions_at(&[merge_spot], encoding_rs::UTF_8, &cancel).unwrap();
+    let expected = full.revisions.iter().find(|r| r.id == merge_row.id).unwrap();
+    assert_eq!(serde_json::to_value(&actual[0]).unwrap(), serde_json::to_value(expected).unwrap());
 }
 
 #[test]
@@ -313,8 +351,6 @@ fn cancelled_requests_stop() {
     let err = repo.block_history_summary(&fx.path("b.txt"), None, (1, 2), encoding_rs::UTF_8, &cancel).unwrap_err();
     assert_eq!(err.kind, ErrorKind::Cancelled);
     let anchor = BlockHistoryAnchor { commit: fx.git(&["rev-parse", "HEAD"]), lines: (1, 2) };
-    let err = repo.block_history_spots(&fx.path("b.txt"), &anchor, &cancel, |_| {}).unwrap_err();
-    assert_eq!(err.kind, ErrorKind::Cancelled);
     let err = repo
         .block_history_revisions(
             &fx.path("b.txt"),
@@ -332,4 +368,65 @@ fn cancelled_requests_stop() {
     };
     let err = repo.block_history_revisions_at(&[spot], encoding_rs::UTF_8, &cancel).unwrap_err();
     assert_eq!(err.kind, ErrorKind::Cancelled);
+}
+
+#[cfg(unix)]
+#[test]
+fn in_flight_cancellation_stops_line_runner_and_parallel_reads() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant};
+
+    let fx = renamed_history();
+    let head = fx.git(&["rev-parse", "HEAD"]);
+    let prev = fx.git(&["rev-parse", "HEAD~2"]);
+    let marker = fx.path("spawned.log");
+    let script = fx.path("slow-git.sh");
+    std::fs::write(&script, format!("#!/bin/sh\necho $$ >> '{}'\nexec sleep 60\n", marker.display())).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let repo = fx.repo();
+    repo.set_git_executable(Some(&script));
+
+    let wait_and_cancel = |marker: PathBuf, expected: usize, cancel: CancellationToken| {
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline {
+                if let Ok(text) = std::fs::read_to_string(&marker)
+                    && text.lines().count() >= expected
+                {
+                    cancel.cancel();
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            cancel.cancel();
+            false
+        })
+    };
+
+    // 1. Streaming line runner (`block_history_summary`).
+    let cancel = CancellationToken::new();
+    let canceller = wait_and_cancel(marker.clone(), 1, cancel.clone());
+    let start = Instant::now();
+    let err = repo.block_history_summary(&fx.path("b.txt"), None, (1, 2), encoding_rs::UTF_8, &cancel).unwrap_err();
+    let saw_spawn = canceller.join().unwrap();
+    assert!(saw_spawn, "slow git did not start for summary");
+    assert_eq!(err.kind, ErrorKind::Cancelled);
+    assert!(start.elapsed() < Duration::from_secs(5), "summary cancel took {:?}", start.elapsed());
+
+    // 2. Parallel per-commit reads (`block_history_revisions_at`): also verifies that the
+    //    scoped worker thread inherits `Repo::execution_scope` (the configured git executable).
+    let _ = std::fs::remove_file(&marker);
+    let cancel = CancellationToken::new();
+    let canceller = wait_and_cancel(marker.clone(), 2, cancel.clone());
+    let spots = [
+        BlockRevisionSpot { id: head, ranges: Some(vec![BlockSpotRange { path: "b.txt".into(), start: 2, end: 3 }]) },
+        BlockRevisionSpot { id: prev, ranges: Some(vec![BlockSpotRange { path: "a.txt".into(), start: 2, end: 3 }]) },
+    ];
+    let start = Instant::now();
+    let err = repo.block_history_revisions_at(&spots, encoding_rs::UTF_8, &cancel).unwrap_err();
+    let saw_both = canceller.join().unwrap();
+    assert!(saw_both, "parallel worker did not run the repository's configured git");
+    assert_eq!(err.kind, ErrorKind::Cancelled);
+    assert!(start.elapsed() < Duration::from_secs(5), "revisions_at cancel took {:?}", start.elapsed());
 }

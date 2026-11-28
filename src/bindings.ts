@@ -2167,11 +2167,6 @@ export const commands = {
 	/**  The diffs of up to four revisions read from their spots ([`Repo::block_history_revisions_at`]). */
 	vcsBlockHistoryRevisionsAt: (request: RequestId, path: string, spots: BlockRevisionSpot[]) => typedError<BlockRevision[], IdeError>(__TAURI_INVOKE("vcs_block_history_revisions_at", { request, path, spots })),
 	/**
-	 *  Every revision's spot, in chunks while Git walks the history (see
-	 *  [`Repo::block_history_spots`]). Cancelling `request` stops Git.
-	 */
-	vcsBlockHistorySpots: (request: RequestId, path: string, anchor: BlockHistoryAnchor, onSpots: Channel<BlockRevisionSpot[]>) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_block_history_spots", { request, path, anchor, onSpots })),
-	/**
 	 *  History for Selection summary: revision headers plus the initial diff batch
 	 *  (or all diffs for small selections/histories). Cancellable with `cancel_request(request)`.
 	 */
@@ -4103,7 +4098,7 @@ export type BlockRevision = {
 /**
  *  Where a selection history row's diff comes from: the line ranges `git log -L` followed
  *  in that commit, so its diff can be read starting there instead of walking down from the
- *  anchor. Listed in the same order as the revisions.
+ *  anchor.
  */
 export type BlockRevisionSpot = {
 	id: string,
@@ -4121,6 +4116,12 @@ export type BlockRevisionSummary = {
 	email: string,
 	timeMs: number | null,
 	summary: string,
+	/**
+	 *  Line ranges `git log -L` followed in this commit, so its diff can be read starting
+	 *  here instead of re-walking from the anchor; empty for diff-less commits (merges),
+	 *  None when the path cannot be passed back to Git (not UTF-8).
+	 */
+	ranges: BlockSpotRange[] | null,
 };
 
 /**  Lines `start..=end` (1-based) of `path` (repository-relative) in a commit. */
