@@ -410,11 +410,46 @@
 }
 .docWindowFrame .docBody {
   flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 .docWindowEmpty {
   padding: 16px;
   font-size: var(--fs-ui);
   color: var(--fg-faint);
+}
+.docFindBar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  border-top: 1px solid var(--border-popup);
+  background: var(--bg-popup);
+}
+.docFindField {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+.docFindActions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-0-5);
+}
+.docFindCount {
+  min-inline-size: 5ch;
+  padding-inline: var(--space-1);
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-subtle);
+  text-align: center;
+  white-space: nowrap;
+}
+.docFindCountNone {
+  color: var(--danger);
 }
 .docToolbar {
   position: sticky;
@@ -428,6 +463,15 @@
 }
 .docBody {
   padding: 10px 14px;
+}
+.docBody :global(mark[data-doc-search-match]) {
+  border-radius: 2px;
+  background: var(--bg-search-match);
+  color: var(--fg-search-match, inherit);
+  box-decoration-break: clone;
+}
+.docBody :global(mark[data-doc-search-current]) {
+  background: var(--bg-search-match-current);
 }
 /* Signatures: a type name opens its documentation (`linkSignatureTypes` in docs.ts); other
    languages' names look like links once they are found to lead somewhere. */
