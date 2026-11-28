@@ -73,12 +73,17 @@ fn is_plot(path: &Path) -> bool {
 #[command(trust = always)]
 pub async fn plots_delete(host: &Host, window: &str, paths: Vec<PathBuf>) -> IdeResult<()> {
     let dir = host.project(window)?.cache_dir.join("plots");
-    super::blocking_value(move || {
-        for path in paths.iter().filter(|p| p.parent() == Some(dir.as_path()) && is_plot(p)) {
-            let _ = std::fs::remove_file(path);
-        }
-    })
-    .await
+    super::blocking_value(move || delete(&dir, &paths)).await
+}
+
+/// Paths are compared canonicalized: the watcher reports real paths, and the cache folder may be
+/// reached through a symlink.
+fn delete(dir: &Path, paths: &[PathBuf]) {
+    let Ok(dir) = dunce::canonicalize(dir) else { return };
+    let in_dir = |p: &Path| p.parent().and_then(|d| dunce::canonicalize(d).ok()).is_some_and(|d| d == dir);
+    for path in paths.iter().filter(|p| is_plot(p) && in_dir(p)) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 ide_command::domain!(
@@ -96,6 +101,23 @@ mod tests {
         assert!(is_plot(Path::new("/c/plots/1-2-0.png")));
         assert!(!is_plot(Path::new("/c/plots/.1-2-0.png")));
         assert!(!is_plot(Path::new("/c/plots/notes.txt")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deletes_only_finished_figures_in_the_plots_folder_through_a_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir_all(real.join("plots")).unwrap();
+        std::fs::create_dir_all(real.join("other")).unwrap();
+        std::os::unix::fs::symlink(&real, tmp.path().join("link")).unwrap();
+        let files = [real.join("plots/1-2-0.png"), real.join("plots/.1-2-1.png"), real.join("other/1-2-2.png")];
+        for f in &files {
+            std::fs::write(f, b"png").unwrap();
+        }
+        let reported: Vec<_> = files.iter().map(|f| dunce::canonicalize(f).unwrap()).collect();
+        delete(&tmp.path().join("link/plots"), &reported);
+        assert_eq!(files.map(|f| f.exists()), [false, true, true]);
     }
 
     #[test]

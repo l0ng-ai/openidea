@@ -76,6 +76,23 @@ mod tests {
         assert_eq!(env, own);
     }
 
+    /// A backend the run inherits (here the project's `.envrc`) wins over the Plots backend.
+    #[test]
+    fn leaves_an_inherited_backend_alone() {
+        if std::env::var_os("MPLBACKEND").is_some() {
+            eprintln!("skipped: this process sets MPLBACKEND");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let plots = plots(tmp.path());
+        let project = tmp.path().join("project");
+        ide_core::project_env::set(&project, vec![("MPLBACKEND".into(), Some("Agg".into()))]);
+        let mut env = BTreeMap::new();
+        add(&mut env, &plots, Some(&project.join("src"))).unwrap();
+        ide_core::project_env::remove(&project);
+        assert!(env.is_empty(), "{env:?}");
+    }
+
     /// Runs the real backend when this machine's `python3` has matplotlib (skipped otherwise).
     #[test]
     fn the_backend_saves_each_shown_figure_once() {

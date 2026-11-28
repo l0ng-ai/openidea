@@ -452,7 +452,7 @@ export function PythonInterpreterPage() {
         <SettingToggle
           k="languages.python.showPlotsInToolWindow"
           label="Show plots in tool window"
-          hint="Runs, debug sessions and the Python Console send matplotlib figures to the Plots tool window, unless the run sets MPLBACKEND. Off: figures open in matplotlib's own window."
+          hint="Runs, debug sessions and the Python Console send matplotlib figures to the Plots tool window, unless the run sets MPLBACKEND; a backend in matplotlibrc is overridden. Off: figures open in matplotlib's own window."
         />
       </Section>
 

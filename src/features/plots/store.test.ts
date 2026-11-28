@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { writeDesktopBase64 } from "@/platform/desktopFiles";
 import { commands } from "@/platform/ipc";
-import { MAX_PLOTS, addPlot, clearPlots, removePlot, usePlots } from "./store";
+import { provideNotificationService } from "@/workbench/contributions";
+import { MAX_PLOTS, addPlot, clearPlots, removePlot, savePlot, usePlots } from "./store";
+
+vi.mock("@/platform/dialog", () => ({ save: async () => "/out/plot.png" }));
+vi.mock("@/platform/desktopFiles", () => ({ writeDesktopBase64: vi.fn(async () => {}) }));
 
 const deleted = vi.spyOn(commands, "plotsDelete").mockResolvedValue({ status: "ok", data: null });
 
@@ -34,5 +39,21 @@ describe("plots", () => {
     const { plots } = usePlots.getState();
     expect([plots.length, plots[0], plots.at(-1)]).toEqual([MAX_PLOTS, "/p/1.png", `/p/${MAX_PLOTS}.png`]);
     expect(deleted).toHaveBeenCalledWith(["/p/0.png"]);
+  });
+
+  it("saves the figure's PNG bytes and reports a failure", async () => {
+    const notes: string[] = [];
+    provideNotificationService({ notify: (n) => void notes.push(`${n.level}: ${n.title}`) });
+    const read = vi
+      .spyOn(commands, "fsReadImage")
+      .mockResolvedValue({ status: "ok", data: "data:image/png;base64,UE5H" });
+    await savePlot("/p/a.png");
+    expect(read).toHaveBeenCalledWith("/p/a.png");
+    expect(writeDesktopBase64).toHaveBeenCalledWith("/out/plot.png", "UE5H");
+    expect(notes).toEqual([]);
+
+    read.mockResolvedValueOnce({ status: "error", error: { kind: "internal", message: "gone", data: null } });
+    await savePlot("/p/a.png");
+    expect(notes).toEqual(["error: Cannot save the plot"]);
   });
 });
