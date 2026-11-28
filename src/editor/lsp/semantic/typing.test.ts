@@ -35,10 +35,11 @@ describe("semantic colours while typing", () => {
     });
     try {
       await vi.advanceTimersByTimeAsync(0);
+      expect(requests).toHaveLength(1);
       expect(view.dom.querySelector(".cm-sem-python-builtin")).toBeNull();
       view.dispatch({ changes: { from: view.state.doc.length, insert: "nt(x)" } });
       await vi.advanceTimersByTimeAsync(0);
-      expect(requests).toHaveLength(0);
+      expect(requests).toHaveLength(1);
       expect(view.dom.querySelector(".cm-sem-python-builtin")?.textContent).toBe("print");
       expect(view.dom.querySelectorAll(".cm-sem-parameter")).toHaveLength(2);
     } finally {
@@ -57,7 +58,8 @@ describe("semantic colours while typing", () => {
       }),
     });
     try {
-      await vi.advanceTimersByTimeAsync(600);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(requests).toHaveLength(1);
       requests.shift()!({
         tokenTypes: ["function", "parameter"],
         tokenModifiers: ["defaultLibrary"],

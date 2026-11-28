@@ -1,6 +1,7 @@
 /** Summaries of workspace edits for rename / refactoring previews, and the intention preview diff. */
 import { ChangeSet, type Text } from "@codemirror/state";
 import type { TextEdit, WorkspaceEdit } from "@/bindings";
+import { tx } from "@/platform/i18n";
 import type { DiffLine } from "./popupStore";
 import { textEditsToChanges } from "./positions";
 
@@ -63,10 +64,9 @@ export function summarizeWorkspaceEdit(edit: WorkspaceEdit): WorkspaceEditSummar
 }
 
 /** "3 occurrences in 2 files". */
-export function describeSummary(s: WorkspaceEditSummary): string {
-  const occ = `${s.occurrences} ${s.occurrences === 1 ? "occurrence" : "occurrences"}`;
-  const files = `${s.files} ${s.files === 1 ? "file" : "files"}`;
-  return `${occ} in ${files}`;
+export function describeSummary({ occurrences, files }: WorkspaceEditSummary): string {
+  if (occurrences === 1) return files === 1 ? tx("1 occurrence in 1 file") : tx`1 occurrence in ${files} files`;
+  return files === 1 ? tx`${occurrences} occurrences in 1 file` : tx`${occurrences} occurrences in ${files} files`;
 }
 
 /** Whether applying needs confirmation (IDEA previews multi-file refactorings). */

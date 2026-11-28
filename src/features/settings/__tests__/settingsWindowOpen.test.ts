@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 const logFrontend = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+const emitTo = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const defaultInit = () => ({
   launch: null,
   remote: null,
@@ -12,6 +13,9 @@ const windowTakeSettingsInit = vi.hoisted(() => vi.fn<() => Promise<unknown>>(()
 const windowTakeLaunch = vi.hoisted(() => vi.fn<() => Promise<unknown>>(() => Promise.resolve(null)));
 const projectCurrent = vi.hoisted(() => vi.fn<() => Promise<unknown>>(() => Promise.resolve(null)));
 const settingsGetGlobal = vi.hoisted(() => vi.fn(() => Promise.resolve({})));
+vi.mock("@tauri-apps/api/event", () => ({
+  emitTo,
+}));
 vi.mock("@tauri-apps/api/webviewWindow", () => ({
   getCurrentWebviewWindow: () => ({
     label: "settings-main",
@@ -52,6 +56,7 @@ vi.mock("../dialog/LazySettingsDialog", () => ({
 const { activateSettingsWindow } = await import("..");
 const { disableRemote } = await import("@/platform/remote");
 const { useProject } = await import("@/platform/project");
+const { editorService } = await import("@/workbench/contributions");
 const { stage, useSettingsDialog } = await import("../model/staging");
 
 describe("the native Settings window", () => {
@@ -177,5 +182,23 @@ describe("the native Settings window", () => {
     disableRemote();
     useProject.setState({ project: null, settings: null });
     dispose();
+  });
+
+  it("provides an editorService proxy that forwards openFile to the parent window", async () => {
+    emitTo.mockClear();
+    loadBuiltinPages.mockResolvedValue(() => {});
+    windowTakeLaunch.mockResolvedValueOnce(null);
+    windowTakeSettingsInit.mockResolvedValueOnce(defaultInit());
+
+    const dispose = activateSettingsWindow("main");
+    try {
+      await editorService().openFile("/Users/dev/.copilot/skills/azure-storage/SKILL.md", { focus: true });
+      expect(emitTo).toHaveBeenCalledWith("main", "openidea://settings/open-file", {
+        path: "/Users/dev/.copilot/skills/azure-storage/SKILL.md",
+        options: { focus: true },
+      });
+    } finally {
+      dispose();
+    }
   });
 });

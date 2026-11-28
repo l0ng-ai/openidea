@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   log: vi.fn(),
   changes: vi.fn(),
   ask: vi.fn(),
+  secondRemote: "fork",
 }));
 
 vi.mock("@/workbench/messages", async (importOriginal) => ({
@@ -63,7 +64,11 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       },
       vcsRemotes: (repo: string) =>
         ok(
-          mocks.unconfigured.has(repo) ? [] : repo === "/p/b" ? [remote("origin"), remote("fork")] : [remote("origin")],
+          mocks.unconfigured.has(repo)
+            ? []
+            : repo === "/p/b"
+              ? [remote("origin"), remote(mocks.secondRemote)]
+              : [remote("origin")],
         ),
       vcsEditRemote: (repo: string, operation: unknown) => {
         mocks.editRemote(repo, operation);
@@ -111,6 +116,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 
 import { provideNotificationService } from "@/workbench/contributions";
 import { getContext, setContext } from "@/platform/context";
+import { useProject } from "@/platform/project";
 import { registerVcsActions } from "../actions";
 import { commonBranchMenu } from "../branchMenu";
 import { VcsDialogHost } from "../dialogs";
@@ -119,6 +125,8 @@ import { useVcs } from "../store";
 
 type Note = { title: string; body?: string };
 let notes: Note[] = [];
+
+const initialProject = useProject.getState().project;
 
 beforeEach(() => {
   localStorage.clear();
@@ -136,8 +144,10 @@ beforeEach(() => {
   mocks.changes.mockReset();
   mocks.ask.mockReset();
   mocks.ask.mockResolvedValue({ button: "force", checked: false });
+  mocks.secondRemote = "fork";
   notes = [];
   useVcs.setState({ root: "/p", roots: ["/p/a", "/p/b", "/p/c"], repo: "/p/a", remoteBusy: null, available: false });
+  useProject.setState({ project: initialProject });
   provideNotificationService({ notify: (n) => void notes.push(n as Note), expire: () => {} });
 });
 
@@ -459,6 +469,22 @@ it("asks to confirm each forced target and pushes nothing when one is declined",
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 });
 
+it("stops asking and pushes nothing when the project changes during a confirmation", async () => {
+  mocks.ask.mockImplementationOnce(async () => {
+    useProject.setState({ project: { root: "/q" } as never });
+    return { button: "force", checked: false };
+  });
+  await openPushDialog();
+  fireEvent.change(screen.getByRole("combobox", { name: "Target branch of a" }), { target: { value: "feat-a" } });
+  fireEvent.click(screen.getByRole("checkbox", { name: "Force (with lease)" }));
+  fireEvent.click(screen.getByRole("button", { name: "Force Push" }));
+
+  await waitFor(() => expect(mocks.ask).toHaveBeenCalledTimes(1));
+  await act(() => Promise.resolve());
+  expect(mocks.ask).toHaveBeenCalledTimes(1);
+  expect(mocks.ops).toEqual([]);
+});
+
 it("force pushes with lease once every target is confirmed", async () => {
   await openPushDialog();
   fireEvent.click(screen.getByRole("checkbox", { name: "Force (with lease)" }));
@@ -495,6 +521,69 @@ it("does not ask without Force", async () => {
 
   await waitFor(() => expect(mocks.ops).toHaveLength(3));
   expect(mocks.ask).not.toHaveBeenCalled();
+});
+
+/** Force pushes `repo` alone, optionally to branch `target` of `remote`. */
+async function forcePushFrom(repo: string, remote?: string, target?: string) {
+  const view = render(<VcsDialogHost />);
+  await act(() => showPushDialog({ repo }));
+  const name = repo.slice(repo.lastIndexOf("/") + 1);
+  const branch = await screen.findByRole("combobox", { name: `Target branch of ${name}` });
+  if (remote) {
+    fireEvent.click(screen.getByRole("button", { name: `Remote of ${name}` }));
+    fireEvent.click(await screen.findByRole("option", { name: remote }));
+  }
+  if (target) fireEvent.change(branch, { target: { value: target } });
+  fireEvent.click(screen.getByRole("checkbox", { name: "Force (with lease)" }));
+  const before = mocks.ops.length;
+  fireEvent.click(screen.getByRole("button", { name: "Force Push" }));
+  await waitFor(() => expect(mocks.ops).toHaveLength(before + 1));
+  view.unmount();
+}
+
+it("remembers Don't warn about this target for the project it was ticked in", async () => {
+  mocks.ask.mockResolvedValue({ button: "force", checked: true });
+  await forcePushFrom("/p/a");
+  await forcePushFrom("/p/a");
+  expect(askedTargets()).toEqual(["origin/feat-x"]);
+
+  // origin/feat-x of another project is another branch: it still asks.
+  useVcs.setState({ root: "/q", roots: ["/q/a", "/q/b"], repo: "/q/a" });
+  await forcePushFrom("/q/a");
+  expect(askedTargets()).toEqual(["origin/feat-x", "origin/feat-x"]);
+});
+
+it("keeps a silenced target apart from another remote and branch that read the same", async () => {
+  // `origin` + `team/feature` and `origin/team` + `feature` both read `origin/team/feature`.
+  mocks.secondRemote = "origin/team";
+  mocks.ask.mockResolvedValue({ button: "force", checked: true });
+  await forcePushFrom("/p/b", "origin", "team/feature");
+  await forcePushFrom("/p/b", "origin", "team/feature");
+  expect(mocks.ask).toHaveBeenCalledTimes(1);
+
+  await forcePushFrom("/p/b", "origin/team", "feature");
+  expect(askedTargets()).toEqual(["origin/team/feature", "origin/team/feature"]);
+  expect(mocks.ops.at(-1)?.op).toMatchObject({ selection: { remote: "origin/team", target: "feature" } });
+});
+
+it("confirms two repositories' targets one by one when only their joined names are the same", async () => {
+  mocks.secondRemote = "origin/team";
+  await openPushDialog();
+  check("c");
+  fireEvent.change(screen.getByRole("combobox", { name: "Target branch of a" }), { target: { value: "team/feature" } });
+  fireEvent.click(screen.getByRole("button", { name: "Remote of b" }));
+  fireEvent.click(await screen.findByRole("option", { name: "origin/team" }));
+  fireEvent.change(screen.getByRole("combobox", { name: "Target branch of b" }), { target: { value: "feature" } });
+  fireEvent.click(screen.getByRole("checkbox", { name: "Force (with lease)" }));
+  fireEvent.click(screen.getByRole("button", { name: "Force Push" }));
+  await waitFor(() => expect(mocks.ops).toHaveLength(2));
+  expect(askedTargets()).toEqual(["origin/team/feature", "origin/team/feature"]);
+});
+
+it("does not take the earlier app-wide silenced targets for this project", async () => {
+  localStorage.setItem("openidea.vcs.silentForcePushTargets", JSON.stringify(["origin/feat-x"]));
+  await forcePushFrom("/p/a");
+  expect(askedTargets()).toEqual(["origin/feat-x"]);
 });
 
 it("preselects the repositories that were committed before opening Push", async () => {

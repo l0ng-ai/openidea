@@ -11,13 +11,13 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent 
 import clsx from "clsx";
 import { dirKeys, type FileTreeNode } from "@/features/vcs/fileTree";
 import { dirName, fileCount, KIND_COLOR, renameFrom } from "@/features/vcs/model";
-import { currentRepoRoot } from "@/features/vcs/store";
 import { useTx } from "@/platform/i18n";
 import { Icon, Tree, fileIconName, showContextMenu, T, type MenuItem, type TreeHandle } from "@/ui";
 import { editorService } from "@/workbench/contributions";
 import type { GHCommitFile, GHPullRequestFileViewedState, GHPullRequestReviewThread } from "../api/types";
 import { openPullRequestFileDiff } from "../data/local";
 import { setViewed } from "../data/operations";
+import { reviewRoot } from "../data/repository";
 import { provideGithubHandler } from "../toolwindow/handlers";
 import { openCommitFileDiff } from "./flow";
 import {
@@ -76,7 +76,7 @@ export function ChangesTree({ number, files, commitSha, viewedState, threads, ch
   const openDiff = (f: GHCommitFile) =>
     void (commitSha ? openCommitFileDiff(number, commitSha, f) : openPullRequestFileDiff(number, f.filename));
   const jumpToSource = (f: GHCommitFile) => {
-    const root = currentRepoRoot();
+    const root = reviewRoot();
     if (root) void editorService().openFile(`${root.replace(/[\\/]+$/, "")}/${f.filename}`, { focus: true });
   };
   const canEdit = (f: GHCommitFile) =>

@@ -10,7 +10,7 @@
  * branch (`gh pr checkout`).
  */
 import { create } from "zustand";
-import { currentRepoRoot, useVcs } from "@/features/vcs/store";
+import { useVcs, type VcsState } from "@/features/vcs/store";
 import { call, commands } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { notifications } from "@/workbench/contributions";
@@ -22,7 +22,7 @@ import {
   reloadPullRequestData,
   subscribePullRequestData,
 } from "../data/pullRequest";
-import { useGhRepository } from "../data/repository";
+import { reviewRoot, useGhRepository } from "../data/repository";
 import { isUpdateRequired, openPullRequestQuery, trackedBranch } from "./model";
 
 export interface ReviewBranchState {
@@ -38,12 +38,25 @@ export const useReviewBranch = create<ReviewBranchState>(() => ({ number: null, 
 
 let lookupSeq = 0;
 
-/** The open pull request for the current branch of the selected repository, or null. */
+/**
+ * The current branch of the review repository (`reviewRoot`): `branch` while it is the one the
+ * VCS store read it for (as `useWidgetBranch` decides), else its entry in `heads`, which has no upstream.
+ */
+function connectedBranch(
+  s: VcsState,
+): { head: string | null; headCommit: string | null; upstream: string | null } | null {
+  const root = reviewRoot(s);
+  if (!root || s.roots.length < 2 || root === s.branchRoot) return s.branch;
+  const head = s.heads[root];
+  return head ? { head: head.head, headCommit: head.headCommit, upstream: null } : null;
+}
+
+/** The open pull request for the current branch of the review repository, or null. */
 async function findPullRequestForCurrentBranch(): Promise<{ number: number; branch: string } | null> {
   const connection = useGhRepository.getState().connection;
-  const head = useVcs.getState().branch?.head;
+  const head = connectedBranch(useVcs.getState())?.head;
   if (!connection || !head) return null;
-  const repo = currentRepoRoot();
+  const repo = reviewRoot();
   const [remote, merge, remotes] = await Promise.all([
     call(commands.vcsConfigGet(repo, `branch.${head}.remote`)),
     call(commands.vcsConfigGet(repo, `branch.${head}.merge`)),
@@ -89,7 +102,7 @@ export async function refreshSyncState(): Promise<void> {
   let updateRequired = false;
   try {
     const pr = await loadPullRequestData(n, "details");
-    const base = await call(commands.vcsMergeBase(currentRepoRoot(), pr.headRefOid, "HEAD")).catch(() => null);
+    const base = await call(commands.vcsMergeBase(reviewRoot(), pr.headRefOid, "HEAD")).catch(() => null);
     updateRequired = isUpdateRequired(pr.headRefOid, base);
   } catch {
     // Details not loaded: nothing to compare with (IntelliJ keeps `false`).
@@ -141,10 +154,9 @@ export function trackCurrentBranchPullRequest(): () => void {
   };
   const disposers = [
     useVcs.subscribe((s, prev) => {
-      const a = s.branch;
-      const b = prev.branch;
-      if (s.repo !== prev.repo || a?.head !== b?.head || a?.upstream !== b?.upstream)
-        void refreshCurrentBranchPullRequest();
+      const a = connectedBranch(s);
+      const b = connectedBranch(prev);
+      if (a?.head !== b?.head || a?.upstream !== b?.upstream) void refreshCurrentBranchPullRequest();
       else if (a?.headCommit !== b?.headCommit) void refreshSyncState();
     }),
     useGhRepository.subscribe((s, prev) => {

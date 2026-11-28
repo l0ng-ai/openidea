@@ -7,7 +7,7 @@
 //! | runtime | profiler | output |
 //! |---|---|---|
 //! | Node.js (scripts, npm scripts) | `node --cpu-prof` (via `NODE_OPTIONS`) | `.cpuprofile` JSON |
-//! | Python | `python -m cProfile -o …`, or `py-spy record --format raw` | pstats, or collapsed stacks |
+//! | Python | cProfile (`python_profile.py`), or `py-spy record --format raw` | pstats, or collapsed stacks |
 //! | JVM applications | async-profiler agent (`JAVA_TOOL_OPTIONS`) | collapsed stacks |
 //! | native / `cargo run` (Linux) | `perf record -g`, then `perf script` | perf script text |
 //!
@@ -140,6 +140,9 @@ pub enum ProfileSpec {
     /// DevTools, CI) or a `pstats` file (cProfile, profile, yappi), told apart by content.
     /// Relative source files of a `pstats` file resolve against `root`, then its directory.
     SnapshotFile { path: IpcPath, root: Option<IpcPath> },
+    /// What `python_profile.py` wrote in `dir` for a profiled Python run: `profile.pstats`.
+    /// Relative source files resolve against `root`.
+    PythonRun { profiler: String, dir: IpcPath, root: IpcPath },
     /// Collapsed-stack files with extension `ext` in `dir`; relative frame files resolve
     /// against `base`. `jvm_root`: map JVM class frames to sources below it. For the
     /// allocation modes the last frame of a JVM stack is the allocated type.
@@ -207,11 +210,7 @@ pub fn collect(spec: &ProfileSpec) -> IdeResult<Profile> {
             let path: &Path = path.as_ref();
             let name =
                 path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
-            let bytes = std::fs::read(path).map_err(|e| match e.kind() {
-                // A profiled run that was killed (a second Stop) or left through `os._exit`.
-                std::io::ErrorKind::NotFound => nothing_recorded(&format!("{name} was not written")),
-                _ => IdeError::invalid(format!("Cannot read {name}: {e}")),
-            })?;
+            let bytes = std::fs::read(path).map_err(|e| IdeError::invalid(format!("Cannot read {name}: {e}")))?;
             let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
             // The content decides (`node --cpu-prof-name=cpu.prof` writes JSON); the extension only
             // names what a file that is neither failed to be.
@@ -237,6 +236,20 @@ pub fn collect(spec: &ProfileSpec) -> IdeResult<Profile> {
                 if f.file.as_ref().is_some_and(|p| !p.is_file()) {
                     (f.file, f.line) = (None, None);
                 }
+            }
+            Ok(profile)
+        }
+        ProfileSpec::PythonRun { profiler, dir, root } => {
+            let bytes = std::fs::read(Path::new(dir.as_ref()).join("profile.pstats")).map_err(|e| match e.kind() {
+                // A run that was killed (a second Stop) or left through `os._exit`.
+                std::io::ErrorKind::NotFound => nothing_recorded(&format!("{profiler} wrote no profile")),
+                _ => IdeError::invalid(format!("Cannot read the {profiler} profile: {e}")),
+            })?;
+            let bases: [&Path; 2] = [root.as_ref(), dir.as_ref()];
+            let profile = pstats::read(&bytes, &bases, profiler)
+                .map_err(|e| IdeError::invalid(format!("Cannot read the {profiler} profile: {e}")))?;
+            if profile.methods.is_empty() {
+                return Err(nothing_recorded(&format!("{profiler} recorded no calls")));
             }
             Ok(profile)
         }
@@ -359,7 +372,7 @@ mod tests {
         }
         let missing =
             collect(&ProfileSpec::SnapshotFile { path: dir.path().join("gone.cpuprofile").into(), root: None });
-        assert_eq!(missing.unwrap_err().message, "The run produced no profile (gone.cpuprofile was not written).");
+        assert!(missing.unwrap_err().message.starts_with("Cannot read gone.cpuprofile"));
     }
 
     #[test]
