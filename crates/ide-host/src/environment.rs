@@ -420,12 +420,11 @@ pub(crate) fn run_command(
         }
         // A process it started in the background may keep the pipes open: the command is done.
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            // Read what it wrote until the pipes close, for at most a second: a busy machine may
+            // deliver its last lines (often the error) well after the exit.
             let deadline = Instant::now() + Duration::from_secs(1);
-            while let Ok(line) = rx.recv_timeout(Duration::from_millis(100)) {
+            while let Ok(line) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
                 on_line(line);
-                if Instant::now() > deadline {
-                    break;
-                }
             }
             break status;
         }
