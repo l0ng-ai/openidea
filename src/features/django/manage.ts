@@ -16,8 +16,15 @@ import {
   type RunConfig,
   type RunId,
 } from "@/platform/ipc";
+import { findManage } from "@/platform/django";
+import { usePlatform } from "@/platform/platformInfo";
 import { dirname } from "@/platform/project";
-import type { RunAnythingItem, RunAnythingProvider } from "@/workbench/contributions";
+import {
+  maybeEditorService,
+  notifications,
+  type RunAnythingItem,
+  type RunAnythingProvider,
+} from "@/workbench/contributions";
 
 export interface ManageCommand {
   name: string;
@@ -28,13 +35,13 @@ export interface ManageCommand {
 /** The script name, as typed in command lines. */
 const MANAGE = "manage.py";
 
-/** `manage.py migrate`, `./manage.py migrate`, `python manage.py migrate`. */
-const LINE = /^(?:python3?\s+)?(?:\.\/)?manage\.py(?:\s+|$)/;
+/** `manage.py migrate`, `./manage.py migrate`, `python manage.py migrate`, `python3.12 …`, `py …`. */
+const LINE = /^(?:(?:py|python[\d.]*)\s+)?(?:\.\/)?manage\.py(?:\s+|$)/;
 
 /** The arguments after `manage.py`, or null when `line` isn't a manage.py command line. */
-export function manageArgs(line: string): string[] | null {
+export function manageArgs(line: string, windows = usePlatform.getState().os === "windows"): string[] | null {
   const head = LINE.exec(line.trim());
-  return head ? parseArgs(line.trim().slice(head[0].length)) : null;
+  return head ? parseArgs(line.trim().slice(head[0].length), windows) : null;
 }
 
 /** Commands listed by `manage.py help`: `[app]` headings, each followed by indented command names. */
@@ -48,12 +55,6 @@ export function parseHelp(text: string): ManageCommand[] {
     else if (app && /^\s+[\w-]+\s*$/.test(line)) out.push({ name: line.trim(), app });
   }
   return out;
-}
-
-/** The project's `manage.py`: the shallowest one outside installed packages. */
-export function pickManage(paths: readonly string[]): string | null {
-  const own = paths.filter((p) => !/\/(?:site-packages|node_modules|\.venv|venv)\//.test(p));
-  return own.sort((a, b) => a.split("/").length - b.split("/").length || a.localeCompare(b))[0] ?? null;
 }
 
 export function manageConfig(python: string, manage: string, args: readonly string[]): RunConfig {
@@ -75,22 +76,34 @@ export function manageConfig(python: string, manage: string, args: readonly stri
 }
 
 interface ManageState {
+  /** The manage.py (and its interpreter) the last lookup found. */
   manage: string | null;
   python: string | null;
-  commands: ManageCommand[];
-  /** Commands are read once per project, on the first manage.py line. */
-  loaded: "no" | "loading" | "yes";
+  /** Commands by manage.py, read once each. */
+  commands: Record<string, ManageCommand[]>;
+  /** manage.py files whose `help` failed: not read again until Run manage.py Task asks. */
+  failed: Record<string, true>;
 }
 
-export const useManage = create<ManageState>(() => ({ manage: null, python: null, commands: [], loaded: "no" }));
+const empty = (): ManageState => ({ manage: null, python: null, commands: {}, failed: {} });
+export const useManage = create<ManageState>(empty);
 
-export const resetManage = () => useManage.setState({ manage: null, python: null, commands: [], loaded: "no" });
+/** Bumped by each reset: work started for an earlier project doesn't write into the store. */
+let epoch = 0;
+const reading = new Map<string, Promise<void>>();
 
-/** Stdout of a short process on the Run process host (no Run tab). */
-async function capture(config: RunConfig, timeoutMs = 30_000): Promise<string> {
+export function resetManage() {
+  epoch++;
+  reading.clear();
+  useManage.setState(empty());
+}
+
+/** Output of a short process on the Run process host (no Run tab). */
+async function capture(config: RunConfig, timeoutMs = 30_000): Promise<{ out: string; err: string }> {
   await ideEventsReady();
   let id: RunId | undefined;
   let out = "";
+  let err = "";
   const exits = new Set<RunId>();
   let finish!: () => void;
   const exited = new Promise<void>((resolve) => (finish = resolve));
@@ -101,50 +114,71 @@ async function capture(config: RunConfig, timeoutMs = 30_000): Promise<string> {
   const channel = new Channel<OutputChunk>();
   channel.onmessage = (chunk) => {
     if (chunk.kind === "stdout" && out.length < 1_000_000) out += chunk.text;
+    if (chunk.kind === "stderr" && err.length < 100_000) err += chunk.text;
   };
   const timer = setTimeout(() => id !== undefined && void call(commands.runStop(id)).catch(() => {}), timeoutMs);
   try {
     id = (await call(commands.runStart(config, channel, null))).id;
     if (exits.has(id)) finish();
     await exited;
-    return out;
+    return { out, err };
   } finally {
     clearTimeout(timer);
     off();
   }
 }
 
-/** The project's manage.py and the interpreter it runs with. */
+/** The file the lookup starts from: the active editor's, so a monorepo uses that project's manage.py. */
+const near = () => maybeEditorService()?.activePath() ?? null;
+
+/** The manage.py of the active file's project and its interpreter (looked up each time: the index may still be building). */
 export async function locateManage(): Promise<{ manage: string | null; python: string | null }> {
-  const manage = pickManage((await call(commands.findFilesNamed("manage.py"))).map(String));
-  const python = manage && (await call(commands.sdkPythonEffective(dirname(manage))));
-  return { manage, python: python || null };
+  const mine = epoch;
+  const manage = await findManage(near());
+  const python = (manage && (await call(commands.sdkPythonEffective(dirname(manage))))) || null;
+  if (mine === epoch) useManage.setState({ manage, python });
+  return { manage, python };
 }
 
-/** Finds manage.py and the interpreter, then lists the commands (each once per project). */
-export async function loadManage(): Promise<void> {
-  if (useManage.getState().loaded !== "no") return;
-  useManage.setState({ loaded: "loading" });
-  try {
-    const { manage, python } = await locateManage();
-    useManage.setState({ manage, python });
-    if (manage && python) {
-      const config = { ...manageConfig(python, manage, ["help"]), id: `django.manage.help:${crypto.randomUUID()}` };
-      useManage.setState({ commands: parseHelp(await capture({ ...config, emulateTerminal: false })) });
-    }
-  } catch (e) {
-    console.warn("manage.py help failed", e);
-  } finally {
-    if (useManage.getState().loaded === "loading") useManage.setState({ loaded: "yes" });
-  }
+/** Reads the commands of `manage` with `manage.py help`, once (again after a failure only with `retry`). */
+export function loadCommands(manage: string, python: string, retry = false): Promise<void> {
+  const s = useManage.getState();
+  if (s.commands[manage] || (s.failed[manage] && !retry)) return Promise.resolve();
+  const pending = reading.get(manage);
+  if (pending) return pending;
+  const mine = epoch;
+  const config = { ...manageConfig(python, manage, ["help"]), id: `django.manage.help:${crypto.randomUUID()}` };
+  const read = capture({ ...config, emulateTerminal: false })
+    .then(({ out, err }) => {
+      if (mine !== epoch) return;
+      const list = parseHelp(out);
+      useManage.setState((st) => {
+        const failed = { ...st.failed };
+        delete failed[manage];
+        if (list.length) return { commands: { ...st.commands, [manage]: list }, failed };
+        return { failed: { ...failed, [manage]: true } };
+      });
+      if (!list.length)
+        notifications().notify({
+          level: "warning",
+          title: "Cannot list the manage.py commands",
+          body: err.trim().split("\n").slice(-5).join("\n") || undefined,
+          key: `django.manage.help:${manage}`,
+        });
+    })
+    .catch((e) => console.warn("manage.py help failed", e))
+    .finally(() => {
+      if (reading.get(manage) === read) reading.delete(manage);
+    });
+  reading.set(manage, read);
+  return read;
 }
 
-/** Runs a manage.py line in the Run tool window; false when it isn't one or there's no manage.py. */
+/** Runs a manage.py line in the Run tool window (not waiting for the command list); false when it isn't one or there's no manage.py. */
 export async function runManageLine(line: string, run: (config: RunConfig) => unknown): Promise<boolean> {
   const args = manageArgs(line);
   if (!args) return false;
-  await loadManage();
-  const { manage, python } = useManage.getState();
+  const { manage, python } = await locateManage();
   if (!manage || !python) return false;
   await run(manageConfig(python, manage, args));
   return true;
@@ -172,6 +206,8 @@ export function commandItems(
     }));
 }
 
+let locating: Promise<void> | null = null;
+
 export function manageRunAnything(run: (config: RunConfig) => unknown): RunAnythingProvider {
   return {
     id: "django.manage",
@@ -179,10 +215,17 @@ export function manageRunAnything(run: (config: RunConfig) => unknown): RunAnyth
     order: 25,
     items(query) {
       if (!manageArgs(query)) return [];
-      void loadManage();
-      return commandItems(query, useManage.getState().commands, (line) => void runManageLine(line, run));
+      const { manage, python, commands: lists } = useManage.getState();
+      if (!manage || !python) {
+        // One lookup at a time while typing; the rows come when it (and `help`) answers.
+        locating ??= locateManage()
+          .then((at) => void (at.manage && at.python && loadCommands(at.manage, at.python)))
+          .finally(() => (locating = null));
+      } else void loadCommands(manage, python);
+      return commandItems(query, (manage && lists[manage]) || [], (line) => void runManageLine(line, run));
     },
     execute: (line) => runManageLine(line, run),
-    subscribe: (listener) => useManage.subscribe((s, prev) => s.commands !== prev.commands && listener()),
+    subscribe: (listener) =>
+      useManage.subscribe((s, prev) => (s.commands !== prev.commands || s.manage !== prev.manage) && listener()),
   };
 }

@@ -5,7 +5,7 @@ import { executeAction, registerActions } from "@/platform/actions";
 import { onIdeEvent, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { notifications, registerEditorBanner, registerRunAnythingProvider } from "@/workbench/contributions";
-import { loadManage, locateManage, manageRunAnything, resetManage, useManage } from "./manage";
+import { loadCommands, locateManage, manageRunAnything, resetManage } from "./manage";
 import { forgetModels, lookupCompletionExtension } from "./models";
 import { checkStubs, resetStubs, useStubs, useStubsBanner } from "./stubs";
 import { forgetUrlNames, urlCompletionExtension, urlNavigation } from "./urls";
@@ -32,11 +32,13 @@ export function activate(): () => void {
         keywords: ["django", "manage.py", "migrate", "makemigrations"],
         when: "projectOpen",
         run: async () => {
-          await loadManage();
-          if (!useManage.getState().manage) {
+          const { manage, python } = await locateManage();
+          if (!manage) {
             notifications().notify({ level: "info", title: "No manage.py in this project" });
             return;
           }
+          // The commands complete once `manage.py help` answers; a failed one is tried again.
+          if (python) void loadCommands(manage, python, true);
           await executeAction("runAnything.show", "manage.py ");
         },
       },
@@ -58,8 +60,6 @@ export function activate(): () => void {
     // A fresh open races the index: manage.py, urls.py and models.py may be there once indexing ends.
     onIdeEvent("indexState", (e) => {
       if (e.indexing) return;
-      const { loaded, manage } = useManage.getState();
-      if (loaded === "yes" && !manage) resetManage();
       forgetUrlNames();
       forgetModels();
       if (!useStubs.getState().python) void checkProject();

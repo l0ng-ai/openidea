@@ -1,7 +1,7 @@
 /** The Python Console's process: the project interpreter running console.py on the Run process host. */
 import { Channel } from "@tauri-apps/api/core";
 import { create } from "zustand";
-import { pickManage } from "@/features/django/manage";
+import { pickManage } from "@/platform/django";
 import { call, commands, onIdeEvent, type OutputChunk, type RunConfig, type RunId } from "@/platform/ipc";
 import { windowLabel } from "@/platform/auxWindow";
 import { dirname, useProject } from "@/platform/project";
