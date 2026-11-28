@@ -194,12 +194,17 @@ export async function refreshConnection(): Promise<void> {
   const found = await projectGitHubRemotes();
   if (seq !== checkSeq) return;
   const current = useGhRepository.getState().connection?.coordinates ?? null;
-  const saved = parseNameWithOwner(loadSelection(projectRoot()));
+  const stored = parseNameWithOwner(loadSelection(projectRoot()));
+  // A choice saved without its host comes from a release that knew only github.com: that one first,
+  // else the repository of that name on the Enterprise host.
+  const legacy = stored && !stored.host ? { ...stored, host: "github.com" } : null;
+  const savedIn = (list: readonly GHRemote[]) =>
+    legacy && !list.some((r) => sameRepository(r, legacy)) ? stored : (legacy ?? stored);
   // gh resolves its repository in a local one; ask in the one likely to be connected.
   const probe =
     (
       found.remotes.find((r) => sameRepository(r, current)) ??
-      found.remotes.find((r) => sameRepository(r, saved)) ??
+      found.remotes.find((r) => sameRepository(r, savedIn(found.remotes))) ??
       found.remotes[0]
     )?.root ?? null;
   try {
@@ -233,14 +238,12 @@ export async function refreshConnection(): Promise<void> {
     disconnect({ forget: false });
     return;
   }
-  // A choice saved without its host (before hosts were recorded): the origin remote's, when it is one of them.
-  const chosen = saved?.host
-    ? saved
-    : (remotes.find((r) => r.remote === "origin" && sameRepository(r, saved)) ?? saved);
   const target =
     remotes.length === 1
       ? remotes[0]!
-      : (remotes.find((r) => sameRepository(r, current)) ?? remotes.find((r) => sameRepository(r, chosen)) ?? null);
+      : (remotes.find((r) => sameRepository(r, current)) ??
+        remotes.find((r) => sameRepository(r, savedIn(localRemotes))) ??
+        null);
   // Only a choice among several repositories is remembered.
   if (target) await connect(target, { remember: remotes.length > 1 });
   else disconnect({ forget: false });

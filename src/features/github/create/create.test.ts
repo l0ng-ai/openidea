@@ -64,6 +64,14 @@ describe("merge direction", () => {
       defaultBranch: "main",
     });
     expect(d.headRepo).toBe(ghe);
+    // Its github.com upstream still names the branch to look for an open pull request with, but it is
+    // no push target for the Enterprise head: creating asks for the branch name and pushes to origin.
+    const names = ["origin", "fork", "public"];
+    expect(trackedHead({ kind: "local", name: "feature" }, tracking, names)).toEqual({
+      remote: "public",
+      name: "feature",
+    });
+    expect(pushTarget(tracking, "feature", ghe.remote, names)).toBeNull();
   });
 
   it("splits remote branches by the longest remote name", () => {
