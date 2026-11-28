@@ -582,6 +582,8 @@ export const commands = {
 	 */
 	docAutosave: (doc: DocId) => typedError<boolean, IdeError>(__TAURI_INVOKE("doc_autosave", { doc })),
 	docClose: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_close", { doc })),
+	/**  Copies the current buffer, including unsaved edits, without changing the source; false for the source itself. */
+	docCopyAs: (doc: DocId, path: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("doc_copy_as", { doc, path })),
 	/**
 	 *  Applies a CodeMirror change set; returns the new version. Rejects with
 	 *  `outOfSync` when `base_version` is stale; the UI then calls `doc_snapshot`.

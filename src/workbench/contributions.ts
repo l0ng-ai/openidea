@@ -841,6 +841,8 @@ export interface EditorService {
   activeCursor(): { doc: number; path: string; line: number; col: number; offset: number } | null;
   /** Save all dirty documents; rejects with the failures once every save was tried. */
   saveAll(opts?: { skipUntitled?: boolean }): Promise<void>;
+  /** Copies an open file's current buffer to `target`; null when `path` is not open in an editor. */
+  copyAs?(path: string, target: string): Promise<boolean | null>;
   /** Doc ids of untitled buffers with unsaved changes (they follow the window, not a project). */
   untitledDirtyDocumentIds?(): number[];
   /** Includes local edits not yet acknowledged by the backend. */

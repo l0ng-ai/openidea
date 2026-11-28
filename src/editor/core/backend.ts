@@ -49,6 +49,8 @@ export interface DocBackend {
   openUntitled(name: string | null): Promise<DocumentInfo>;
   /** Save As for an untitled buffer: writes it to `path` and re-keys the document. */
   saveAs(doc: DocId, path: string): Promise<DocumentInfo>;
+  /** Copies a real file's current buffer to `path`; `false` when it already names the source. */
+  copyAs(doc: DocId, path: string): Promise<boolean>;
   close(doc: DocId): Promise<void>;
   edit(doc: DocId, baseVersion: number, changes: TextChange[]): Promise<number>;
   save(doc: DocId): Promise<void>;
@@ -100,6 +102,7 @@ export const ipcBackend: DocBackend = {
   openVirtual: (uri) => call(commands.docOpenVirtual(uri)),
   openUntitled: (name) => call(commands.docOpenUntitled(name)),
   saveAs: (doc, path) => call(commands.docSaveAs(doc, path)),
+  copyAs: (doc, path) => call(commands.docCopyAs(doc, path)),
   close: async (doc) => void (await call(commands.docClose(doc))),
   edit: (doc, baseVersion, changes) => call(commands.docEdit(doc, baseVersion, { changes })),
   save: async (doc) => void (await call(commands.docSave(doc))),
@@ -578,6 +581,16 @@ export function createMemoryBackend(files: Record<string, string> = {}): MemoryB
       d.language = EXT_LANG[path.slice(path.lastIndexOf(".") + 1).toLowerCase()] ?? "plaintext";
       setDirty(d, before);
       return info(d);
+    },
+    async copyAs(doc, path) {
+      const d = get(doc);
+      if (d.uri)
+        throw new IpcError({ kind: "invalidInput", message: "only a file document can be copied to a new path" });
+      if (byPath.get(path) === doc) return false;
+      if (byPath.has(path)) throw new IpcError({ kind: "invalidInput", message: `${path} is already open` });
+      store.set(path, d.text);
+      savedBoms.set(path, d.hasBom);
+      return true;
     },
     edit(doc, baseVersion, changes) {
       return delay(() => {

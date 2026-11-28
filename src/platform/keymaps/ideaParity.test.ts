@@ -151,6 +151,7 @@ describe("IDEA keymap parity", () => {
     ["workbench.stopBackgroundProcesses", ["Meta+Shift+F2"], ["Ctrl+Shift+F2"]],
     ["navigate.back", ["Meta+[", "Meta+Alt+Left", "Button4", "SwipeRight"], ["Ctrl+Alt+Left", "Button4"]],
     ["navigate.forward", ["Meta+]", "Meta+Alt+Right", "Button5", "SwipeLeft"], ["Ctrl+Alt+Right", "Button5"]],
+    ["file.saveAs", ["Meta+Shift+S"], ["Ctrl+Shift+S"]],
     ["file.projectStructure", ["Meta+;"], ["Ctrl+Alt+Shift+S"]],
     ["build.compileFile", ["Meta+Shift+F9"], ["Ctrl+Shift+F9"]],
     ["build.buildModule", [], []],

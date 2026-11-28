@@ -1065,6 +1065,19 @@ impl Documents {
         }
     }
 
+    /// Writes the current buffer with its encoding, BOM, line ending and file-type conversion.
+    fn write_to(st: &DocState, target: &Path) -> IdeResult<f64> {
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let text = st.doc.text_for_save();
+        if st.native_to_ascii {
+            ide_vfs::save_properties_text(target, &text)
+        } else {
+            ide_vfs::save_text(target, &text, &st.encoding, st.has_bom)
+        }
+    }
+
     /// Save As for an untitled buffer: writes it to `target` (creating missing
     /// parent folders) and turns it into a regular file document — the buffer
     /// keeps its identity (undo history, version), the registry is re-keyed and
@@ -1090,15 +1103,7 @@ impl Documents {
             if st.uri.is_none() || !is_untitled(&st.path) {
                 return Err(IdeError::invalid("only an untitled document can be saved to a new path"));
             }
-            let text = st.doc.text_for_save();
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let mtime = if st.native_to_ascii {
-                ide_vfs::save_properties_text(&target, &text)?
-            } else {
-                ide_vfs::save_text(&target, &text, &st.encoding, st.has_bom)?
-            };
+            let mtime = Self::write_to(st, &target)?;
             // Re-key the registry before anyone opens the new path in parallel.
             let keys = keys_for(&target);
             {
@@ -1146,6 +1151,35 @@ impl Documents {
             }
             Ok(info)
         })
+    }
+
+    /// Copies the current buffer without changing the source; another open target is never overwritten.
+    pub fn copy_as(&self, doc: DocId, target: &Path) -> IdeResult<bool> {
+        // Keep the operation lock across the target check and write so opening cannot race the copy.
+        let _operation = self.operations.lock();
+        if is_untitled(target) {
+            return Err(IdeError::invalid("cannot copy over an untitled buffer"));
+        }
+        let target = absolute(target);
+        {
+            let reg = self.registry.lock();
+            match Self::lookup(&reg, &target) {
+                Some(other) if other != doc => {
+                    return Err(IdeError::invalid(format!("{} is already open", target.display())));
+                }
+                Some(_) => return Ok(false),
+                None => {}
+            }
+        }
+        let slot = self.slot(doc)?;
+        let st = slot.lock();
+        if st.closed {
+            return Err(IdeError::not_found(format!("document {doc} is not open")));
+        }
+        if st.uri.is_some() || ide_vfs::is_archive_path(&st.path) {
+            return Err(IdeError::invalid("only a file document can be copied to a new path"));
+        }
+        Self::write_to(&st, &target).map(|_| true)
     }
 
     pub fn has_unsaved_changes(&self) -> bool {

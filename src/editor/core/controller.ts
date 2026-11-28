@@ -2416,6 +2416,14 @@ export class EditorController implements SlotHost {
     return this.activeSlot?.model.path ?? this.activeTabOf()?.input.path ?? null;
   }
 
+  /** Copies an open file's current buffer without saving it; null when no editor document owns `path`. */
+  async copyAs(path: string, target: string): Promise<boolean | null> {
+    const model = this.manager.get(path);
+    if (!model || model.closed || model.virtual || isUntitledUri(path)) return null;
+    await model.sync.whenIdle();
+    return this.manager.backend.copyAs(model.doc, target);
+  }
+
   activeCursor() {
     const slot = this.activeSlot;
     if (!slot) return null;

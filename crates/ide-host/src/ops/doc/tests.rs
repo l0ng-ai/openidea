@@ -112,6 +112,36 @@ async fn dirty_document_keeps_edits_and_warns_once() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn save_as_copies_the_current_buffer_and_leaves_the_source_on_disk() {
+    let f = Fixture::new();
+    let original = f.open(&f.path).await;
+    doc_edit(
+        &f.host,
+        "main",
+        original.id,
+        original.version,
+        ChangeSet { changes: vec![TextChange { from: 0, to: 0, insert: "local ".into() }] },
+    )
+    .await
+    .unwrap();
+    let target = f.outside.with_extension("copy.txt");
+    std::fs::write(&target, "old\n").unwrap();
+
+    assert!(doc_copy_as(&f.host, "main", original.id, target.clone()).await.unwrap());
+
+    assert_eq!(std::fs::read_to_string(&f.path).unwrap(), "original\n");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "local original\n");
+    let source = f.project.documents.snapshot(original.id).unwrap();
+    assert_eq!(source.path, f.path);
+    assert_eq!(source.text, "local original\n");
+    assert!(source.dirty);
+    let copy = f.open(&target).await;
+    assert_ne!(copy.id, original.id);
+    assert_eq!(copy.text, "local original\n");
+    assert!(!copy.dirty);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deleted_document_keeps_its_buffer_and_other_documents_still_reload() {
     let f = Fixture::new();
     let original = f.open(&f.path).await;

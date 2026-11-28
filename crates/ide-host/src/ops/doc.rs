@@ -56,6 +56,20 @@ pub async fn doc_save_as(host: &Host, window: &str, doc: DocId, path: PathBuf) -
     .await
 }
 
+/// Copies the current buffer, including unsaved edits, without changing the source; false for the source itself.
+#[command(trust = always)]
+pub async fn doc_copy_as(host: &Host, window: &str, doc: DocId, path: PathBuf) -> IdeResult<bool> {
+    let project = host.project(window)?;
+    host.blocking(move || {
+        let copied = project.documents.copy_as(doc, &path)?;
+        if let Some(dir) = path.parent().filter(|_| project.light) {
+            project.watch_light_dir(dir);
+        }
+        Ok(copied)
+    })
+    .await
+}
+
 /// Applies a CodeMirror change set; returns the new version. Rejects with
 /// `outOfSync` when `base_version` is stale; the UI then calls `doc_snapshot`.
 #[command(trust = always, desktop_body = async)]
@@ -141,6 +155,7 @@ mod tests;
 ide_command::domain!(
     doc:
     doc_close,
+    doc_copy_as,
     doc_edit,
     doc_open,
     doc_open_untitled,

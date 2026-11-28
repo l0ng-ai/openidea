@@ -241,6 +241,7 @@ deploy_upload                                trusted            project_host bin
 diff_external_tool                           always             desktop      bindings async
 doc_autosave                                 always             project_host bindings async
 doc_close                                    always             project_host bindings async
+doc_copy_as                                  always             project_host bindings async
 doc_edit                                     always             project_host bindings async
 doc_flutter_outline                          always             project_host bindings async
 doc_folding                                  always             project_host bindings async

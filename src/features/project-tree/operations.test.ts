@@ -5,6 +5,7 @@ import {
   checkEditingName,
   copySelection,
   importExternal,
+  openCopyDialog,
   paste,
   refreshOsClipboard,
   revealablePath,
@@ -16,7 +17,11 @@ import { IpcError } from "@/platform/ipc";
 import { closeFileRefactorDialog, pendingFileRefactorDialog } from "./FileRefactorDialogs";
 import { useRemote } from "@/platform/remote";
 import { usePlatform } from "@/platform/platformInfo";
-import { provideNotificationService } from "@/workbench/contributions";
+import { provideEditorService, provideNotificationService, type EditorService } from "@/workbench/contributions";
+import { getAction } from "@/platform/actions";
+import { getContext } from "@/platform/context";
+import { useEditorRegistry } from "@/editor/api";
+import { registerProjectActions } from "./actions";
 import { MemoryFs, setProjectFsForTests } from "./fs";
 import { initProjectTree, loadDir, setClipboard, setSelection, useProjectTree } from "./store";
 import { setOsClipboardForTests } from "./clipboard";
@@ -595,6 +600,97 @@ describe("project clipboard ownership", () => {
     await refreshing;
     expect(useProjectTree.getState().clipboard).toBe(newer);
     expect(canPaste()).toBe(true);
+  });
+});
+
+describe("Copy dialog buffer copies and Save As", () => {
+  let disposeActions: () => void;
+  let copyAs: ReturnType<typeof vi.fn>;
+  let openFile: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    fs = new MemoryFs({ "/p/source.txt": "saved\n", "/p/other.txt": "other\n", "/p/target": null }, "/p");
+    setProjectFsForTests(fs, "/p");
+    initProjectTree("/p", "p");
+    await loadDir("/p");
+    provideNotificationService({ notify });
+    notify.mockClear();
+    copyAs = vi.fn(async () => true);
+    openFile = vi.fn(async () => {});
+    provideEditorService({ copyAs, openFile, activePath: () => "/p/source.txt" } as unknown as EditorService);
+    disposeActions = registerProjectActions();
+  });
+
+  afterEach(() => {
+    disposeActions();
+    closeFileRefactorDialog();
+    provideEditorService(undefined as unknown as EditorService);
+    useEditorRegistry.setState({ active: null });
+    setProjectFsForTests(null);
+    initProjectTree(null);
+    vi.restoreAllMocks();
+  });
+
+  it("copies one open file through its document buffer and opens the copy on request", async () => {
+    const filesystemCopy = vi.spyOn(fs, "copy");
+    openCopyDialog([node("/p/source.txt")]);
+    const request = pendingFileRefactorDialog();
+    expect(request).toMatchObject({ kind: "copy", paths: ["/p/source.txt"], target: "/p" });
+    if (request?.kind !== "copy") throw new Error("no copy dialog");
+
+    expect(await request.copy("/p/target", "source copy.txt", true)).toBe(true);
+    expect(copyAs).toHaveBeenCalledExactlyOnceWith("/p/source.txt", "/p/target/source copy.txt");
+    expect(filesystemCopy).not.toHaveBeenCalled();
+    expect(openFile).toHaveBeenCalledExactlyOnceWith("/p/target/source copy.txt", { focus: true });
+  });
+
+  it("keeps the filesystem copy path when the source is not open", async () => {
+    copyAs.mockResolvedValue(null);
+    const filesystemCopy = vi.spyOn(fs, "copy");
+    openCopyDialog([node("/p/source.txt")]);
+    const request = pendingFileRefactorDialog();
+    if (request?.kind !== "copy") throw new Error("no copy dialog");
+
+    expect(await request.copy("/p/target", "source copy.txt", false)).toBe(true);
+    expect(copyAs).toHaveBeenCalledExactlyOnceWith("/p/source.txt", "/p/target/source copy.txt");
+    expect(filesystemCopy).toHaveBeenCalledExactlyOnceWith("/p/source.txt", "/p/target/source copy.txt");
+    expect(openFile).not.toHaveBeenCalled();
+  });
+
+  it("reports a buffer copy failure without falling back to stale disk contents", async () => {
+    copyAs.mockRejectedValue(new Error("disk full"));
+    const filesystemCopy = vi.spyOn(fs, "copy");
+    openCopyDialog([node("/p/source.txt")]);
+    const request = pendingFileRefactorDialog();
+    if (request?.kind !== "copy") throw new Error("no copy dialog");
+
+    expect(await request.copy("/p/target", "source copy.txt", false)).toBe(false);
+    expect(filesystemCopy).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ level: "error", title: "Some items could not be copied", body: "disk full" }),
+    );
+  });
+
+  it("opens the same Copy dialog for Save As and F5 using the active editor's file", async () => {
+    setSelection(new Set(["/p/other.txt"]), "/p/other.txt");
+    useEditorRegistry.setState({ active: { ctx: { path: "/p/source.txt" } } as never });
+
+    await getAction("file.saveAs")!.run({ ctx: getContext() });
+    expect(pendingFileRefactorDialog()).toMatchObject({
+      kind: "copy",
+      paths: ["/p/source.txt"],
+      target: "/p",
+      forceOpenInEditor: true,
+    });
+    closeFileRefactorDialog();
+
+    await getAction("project.copyElement")!.run({ ctx: { ...getContext(), projectViewFocus: false } });
+    expect(pendingFileRefactorDialog()).toMatchObject({
+      kind: "copy",
+      paths: ["/p/source.txt"],
+      target: "/p",
+      forceOpenInEditor: false,
+    });
   });
 });
 

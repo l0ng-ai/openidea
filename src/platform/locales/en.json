@@ -236,6 +236,7 @@
   "menu.window.previousTab": "Previous Project Tab",
   "menu.project.attach": "Attach Project…",
   "menu.file.openProject": "Open…",
+  "menu.file.saveAs": "Save As…",
   "menu.file.save": "Save All",
   "menu.file.projectStructure": "Project Structure…",
   "menu.file.settings": "Settings…",

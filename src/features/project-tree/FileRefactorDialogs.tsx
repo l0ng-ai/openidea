@@ -51,6 +51,8 @@ export type FileRefactorRequest =
       target: string;
       /** The single copied item is a folder. */
       dir?: boolean;
+      /** Save As always opens the copy without changing the remembered Copy option. */
+      forceOpenInEditor?: boolean;
       /** Copies into `target` (`name`: the single item's new name); false keeps the dialog open. */
       copy: (target: string, name: string | null, openInEditor: boolean) => Promise<boolean>;
     };
@@ -433,6 +435,7 @@ function CopyDialog({ request }: { request: Extract<FileRefactorRequest, { kind:
     return single ? uniqueName(own, (n) => taken.has(fold(n)), !!request.dir) : "";
   });
   const [openInEditor, setOpenInEditor] = useState(() => {
+    if (request.forceOpenInEditor) return true;
     try {
       return localStorage.getItem(COPY_OPEN_KEY) === "true";
     } catch {
@@ -465,10 +468,12 @@ function CopyDialog({ request }: { request: Extract<FileRefactorRequest, { kind:
     : tx`Copy ${count} items`;
   const submit = async () => {
     if (busy || browsing || error) return;
-    try {
-      localStorage.setItem(COPY_OPEN_KEY, String(openInEditor));
-    } catch {
-      /* storage unavailable */
+    if (!request.forceOpenInEditor) {
+      try {
+        localStorage.setItem(COPY_OPEN_KEY, String(openInEditor));
+      } catch {
+        /* storage unavailable */
+      }
     }
     setBusy(true);
     const ok = await request.copy(dest, single ? name : null, openInEditor && !request.dir);
@@ -484,7 +489,12 @@ function CopyDialog({ request }: { request: Extract<FileRefactorRequest, { kind:
       footerStart={
         single &&
         !request.dir && (
-          <Checkbox label="Open copy in editor" checked={openInEditor} disabled={busy} onChange={setOpenInEditor} />
+          <Checkbox
+            label="Open copy in editor"
+            checked={openInEditor}
+            disabled={busy || request.forceOpenInEditor}
+            onChange={setOpenInEditor}
+          />
         )
       }
       buttons={[

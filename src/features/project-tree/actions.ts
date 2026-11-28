@@ -1,10 +1,11 @@
 /** Actions of the project view (Find Action, keymap, other features via `executeAction`). */
-import { activeEditor } from "@/editor/api";
+import { activeEditor, focusedCellEditor } from "@/editor/api";
 import { executeAction, getAction, registerActions, type Action } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import { FILE_COLOR_NAMES } from "@/platform/fileColors";
 import { canRevealInFileManager, revealInFileManagerLabel } from "@/platform/fileManager";
 import { dirname, useProject } from "@/platform/project";
+import { isUntitledUri } from "@/platform/virtualDocs";
 import { showContextMenu, type MenuItem } from "@/ui";
 import { maybeEditorService, menuGroupItems, toolWindowService } from "@/workbench/contributions";
 import { OPTION_LABELS, SORT_LABELS, flipToggle, isToggled } from "./HeaderActions";
@@ -399,6 +400,21 @@ export function registerProjectActions(): () => void {
         if (arg !== undefined || ctx.projectViewFocus) return openCopyDialog(nodesFrom(arg));
         const path = activeEditor()?.ctx.path;
         if (path) openCopyDialog(nodesFrom(path));
+      },
+    },
+    {
+      id: "file.saveAs",
+      title: "Save As…",
+      category: "File",
+      keywords: ["save", "copy file"],
+      when: "textEditorActive",
+      enabled: () => {
+        const editor = activeEditor();
+        return !!editor && !editor.ctx.virtual && !isUntitledUri(editor.ctx.path) && !focusedCellEditor();
+      },
+      run: () => {
+        const path = activeEditor()?.ctx.path;
+        if (path) openCopyDialog(nodesFrom(path), { forceOpenInEditor: true });
       },
     },
     {

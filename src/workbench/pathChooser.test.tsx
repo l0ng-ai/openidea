@@ -159,6 +159,22 @@ describe("choosePath in a remote window", () => {
     expect(mocks.confirm).not.toHaveBeenCalled();
   });
 
+  it("does not accept an existing save destination when overwrite is declined", async () => {
+    mocks.confirm.mockResolvedValueOnce(false);
+    let result!: Promise<string | null>;
+    act(() => {
+      result = chooseSavePath({ title: "Save As", defaultPath: "/srv/app/pom.xml" });
+    });
+    await dialog().findByText("runner");
+    fireEvent.click(dialog().getByRole("button", { name: "OK" }));
+    await waitFor(() => expect(mocks.confirm).toHaveBeenCalledOnce());
+    expect(mocks.nativeSave).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog")).toBeTruthy();
+
+    fireEvent.click(dialog().getByRole("button", { name: "Cancel" }));
+    await expect(result).resolves.toBeNull();
+  });
+
   it("asks before accepting an existing save destination", async () => {
     mocks.confirm.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
     let result!: Promise<string | null>;

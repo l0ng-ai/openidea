@@ -265,6 +265,7 @@ describe("menu config", () => {
   it("carries keymap shortcuts as native accelerators", () => {
     const mac = buildMenuConfig("macos");
     expect(mac.accelerators["file.save"]).toBe("Meta+S");
+    expect(mac.accelerators["file.saveAs"]).toBe("Shift+Meta+S");
     expect(mac.accelerators["navigate.gotoFile"]).toBe("Shift+Meta+O");
     expect(mac.accelerators["build.compileFile"]).toBe("Shift+Meta+F9");
     expect(mac.accelerators["navigate.searchEverywhere"]).toBeUndefined();
