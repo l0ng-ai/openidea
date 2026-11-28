@@ -8,6 +8,7 @@
  */
 import { LRLanguage, LanguageSupport, foldInside, foldNodeProp } from "@codemirror/language";
 import { html } from "@codemirror/lang-html";
+import { VERSIONED_SCRIPT_TYPES } from "../htmlScripts";
 import { javaLanguage } from "@codemirror/lang-java";
 import { styleTags, tags as t } from "@lezer/highlight";
 import {
@@ -23,7 +24,7 @@ import {
 import { JAVA_TAGS } from "../languages";
 import { parser } from "./parser";
 
-const baseHTML = html({ selfClosingTags: true });
+const baseHTML = html({ selfClosingTags: true, nestedLanguages: VERSIONED_SCRIPT_TYPES });
 
 const JSP_COMMENT = { block: { open: "<%--", close: "--%>" } };
 

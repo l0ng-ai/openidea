@@ -9,6 +9,7 @@ import { html } from "@codemirror/lang-html";
 import { lessLanguage } from "@codemirror/lang-less";
 import { sassLanguage } from "@codemirror/lang-sass";
 import { vue } from "@codemirror/lang-vue";
+import { VERSIONED_SCRIPT_TYPES } from "./htmlScripts";
 
 /**
  * WebStorm's Vue code style indents the children of the top-level `<template>` only: code in
@@ -30,6 +31,7 @@ export function vueLanguage(): LanguageSupport {
     // `<style>` without `lang` (or with `lang="css"`) keeps HTML's own CSS
     // nesting; only an explicit SCSS/Sass/Less dialect re-parses it.
     nestedLanguages: [
+      ...VERSIONED_SCRIPT_TYPES,
       {
         tag: "style",
         attrs: (a) => a.lang === "scss" || a.lang === "sass",

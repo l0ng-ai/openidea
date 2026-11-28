@@ -16,6 +16,7 @@ import {
   type TreeIndentContext,
 } from "@codemirror/language";
 import { html } from "@codemirror/lang-html";
+import { VERSIONED_SCRIPT_TYPES } from "../htmlScripts";
 import type { CompletionContext, CompletionResult } from "@codemirror/autocomplete";
 import { EditorSelection, Prec, type EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
@@ -26,7 +27,7 @@ import { BLOCK_TAGS } from "./tokens";
 
 export { BLOCK_TAGS };
 
-const baseHTML = html({ selfClosingTags: true });
+const baseHTML = html({ selfClosingTags: true, nestedLanguages: VERSIONED_SCRIPT_TYPES });
 
 /** `{# #}` can't span lines: a multi-line block comment is a `comment` tag. */
 const DJANGO_COMMENT = { block: { open: "{#", close: "#}" } };

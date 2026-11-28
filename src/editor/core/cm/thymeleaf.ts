@@ -6,6 +6,7 @@
  */
 import type { Completion, CompletionContext, CompletionResult } from "@codemirror/autocomplete";
 import { html } from "@codemirror/lang-html";
+import { VERSIONED_SCRIPT_TYPES } from "./htmlScripts";
 import { LanguageSupport, StreamLanguage, type StringStream } from "@codemirror/language";
 
 /** The Standard Dialect's attributes (without `th:`). */
@@ -305,7 +306,7 @@ export function thymeleafSupport(): LanguageSupport {
     { name: `th:${name}`, parser: expression.parser },
     { name: `data-th-${name}`, parser: expression.parser },
   ]);
-  const base = html({ nestedAttributes: attributes });
+  const base = html({ nestedAttributes: attributes, nestedLanguages: VERSIONED_SCRIPT_TYPES });
   return new LanguageSupport(base.language, [
     base.support,
     base.language.data.of({ openideaCompletion: thymeleafAttributeCompletion }),
