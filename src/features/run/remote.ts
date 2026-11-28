@@ -54,32 +54,31 @@ export function withTarget(config: RunConfig, target: string): RunConfig {
   return target || workflowSettings().run.defaultTarget ? { ...rest, target } : rest;
 }
 
-/** A Python configuration on a Docker / Compose target: debugged in its container (`debugInContainer`). */
-export function containerDebuggable(
-  config: RunConfig,
-  targets: readonly RuntimeRunTarget[] = allRunTargets(),
-): boolean {
+/** A Python configuration on an SSH, Docker or Compose target: debugged there (`debugOnTarget`). */
+export function targetDebuggable(config: RunConfig, targets: readonly RuntimeRunTarget[] = allRunTargets()): boolean {
   const target = targetOf(config, targets);
-  return !!target && inContainer(target) && config.debugAdapter === "debugpy";
+  return !!target && (target.kind === "ssh" || inContainer(target)) && config.debugAdapter === "debugpy";
 }
 
 /**
- * Debugging on run targets isn't supported, except Python in containers: tells so
- * (offering Run) and returns true when `config` can't be debugged where it runs.
+ * Debugging on run targets is supported for Python on SSH and container targets: tells
+ * so (offering Run) and returns true when `config` can't be debugged where it runs.
  */
 export function remoteDebugBlocked(config: RunConfig, targets: readonly RuntimeRunTarget[] = allRunTargets()): boolean {
   config = withRunTarget(config);
-  if (!config.target || containerDebuggable(config, targets)) return false;
+  if (!config.target || targetDebuggable(config, targets)) return false;
   const target = targetName(config, targets) ?? config.target;
-  const container = targetOf(config, targets);
+  const where = targetOf(config, targets);
   notifications().notify({
     group: "run",
     level: "warning",
     key: "run.remoteDebug",
     title:
-      container && inContainer(container)
+      where && inContainer(where)
         ? "Only Python can be debugged in containers"
-        : "Debugging on run targets is not supported",
+        : where?.kind === "ssh"
+          ? "Only Python can be debugged on SSH run targets"
+          : "Debugging on run targets is not supported",
     body: txTemplate(
       `'${config.name}' runs on ${target}. Run it, or choose “Local machine” under “Run on” to debug it.`,
     ),

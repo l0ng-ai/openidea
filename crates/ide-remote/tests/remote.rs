@@ -443,6 +443,7 @@ async fn runs_a_configuration_on_a_target() {
         root: env.project.clone(),
         remote_root: "/home/dev/demo".into(),
         sync: None,
+        debug: None,
     };
     let info = runs.start(
         start,

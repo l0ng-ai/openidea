@@ -116,7 +116,7 @@ async fn docker_targets_run_through_the_docker_cli() {
     std::fs::write(lib.join("debugpy/__init__.py"), "").unwrap();
     let mut debug = config("py", &root);
     debug.debug_adapter = Some("debugpy".into());
-    debug.extras.params.insert("containerDebug".into(), "true".into());
+    debug.extras.params.insert("targetDebug".into(), "true".into());
     let out = output_of(&host, debug.clone()).await;
     let args: Vec<&str> = out.lines().filter_map(|l| l.strip_prefix("arg:")).collect();
     let publish = args[args.iter().position(|a| *a == "--publish").unwrap() + 1];

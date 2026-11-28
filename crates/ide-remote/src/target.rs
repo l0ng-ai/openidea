@@ -118,6 +118,64 @@ pub fn argv_command(config: &RunConfig, target: &RunTarget, root: &Path, remote_
     target_command(config, target, root, remote_root, false)
 }
 
+/// Set by the Debug action on a configuration that runs on a run target: the Python program
+/// starts under debugpy and waits for the debugger.
+pub const DEBUG_PARAM: &str = "targetDebug";
+
+/// `command` (an SSH target's) under the debug bootstrap at `bootstrap`: debugpy listens on the
+/// host's loopback `port`, which the IDE reaches through an SSH forward. `debugpy_lib` is the
+/// IDE's uploaded copy, for an interpreter without debugpy.
+pub fn ssh_debug_command(
+    command: &RemoteCommand,
+    target: &RunTarget,
+    remote_root: &str,
+    port: u16,
+    bootstrap: &str,
+    debugpy_lib: Option<&str>,
+) -> IdeResult<RemoteCommand> {
+    if command.shell_line.is_some() {
+        return Err(IdeError::invalid(
+            "a shell command line can't be debugged on a run target: set Command to the Python executable and put the script or -m module in Arguments",
+        ));
+    }
+    let line = crate::docker::debug_command(&command.program, &command.args, target, port, remote_root, bootstrap)?;
+    let mut env = command.env.clone();
+    env.insert("OPENIDEA_DEBUG_HOST".into(), "127.0.0.1".into());
+    if let Some(lib) = debugpy_lib {
+        env.insert("OPENIDEA_DEBUGPY_LIB".into(), lib.into());
+    }
+    Ok(RemoteCommand {
+        program: line[0].clone(),
+        args: line[1..].to_vec(),
+        cwd: command.cwd.clone(),
+        env,
+        shell_line: None,
+    })
+}
+
+/// The interpreter of an [`ssh_debug_command`] (with its options, or behind `uv run`).
+pub fn debug_interpreter(debug: &RemoteCommand, bootstrap: &str) -> RemoteCommand {
+    let end = debug.args.iter().position(|a| a == bootstrap).unwrap_or(debug.args.len());
+    RemoteCommand { args: debug.args[..end].to_vec(), ..debug.clone() }
+}
+
+/// Exit status of [`debugpy_probe`] when the project folder is not on the host yet (the first
+/// sync runs later): a project interpreter or `uv run` can't be asked before it.
+pub const PROBE_NO_FOLDER: u32 = 97;
+
+/// The command line that exits with 0 when the interpreter of an [`ssh_debug_command`] has
+/// debugpy, [`PROBE_NO_FOLDER`] when its folder does not exist yet.
+pub fn debugpy_probe(debug: &RemoteCommand, bootstrap: &str) -> String {
+    let probe = debug_interpreter(debug, bootstrap);
+    let mut args = probe.args;
+    args.extend(["-c".into(), "import debugpy".into()]);
+    format!(
+        "cd {} 2>/dev/null || exit {PROBE_NO_FOLDER}; {}",
+        ide_ssh::shell::quote(&probe.cwd),
+        ide_ssh::shell::command_line(None, &probe.env, &probe.program, &args)
+    )
+}
+
 /// `java` flags whose value is a path list that may point outside the project
 /// (`~/.m2` jars, `--module-path` entries): deployment sync only uploads the
 /// project root, so these entries need their own sync + rewrite (#2641).
@@ -291,6 +349,15 @@ pub struct RemoteStart {
     pub remote_root: String,
     /// Uploads local changes first (`sync_before_run`).
     pub sync: Option<SyncFn>,
+    /// A debug run: started under debugpy instead of the configuration's own command.
+    pub debug: Option<RemoteDebug>,
+}
+
+/// The command of a debug run and the SSH forward the debugger connects through,
+/// which closes when the run ends.
+pub struct RemoteDebug {
+    pub command: RemoteCommand,
+    pub tunnel: ide_ssh::Tunnel,
 }
 
 impl RemoteRuns {
@@ -329,7 +396,10 @@ impl RemoteRuns {
         });
         self.runs.lock().insert(id, run.clone());
         let on_output: OutputFn = Arc::from(on_output);
-        let command = remote_command(config, &start.target, &start.root, &start.remote_root);
+        let command = match &start.debug {
+            Some(debug) => debug.command.clone(),
+            None => remote_command(config, &start.target, &start.root, &start.remote_root),
+        };
         tokio::spawn(async move {
             let code = run_remote(&run, start, command, pty, on_output.clone()).await;
             let message = match &code {
@@ -484,6 +554,43 @@ mod tests {
         assert_eq!((c.program.as_str(), c.cwd.as_str()), ("node", "/srv"));
         let c = remote_command(&config("/usr/bin/make", &["test"], None), &RunTarget::default(), root, "/srv");
         assert_eq!(c.program, "make");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn debugs_python_on_an_ssh_host_through_its_loopback_port() {
+        let target = RunTarget { python: "/opt/py/bin/python".into(), ..Default::default() };
+        let root = Path::new("/work/proj");
+        let bootstrap = "/home/me/.openidea/debug/openidea_debug.py";
+        let plain = remote_command(
+            &config("/work/proj/.venv/bin/python", &["-u", "/work/proj/src/main.py", "--n", "1"], None),
+            &target,
+            root,
+            "/home/me/proj",
+        );
+        let debug = ssh_debug_command(&plain, &target, "/home/me/proj", 50123, bootstrap, None).unwrap();
+        assert_eq!(debug.program, "/opt/py/bin/python");
+        // Interpreter options stay in front of the bootstrap; the project folder is the remote one.
+        assert_eq!(debug.args, ["-u", bootstrap, "50123", "/home/me/proj", "/home/me/proj/src/main.py", "--n", "1"]);
+        assert_eq!(debug.env["OPENIDEA_DEBUG_HOST"], "127.0.0.1");
+        assert!(!debug.env.contains_key("OPENIDEA_DEBUGPY_LIB"));
+        // A folder the first sync has yet to create is told apart from a missing debugpy.
+        assert_eq!(
+            debugpy_probe(&debug, bootstrap),
+            "cd /home/me/proj 2>/dev/null || exit 97; exec env DATA=/home/me/proj/data OPENIDEA_DEBUG_HOST=127.0.0.1 /opt/py/bin/python -u -c 'import debugpy'"
+        );
+
+        // A console script runs as a module; the IDE's uploaded copy is the fallback.
+        let pytest = remote_command(&config("pytest", &["tests"], None), &target, root, "/home/me/proj");
+        let lib = "/home/me/.openidea/debug/debugpy-1.8.22";
+        let debug = ssh_debug_command(&pytest, &target, "/home/me/proj", 50123, bootstrap, Some(lib)).unwrap();
+        assert_eq!(debug.program, "/opt/py/bin/python");
+        assert_eq!(debug.args, [bootstrap, "50123", "/home/me/proj", "-m", "pytest", "tests"]);
+        assert_eq!(debug.env["OPENIDEA_DEBUGPY_LIB"], lib);
+        assert_eq!(debug_interpreter(&debug, bootstrap).display(), "/opt/py/bin/python");
+
+        let shell = remote_command(&config("python main.py", &[], None), &target, root, "/home/me/proj");
+        assert!(ssh_debug_command(&shell, &target, "/home/me/proj", 50123, bootstrap, None).is_err());
     }
 
     #[test]

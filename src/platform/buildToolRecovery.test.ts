@@ -66,3 +66,11 @@ it("explains a plugin prefix Maven cannot resolve offline and links Maven settin
   result.actions[0]!.run();
   expect(executeAction).toHaveBeenCalledWith("file.settings", "build.maven");
 });
+
+it("offers OpenIDEA's debugpy when an SSH target's interpreter has none", () => {
+  const message = "debugpy is not installed for python3 on me@box. Install OpenIDEA's copy";
+  const result = buildToolRecovery(message);
+  expect(result.body).toBe(message);
+  result.actions[0]!.run();
+  expect(executeAction).toHaveBeenCalledWith("tools.install", "debugpy");
+});

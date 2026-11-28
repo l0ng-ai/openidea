@@ -240,7 +240,7 @@ async fn debugs_python_in_a_container() {
 
     let mut debug = config("debug-main", "py", &root, &[&main.to_string_lossy()]);
     debug.debug_adapter = Some("debugpy".into());
-    debug.extras.params.insert("containerDebug".into(), "true".into());
+    debug.extras.params.insert("targetDebug".into(), "true".into());
     let (_, out) = start(&host, debug).await;
     let mut ready = None;
     for _ in 0..1200 {

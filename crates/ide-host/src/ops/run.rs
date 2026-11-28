@@ -469,7 +469,11 @@ async fn start_inner(
             );
         }
         let out = on_output.clone();
-        return host.remote.run(&settings, &project.root, &config, sink.clone(), Box::new(move |c| out(c))).await;
+        let debugpy = container::ide_debugpy(&host.data_dir);
+        return host
+            .remote
+            .run(&settings, &project.root, &config, debugpy.as_deref(), sink.clone(), Box::new(move |c| out(c)))
+            .await;
     }
     let mut config = config;
     let (root, settings, fallback) = settings_for(host, &project, &mut config)?;
