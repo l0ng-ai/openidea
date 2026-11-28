@@ -95,6 +95,8 @@ describe("Debug console links", () => {
       "/repo/demo-app",
       true,
       undefined,
+      // Not a run in a container.
+      null,
     );
   });
 
