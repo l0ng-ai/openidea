@@ -1,12 +1,15 @@
 use super::blocking;
-use super::pytest_fixtures::{PytestFixtureAt, PytestFixtureUsages, fixture_at, fixture_usages, rename_fixture};
+use super::pytest_fixtures::{
+    PytestFixtureAt, PytestFixtureRename, PytestFixtureTarget, PytestFixtureUsages, fixture_at, fixture_target,
+    fixture_usages, rename_fixture,
+};
 use super::python_stubs::{
     PythonStubLinks, counterpart_candidates, match_declarations, module_name, site_packages, stub_path,
 };
 use crate::Host;
 use crate::Project;
 use ide_command::command;
-use ide_core::{DocId, IdeResult, IpcPath, LanguageId, Location, Pos, RequestId, WorkspaceEdit};
+use ide_core::{DocId, IdeResult, IpcPath, LanguageId, Location, Pos, RequestId};
 use ide_index::{ExtensionCount, FileMatch, IndexStatus, SymbolFilter, SymbolMatch};
 use ide_language::{CSS_VARIABLE, FileReference, WebReference};
 use ide_workspace::file_refs::{self, PathCompletion};
@@ -522,8 +525,30 @@ pub async fn nav_pytest_fixture_usages(
     result
 }
 
+/// The pytest fixture at `pos` (its definition, a place asking for it, or a read of such a
+/// parameter in a function body), without searching the project: what Rename renames.
+#[command(trust = always)]
+pub async fn nav_pytest_fixture_target(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    pos: Pos,
+) -> IdeResult<Option<PytestFixtureTarget>> {
+    let project = host.project(window)?;
+    let syntax = host.syntax();
+    blocking(move || {
+        let snap = project.documents.snapshot(doc)?;
+        if snap.large || snap.language.as_str() != "python" {
+            return Ok(None);
+        }
+        Ok(fixture_target(&project, &syntax, &snap.path, &snap.text, pos))
+    })
+    .await
+}
+
 /// Rename of the pytest fixture at `pos`: its definition, every place that gets it and the
-/// uses of those parameters in their functions. Cancellable.
+/// reads of those parameters in their functions; or the parameter or fixture the new name
+/// would clash with. Cancellable.
 #[command(trust = always)]
 pub async fn nav_pytest_fixture_rename(
     host: &Host,
@@ -532,19 +557,19 @@ pub async fn nav_pytest_fixture_rename(
     pos: Pos,
     new_name: String,
     request: RequestId,
-) -> IdeResult<WorkspaceEdit> {
+) -> IdeResult<PytestFixtureRename> {
     let project = host.project(window)?;
     let syntax = host.syntax();
     let token = host.begin_request(request);
     let result = blocking(move || {
         let snap = project.documents.snapshot(doc)?;
-        let mut edit =
+        let mut renamed =
             rename_fixture(&project, &syntax, &snap.path, &snap.text, pos, &new_name, &|| token.is_cancelled())?;
         if token.is_cancelled() {
             return Err(ide_core::IdeError::cancelled());
         }
-        project.documents.prepare_workspace_edit(&mut edit)?;
-        Ok(edit)
+        project.documents.prepare_workspace_edit(&mut renamed.edit)?;
+        Ok(renamed)
     })
     .await;
     host.end_request(request);
@@ -565,6 +590,7 @@ ide_command::domain!(
     nav_index_definitions,
     nav_inheritance,
     nav_pytest_fixture_rename,
+    nav_pytest_fixture_target,
     nav_pytest_fixture_usages,
     nav_pytest_fixtures,
     nav_python_stubs,

@@ -18,7 +18,6 @@ pub mod doc;
 pub mod file_dialog;
 pub mod fonts;
 pub mod fs;
-pub mod github;
 pub mod hotkeys;
 pub mod http;
 pub mod lsp;
@@ -200,7 +199,6 @@ fn catalogue() -> (tauri_specta::Commands<tauri::Wry>, Vec<Command>) {
         desktop file_dialog;
         desktop fonts;
         desktop fs;
-        desktop github;
         desktop hotkeys;
         desktop http;
         desktop lsp;
@@ -255,6 +253,15 @@ mod tests {
         let mut served = ide_host::rpc::Dispatcher::standard().commands();
         served.sort_unstable();
         assert_eq!(super::routed(), served);
+    }
+
+    /// Reading the clipboard executes nothing, and a refused native read only falls back to the
+    /// WebView's own read (WebKit's Paste callout on macOS), so Restricted Mode allows all of them.
+    #[test]
+    fn restricted_mode_allows_clipboard_reads() {
+        for name in ["clipboard_text", "clipboard_image", "clipboard_file_list"] {
+            assert_eq!(super::trust_of(name), Some(super::TrustClass::Always), "{name}");
+        }
     }
 
     /// `openidea-server --web` serves the desktop's shell commands itself: each must be one the

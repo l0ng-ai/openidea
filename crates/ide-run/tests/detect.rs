@@ -1030,6 +1030,26 @@ fn cmake_configures_before_the_first_build() {
 }
 
 #[test]
+fn cmake_builds_ask_for_one_job_per_logical_cpu() {
+    let default = ide_core::build_jobs::default_jobs().to_string();
+    let jobs = |args: &[String]| {
+        let tail = &args[args.len() - 2..];
+        assert_eq!(tail[0], "-j", "{args:?}");
+        tail[1].clone()
+    };
+    let dir = project(&[("CMakeLists.txt", "project(demo)")]);
+    cmake_reply(dir.path(), "build", &[("Debug", &["hello"])]);
+    let configs = detect(dir.path());
+    assert_eq!(jobs(&find(&configs, "cmake:build:build").args), default);
+    let target = find(&configs, "cmake:build:Debug:hello:build");
+    assert_eq!(jobs(&target.args), default);
+    assert!(
+        !find(&configs, "cmake:build:test").args.iter().any(|arg| arg == "-j"),
+        "CTest runs the build itself; it is not a compiler build"
+    );
+}
+
+#[test]
 fn cmake_ignores_malformed_file_api_replies() {
     let dir = project(&[
         ("CMakeLists.txt", "project(demo)"),

@@ -1,29 +1,42 @@
 """matplotlib backend of OpenIDEA's Plots tool window (MPLBACKEND=module://openidea_matplotlib_backend).
 
 plt.show() saves every open figure as a PNG in OPENIDEA_PLOTS_DIR, where the IDE picks it up, and
-closes the figures; Figure.show() saves that figure.
+closes the figures; Figure.show() saves that figure. A figure shown again unchanged is not saved twice.
 """
 
+import hashlib
+import io
 import itertools
 import os
 import time
+import weakref
 
 from matplotlib._pylab_helpers import Gcf
 from matplotlib.backend_bases import FigureManagerBase, _Backend
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 _counter = itertools.count()
+# The digest of each live figure's last saved image.
+_saved = weakref.WeakKeyDictionary()
 
 
 def _save(figure):
     directory = os.environ.get("OPENIDEA_PLOTS_DIR")
     if not directory:
         return
+    buffer = io.BytesIO()
+    figure.savefig(buffer, format="png")
+    data = buffer.getvalue()
+    digest = hashlib.sha1(data).digest()
+    if _saved.get(figure) == digest:
+        return
+    _saved[figure] = digest
     os.makedirs(directory, exist_ok=True)
     name = "%d-%d-%d.png" % (time.time_ns(), os.getpid(), next(_counter))
     # Written under a hidden name first: the IDE reads only finished files.
     partial = os.path.join(directory, "." + name)
-    figure.savefig(partial, format="png")
+    with open(partial, "wb") as file:
+        file.write(data)
     os.replace(partial, os.path.join(directory, name))
 
 

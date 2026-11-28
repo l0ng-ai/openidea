@@ -84,7 +84,7 @@ pub(crate) async fn resolve_launch(
     let build = policy != BuildPolicy::NoBuild;
     let full = policy == BuildPolicy::Rebuild;
     let build_kind = if full { compile::BuildKind::Rebuild } else { compile::BuildKind::Build };
-    let (model, external, mut delegated, is_maven, non_java, served) = {
+    let (model, external, mut delegated, is_maven, non_java, served, needs_cleanup) = {
         let scope = scope.clone();
         let launches = launches.clone();
         let module = module.clone();
@@ -95,16 +95,11 @@ pub(crate) async fn resolve_launch(
             let non_java = build && compile::launch_has_non_java_sources(root, &model, &module, test);
             let is_maven = is_maven_module(root, &model, &module);
             let served = served_by_service(root, &model, &scope.settings, &module);
-            let delegated = build
-                && delegates_to_external_build(
-                    is_maven,
-                    policy,
-                    non_java,
-                    cache::has_record(root, &scope.cache, &module),
-                    prefer_maven,
-                );
+            let needs_cleanup = build && is_maven && cache::needs_cleanup(root, &scope.cache, &model, &module, test);
+            let delegated =
+                build && delegates_to_external_build(is_maven, policy, non_java, needs_cleanup, prefer_maven);
             let external = non_java || delegated;
-            (std::sync::Arc::new(model), external, delegated, is_maven, non_java, served)
+            (std::sync::Arc::new(model), external, delegated, is_maven, non_java, served, needs_cleanup)
         })
         .await
         .map_err(|e| IdeError::internal(e.to_string()))?
@@ -117,7 +112,7 @@ pub(crate) async fn resolve_launch(
     // the launch debugs with java-debug, whose HotSwap reloads what jdtls compiles (ecj's
     // classes differ from javac's: lambda names). jdtls keeps building for its diagnostics
     // either way.
-    if served && !non_java && !debug {
+    if served && !non_java && !debug && !needs_cleanup {
         let built = {
             let (service, data_dir, scope, model, module, cancel, events) = (
                 host.java_build.clone(),
@@ -806,7 +801,7 @@ fn joining_launches(
                     is_maven,
                     o.policy,
                     compile::launch_has_non_java_sources(root, model, &o.module, test),
-                    cache::has_record(root, cache_dir, &o.module),
+                    is_maven && cache::needs_cleanup(root, cache_dir, model, &o.module, test),
                     prefer_maven,
                 )
         })
@@ -820,10 +815,10 @@ fn delegates_to_external_build(
     is_maven: bool,
     policy: BuildPolicy,
     non_java: bool,
-    has_record: bool,
+    needs_cleanup: bool,
     prefer_maven: bool,
 ) -> bool {
-    is_maven && (prefer_maven || policy == BuildPolicy::Rebuild || non_java || has_record)
+    is_maven && (prefer_maven || policy == BuildPolicy::Rebuild || non_java || needs_cleanup)
 }
 
 fn same_entry(a: &str, b: &str, windows: bool) -> bool {
@@ -1286,6 +1281,54 @@ mod tests {
         assert!(delegates_to_external_build(true, BuildPolicy::Automatic, false, false, true));
         assert!(delegates_to_external_build(true, BuildPolicy::Make, false, false, true));
         assert!(!delegates_to_external_build(false, BuildPolicy::Automatic, false, false, true));
+    }
+
+    #[test]
+    fn shared_builds_do_not_join_plain_java_launches_only_because_of_legacy_null_records() {
+        use std::{fs, sync::Arc};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let cache_dir = root.join("cache");
+        fs::write(
+            root.join("pom.xml"),
+            concat!(
+                "<project><groupId>sample</groupId><artifactId>root</artifactId><version>1</version>",
+                "<packaging>pom</packaging><modules><module>leader</module><module>plain</module>",
+                "<module>dirty</module></modules></project>",
+            ),
+        )
+        .unwrap();
+        for name in ["leader", "plain", "dirty"] {
+            let module = root.join(name);
+            fs::create_dir_all(module.join("src/main/java")).unwrap();
+            fs::write(module.join("src/main/java/Main.java"), "class Main {}").unwrap();
+            fs::write(
+                module.join("pom.xml"),
+                format!(
+                    "<project><groupId>sample</groupId><artifactId>{name}</artifactId><version>1</version></project>"
+                ),
+            )
+            .unwrap();
+            let records = cache_dir.join("java-launch/records").join(name);
+            fs::create_dir_all(&records).unwrap();
+            fs::write(records.join("main.json"), b"null").unwrap();
+        }
+        fs::create_dir_all(root.join("dirty/target/classes")).unwrap();
+        fs::write(root.join("dirty/target/classes/Old.class"), "old-output").unwrap();
+        let model = ide_build::load(root, &cache_dir, None);
+        let waiting = ["plain", "dirty"]
+            .into_iter()
+            .map(|name| {
+                Arc::new(cache::WaitingLaunch {
+                    module: root.join(name),
+                    test: false,
+                    policy: BuildPolicy::Automatic,
+                    events: None,
+                })
+            })
+            .collect();
+        let joined = joining_launches(root, &cache_dir, &model, &root.join("leader"), false, waiting, false);
+        assert_eq!(joined.iter().map(|launch| &launch.module).collect::<Vec<_>>(), [&root.join("dirty")]);
     }
 
     #[test]

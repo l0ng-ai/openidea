@@ -29,7 +29,8 @@ pub enum VenvTool {
     Uv,
     /// `poetry env use <base>` in the project, then `poetry env info --path`.
     Poetry,
-    /// `conda create -n <name> -y` for a bare name, else `-p <location>` (conda must be on PATH).
+    /// `conda create -n <name> -y` for a bare name, else `-p <location>`, with the conda of the
+    /// base interpreter's installation, else the one on PATH, `CONDA_EXE` or a default install.
     Conda,
     /// `pipenv --python <base>` in the project (pipenv must be on PATH).
     Pipenv,
@@ -49,6 +50,7 @@ pub fn create_venv(
     cancel: &CancellationToken,
     on_line: &dyn Fn(String),
 ) -> IdeResult<Sdk> {
+    let which = |tool: &str| if tool == "conda" { crate::discover::conda_exe_for(base) } else { which(tool) };
     create_venv_with(tool, base, location, install, which, cancel, on_line)
 }
 
@@ -352,10 +354,15 @@ fn create_conda_env(
             format!("{} already contains a conda environment", location.display()),
         ));
     }
-    let conda = which("conda")
-        .ok_or_else(|| IdeError::unavailable("conda is not installed (install it from https://docs.conda.io)"))?;
+    let conda = which("conda").ok_or_else(|| {
+        IdeError::unavailable(
+            "conda is not installed (install it from https://docs.conda.io, or set CONDA_EXE to its conda executable)",
+        )
+    })?;
+    let env = crate::discover::conda_run_env(&conda);
+    let env_refs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let prefixes = || {
-        query_in(&conda, &["env", "list"], None, &[], Duration::from_secs(15))
+        query_in(&conda, &["env", "list"], None, &env_refs, Duration::from_secs(15))
             .map(|list| crate::discover::conda_env_list_prefixes(&list))
             .unwrap_or_default()
     };
@@ -371,7 +378,7 @@ fn create_conda_env(
     }
     let version = query_in(base, &["--version"], None, &[], Duration::from_secs(15))
         .and_then(|v| v.strip_prefix("Python ").map(str::to_owned));
-    stream(&conda, &conda_create_args(location, version.as_deref()), None, &[], cancel, on_line)?;
+    stream(&conda, &conda_create_args(location, version.as_deref()), None, &env, cancel, on_line)?;
     let prefix = match name {
         Some(name) => prefixes()
             .into_iter()
@@ -630,8 +637,16 @@ pub fn install_package(
         return Err(IdeError::invalid("enter a package name or requirement"));
     }
     let requirement = resolve_requirement(requirement, project_root)?;
+    // A path (a requirement never starts with a root), maybe with `[extras]` after it.
+    let path = Path::new(&requirement).has_root().then_some(requirement.as_str());
+    if let Some(path) = path {
+        let without_extras = path.strip_suffix(']').and_then(|p| p.rsplit_once('[')).map(|(p, _)| p);
+        if !Path::new(path).exists() && !without_extras.is_some_and(|p| Path::new(p).exists()) {
+            return Err(IdeError::not_found(format!("{} does not exist", without_extras.unwrap_or(path))));
+        }
+    }
     // An editable clone of a repository would go where pip runs, a temporary folder.
-    if editable && !Path::new(&requirement).is_absolute() {
+    if editable && path.is_none() {
         return Err(IdeError::invalid("only a local directory can be installed in editable mode"));
     }
     let installer = installer(python)?;

@@ -156,8 +156,13 @@ describe("Python Packages", () => {
     const path = await screen.findByRole("textbox", { name: "Path" });
     fireEvent.change(path, { target: { value: "--index-url=https://evil.example" } });
     expect(screen.getByRole("button", { name: "Install" })).toBeDisabled();
+    // Editable, then an archive, then a directory again: the archive cleared the choice.
+    fireEvent.change(path, { target: { value: "pkgs/mylib" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Install as editable (-e)" }));
     fireEvent.change(path, { target: { value: "dist/mylib-0.1.0-py3-none-any.whl" } });
     expect(screen.getByRole("checkbox", { name: "Install as editable (-e)" })).toBeDisabled();
+    fireEvent.change(path, { target: { value: "pkgs/mylib" } });
+    expect(screen.getByRole("checkbox", { name: "Install as editable (-e)" })).not.toBeChecked();
     // A bare name is a directory here, never a PyPI package.
     fireEvent.change(path, { target: { value: "mylib" } });
     fireEvent.click(screen.getByRole("checkbox", { name: "Install as editable (-e)" }));

@@ -68,7 +68,6 @@ ide-plugin = { path = "../crates/ide-plugin" }
 ide-extension = { path = "../crates/ide-extension" }
 ide-docker = { path = "../crates/ide-docker" }
 ide-android = { path = "../crates/ide-android" }
-ide-github = { path = "../crates/ide-github" }
 
 [dev-dependencies]
 tempfile.workspace = true

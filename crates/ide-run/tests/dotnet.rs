@@ -60,6 +60,42 @@ fn project_properties_and_sdk_defaults() {
 }
 
 #[test]
+fn testing_platform_projects_are_test_projects_without_the_test_sdk() {
+    let project = |body: &str| {
+        let xml = format!(
+            r#"<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net11.0</TargetFramework></PropertyGroup>{body}</Project>"#
+        );
+        parse_project(&xml).unwrap()
+    };
+    // xUnit v3 on Microsoft.Testing.Platform: an executable with no Microsoft.NET.Test.Sdk.
+    let xunit_v3 = project(
+        r#"<PropertyGroup><UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner></PropertyGroup><ItemGroup><PackageReference Include="xunit.v3" Version="3.2.0" /></ItemGroup>"#,
+    );
+    assert!(xunit_v3.executable && xunit_v3.test);
+    for body in [
+        r#"<ItemGroup><PackageReference Include="xunit.v3" /></ItemGroup>"#,
+        r#"<ItemGroup><PackageReference Include="xunit.v3.mtp-v2" /></ItemGroup>"#,
+        r#"<ItemGroup><PackageReference Include="TUnit" /></ItemGroup>"#,
+        r#"<ItemGroup><PackageReference Include="MSTest" /></ItemGroup>"#,
+        r#"<PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup>"#,
+        r#"<PropertyGroup><IsTestingPlatformApplication>true</IsTestingPlatformApplication></PropertyGroup>"#,
+        r#"<PropertyGroup><EnableMSTestRunner>true</EnableMSTestRunner></PropertyGroup>"#,
+    ] {
+        assert!(project(body).test, "{body}");
+    }
+    let mstest_sdk = parse_project(r#"<Project Sdk="MSTest.Sdk/3.8.0"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"#).unwrap();
+    assert!(mstest_sdk.test);
+    // A project that opts out, a library of test helpers, and a framework's companion package.
+    for body in [
+        r#"<PropertyGroup><IsTestProject>false</IsTestProject></PropertyGroup><ItemGroup><PackageReference Include="xunit.v3" /></ItemGroup>"#,
+        r#"<ItemGroup><PackageReference Include="xunit.v3.assert" /></ItemGroup>"#,
+        r#"<PropertyGroup Condition="'$(CI)'=='true'"><IsTestProject>true</IsTestProject></PropertyGroup>"#,
+    ] {
+        assert!(!project(body).test, "{body}");
+    }
+}
+
+#[test]
 fn profiles_filter_and_preserve_launch_properties() {
     let p = parse_profiles(PROFILES);
     assert_eq!(p.keys().map(String::as_str).collect::<Vec<_>>(), ["http", "https"]);
@@ -137,4 +173,21 @@ fn solution_references_can_reach_projects_outside_the_open_directory() {
     let configs = detect(&temp.path().join("open"));
     assert_eq!(configs.len(), 1);
     assert!(configs[0].args[2].ends_with("external/App.csproj"));
+}
+
+#[test]
+fn an_xunit_v3_testing_platform_project_gets_a_test_configuration() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(
+        root,
+        "tests/App.Tests/App.Tests.csproj",
+        r#"<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net11.0</TargetFramework><UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner></PropertyGroup><ItemGroup><PackageReference Include="xunit.v3" Version="3.2.0" /></ItemGroup></Project>"#,
+    );
+    let configs = detect(root);
+    assert_eq!(configs.len(), 1, "a test project is not also run as an application");
+    assert_eq!(configs[0].kind, "dotnet-test");
+    assert!(configs[0].is_test);
+    assert_eq!(configs[0].extras.params["project"], "tests/App.Tests/App.Tests.csproj");
+    assert_eq!(configs[0].args, ["test", "tests/App.Tests/App.Tests.csproj", "--framework", "net11.0"]);
 }
