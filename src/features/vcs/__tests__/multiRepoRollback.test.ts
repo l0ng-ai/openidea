@@ -461,25 +461,34 @@ describe("renaming a common branch", () => {
     ]);
   });
 
-  const recents = () => JSON.parse(localStorage.getItem("openidea.vcs.recentBranches:/p") ?? "[]");
+  // Each repository keeps its own recent branches.
+  const recents = (root: string) => JSON.parse(localStorage.getItem(`openidea.vcs.recentBranches:${root}`) ?? "[]");
   const keepRecents = () => {
     useVcs.setState({ root: "/p" });
-    localStorage.setItem("openidea.vcs.recentBranches:/p", JSON.stringify(["feature", "main"]));
+    for (const root of ["/a", "/b", "/c"])
+      localStorage.setItem(`openidea.vcs.recentBranches:${root}`, JSON.stringify(["feature", "main"]));
   };
 
   it("renames the branch in recent branches once it stayed renamed", async () => {
     keepRecents();
     await renameInRepos("feature", ["/a", "/c"], false);
-    expect(recents()).toEqual(["feature2", "main"]);
+    expect(["/a", "/b", "/c"].map(recents)).toEqual([
+      ["feature2", "main"],
+      ["feature", "main"],
+      ["feature2", "main"],
+    ]);
   });
 
   it("leaves recent branches alone when the rename failed or was rolled back", async () => {
     keepRecents();
     await renameInRepos("feature", ["/b"], false);
-    expect(recents()).toEqual(["feature", "main"]);
+    expect(recents("/b")).toEqual(["feature", "main"]);
     mocks.ask.mockResolvedValue({ button: "rollback" });
     await renameInRepos("feature", ["/a", "/b"], false);
-    expect(recents()).toEqual(["feature", "main"]);
+    expect(["/a", "/b"].map(recents)).toEqual([
+      ["feature", "main"],
+      ["feature", "main"],
+    ]);
   });
 
   it("unsets the upstream only after the branch was renamed in every repository", async () => {
@@ -507,7 +516,11 @@ describe("renaming a common branch", () => {
       ["/b", "feature", "feature2", false],
       ["/a", "feature2", "feature2", true],
     ]);
-    expect(recents()).toEqual(["feature2", "feature", "main"]);
+    // Renamed only where the rename was kept.
+    expect(["/a", "/b"].map(recents)).toEqual([
+      ["feature2", "main"],
+      ["feature", "main"],
+    ]);
   });
 
   it("offers to unset the upstream only when the branch has one", async () => {
