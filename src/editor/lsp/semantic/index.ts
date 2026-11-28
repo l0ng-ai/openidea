@@ -1,8 +1,8 @@
 /**
  * Semantic highlighting: `lsp_semantic_tokens` → mark decorations with
  * `cm-sem-*` classes (styled with the --syn-* tokens) layered over the Lezer
- * highlighting. Refreshed after edits (debounced); in between, existing marks
- * are mapped through the changes.
+ * highlighting. The view requests tokens as soon as it opens; edits refresh
+ * them after a debounce, and existing marks are mapped through the changes.
  *
  * Semantic highlighting (Color Scheme › Language Defaults, IDEA's rainbow
  * identifiers): local variables and parameters additionally get
@@ -232,8 +232,10 @@ const semanticPlugin = ViewPlugin.fromClass(
       queueMicrotask(() => {
         if (!this.destroyed) this.decorate(this.view.state.doc, null);
       });
-      this.refresh();
       this.offReady = onLspRefresh("semanticTokens", () => this.refresh());
+      // Requests semantic tokens while the view opens.
+      // Later refreshes still use the debounced `refresh`.
+      void this.run();
     }
     update(u: ViewUpdate) {
       const tree = syntaxTree(u.state);
