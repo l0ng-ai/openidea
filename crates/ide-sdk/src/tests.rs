@@ -1676,6 +1676,75 @@ fn conda_creates_named_environments_in_its_envs_directory() {
 }
 
 #[test]
+fn conda_takes_plain_requirements_and_knows_its_own_packages() {
+    use crate::python::{conda_installed, conda_spec};
+    assert_eq!(conda_spec("requests").as_deref(), Some("requests"));
+    assert_eq!(conda_spec("Django == 5.0").as_deref(), Some("django==5.0"));
+    assert_eq!(conda_spec("numpy>=2.1").as_deref(), Some("numpy>=2.1"));
+    for pip_only in
+        ["requests[socks]", "pkg; python_version<'3.12'", "pkg~=1.0", "git+https://x/y", "pkg @ https://x", ""]
+    {
+        assert_eq!(conda_spec(pip_only), None, "{pip_only}");
+    }
+    let env = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(env.path().join("conda-meta")).unwrap();
+    std::fs::write(env.path().join("conda-meta/typing_extensions-4.12.2-pyha770c72_1.json"), "{}").unwrap();
+    std::fs::write(env.path().join("conda-meta/history"), "").unwrap();
+    assert!(conda_installed(env.path(), "typing-extensions"));
+    assert!(conda_installed(env.path(), "Typing_Extensions"));
+    assert!(!conda_installed(env.path(), "typing"));
+}
+
+#[test]
+#[cfg(unix)]
+fn conda_environments_install_and_remove_with_conda_and_fall_back_to_pip() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let script = |path: &Path, body: String| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    // An installation with an environment; conda knows `requests`, not `nope`.
+    let root = tmp.path().join("miniforge3");
+    std::fs::create_dir_all(root.join("condabin")).unwrap();
+    let env = root.join("envs/demo");
+    std::fs::create_dir_all(env.join("conda-meta")).unwrap();
+    std::fs::write(env.join("conda-meta/six-1.17.0-pyhd8ed1ab_0.json"), "{}").unwrap();
+    let conda_log = tmp.path().join("conda.log");
+    let pip_log = tmp.path().join("pip.log");
+    script(
+        &root.join("bin/conda"),
+        format!(
+            "#!/bin/sh\necho \"$@\" >> '{}'\ncase \"$*\" in *nope*) echo 'PackagesNotFoundError: The following packages are not available'; exit 1;; esac\n",
+            conda_log.display()
+        ),
+    );
+    let python = env.join("bin/python");
+    script(&python, format!("#!/bin/sh\necho \"$@\" >> '{}'\n", pip_log.display()));
+    let log = |p: &Path| std::fs::read_to_string(p).unwrap_or_default();
+    let cancel = Default::default();
+    let prefix = env.display();
+
+    crate::python::install_package(&python, "requests", false, false, None, &cancel, &|_| {}).unwrap();
+    assert!(log(&conda_log).contains(&format!("install -p {prefix} -y requests")), "{}", log(&conda_log));
+    assert!(!log(&pip_log).contains("install"));
+    // Not in conda's channels: pip installs it.
+    let lines = std::cell::RefCell::new(Vec::new());
+    crate::python::install_package(&python, "nope", false, false, None, &cancel, &|l| lines.borrow_mut().push(l))
+        .unwrap();
+    assert!(log(&pip_log).contains("-m pip install nope"), "{}", log(&pip_log));
+    assert!(lines.borrow().iter().any(|l| l.contains("installing it with pip")));
+    // conda's own package is removed and updated by conda; a pip one by pip.
+    crate::python::uninstall_package(&python, "six", &cancel, &|_| {}).unwrap();
+    assert!(log(&conda_log).contains(&format!("remove -p {prefix} -y six")));
+    crate::python::install_package(&python, "six", true, false, None, &cancel, &|_| {}).unwrap();
+    assert!(log(&conda_log).contains(&format!("update -p {prefix} -y six")));
+    crate::python::uninstall_package(&python, "nope", &cancel, &|_| {}).unwrap();
+    assert!(log(&pip_log).contains("-m pip uninstall -y nope"), "{}", log(&pip_log));
+}
+
+#[test]
 #[cfg(unix)]
 fn a_named_conda_environment_is_found_where_conda_put_it() {
     use std::os::unix::fs::PermissionsExt;

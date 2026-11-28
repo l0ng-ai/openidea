@@ -649,11 +649,96 @@ pub fn install_package(
     if editable && path.is_none() {
         return Err(IdeError::invalid("only a local directory can be installed in editable mode"));
     }
+    if !editable && path.is_none() && conda_install(python, &requirement, upgrade, cancel, on_line)? {
+        return Ok(());
+    }
     let installer = installer(python)?;
     let _busy = Busy::take(python)?;
     let (program, args) = pip_command(python, &installer, &install_args(&requirement, upgrade, editable));
     let dir = neutral_dir();
     stream(&program, &args, dir.as_ref().map(|d| d.path()), &pip_env(python), cancel, on_line).map(|_| ())
+}
+
+/// The conda to run for the conda environment `python` belongs to, and that environment's prefix.
+fn conda_of_env(python: &Path) -> Option<(PathBuf, PathBuf)> {
+    let prefix = crate::discover::conda_env_home(python).filter(|p| p.join("conda-meta").is_dir())?;
+    Some((crate::discover::conda_exe_for(python)?, prefix))
+}
+
+/// Whether conda installed `name` into the environment at `prefix`: it keeps a
+/// `conda-meta/<name>-<version>-<build>.json` record of each package, and none of pip's.
+pub(crate) fn conda_installed(prefix: &Path, name: &str) -> bool {
+    let norm = |n: &str| n.to_lowercase().replace(['_', '.'], "-");
+    let want = norm(name);
+    let records = std::fs::read_dir(prefix.join("conda-meta")).into_iter().flatten().flatten();
+    records.into_iter().any(|entry| {
+        let file = entry.file_name();
+        let record = file.to_string_lossy();
+        record.strip_suffix(".json").and_then(|r| r.rsplitn(3, '-').nth(2)).is_some_and(|n| norm(n) == want)
+    })
+}
+
+/// A requirement conda reads the same way pip does: a name, optionally with one version
+/// constraint (`django==5.0`, `numpy>=2`). Extras, markers, URLs and `~=` are pip's only.
+pub(crate) fn conda_spec(requirement: &str) -> Option<String> {
+    let name_end = requirement
+        .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')))
+        .unwrap_or(requirement.len());
+    let (name, constraint) = requirement.split_at(name_end);
+    let constraint = constraint.trim();
+    let op = ["==", ">=", "<=", "!=", ">", "<"].into_iter().find(|op| constraint.starts_with(op));
+    let version = op.map(|op| constraint[op.len()..].trim());
+    let version_ok = |v: &str| !v.is_empty() && v.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '*'));
+    let valid = !name.is_empty() && (constraint.is_empty() || version.is_some_and(version_ok));
+    valid.then(|| format!("{}{}", name.to_lowercase(), constraint.replace(' ', "")))
+}
+
+/// `conda <command> -p <prefix> -y <spec>`.
+pub(crate) fn conda_package_args(command: &str, prefix: &Path, spec: &str) -> Vec<String> {
+    let prefix = prefix.to_string_lossy().into_owned();
+    [command, "-p", &prefix, "-y", spec].map(str::to_owned).into()
+}
+
+/// Installs (or, with `upgrade`, updates) `requirement` with conda when `python` is a conda
+/// environment's and conda reads the requirement. `false` when pip should install it instead:
+/// no conda environment, a pip-only requirement, or a package conda's channels don't have.
+fn conda_install(
+    python: &Path,
+    requirement: &str,
+    upgrade: bool,
+    cancel: &CancellationToken,
+    on_line: &dyn Fn(String),
+) -> IdeResult<bool> {
+    let (Some((conda, prefix)), Some(spec)) = (conda_of_env(python), conda_spec(requirement)) else {
+        return Ok(false);
+    };
+    let name = spec.split(['=', '>', '<', '!']).next().unwrap_or(&spec).to_owned();
+    // An update keeps what conda installed with conda; a pip-installed package stays with pip.
+    if upgrade && !conda_installed(&prefix, &name) {
+        return Ok(false);
+    }
+    let _busy = Busy::take(python)?;
+    let args = if upgrade {
+        conda_package_args("update", &prefix, &name)
+    } else {
+        conda_package_args("install", &prefix, &spec)
+    };
+    let env = crate::discover::conda_run_env(&conda);
+    let not_found = std::cell::Cell::new(false);
+    let on_conda_line = |line: String| {
+        if line.contains("PackagesNotFound") {
+            not_found.set(true);
+        }
+        on_line(line);
+    };
+    match stream(&conda, &args, None, &env, cancel, &on_conda_line) {
+        Ok(_) => Ok(true),
+        Err(_) if not_found.get() && !cancel.is_cancelled() => {
+            on_line(format!("{name} is not in conda's channels; installing it with pip"));
+            Ok(false)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// The `install` sub-command for [`pip_command`].
@@ -754,6 +839,12 @@ pub fn uninstall_package(
     let name = name.trim();
     if name.is_empty() || name.starts_with('-') {
         return Err(IdeError::invalid("no package selected"));
+    }
+    if let Some((conda, prefix)) = conda_of_env(python).filter(|(_, prefix)| conda_installed(prefix, name)) {
+        let _busy = Busy::take(python)?;
+        let args = conda_package_args("remove", &prefix, name);
+        let env = crate::discover::conda_run_env(&conda);
+        return stream(&conda, &args, None, &env, cancel, on_line).map(|_| ());
     }
     let installer = installer(python)?;
     let _busy = Busy::take(python)?;
