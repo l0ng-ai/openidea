@@ -5,6 +5,7 @@ import { BranchesPopupHost, showBranchesPopup, useBranchesPopup } from "../Branc
 import { useVcs } from "../store";
 
 const repoBranches = vi.hoisted(() => new Map<string, Branch[]>());
+const checkout = vi.hoisted(() => vi.fn());
 
 vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
@@ -14,6 +15,7 @@ vi.mock("@/platform/ipc", async (original) => {
       ...real.commands,
       vcsBranches: async (root: string) => ({ status: "ok", data: repoBranches.get(root) ?? [] }),
       vcsTags: async () => ({ status: "ok", data: [] }),
+      vcsCheckout: checkout,
     },
   };
 });
@@ -187,4 +189,47 @@ it("shows repository names as written in Chinese", async () => {
   } finally {
     _resetI18nForTests();
   }
+});
+
+it("lists only the current repository's recent branches", async () => {
+  const { checkoutBranch } = await import("../branchOps");
+  const { useProject } = await import("@/platform/project");
+  const a = "/work/a";
+  const b = "/work/b";
+  const branch = (name: string, current = false): Branch => ({
+    name,
+    current,
+    remote: false,
+    upstream: null,
+    ahead: 0,
+    behind: 0,
+    lastCommitMs: null,
+  });
+  repoBranches.set(a, [branch("main", true), branch("develop")]);
+  repoBranches.set(b, [branch("develop", true), branch("feature")]);
+  // Repositories on different branches without synchronized branch operations list the current one's branches.
+  useProject.setState({
+    project: { root: "/work" } as never,
+    settings: { vcs: { git: { syncBranchOperations: false } } } as never,
+  });
+  useVcs.setState({
+    root: "/work",
+    repo: a,
+    roots: [a, b],
+    branchesLoaded: true,
+    branches: repoBranches.get(a)!,
+    heads: { [a]: { head: "main", headCommit: "1" }, [b]: { head: "feature", headCommit: "2" } },
+  });
+  checkout.mockImplementation(async (root: string, ref: string) => {
+    const s = useVcs.getState();
+    useVcs.setState({ heads: { ...s.heads, [root]: { head: ref.replace("refs/heads/", ""), headCommit: "3" } } });
+    return { status: "ok", data: { kind: "done" } };
+  });
+  // Checking develop out in b leaves a's recent branches empty.
+  await checkoutBranch(branch("develop"), b);
+  render(<BranchesPopupHost />);
+  act(showBranchesPopup);
+  const list = screen.getByRole("listbox", { name: "Repositories and branches" });
+  await within(list).findByText("Local Branches in a");
+  expect(within(list).queryByText("Recent Branches in a")).toBeNull();
 });

@@ -47,22 +47,36 @@ import { splitTracked } from "./pushTarget";
 import { chooseRevision } from "./RevisionChooser";
 import { branchRepositoryRoots } from "./repoBranches";
 
-const recentKey = () => `openidea.vcs.recentBranches:${useVcs.getState().root ?? ""}`;
+/** Recent branches are kept per repository (unset: the selected one), like IDEA's per-repository reflog. */
+const recentKey = (repo?: string | null) => `openidea.vcs.recentBranches:${repo ?? currentRepoRoot() ?? ""}`;
 
-export function recentBranches(): string[] {
+function readRecent(key: string): string[] | null {
   try {
-    const raw = localStorage.getItem(recentKey());
-    const v: unknown = raw ? JSON.parse(raw) : [];
-    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+    const raw = localStorage.getItem(key);
+    const v: unknown = raw ? JSON.parse(raw) : null;
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : null;
   } catch {
-    return [];
+    return null;
   }
 }
 
-function rememberBranch(name: string | null | undefined) {
+/** Branches recently checked out in `repo` (unset: the selected repository), newest first. */
+export function recentBranches(repo?: string | null): string[] {
+  const { roots, root } = useVcs.getState();
+  // They used to be kept per project: a project's only repository still reads that list.
+  return readRecent(recentKey(repo)) ?? (roots.length <= 1 ? readRecent(recentKey(root)) : null) ?? [];
+}
+
+/** The branch checked out in `root` (unset: the selected repository). */
+function repoHead(root?: string | null) {
+  const s = useVcs.getState();
+  return root && root !== currentRepoRoot() ? s.heads[root]?.head : s.branch?.head;
+}
+
+function rememberBranch(name: string | null | undefined, repo?: string | null) {
   if (!name) return;
   try {
-    localStorage.setItem(recentKey(), JSON.stringify(pushRecent(recentBranches(), name)));
+    localStorage.setItem(recentKey(repo), JSON.stringify(pushRecent(recentBranches(repo), name)));
   } catch {
     // Storage unavailable: recents are a convenience only.
   }
@@ -285,10 +299,7 @@ export async function checkoutBranch(branch: NamedBranch, repo = currentRepo()) 
   const state = useVcs.getState();
   const project = useProject.getState().project;
   const root = repo ?? state.roots[0] ?? state.root;
-  const head = () => {
-    const s = useVcs.getState();
-    return root && root !== currentRepoRoot() ? s.heads[root]?.head : s.branch?.head;
-  };
+  const head = () => repoHead(root);
   const previous = head();
   // A local namesake tracking another branch: IDEA asks for a new local name instead.
   if (remote) {
@@ -298,9 +309,9 @@ export async function checkoutBranch(branch: NamedBranch, repo = currentRepo()) 
   }
   const ok = await performCheckout(branchRef(name, remote), () => `Checked out ${head() ?? name}`, repo);
   if (ok && useProject.getState().project === project) {
-    rememberBranch(previous);
+    rememberBranch(previous, root);
     await refreshNow();
-    rememberBranch(head());
+    rememberBranch(head(), root);
   }
 }
 
@@ -524,10 +535,10 @@ async function createBranch(roots: readonly (string | null)[], from?: BranchSour
           checkout,
         )) > 0;
   if (!done || !checkout || useProject.getState().project !== project) return;
-  const focused = currentRepoRoot();
-  if (selected.includes(focused) || selected.includes(null)) {
-    rememberBranch(head(focused));
-    rememberBranch(r.value);
+  // Each repository keeps its own recent branches.
+  for (const repo of selected) {
+    rememberBranch(head(repo), repo);
+    rememberBranch(r.value, repo);
   }
 }
 
@@ -763,7 +774,7 @@ export async function renameBranch(branch: Branch) {
     },
   );
   if (ok !== undefined && useProject.getState().project === project) {
-    renameRecent(name, to);
+    renameRecent(name, to, repo);
     // The log follows: its Branch filter and "Log: branch" tabs keep naming the branch.
     if (repo) renameBranchInLogFilters(repo, name, to);
   }
@@ -814,9 +825,9 @@ async function promptBranchRename(
   return r ? { to: r.value.trim(), unsetUpstream: hasUpstream && r.checked } : null;
 }
 
-function renameRecent(from: string, to: string) {
+function renameRecent(from: string, to: string, repo?: string | null) {
   try {
-    localStorage.setItem(recentKey(), JSON.stringify(recentBranches().map((b) => (b === from ? to : b))));
+    localStorage.setItem(recentKey(repo), JSON.stringify(recentBranches(repo).map((b) => (b === from ? to : b))));
   } catch {
     // Recents are best effort.
   }
@@ -1372,10 +1383,10 @@ export async function checkoutAndRebase({ branch, repos }: CheckoutRebaseTarget)
     progress: title,
     success: tx`Checked out and rebased '${branchName}'`,
     failure: tx("Checkout and Rebase failed"),
-    onRebased({ operation }) {
+    onRebased({ root, operation }) {
       if (operation.op === "checkoutRebase") {
-        rememberBranch(operation.plan.base.branch);
-        rememberBranch(operation.plan.branch);
+        rememberBranch(operation.plan.base.branch, root);
+        rememberBranch(operation.plan.branch, root);
       }
     },
   });
@@ -1632,7 +1643,7 @@ export async function checkoutInRepos(branch: NamedBranch, roots: readonly strin
   const elsewhere = remote ? roots : reposNotOn(name, roots);
   if (!elsewhere.length) return;
   const project = useProject.getState().project;
-  const previous = useVcs.getState().branch?.head;
+  const previous = new Map(elsewhere.map((root) => [root, repoHead(root)]));
   let label = name;
   if (remote) {
     const check = await remoteCheckoutTargets(name, elsewhere);
@@ -1656,8 +1667,11 @@ export async function checkoutInRepos(branch: NamedBranch, roots: readonly strin
     { undo: tx("check out the previous branch again"), run: (root, _, before) => checkoutBack(root, before) },
     true,
   );
-  rememberBranch(previous);
-  rememberBranch(useVcs.getState().branch?.head);
+  // Each repository keeps its own recent branches.
+  for (const root of elsewhere) {
+    rememberBranch(previous.get(root), root);
+    rememberBranch(repoHead(root), root);
+  }
 }
 
 /** New Branch in every repository of `roots` (from HEAD or `from`), checked out by default. */
@@ -1765,8 +1779,7 @@ export async function renameInRepos(name: string, roots: readonly string[], upst
     false,
     async (title, complete, done) => {
       if (useProject.getState().project !== project) return;
-      if (complete) renameRecent(name, to);
-      else rememberBranch(to);
+      for (const { root } of done) renameRecent(name, to, root);
       // The log follows the kept renames in every renamed repository.
       if (complete) for (const root of roots) renameBranchInLogFilters(root, name, to);
       // Only change tracking after the user has decided which renames to retain.

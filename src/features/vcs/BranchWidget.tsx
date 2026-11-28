@@ -500,7 +500,7 @@ function BranchesPanel({ onClose, actions: baseActions, worktreeFor, root, fallb
     live ? (s.branch?.head ?? null) : root ? (s.heads[root]?.head ?? null) : (s.branch?.head ?? null),
   );
   const [query, setQuery] = useState("");
-  const [recent] = useState(recentBranches);
+  const recent = useMemo(() => recentBranches(root ?? selected), [root, selected]);
   const [active, setActive] = useState(0);
   const { menuFor, setMenuFor, openTagMenu } = useBranchSubmenu();
   const listRef = useRef<HTMLDivElement>(null);
@@ -726,7 +726,8 @@ function MultiRepoPanel({
   const operations = useVcs((s) => s.operations);
   const version = useVcs((s) => s.version);
   const favorites = useFavoriteBranches((s) => s.names);
-  const [recent] = useState(recentBranches);
+  // The branches listed below are the current repository's, and so are its recent ones.
+  const recent = useMemo(() => recentBranches(current), [current]);
   const [tags, setTags] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);

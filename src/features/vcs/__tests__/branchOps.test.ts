@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Branch, BranchInfo, ProjectInfo, Worktree } from "@/bindings";
 const mocks = vi.hoisted(() => ({
   prompt: vi.fn(),
@@ -81,6 +81,7 @@ import {
   deleteTag,
   newBranch,
   newBranchInRepos,
+  recentBranches,
   renameBranch,
 } from "../branchOps";
 import { useVcs } from "../store";
@@ -677,4 +678,62 @@ it("keeps the local open action when another worktree holds the branch", async (
   expect(mocks.executeAction).toHaveBeenCalledExactlyOnceWith("file.openProjectPath", path);
   expect(mocks.windowOpenRemote).not.toHaveBeenCalled();
   expect(mocks.checkout).toHaveBeenCalledTimes(1);
+});
+
+describe("recent branches", () => {
+  beforeEach(() => localStorage.clear());
+  const head = (name: string | null) => ({ head: name, headCommit: "abc1234567890" });
+  // Checking out moves the HEAD of the repository it ran in.
+  const checkoutMovesHead = () =>
+    mocks.checkout.mockImplementation(async (root: string, ref: string) => {
+      const name = ref.replace(/^refs\/heads\//, "");
+      const s = useVcs.getState();
+      useVcs.setState({
+        heads: { ...s.heads, [root]: head(name) },
+        ...(root === s.repo ? { branch: branch(name) } : {}),
+      });
+      return ok({ kind: "done" });
+    });
+
+  it("are kept per repository, not per project", async () => {
+    useVcs.setState({
+      repo: "/p/front",
+      roots: ["/p/front", "/p/back"],
+      heads: { "/p/front": head("feature/ui"), "/p/back": head("main") },
+    });
+    checkoutMovesHead();
+    await checkoutBranch(local("develop"), "/p/back");
+    expect(recentBranches("/p/back")).toEqual(["develop", "main"]);
+    expect(recentBranches("/p/front")).toEqual([]);
+    expect(recentBranches()).toEqual([]);
+  });
+
+  it("are recorded in every repository a multi-repository checkout moved", async () => {
+    useVcs.setState({
+      repo: "/p/front",
+      roots: ["/p/front", "/p/back"],
+      heads: { "/p/front": head("feature/ui"), "/p/back": head("main") },
+    });
+    checkoutMovesHead();
+    await checkoutInRepos(local("develop"), ["/p/front", "/p/back"]);
+    expect(recentBranches("/p/front")).toEqual(["develop", "feature/ui"]);
+    expect(recentBranches("/p/back")).toEqual(["develop", "main"]);
+  });
+
+  it("stay under the project's key in a single-repository project", async () => {
+    useVcs.setState({ repo: "/p", roots: ["/p"], heads: { "/p": head("feature/ui") } });
+    checkoutMovesHead();
+    await checkoutBranch(local("develop"));
+    expect(JSON.parse(localStorage.getItem("openidea.vcs.recentBranches:/p")!)).toEqual(["develop", "feature/ui"]);
+  });
+
+  it("keep the list saved before when the only repository sits above the project", async () => {
+    useProject.setState({ project: { root: "/repo/app", name: "app" } as ProjectInfo });
+    useVcs.setState({ root: "/repo/app", repo: "/repo", roots: ["/repo"], heads: { "/repo": head("feature/ui") } });
+    localStorage.setItem("openidea.vcs.recentBranches:/repo/app", JSON.stringify(["release"]));
+    expect(recentBranches()).toEqual(["release"]);
+    checkoutMovesHead();
+    await checkoutBranch(local("develop"));
+    expect(recentBranches()).toEqual(["develop", "feature/ui", "release"]);
+  });
 });
