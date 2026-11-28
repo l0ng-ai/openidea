@@ -133,8 +133,62 @@ impl Scope {
                 out.push((file, m));
             }
         }
-        out
+        // A fixture imported into a project module is that module's own, right after it.
+        let mut layers = Vec::with_capacity(out.len());
+        for (file, m) in out {
+            let imported =
+                if is_project_file(project, &file) { self.imported(project, syntax, &file, &m) } else { Vec::new() };
+            layers.push((file, m));
+            layers.extend(imported);
+        }
+        layers
     }
+
+    /// The fixtures `module` (the file `path`) imports, one layer per module imported from, each
+    /// named as it is bound here.
+    fn imported(&self, project: &Project, syntax: &Syntax, path: &Path, module: &PytestModule) -> Vec<Layer> {
+        let mut out: Vec<(PathBuf, PytestModule)> = Vec::new();
+        for import in &module.imports {
+            let Some(file) = import_file(&import.module, path, &self.search) else { continue };
+            let Some(from) = module_of(project, syntax, &file) else { continue };
+            let picked = from.fixtures.iter().filter(|f| f.class.is_none()).filter_map(|f| {
+                let star = import.name == "*" && !f.function.starts_with('_');
+                if !star && f.function != import.name {
+                    return None;
+                }
+                // pytest takes the name a fixture is bound to, unless `name=` gives one.
+                let name = if f.by_argument || star { f.name.clone() } else { import.alias.clone() };
+                Some(ide_language::PytestFixture { name, ..f.clone() })
+            });
+            let picked: Vec<_> = picked.collect();
+            if picked.is_empty() {
+                continue;
+            }
+            match out.iter_mut().find(|(p, _)| *p == file) {
+                Some((_, m)) => m.fixtures.extend(picked),
+                None => out.push((file, PytestModule { fixtures: picked, ..Default::default() })),
+            }
+        }
+        out.into_iter().map(|(p, m)| (p, Arc::new(m))).collect()
+    }
+}
+
+/// The file of `module` imported from `path`: relative (`.fixtures`, `..`) from its folder, else
+/// from the import search path.
+fn import_file(module: &str, path: &Path, search: &[PathBuf]) -> Option<PathBuf> {
+    let rest = module.trim_start_matches('.');
+    let dots = module.len() - rest.len();
+    if dots == 0 {
+        return module_file(module, search);
+    }
+    let mut base = path.parent()?;
+    for _ in 1..dots {
+        base = base.parent()?;
+    }
+    if rest.is_empty() {
+        return Some(base.join("__init__.py")).filter(|p| p.is_file());
+    }
+    module_file(rest, &[base.to_path_buf()])
 }
 
 /// A fixture definition: its file and the range of its name there.
@@ -232,6 +286,8 @@ pub struct PytestFixtureUsages {
 struct Usage {
     path: PathBuf,
     use_: ide_language::PytestFixtureUse,
+    /// The modules its file sees, as `Scope::layers` gives them.
+    layers: Arc<Vec<Layer>>,
 }
 
 /// The fixture at `pos` of the Python document `path` / `text` (a definition or a place asking
@@ -320,8 +376,9 @@ pub(crate) fn rename_fixture(
     Ok(PytestFixtureRename { edit: WorkspaceEdit { files, preconditions: Vec::new() }, clash: None })
 }
 
-/// Where `new_name` is already taken: another parameter of a function that gets the fixture,
-/// or another fixture of the definition's scope.
+/// Where `new_name` is already taken: a name a function that gets the fixture already uses
+/// (a parameter, a name in its body), a fixture of that name a place that gets it sees (an
+/// override in a lower conftest, a class's own fixture), or another fixture of the definition's scope.
 fn clash(
     project: &Project,
     syntax: &Syntax,
@@ -330,8 +387,18 @@ fn clash(
     new_name: &str,
 ) -> Option<Location> {
     for u in usages {
-        if u.use_.params.iter().any(|p| p == new_name) {
+        if u.use_.taken.iter().any(|p| p == new_name) {
             return Some(Location { path: IpcPath::from(u.path.clone()), range: u.use_.range, uri: None });
+        }
+    }
+    for u in usages {
+        let modules: Vec<&PytestModule> = u.layers.iter().map(|(_, m)| m.as_ref()).collect();
+        if let Some((l, f)) = resolve_fixture(&modules, new_name, u.use_.class.as_deref(), false) {
+            return Some(Location {
+                path: IpcPath::from(u.layers[l].0.clone()),
+                range: modules[l].fixtures[f].selection,
+                uri: None,
+            });
         }
     }
     let module = module_of(project, syntax, &target.path)?;
@@ -365,10 +432,10 @@ fn usages_of(
         if !module.uses.iter().any(|u| u.name == target.name) {
             continue;
         }
-        let layers = scope.layers(project, syntax, &file, module.clone());
+        let layers = Arc::new(scope.layers(project, syntax, &file, module.clone()));
         for u in module.uses.iter().filter(|u| u.name == target.name) {
             if definition_of(&layers, u).as_ref() == Some(&target) {
-                usages.push(Usage { path: file.clone(), use_: u.clone() });
+                usages.push(Usage { path: file.clone(), use_: u.clone(), layers: layers.clone() });
             }
         }
     }
@@ -439,18 +506,30 @@ fn is_test_module(name: &str, patterns: &[String]) -> bool {
     patterns.iter().any(|p| glob_match(p, name))
 }
 
-/// `python_files` from the project's pytest configuration (`pytest.ini`, `pyproject.toml`,
-/// `tox.ini`, `setup.cfg`, the first that has a pytest section), else pytest's default.
+/// `python_files` from the project's pytest configuration (the first of `pytest.toml`,
+/// `.pytest.toml`, `pytest.ini`, `.pytest.ini`, `pyproject.toml`, `tox.ini`, `setup.cfg` that
+/// pytest takes), else pytest's default.
 fn test_file_patterns(root: &Path) -> Vec<String> {
     let read = |name: &str| std::fs::read_to_string(root.join(name)).ok();
-    let from_ini = |text: String, section: &str| -> Option<Option<String>> {
-        let mut inside = false;
-        let mut found = None;
-        for line in text.lines() {
-            let line = line.trim();
+    // `Some(value)` when the file is the configuration; `value` is None without `python_files`.
+    let from_ini = |text: String, section: &str, always: bool| -> Option<Option<String>> {
+        let mut found: Option<Option<String>> = always.then_some(None);
+        let (mut inside, mut continued) = (false, false);
+        for raw in text.lines() {
+            let line = raw.trim();
+            if continued && raw.starts_with([' ', '\t']) && !line.is_empty() {
+                if !line.starts_with(['#', ';'])
+                    && let Some(Some(value)) = &mut found
+                {
+                    value.push(' ');
+                    value.push_str(line);
+                }
+                continue;
+            }
+            continued = false;
             if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
                 inside = name == section;
-                if inside {
+                if inside && found.is_none() {
                     found = Some(None);
                 }
             } else if inside
@@ -458,25 +537,41 @@ fn test_file_patterns(root: &Path) -> Vec<String> {
                 && key.trim() == "python_files"
             {
                 found = Some(Some(value.trim().to_owned()));
+                continued = true;
             }
         }
         found
     };
-    let from_toml = |text: String| -> Option<Option<String>> {
+    let from_toml = |text: String, tables: &[&[&str]], always: bool| -> Option<Option<String>> {
         let table = text.parse::<toml::Table>().ok()?;
-        let options = table.get("tool")?.get("pytest")?.get("ini_options")?;
+        let options = tables.iter().find_map(|path| {
+            let mut at = table.get(path[0])?;
+            for key in &path[1..] {
+                at = at.get(*key)?;
+            }
+            Some(at)
+        });
+        let Some(options) = options else { return always.then_some(None) };
         Some(match options.get("python_files") {
             Some(toml::Value::String(s)) => Some(s.clone()),
             Some(toml::Value::Array(a)) => Some(a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" ")),
             _ => None,
         })
     };
-    // pytest uses the first file with a pytest section, in this order.
-    let configured = read("pytest.ini")
-        .and_then(|t| from_ini(t, "pytest"))
-        .or_else(|| read("pyproject.toml").and_then(from_toml))
-        .or_else(|| read("tox.ini").and_then(|t| from_ini(t, "pytest")))
-        .or_else(|| read("setup.cfg").and_then(|t| from_ini(t, "tool:pytest")))
+    // The first file pytest takes, in its order; a pytest.toml or pytest.ini counts even when empty.
+    let pytest_toml = |t: String| from_toml(t, &[&["pytest"]], true);
+    let pytest_ini = |t: String| from_ini(t, "pytest", true);
+    let configured = read("pytest.toml")
+        .and_then(pytest_toml)
+        .or_else(|| read(".pytest.toml").and_then(pytest_toml))
+        .or_else(|| read("pytest.ini").and_then(pytest_ini))
+        .or_else(|| read(".pytest.ini").and_then(pytest_ini))
+        .or_else(|| {
+            read("pyproject.toml")
+                .and_then(|t| from_toml(t, &[&["tool", "pytest", "ini_options"], &["tool", "pytest"]], false))
+        })
+        .or_else(|| read("tox.ini").and_then(|t| from_ini(t, "pytest", false)))
+        .or_else(|| read("setup.cfg").and_then(|t| from_ini(t, "tool:pytest", false)))
         .flatten();
     match configured {
         Some(value) if !value.trim().is_empty() => value.split_whitespace().map(str::to_owned).collect(),
@@ -484,13 +579,38 @@ fn test_file_patterns(root: &Path) -> Vec<String> {
     }
 }
 
-/// `fnmatch` with `*` and `?`, as pytest matches `python_files` against a file name.
+/// `fnmatch` with `*`, `?` and `[…]` / `[!…]` (ranges too), as pytest matches `python_files`
+/// against a file name.
 fn glob_match(pattern: &str, name: &str) -> bool {
+    /// The class at the start of `p` (after `[`): whether it matches `c`, and its length with `]`.
+    fn class(p: &[char], c: char) -> Option<(bool, usize)> {
+        let negated = p.first() == Some(&'!');
+        let mut i = usize::from(negated);
+        let mut hit = false;
+        // A `]` right after `[` or `[!` is a member.
+        let start = i;
+        while i < p.len() && (p[i] != ']' || i == start) {
+            if i + 2 < p.len() && p[i + 1] == '-' && p[i + 2] != ']' {
+                hit |= p[i] <= c && c <= p[i + 2];
+                i += 3;
+            } else {
+                hit |= p[i] == c;
+                i += 1;
+            }
+        }
+        (i < p.len()).then_some((hit != negated, i + 1))
+    }
     fn go(p: &[char], n: &[char]) -> bool {
         match p.split_first() {
             None => n.is_empty(),
             Some(('*', rest)) => (0..=n.len()).any(|i| go(rest, &n[i..])),
             Some(('?', rest)) => !n.is_empty() && go(rest, &n[1..]),
+            Some(('[', rest))
+                if let Some(&c) = n.first()
+                    && let Some((hit, len)) = class(rest, c) =>
+            {
+                hit && go(&rest[len..], &n[1..])
+            }
             Some((c, rest)) => n.first() == Some(c) && go(rest, &n[1..]),
         }
     }
@@ -641,6 +761,29 @@ mod tests {
         // A pytest.ini section without python_files means pytest's default, even with the others.
         std::fs::write(dir.path().join("pytest.ini"), "[pytest]\naddopts = -q\n").unwrap();
         assert_eq!(test_file_patterns(dir.path()), ["test_*.py", "*_test.py"]);
+        // pytest.toml comes first, its options in `[pytest]`.
+        std::fs::write(dir.path().join("pytest.toml"), "[pytest]\npython_files = [\"spec_*.py\"]\n").unwrap();
+        assert_eq!(test_file_patterns(dir.path()), ["spec_*.py"]);
+    }
+
+    #[test]
+    fn reads_python_files_written_over_several_lines_and_in_any_pytest_table() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("setup.cfg"),
+            "[tool:pytest]\npython_files =\n    check_*.py\n    t_*.py\nx = 1\n",
+        )
+        .unwrap();
+        assert_eq!(test_file_patterns(dir.path()), ["check_*.py", "t_*.py"]);
+        // An empty pytest.ini still is the configuration: pytest's default.
+        std::fs::write(dir.path().join("pytest.ini"), "").unwrap();
+        assert_eq!(test_file_patterns(dir.path()), ["test_*.py", "*_test.py"]);
+        std::fs::remove_file(dir.path().join("pytest.ini")).unwrap();
+        // pytest 9's `[tool.pytest]` with native lists.
+        std::fs::write(dir.path().join("pyproject.toml"), "[tool.pytest]\npython_files = [\"it_*.py\"]\n").unwrap();
+        assert_eq!(test_file_patterns(dir.path()), ["it_*.py"]);
+        assert!(glob_match("test_[ab].py", "test_a.py") && !glob_match("test_[!ab].py", "test_a.py"));
+        assert!(glob_match("test_[!ab].py", "test_c.py") && !glob_match("test_[ab].py", "test_c.py"));
     }
 
     #[test]

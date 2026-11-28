@@ -64,6 +64,44 @@ def test_plain(tasks, db):
 @pytest.mark.usefixtures(\"sample\")
 def test_sample(sample, request):
     assert request.getfixturevalue(\"tasks\") is sample
+
+
+class TestDb:
+    @pytest.fixture
+    def extra(self):
+        return 0
+
+    def test_db(self, db):
+        assert db == {}
+";
+
+/// A module a conftest imports a fixture from (no `pytest_plugins`).
+const SHARED: &str = "\
+import pytest
+
+
+@pytest.fixture
+def item():
+    return 1
+";
+
+const SUB_CONFTEST: &str = "\
+import pytest
+from tests.shared import item
+
+
+@pytest.fixture
+def seed():
+    return 0
+";
+
+const TEST_C: &str = "\
+def test_c(item):
+    assert item == 1
+
+
+def test_d(tasks):
+    assert tasks == []
 ";
 
 const CHECK_B: &str = "\
@@ -84,6 +122,11 @@ async fn open() -> Opened {
     std::fs::write(tests.join("check_b.py"), CHECK_B).unwrap();
     // Not collected by pytest: its `db` parameter is no fixture use.
     std::fs::write(tests.join("helpers.py"), "def helper(db):\n    return db\n").unwrap();
+    std::fs::write(tests.join("shared.py"), SHARED).unwrap();
+    std::fs::create_dir_all(tests.join("sub")).unwrap();
+    std::fs::write(tests.join("sub/__init__.py"), "").unwrap();
+    std::fs::write(tests.join("sub/conftest.py"), SUB_CONFTEST).unwrap();
+    std::fs::write(tests.join("sub/test_c.py"), TEST_C).unwrap();
 
     let app = tmp.path().join("app");
     let host = Arc::new(Host::new(common::host_config(&app)));
@@ -133,7 +176,16 @@ async fn finds_usages_where_pytest_would_inject_the_fixture() {
             .unwrap();
     let mut usages: Vec<String> = found.usages.iter().map(|l| short(&p.root, l)).collect();
     usages.sort();
-    assert_eq!(usages, ["tests/conftest.py:12", "tests/test_a.py:13", "tests/test_a.py:20", "tests/test_a.py:6"]);
+    assert_eq!(
+        usages,
+        [
+            "tests/conftest.py:12",
+            "tests/sub/test_c.py:5",
+            "tests/test_a.py:13",
+            "tests/test_a.py:20",
+            "tests/test_a.py:6"
+        ]
+    );
 
     // `db` lives in a module `pytest_plugins` loads: the whole project is searched, including a
     // `python_files = check_*.py` module, but not helpers.py, which pytest doesn't collect.
@@ -145,7 +197,20 @@ async fn finds_usages_where_pytest_would_inject_the_fixture() {
             .unwrap();
     let mut usages: Vec<String> = found.usages.iter().map(|l| short(&p.root, l)).collect();
     usages.sort();
-    assert_eq!(usages, ["tests/check_b.py:1", "tests/test_a.py:13"]);
+    assert_eq!(usages, ["tests/check_b.py:1", "tests/test_a.py:13", "tests/test_a.py:28"]);
+
+    // `item` reaches tests/sub through the conftest's `from tests.shared import item`.
+    let test_c = ops::doc::doc_open(&p.host, WINDOW, p.root.join("tests/sub/test_c.py")).await.unwrap().id;
+    let at = ops::nav::nav_pytest_fixtures(&p.host, WINDOW, test_c, pos_of(TEST_C, "item", 0)).await.unwrap();
+    let definition = at.reference.and_then(|r| r.definition).expect("item resolves");
+    assert_eq!(short(&p.root, &definition), "tests/shared.py:5");
+    let shared = ops::doc::doc_open(&p.host, WINDOW, p.root.join("tests/shared.py")).await.unwrap().id;
+    let found = ops::nav::nav_pytest_fixture_usages(&p.host, WINDOW, shared, pos_of(SHARED, "def item", 4), request())
+        .await
+        .unwrap()
+        .unwrap();
+    let usages: Vec<String> = found.usages.iter().map(|l| short(&p.root, l)).collect();
+    assert_eq!(usages, ["tests/sub/test_c.py:1"]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -163,6 +228,19 @@ async fn renames_the_fixture_its_requests_and_their_reads() {
     let clash = ops::nav::nav_pytest_fixture_rename(&p.host, WINDOW, test_a, at, "db".into(), request()).await.unwrap();
     assert!(clash.edit.files.is_empty());
     assert_eq!(short(&p.root, &clash.clash.unwrap()), "tests/test_a.py:13");
+    // A name test_plain's body already uses (`done`) would be shadowed.
+    let clash =
+        ops::nav::nav_pytest_fixture_rename(&p.host, WINDOW, test_a, at, "done".into(), request()).await.unwrap();
+    assert_eq!(short(&p.root, &clash.clash.unwrap()), "tests/test_a.py:13");
+    // test_d in tests/sub would get sub/conftest.py's `seed` instead.
+    let clash =
+        ops::nav::nav_pytest_fixture_rename(&p.host, WINDOW, test_a, at, "seed".into(), request()).await.unwrap();
+    assert_eq!(short(&p.root, &clash.clash.unwrap()), "tests/sub/conftest.py:6");
+    // TestDb.test_db would get the class's own `extra` instead of `db`.
+    let db = pos_of(TEST_A, "def test_db(self, db)", 18);
+    let clash =
+        ops::nav::nav_pytest_fixture_rename(&p.host, WINDOW, test_a, db, "extra".into(), request()).await.unwrap();
+    assert_eq!(short(&p.root, &clash.clash.unwrap()), "tests/test_a.py:25");
 
     let renamed =
         ops::nav::nav_pytest_fixture_rename(&p.host, WINDOW, test_a, at, "todo".into(), request()).await.unwrap();
@@ -178,6 +256,7 @@ async fn renames_the_fixture_its_requests_and_their_reads() {
     };
     // conftest.py: the definition, sample_tasks's parameter and its read.
     assert_eq!(lines("tests/conftest.py"), [7, 12, 13]);
+    assert_eq!(lines("tests/sub/test_c.py"), [5, 6]);
     // test_a.py: the overriding parameter and its read, test_plain's parameter and its read
     // (not the comprehension's own `tasks`), and the getfixturevalue string; not test_own's.
     assert_eq!(lines("tests/test_a.py"), [6, 7, 13, 15, 20]);
