@@ -140,6 +140,43 @@ fn restricted_mode_runs_no_diff_driver_of_the_repository() {
 }
 
 #[test]
+fn head_block_uses_the_editors_line_endings() {
+    // The editor text is LF-normalised (`SelectionHistory.tsx` compares `head`
+    // against `blockOf(editorText, lines)` to decide whether to show Local Changes),
+    // so a clean file must give HEAD's block equal to the editor's regardless of EOL.
+    for content in ["one\r", "one\n", "one\r\n"] {
+        let fx = Fixture::new();
+        fx.write("a.txt", content);
+        fx.commit("Add a");
+        let h = history(&fx.repo(), &fx.path("a.txt"), Some("one\n"), (0, 0));
+        assert_eq!(h.head_lines, Some((0, 0)), "{content:?}");
+        assert_eq!(h.head.as_deref(), Some("one\n"), "{content:?}");
+        assert_eq!(h.revisions[0].after, "one\n", "{content:?}");
+    }
+
+    for content in ["one\ntwo\r", "one\r\ntwo\r"] {
+        let fx = Fixture::new();
+        fx.write("a.txt", content);
+        fx.commit("Add a");
+        let repo = fx.repo();
+        for (lines, expected) in [((0, 1), "one\ntwo\n"), ((1, 1), "two\n")] {
+            let h = history(&repo, &fx.path("a.txt"), Some("one\ntwo\n"), lines);
+            assert_eq!(h.head_lines, Some(lines), "{content:?} {lines:?}");
+            assert_eq!(h.head.as_deref(), Some(expected), "{content:?} {lines:?}");
+            assert_eq!(h.revisions[0].after, expected, "{content:?} {lines:?}");
+        }
+    }
+
+    // Multiple lone-CR lines: `head` slices normalised lines just like `line_hunks`.
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\rtwo\r");
+    fx.commit("Add a");
+    let h = history(&fx.repo(), &fx.path("a.txt"), Some("one\ntwo\n"), (0, 0));
+    assert_eq!(h.head_lines, Some((0, 0)));
+    assert_eq!(h.head.as_deref(), Some("one\n"));
+}
+
+#[test]
 fn cancelled_requests_stop() {
     let fx = renamed_history();
     let cancel = CancellationToken::new();

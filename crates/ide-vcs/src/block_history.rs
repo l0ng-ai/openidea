@@ -38,6 +38,8 @@ pub(crate) fn block_history(
     let args = ["log", "--no-color", "--no-ext-diff", "--no-textconv", FORMAT, &range, "HEAD"];
     let out = cli::run_cancellable(r.root(), &args, cancel)?;
     // The newest row's block can't stand in for HEAD's: a merge row has none.
+    // Normalise line endings so HEAD's block matches the editor and `line_hunks`.
+    let head = crate::diff::normalize_eol(&head);
     let mut block = String::new();
     for line in head.lines().skip(start as usize).take((end - start) as usize + 1) {
         push_line(&mut block, line);
