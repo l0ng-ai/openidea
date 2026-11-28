@@ -85,6 +85,7 @@ import { AmendTargetMenu } from "./AmendTargetMenu";
 import { useChangeModules } from "./changeModules";
 import { commitChanges, deleteFiles } from "./changeOps";
 import { CommitOptionsPopup } from "./CommitOptions";
+import { CommitGrammar } from "./CommitGrammar";
 import { CommitCheckSummary } from "./CommitCheckSummary";
 import { DEFAULT_LIST_NAME, useChangelists, withListDefaults } from "./changelists";
 import {
@@ -1594,6 +1595,7 @@ export function CommitMessageField({
           ))}
         </div>
       )}
+      <CommitGrammar message={message} onChange={(m) => useCommit.setState({ message: m })} />
       <CommitCheckFeedback canRun={runner.canCommit} onOpenToolWindow={onOpenToolWindow} />
     </>
   );

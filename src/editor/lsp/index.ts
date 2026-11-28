@@ -39,6 +39,7 @@ import { inspectionWidgetExtension } from "./inspectionWidget";
 import { unresolvedReferences } from "./fileReferences";
 import { syntaxErrorsExtension } from "./syntaxErrors";
 import { spellingExtension } from "./spelling";
+import { grammarExtension } from "./grammar";
 import { DocumentationWindow, LspPopups, UsagesStatus } from "./Popups";
 import { MemberChooserDialog } from "./MemberChooserDialog";
 import { DOCUMENTATION_WINDOW } from "./docs";
@@ -78,6 +79,7 @@ export function lspExtensions(ctx: EditorDocContext): Extension[] {
     unresolvedReferences(),
     syntaxErrorsExtension(),
     spellingExtension(),
+    grammarExtension(),
   ];
 }
 

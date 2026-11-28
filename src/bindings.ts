@@ -834,6 +834,18 @@ export const commands = {
 	 */
 	gradlePublishedCatalog: (coordinates: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("gradle_published_catalog", { coordinates })),
 	gradleUnlinkProjects: (paths: string[]) => typedError<BuildModel, IdeError>(__TAURI_INVOKE("gradle_unlink_projects", { paths })),
+	/**
+	 *  Grammar problems in the comments and docstrings of `doc`, or in all of
+	 *  its text for Markdown and plain text. Cancel with `cancel_request(request)`.
+	 */
+	grammarCheck: (doc: DocId, request: RequestId) => typedError<GrammarProblem[], IdeError>(__TAURI_INVOKE("grammar_check", { doc, request })),
+	/**
+	 *  Grammar problems in a plain text that is not a document (the commit
+	 *  message). Cancel with `cancel_request(request)`.
+	 */
+	grammarCheckText: (text: string, request: RequestId) => typedError<GrammarProblem[], IdeError>(__TAURI_INVOKE("grammar_check_text", { text, request })),
+	/**  Every grammar rule, for the Grammar settings page. */
+	grammarRules: () => typedError<GrammarRule[], IdeError>(__TAURI_INVOKE("grammar_rules")),
 	/**  Shows a GTK file chooser attached to `window`. `None` when the user cancels. */
 	gtkPickPaths: (options: GtkPickOptions) => typedError<IpcPath[] | null, IdeError>(__TAURI_INVOKE("gtk_pick_paths", { options })),
 	historyContent: (id: string) => typedError<string, IdeError>(__TAURI_INVOKE("history_content", { id })),
@@ -8257,6 +8269,51 @@ export type GradleTask = {
 	description: string | null,
 };
 
+/**  One edit that resolves a problem. */
+export type GrammarFix = {
+	/**  UTF-16 range replaced (empty to insert). */
+	range: Range,
+	text: string,
+};
+
+/**  A grammar problem. */
+export type GrammarProblem = {
+	/**  UTF-16 range of the flagged text. */
+	range: Range,
+	/**
+	 *  The flagged text as the document has it (comment markers included,
+	 *  `\r\n` as `\n`).
+	 */
+	text: string,
+	/**  Harper's rule name (`AnA`), what "Disable rule" turns off. */
+	rule: string,
+	message: string,
+	/**  Edits Harper suggests, best first; none when the text spans comment markers. */
+	fixes: GrammarFix[],
+	/**
+	 *  The flagged text is one word Harper's dictionary lacks (a name, a
+	 *  term): saving it to the spelling dictionary makes Harper accept it.
+	 */
+	unknownWord: boolean,
+};
+
+/**  A rule the Grammar settings page lists. */
+export type GrammarRule = {
+	name: string,
+	description: string,
+};
+
+/**  Editor › Natural Languages › Grammar (Proofreading › Grammar). */
+export type GrammarSettings = {
+	/**  Harper rule names turned off (`LongSentences`). */
+	disabledRules?: string[],
+	/**
+	 *  English dialect: `american` (the default), `british`, `canadian`,
+	 *  `australian` or `indian`.
+	 */
+	dialect?: string | null,
+};
+
 export type GtkFilter = {
 	name: string,
 	extensions: string[],
@@ -13671,6 +13728,8 @@ export type Settings_Deserialize = {
 	inspections?: InspectionSettings,
 	/**  Editor › Natural Languages › Spelling. */
 	spelling?: SpellingSettings,
+	/**  Editor › Natural Languages › Grammar. */
+	grammar?: GrammarSettings,
 	/**  Tools › SSH Configurations. */
 	ssh?: SshSettings,
 	remoteDevelopment?: RemoteDevelopmentSettings,
@@ -13748,6 +13807,8 @@ export type Settings_Serialize = {
 	inspections: InspectionSettings,
 	/**  Editor › Natural Languages › Spelling. */
 	spelling: SpellingSettings,
+	/**  Editor › Natural Languages › Grammar. */
+	grammar: GrammarSettings,
 	/**  Tools › SSH Configurations. */
 	ssh: SshSettings,
 	remoteDevelopment: RemoteDevelopmentSettings,

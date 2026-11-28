@@ -77,6 +77,8 @@ pub struct SpellingRegion {
     /// (`r"\user"`, `r#"…"#`, `` `…` ``, `@"…"`). The spelling layer must not
     /// skip the character after a `\` in one of these.
     pub raw: bool,
+    /// A Python string that is a statement of its own: a docstring.
+    pub doc: bool,
 }
 
 /// Whether `node` is a string literal whose backslashes are not escapes.
@@ -127,19 +129,23 @@ fn declares(cursor: &TreeCursor<'_>, node: &Node<'_>) -> bool {
     }
 }
 
-/// Comments, string literals and declared names, for spell checking.
-pub(crate) fn spelling_regions(tree: &Tree, text: &str) -> Vec<SpellingRegion> {
+/// Comments, string literals and declared names, for spell checking;
+/// `python` marks docstrings (string statements).
+pub(crate) fn spelling_regions(tree: &Tree, text: &str, python: bool) -> Vec<SpellingRegion> {
     let mut out = Vec::new();
     let mut cursor = tree.walk();
     loop {
         let node = cursor.node();
         let literal = kind_of(&node);
-        let region = |kind| SpellingRegion { start: node.start_byte(), end: node.end_byte(), kind, raw: false };
+        let region =
+            |kind| SpellingRegion { start: node.start_byte(), end: node.end_byte(), kind, raw: false, doc: false };
         match literal {
             Some(LiteralKind::Comment) => out.push(region(SpellingKind::Comment)),
             Some(LiteralKind::String) => {
                 let mut r = region(SpellingKind::String);
                 r.raw = is_raw_string(&node, text);
+                r.doc = python
+                    && node.parent().is_some_and(|p| p.kind() == "expression_statement" && p.named_child_count() == 1);
                 out.push(r);
             }
             None if node.is_named()

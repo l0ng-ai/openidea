@@ -1,4 +1,4 @@
-/** Settings › Editor pages (General and sub-pages, Code Editing, Font, Color Scheme, Code Style, Inspections, Natural Languages › Spelling, File Encodings, Inlay Hints). */
+/** Settings › Editor pages (General and sub-pages, Code Editing, Font, Color Scheme, Code Style, Inspections, Natural Languages › Spelling and Grammar, File Encodings, Inlay Hints). */
 import type { PageSpec } from "../spec";
 import { COLOR_SCHEME_PAGES } from "./colorScheme";
 import { GENERAL_PAGES } from "./general";
@@ -6,6 +6,7 @@ import { FONT_PAGE } from "./font";
 import { CODE_STYLE_PAGES } from "./codeStyle";
 import { INSPECTIONS_PAGE } from "./inspections";
 import { NATURAL_LANGUAGES_PAGE, SPELLING_PAGE } from "./spelling";
+import { GRAMMAR_PAGE } from "./grammar";
 
 export { codeStyleLanguagePages } from "./codeStyle";
 
@@ -17,4 +18,5 @@ export const EDITOR_PAGES: PageSpec[] = [
   INSPECTIONS_PAGE,
   NATURAL_LANGUAGES_PAGE,
   SPELLING_PAGE,
+  GRAMMAR_PAGE,
 ];

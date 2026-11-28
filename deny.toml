@@ -6,6 +6,18 @@ ignore = [
     # SQLx MySQL uses RSA public-key encryption; russh/ssh-key use signatures.
     # No RSA private-key decryption is exposed to attacker-controlled ciphertext.
     { id = "RUSTSEC-2023-0071", reason = "RSA is used for MySQL password encryption and SSH signatures, not RSA decryption" },
+    # zip 8.6.0 (no fixed 8.x release) comes only through harper-core (ide-grammar), which
+    # pins zip ^8.6 for its Weirpack rule packs. The IDE never loads a Weirpack, and Harper
+    # only reads in-memory archives there: no extraction or ZipStreamReader, and only the
+    # `deflate` feature is enabled (no AES, no legacy Shrink/Reduce/Implode decoders).
+    { id = "RUSTSEC-2026-0367", reason = "zip via harper-core only; no archive is extracted, streamed or loaded by the IDE" },
+    { id = "RUSTSEC-2026-0368", reason = "zip via harper-core only; no archive is extracted, streamed or loaded by the IDE" },
+    { id = "RUSTSEC-2026-0369", reason = "zip via harper-core only; no archive is extracted, streamed or loaded by the IDE" },
+    { id = "RUSTSEC-2026-0429", reason = "zip via harper-core only; no archive is extracted, streamed or loaded by the IDE" },
+    { id = "RUSTSEC-2026-0545", reason = "zip via harper-core only; no archive is extracted, streamed or loaded by the IDE" },
+    { id = "RUSTSEC-2026-0546", reason = "zip via harper-core only; no archive is extracted, streamed or loaded by the IDE" },
+    { id = "RUSTSEC-2026-0547", reason = "zip via harper-core only; no archive is extracted, streamed or loaded by the IDE" },
+    { id = "RUSTSEC-2026-0548", reason = "zip via harper-core only; no archive is extracted, streamed or loaded by the IDE" },
 ]
 
 [licenses]

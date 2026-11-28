@@ -78,6 +78,18 @@ pub struct SpellingSettings {
     pub default_dictionary: Option<String>,
 }
 
+/// Editor › Natural Languages › Grammar (Proofreading › Grammar).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GrammarSettings {
+    /// Harper rule names turned off (`LongSentences`).
+    pub disabled_rules: Vec<String>,
+    /// English dialect: `american` (the default), `british`, `canadian`,
+    /// `australian` or `indian`.
+    #[specta(optional)]
+    pub dialect: Option<String>,
+}
+
 /// Changes to one inspection; absent fields keep the inspection's defaults.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]

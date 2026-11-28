@@ -332,7 +332,8 @@ impl Syntax {
     /// Comments, string literals and declared names (byte ranges, document
     /// order) for the Typo inspection; `None` like [`Self::literals`].
     pub fn spelling_regions(&self, lang: &LanguageId, text: &str) -> Option<Vec<SpellingRegion>> {
-        self.analyze(lang, text, |_, tree, text| Some(literals::spelling_regions(tree, text)))
+        let python = lang.as_str() == "python";
+        self.analyze(lang, text, |_, tree, text| Some(literals::spelling_regions(tree, text, python)))
     }
 
     /// Syntax-aware selection ranges for IDEA "Extend Selection" (⌥↑), innermost first.

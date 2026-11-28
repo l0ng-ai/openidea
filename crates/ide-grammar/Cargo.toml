@@ -1,0 +1,14 @@
+[package]
+name = "ide-grammar"
+description = "Grammar checking (Proofreading › Grammar): Harper's English rules over comments, docstrings, Markdown, plain text and commit messages, in process"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ide-core.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+specta.workspace = true
+# Local English grammar checker (Apache-2.0); no thesaurus.
+harper-core = { version = "3.2", default-features = false, features = ["concurrent"] }

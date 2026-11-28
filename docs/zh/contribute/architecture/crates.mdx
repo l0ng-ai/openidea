@@ -36,6 +36,7 @@ Cargo workspace 由 `crates/*` 加 `src-tauri` 组成（见根目录 `Cargo.toml
 | `ide-search`   | 基于 ripgrep 引擎 crate 的 Find / Replace in Files。                                                                                                      |
 | `ide-analysis` | 基于语法树的项目级分析：Locate Duplicates 和结构化搜索/替换。                                                                                             |
 | `ide-spell`    | 拼写检查（注释、字符串、声明的名称）：内置 Hunspell en_US / en_GB 词典、编程术语表、用户词典。                                                            |
+| `ide-grammar`  | 语法检查（注释、文档字符串、Markdown、纯文本、提交信息）：在进程内运行 Harper（`harper-core`）。                                                          |
 
 ## 运行、调试与构建
 

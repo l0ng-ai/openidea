@@ -231,6 +231,9 @@ export const JAVA_SERIAL_VERSION_INSPECTION = "java:missing-serial-version";
 /** Producer key of the Typo inspection's diagnostics. */
 export const SPELLING_PRODUCER = "spelling";
 export const SPELLING_INSPECTION = "builtin:spelling";
+/** Producer key of the Grammar inspection's diagnostics. */
+export const GRAMMAR_PRODUCER = "grammar";
+export const GRAMMAR_INSPECTION = "builtin:grammar";
 
 /** Syntax errors of the built-in parser, for files no language server checks. */
 export const SYNTAX_ERRORS_PRODUCER = "syntax";
@@ -428,6 +431,15 @@ export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
       { key: SPELLING_OPTIONS.literals, label: "Process literals", default: true },
       { key: SPELLING_OPTIONS.comments, label: "Process comments", default: true },
     ],
+  },
+  {
+    id: GRAMMAR_INSPECTION,
+    producer: GRAMMAR_PRODUCER,
+    name: "Grammar",
+    group: "Proofreading",
+    description:
+      "Reports grammar, punctuation and style problems in comments, Python docstrings, Markdown and plain text, and in the commit message, with Harper's English rules. The check runs on this machine; no text is sent anywhere. Quick fixes apply Harper's suggestions; single rules can be turned off and the English dialect chosen in Editor › Natural Languages › Grammar.",
+    defaultLevel: "weakWarning",
   },
 ];
 
