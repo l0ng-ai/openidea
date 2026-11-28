@@ -2387,7 +2387,12 @@ pub fn terminal_activation(root: &Path, s: &Settings, shell: &str) -> Option<Str
     let name = shell.rsplit(['/', '\\']).next().unwrap_or(shell);
     let name = Path::new(name).file_stem().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
     let Some(venv) = venv_of(&python) else {
-        return conda_activation(&python, &name, std::env::var_os("CONDA_EXE").map(PathBuf::from), which("conda"));
+        return conda_activation(
+            &python,
+            &name,
+            std::env::var_os("CONDA_EXE").map(PathBuf::from),
+            crate::discover::conda_exe(),
+        );
     };
     if std::env::var_os("VIRTUAL_ENV").is_some_and(|v| Path::new(&v) == venv) {
         return None;
