@@ -33,6 +33,7 @@ import {
 } from "@codemirror/merge";
 import { useStore } from "zustand";
 import { attachDocument, diffSideExtensions, embeddedEditorExtensions, type DocumentAttachment } from "@/editor/api";
+import { findUsages } from "@/features/code-insight/usages";
 import { findChangedRanges, setFindOpen } from "@/editor/core/cm/find";
 import { softWrapActive } from "@/editor/core/cm/prefs";
 import { FindPanel, searchAgain, seedFind, type FindTarget } from "@/editor/core/view/FindBar";
@@ -1731,6 +1732,37 @@ function TwoPaneDiff({
       },
     ];
   };
+  /** Find Usages for the symbol under a clicked pane, when that pane has a live document. */
+  const findUsagesItems = (pane: DiffViewerPane | undefined, pos: number | null): MenuItem[] => {
+    if (!pane || pos === null) return [];
+    const att =
+      viewMode === "split"
+        ? pane.side === "left"
+          ? attached?.a
+          : attached?.b
+        : unifiedOnLeft
+          ? attached?.a
+          : attached?.b;
+    if (!att) return [];
+    const word = pane.view.state.wordAt(pos);
+    if (!word) return [];
+    const at = pane.view.state.doc.lineAt(pos);
+    const caret = {
+      doc: att.doc,
+      path: att.path,
+      line: at.number - 1,
+      col: pos - at.from,
+      word: pane.view.state.sliceDoc(word.from, word.to),
+      view: pane.view,
+    };
+    return [
+      {
+        label: "Find Usages",
+        shortcut: shortcutLabel("find.usages"),
+        run: () => void findUsages(caret),
+      },
+    ];
+  };
   /**
    * The panes' right-click menu: the contributions' items for the clicked line and Git annotations
    * (none: the default menu). The divider between the panes acts on the pane focused last.
@@ -1740,9 +1772,8 @@ function TwoPaneDiff({
     if (!viewer || e.defaultPrevented) return;
     const hit = viewer.panes().find((p) => p.view.dom.contains(e.target as Node | null));
     const pane = hit ?? viewer.focusedPane();
-    const line = hit
-      ? hit.view.state.doc.lineAt(hit.view.posAtCoords({ x: e.clientX, y: e.clientY }, false)).number - 1
-      : -1;
+    const pos = hit ? hit.view.posAtCoords({ x: e.clientX, y: e.clientY }, false) : null;
+    const line = hit && pos !== null ? hit.view.state.doc.lineAt(pos).number - 1 : -1;
     const local = viewsRef.current?.b;
     const inclusion: MenuItem[] = [];
     if (includable && local && hit && line >= 0) {
@@ -1768,6 +1799,7 @@ function TwoPaneDiff({
     }
     const groups = [
       ...(hit ? contribs.map((c) => c.contextMenuItems?.({ side: hit.side, line }) ?? []) : []),
+      findUsagesItems(hit, pos),
       inclusion,
       blameItems(pane),
     ].filter((g) => g.length);
