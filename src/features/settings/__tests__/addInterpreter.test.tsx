@@ -133,6 +133,7 @@ describe("Add Python Interpreter", () => {
     const inherit = () => screen.queryByRole("checkbox", { name: "Inherit packages from base interpreter" });
     expect(inherit()).not.toBeChecked();
     fireEvent.click(inherit()!);
+    expect(screen.getByText(/-m venv --system-site-packages/)).toBeInTheDocument();
     for (const [label, tool] of [
       ["Virtualenv Environment", "venv"],
       ["uv Environment", "uv"],

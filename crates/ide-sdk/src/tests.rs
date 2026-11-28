@@ -1572,6 +1572,38 @@ fn a_virtualenv_inherits_the_base_packages_only_when_asked() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn uv_inherits_the_base_packages_and_no_venv_base_is_inherited_from() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    // A fake uv that records its arguments and fails, so nothing else runs.
+    let uv = tmp.path().join("uv");
+    let log = tmp.path().join("args");
+    std::fs::write(&uv, format!("#!/bin/sh\necho \"$@\" > '{}'\nexit 1\n", log.display())).unwrap();
+    std::fs::set_permissions(&uv, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let which = |tool: &str| (tool == "uv").then(|| uv.clone());
+    let base = tmp.path().join("python3");
+    let create = |tool, base: &Path, inherit| {
+        let location = tmp.path().join("new");
+        crate::python::create_venv_with(tool, base, &location, false, inherit, which, &Default::default(), &|_| {})
+    };
+    assert!(create(crate::python::VenvTool::Uv, &base, true).is_err());
+    assert!(std::fs::read_to_string(&log).unwrap().trim_end().ends_with("--system-site-packages"));
+    assert!(create(crate::python::VenvTool::Uv, &base, false).is_err());
+    assert!(!std::fs::read_to_string(&log).unwrap().contains("--system-site-packages"));
+    // A virtualenv as the base: refused before any tool runs, as its packages would not be inherited.
+    let venv = tmp.path().join("venv");
+    std::fs::create_dir_all(venv.join("bin")).unwrap();
+    std::fs::write(venv.join("pyvenv.cfg"), "home = /usr/bin").unwrap();
+    std::fs::remove_file(&log).unwrap();
+    for tool in [crate::python::VenvTool::Uv, crate::python::VenvTool::Venv] {
+        let err = create(tool, &venv.join("bin/python"), true).unwrap_err();
+        assert!(err.message.contains("is a virtual environment"), "{}", err.message);
+    }
+    assert!(!log.exists());
+}
+
 #[test]
 fn env_tools_are_reported_missing_before_they_run() {
     // Without uv / Poetry on PATH the error names the install, not a spawn failure.

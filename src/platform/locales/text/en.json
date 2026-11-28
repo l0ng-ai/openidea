@@ -4064,6 +4064,8 @@
   "Pipenv Environment": "Pipenv Environment",
   "Install packages from Pipfile": "Install packages from Pipfile",
   "Inherit packages from base interpreter": "Inherit packages from base interpreter",
+  "Runs “<base> -m venv --system-site-packages <location>”; the new interpreter becomes the project interpreter.": "Runs “<base> -m venv --system-site-packages <location>”; the new interpreter becomes the project interpreter.",
+  "Runs “uv venv <location> --python <base> --system-site-packages”; the new interpreter becomes the project interpreter.": "Runs “uv venv <location> --python <base> --system-site-packages”; the new interpreter becomes the project interpreter.",
   "Runs “pipenv --python <base>” in the project, which writes a Pipfile (from requirements.txt if there is one) when the project has none. Pipenv chooses where to store the environment and reuses an existing one.": "Runs “pipenv --python <base>” in the project, which writes a Pipfile (from requirements.txt if there is one) when the project has none. Pipenv chooses where to store the environment and reuses an existing one.",
   "Black formatter": "Black formatter",
   "Reformat with Black": "Reformat with Black",

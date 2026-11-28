@@ -76,6 +76,14 @@ pub(crate) fn create_venv_with(
                     format!("{} already contains a virtual environment", location.display()),
                 ));
             }
+            // A venv's site-packages are not passed on: venv and uv build on the Python it was made from.
+            if inherit && venv_of(base).is_some() {
+                return Err(IdeError::invalid(format!(
+                    "{} is a virtual environment, whose packages a new environment cannot inherit. \
+                     Pick the Python it was created from as the base interpreter.",
+                    base.display()
+                )));
+            }
             if let Some(parent) = location.parent() {
                 std::fs::create_dir_all(parent)?;
             }
