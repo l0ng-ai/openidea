@@ -17,6 +17,7 @@ import { pythonGenerateEntries } from "./generate";
 import { pythonCreateFixes } from "./createFromUsage";
 import { pythonTypeHintIntentions } from "./typeHints";
 import { pythonStringIntentions } from "./stringFormat";
+import { pythonLibraryImports } from "./libraryImports";
 
 /** Server tokens these kinds override: the kind's own classes replace the generic ones. */
 const VARIABLE_KINDS = new Set<PythonSymbolKind>([
@@ -61,7 +62,8 @@ const pythonSemantics: LanguageSemantics = {
     return [...pythonCreateFixes(view, from, to), ...pythonMemberIntentions(view), ...pythonStringIntentions(view)];
   },
   quickFixes: pythonCreateFixes,
-  asyncIntentions: pythonTypeHintIntentions,
+  asyncIntentions: async (view, signal) =>
+    (await Promise.all([pythonTypeHintIntentions(view, signal), pythonLibraryImports(view, signal)])).flat(),
   implementMethods: implementPythonAbstractMethods,
   overrideMethods: overridePythonMethods,
   generate: pythonGenerateEntries,

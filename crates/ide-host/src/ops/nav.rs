@@ -1,12 +1,14 @@
 use super::blocking;
 use super::pytest_fixtures::{PytestFixtureAt, PytestFixtureUsages, fixture_at, fixture_usages, rename_fixture};
 use super::python_stubs::{
-    PythonStubLinks, counterpart_candidates, match_declarations, module_name, site_packages, stub_path,
+    PythonStubLinks, counterpart_candidates, interpreter_site_packages, match_declarations, module_name, site_packages,
+    stub_path,
 };
 use crate::Host;
 use crate::Project;
 use ide_command::command;
 use ide_core::{DocId, IdeResult, IpcPath, LanguageId, Location, Pos, RequestId, WorkspaceEdit};
+use ide_index::python_library::{PythonImportCandidate, PythonLibraries};
 use ide_index::{ExtensionCount, FileMatch, IndexStatus, SymbolFilter, SymbolMatch};
 use ide_language::{CSS_VARIABLE, FileReference, WebReference};
 use ide_workspace::file_refs::{self, PathCompletion};
@@ -496,6 +498,41 @@ pub async fn nav_pytest_fixtures(host: &Host, window: &str, doc: DocId, pos: Pos
     .await
 }
 
+static PYTHON_LIBRARIES: std::sync::LazyLock<PythonLibraries> = std::sync::LazyLock::new(Default::default);
+
+/// Imports that bind `name` from the packages installed in the interpreter of the Python document
+/// `doc` (its workspace member's, else the project's): PyCharm's "Import this name" for library
+/// symbols, which basedpyright offers for the project and the standard library only. The first
+/// request indexes the interpreter's `site-packages` in the background, and a change there
+/// re-indexes it; a request waits for the index until cancelled.
+#[command(trust = always)]
+pub async fn nav_python_library_imports(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    name: String,
+    request: RequestId,
+) -> IdeResult<Vec<PythonImportCandidate>> {
+    let project = host.project(window)?;
+    let syntax = host.syntax();
+    let config_dir = host.config_dir.clone();
+    let token = host.begin_request(request);
+    let result = blocking(move || {
+        let snap = project.documents.snapshot(doc)?;
+        if snap.language.as_str() != "python" {
+            return Ok(Vec::new());
+        }
+        let Some(python) = super::sdk::effective_python(&config_dir, &project, Some(&snap.path)) else {
+            return Ok(Vec::new());
+        };
+        let roots = interpreter_site_packages(&python);
+        Ok(PYTHON_LIBRARIES.index(&roots, &syntax, &token).map(|index| index.candidates(&name)).unwrap_or_default())
+    })
+    .await;
+    host.end_request(request);
+    result
+}
+
 /// Find Usages of the pytest fixture at `pos` (its definition, or a place asking for it): every
 /// test and fixture parameter, `usefixtures` and `getfixturevalue` string that gets it.
 /// None when `pos` names no fixture. Cancellable.
@@ -567,6 +604,7 @@ ide_command::domain!(
     nav_pytest_fixture_rename,
     nav_pytest_fixture_usages,
     nav_pytest_fixtures,
+    nav_python_library_imports,
     nav_python_stubs,
     nav_resolve_module,
     path_completions,

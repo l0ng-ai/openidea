@@ -33,7 +33,7 @@ import {
 import { GutterMarker, ViewPlugin, type EditorView, type ViewUpdate } from "@codemirror/view";
 import type { LanguageDescription } from "@codemirror/language";
 import type { HunkKind } from "@/bindings";
-import type { LineEnding } from "@/platform/ipc";
+import type { CodeAction, LineEnding } from "@/platform/ipc";
 import { create } from "zustand";
 import { maybeEditorService, type EditorInput, type MenuGroupContext } from "@/workbench/contributions";
 import { isSameOrInside } from "@/platform/paths";
@@ -598,7 +598,11 @@ export interface ContributedIntention {
   label: string;
   icon?: string;
   quickFix?: boolean;
+  /** The preferred fix: bold, and first among the fixes. */
+  emphasis?: boolean;
   run: () => void | Promise<void>;
+  /** A fallback for what the language server may offer itself: left out of ⌥↵ when one of its actions matches. */
+  supersededBy?: (action: CodeAction) => boolean;
 }
 
 /** A background provider has new context actions for the current document. */

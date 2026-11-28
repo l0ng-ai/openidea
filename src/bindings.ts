@@ -1252,6 +1252,14 @@ export const commands = {
 	 */
 	navPytestFixtures: (doc: DocId, pos: Pos) => typedError<PytestFixtureAt, IdeError>(__TAURI_INVOKE("nav_pytest_fixtures", { doc, pos })),
 	/**
+	 *  Imports that bind `name` from the packages installed in the interpreter of the Python document
+	 *  `doc` (its workspace member's, else the project's): PyCharm's "Import this name" for library
+	 *  symbols, which basedpyright offers for the project and the standard library only. The first
+	 *  request indexes the interpreter's `site-packages` in the background, and a change there
+	 *  re-indexes it; a request waits for the index until cancelled.
+	 */
+	navPythonLibraryImports: (doc: DocId, name: string, request: RequestId) => typedError<PythonImportCandidate[], IdeError>(__TAURI_INVOKE("nav_python_library_imports", { doc, name, request })),
+	/**
 	 *  The stub (`.pyi`) of a Python document, or the implementation of a stub, and the
 	 *  functions and classes declared in both: PyCharm's stub gutter markers.
 	 */
@@ -12344,6 +12352,12 @@ export type PythonFacts = {
 	classes: PythonClassFacts[],
 	/**  `# noinspection` comments, in source order. */
 	suppressions: PythonSuppression[],
+};
+
+/**  An import that binds a name: `from module import name`, or `import module` without `name`. */
+export type PythonImportCandidate = {
+	module: string,
+	name: string | null,
 };
 
 /**  A method definition the inspections can reason about. */

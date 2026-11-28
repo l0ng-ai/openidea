@@ -455,6 +455,7 @@ nav_inheritance                              always             project_host bin
 nav_pytest_fixture_rename                    always             project_host bindings async
 nav_pytest_fixture_usages                    always             project_host bindings async
 nav_pytest_fixtures                          always             project_host bindings async
+nav_python_library_imports                   always             project_host bindings async
 nav_python_stubs                             always             project_host bindings async
 nav_resolve_module                           always             project_host bindings async
 notebook_cell_docs                           trusted            project_host bindings sync

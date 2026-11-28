@@ -19,6 +19,7 @@ use std::time::Duration;
 mod data;
 mod filter;
 mod matching;
+pub mod python_library;
 mod store;
 mod worker;
 

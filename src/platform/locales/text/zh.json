@@ -19,6 +19,8 @@
   "Short Go error guards and case clauses": "简短的 Go 错误检查和 case 分支",
   "Create function '{name}'": "创建函数 '{name}'",
   "Create class '{name}'": "创建类 '{name}'",
+  "Import '{name}' from '{module}'": "从 '{module}' 导入 '{name}'",
+  "Import module '{module}'": "导入模块 '{module}'",
   "Create method '{name}' in '{owner}'": "在 '{owner}' 中创建方法 '{name}'",
   "Database Output": "数据库输出",
   "Dataclasses, enums, named tuples, typed dicts and models get __init__ on their own": "数据类、枚举、具名元组、TypedDict 和模型会自动获得 __init__",

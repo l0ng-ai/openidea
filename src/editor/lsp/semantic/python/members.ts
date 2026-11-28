@@ -13,7 +13,7 @@ import { docOf, lspRequest, reportLspError } from "../../lsp";
 import { readFileLines, withDocument } from "../../files";
 import { showHint } from "../../hint";
 import { chooseMembers } from "../../memberChooser";
-import { importLine, importedFrom, neededImports, placeImports, topLevelBindings } from "./imports";
+import { importChanges, importedFrom, neededImports, topLevelBindings } from "./imports";
 
 /** A Python identifier (letters of any script). */
 export const ID = "[\\p{L}_][\\p{L}\\p{N}_]*";
@@ -285,17 +285,11 @@ export function insertMembers(
       : placeholder
         ? { from: state.doc.line(bodyLines[0]!).from, to: state.doc.line(end).to, insert: stubs }
         : { from: state.doc.line(end).to, insert: `\n\n${stubs}` };
-  const { appended, added } = placeImports(lines, imports);
-  const importChanges = [...appended].map(([n, text]) => ({ from: state.doc.line(n + 1).to, insert: text }));
-  if (added.length) {
-    const before = importLine(lines);
-    importChanges.push(
-      before < state.doc.lines
-        ? { from: state.doc.line(before + 1).from, insert: `${added.join("\n")}\n` }
-        : { from: state.doc.length, insert: `\n${added.join("\n")}` },
-    );
-  }
-  view.dispatch({ changes: [...importChanges, ...extra, changes], userEvent: "input.complete", scrollIntoView: true });
+  view.dispatch({
+    changes: [...importChanges(state.doc, imports), ...extra, changes],
+    userEvent: "input.complete",
+    scrollIntoView: true,
+  });
 }
 
 /** A base class of the class at the caret and the methods it declares. */

@@ -1,3 +1,5 @@
+import type { Text } from "@codemirror/state";
+
 /**
  * The imports an override copied from a base class needs: names its signature uses that the
  * current file does not bind, imported the way the base class's file binds them.
@@ -131,4 +133,20 @@ export function placeImports(
   }
   for (const [module, names] of grouped) added.push(`from ${module} import ${names.join(", ")}`);
   return { appended, added };
+}
+
+/** The changes that add `statements` to `doc`, placed by `placeImports`. */
+export function importChanges(doc: Text, statements: readonly string[]): { from: number; insert: string }[] {
+  const lines = doc.toJSON();
+  const { appended, added } = placeImports(lines, statements);
+  const changes = [...appended].map(([n, text]) => ({ from: doc.line(n + 1).to, insert: text }));
+  if (added.length) {
+    const before = importLine(lines);
+    changes.push(
+      before < doc.lines
+        ? { from: doc.line(before + 1).from, insert: `${added.join("\n")}\n` }
+        : { from: doc.length, insert: `\n${added.join("\n")}` },
+    );
+  }
+  return changes;
 }

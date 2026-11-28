@@ -20,6 +20,7 @@ import {
   quickFixProviders,
   intentionsChanged,
   whenSynced,
+  type ContributedIntention,
 } from "@/editor/api";
 import { shortcutLabel } from "@/platform/keymap";
 import { debounce, docOf, isUnavailable, lspRequest, reportLspError } from "./lsp";
@@ -541,6 +542,14 @@ export function withInspectionControls(view: EditorView, items: ListPopupItem[])
   ];
 }
 
+/** `intentions` without the fallbacks the server's `actions` make redundant. */
+export function withoutSuperseded(
+  intentions: readonly ContributedIntention[],
+  actions: readonly CodeAction[],
+): ContributedIntention[] {
+  return intentions.filter((i) => !i.supersededBy || !actions.some((a) => !a.disabledReason && i.supersededBy!(a)));
+}
+
 /**
  * How long ⌥↵ waits for the server's actions before showing the popup with a
  * progress row: the answer that arrives sooner appears at once (no flash), a
@@ -615,7 +624,7 @@ export async function showIntentions(view: EditorView) {
       }),
       contributedIntentionsAsync(view, asked.signal),
     ]);
-    local.push(...found);
+    local.push(...withoutSuperseded(found, actions ?? []));
     clearTimeout(timer);
     const items = actions ? itemsFor(actions) : withInspectionControls(view, listedIntentions(view, local));
     if (!items.length) {

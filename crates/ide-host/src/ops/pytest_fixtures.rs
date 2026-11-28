@@ -3,7 +3,7 @@
 //! plugins' `pytest11` entry points, pytest's own `_pytest` package), for Go to Declaration
 //! and completion of fixture names.
 
-use super::python_stubs::site_packages;
+use super::python_stubs::interpreter_site_packages as python_site_packages;
 use crate::Project;
 use ide_core::{FileEdit, IdeError, IdeResult, IpcPath, LanguageId, Location, Pos, Range, TextEdit, WorkspaceEdit};
 use ide_language::{PytestModule, Syntax, resolve_fixture, visible_fixtures};
@@ -324,8 +324,7 @@ fn is_test_file(rel: &Path) -> bool {
 fn interpreter_site_packages(project: &Project) -> Vec<PathBuf> {
     let settings = project.settings.effective();
     let Some(python) = ide_sdk::apply::python_interpreter(&project.root, &settings) else { return Vec::new() };
-    let prefix = ide_sdk::venv_of(&python).or_else(|| python.parent()?.parent().map(Path::to_path_buf));
-    prefix.map(|p| site_packages(&p)).unwrap_or_default()
+    python_site_packages(&python)
 }
 
 /// `pkg.mod` → `pkg/mod.py` or `pkg/mod/__init__.py` in the first folder that has it.

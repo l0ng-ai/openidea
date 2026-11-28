@@ -14,7 +14,7 @@ import { docOf } from "../../lsp";
 import type { EditorDiagnostic } from "../../diagnostics";
 
 /** Unresolved-name and missing-attribute codes of basedpyright/pyright, Ruff, ty and pyrefly. */
-const UNDEFINED_NAME = new Set(["reportUndefinedVariable", "F821", "unresolved-reference", "unknown-name"]);
+export const UNDEFINED_NAME = new Set(["reportUndefinedVariable", "F821", "unresolved-reference", "unknown-name"]);
 const MISSING_ATTRIBUTE = new Set(["reportAttributeAccessIssue", "unresolved-attribute", "missing-attribute"]);
 
 export interface CreateFix {

@@ -248,6 +248,30 @@ describe("context actions a feature finds through the language server", () => {
     expect(labels()).toEqual(["Enable exception breakpoint on Failure"]);
     error.mockRestore();
   });
+
+  it("drops a fallback the server's own fix supersedes, and lists a preferred one first", async () => {
+    const fallback = {
+      ...intention("Import 'Widget' from 'lib'"),
+      quickFix: true,
+      emphasis: true,
+      supersededBy: (a: CodeAction) => a.title.startsWith("Import"),
+    };
+    const create = { ...intention("Create class 'Widget'"), quickFix: true };
+    const view = editor(async () => [create, fallback]);
+    const fix = (title: string) => ({ ...resolved, title, kind: "quickfix", edit: null });
+    lspCodeActions.mockResolvedValue({ status: "ok", data: [fix("Ignore 'Widget'")] });
+    await showIntentions(view);
+    expect(labels().slice(0, 3)).toEqual(["Import 'Widget' from 'lib'", "Create class 'Widget'", "Ignore 'Widget'"]);
+
+    closePopup();
+    lspCodeActions.mockResolvedValue({
+      status: "ok",
+      data: [fix("Ignore 'Widget'"), fix("Import 'Widget' from 'own'")],
+    });
+    await showIntentions(view);
+    expect(labels()).not.toContain("Import 'Widget' from 'lib'");
+    expect(labels()).toContain("Import 'Widget' from 'own'");
+  });
 });
 
 describe("inspection controls in ⌥↵ (issue #42)", () => {

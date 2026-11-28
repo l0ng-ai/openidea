@@ -56,6 +56,19 @@ pub(crate) fn site_packages(venv: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// The `site-packages` of the interpreter `python`, found on disk without running it: in the
+/// environment holding its `bin` / `Scripts` folder (a virtualenv, a conda environment, an install
+/// prefix), else in its own folder (a conda environment on Windows keeps `python.exe` at its root).
+pub(crate) fn interpreter_site_packages(python: &Path) -> Vec<PathBuf> {
+    let home = python.parent();
+    [home.and_then(Path::parent), home]
+        .into_iter()
+        .flatten()
+        .map(site_packages)
+        .find(|p| !p.is_empty())
+        .unwrap_or_default()
+}
+
 /// The dotted module of a Python file, from the innermost `search` folder holding it
 /// (`src/a/b.py` → `a.b`, `site-packages/a/__init__.py` → `a`).
 pub(crate) fn module_name(path: &Path, search: &[PathBuf]) -> Option<String> {
@@ -226,5 +239,21 @@ mod tests {
         let names: Vec<(&str, u32, u32)> =
             links.iter().map(|l| (l.name.as_str(), l.range.start.line, l.target.start.line)).collect();
         assert_eq!(names, [("f", 0, 2), ("C", 4, 5), ("C.__init__", 5, 6), ("C.m", 6, 7)]);
+    }
+
+    #[test]
+    fn interpreter_site_packages_of_venvs_and_conda_environments() {
+        let dir = tempfile::tempdir().unwrap();
+        let unix = dir.path().join("envs/langchain");
+        std::fs::create_dir_all(unix.join("lib/python3.13/site-packages")).unwrap();
+        assert_eq!(interpreter_site_packages(&unix.join("bin/python")), [unix.join("lib/python3.13/site-packages")]);
+        // Windows: `.venv\Scripts\python.exe`, and conda's `<env>\python.exe`.
+        let venv = dir.path().join(".venv");
+        std::fs::create_dir_all(venv.join("Lib/site-packages")).unwrap();
+        assert_eq!(interpreter_site_packages(&venv.join("Scripts/python.exe")), [venv.join("Lib/site-packages")]);
+        let conda = dir.path().join("miniconda/envs/data");
+        std::fs::create_dir_all(conda.join("Lib/site-packages")).unwrap();
+        assert_eq!(interpreter_site_packages(&conda.join("python.exe")), [conda.join("Lib/site-packages")]);
+        assert!(interpreter_site_packages(&dir.path().join("nowhere/bin/python")).is_empty());
     }
 }
