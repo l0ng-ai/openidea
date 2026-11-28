@@ -9,6 +9,7 @@ const ipc = vi.hoisted(() => {
     ok,
     runStop: vi.fn(() => ok(null)),
     debugStep: vi.fn(() => ok(null)),
+    debugStepInstruction: vi.fn(() => ok(null)),
     debugResume: vi.fn(() => ok(null)),
     debugForceStepOver: vi.fn(() => ok(null)),
     debugRunTo: vi.fn(() => ok(null)),
@@ -37,6 +38,9 @@ const ipc = vi.hoisted(() => {
       ]),
     ),
     debugScopes: vi.fn(() => ok([])),
+    debugReadMemory: vi.fn((_s: number, reference: string, offset: number, count: number) =>
+      ok({ address: reference, data: Array<number>(count).fill(offset & 0xff), unreadableBytes: 0 }),
+    ),
     debugStart: vi.fn((_launch: { extraJson: string | null }) => ok(42)),
     debugSetBreakpoints: vi.fn(() => ok([])),
     debugBreakpointStates: vi.fn(() => ok([])),
@@ -82,7 +86,11 @@ import { clearContext, setContext } from "@/platform/context";
 import { intellijMacos } from "@/platform/keymaps/intellij-macos";
 import type { DebugCapabilities, RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { provideNotificationService } from "@/workbench/contributions";
+import {
+  provideNotificationService,
+  provideToolWindowService,
+  type ToolWindowService,
+} from "@/workbench/contributions";
 import { registerDebugActions } from "../actions";
 import { breakpointsOf, loadBreakpoints, toggleBreakpoint, updateBreakpoint } from "../breakpoints/store";
 import {
@@ -99,6 +107,8 @@ import { useOverlays } from "../ui/popoverStore";
 import { forgetMemory, selectMemoryClass } from "../memory/memoryState";
 import { forgetInstances, setInstancesLead, showInstances, useInstances } from "../memory/instancesState";
 import { InstancesPane } from "../memory/InstancesPane";
+import { forgetMemoryView, useMemoryView } from "../memoryView/memoryViewState";
+import { useDisassembly } from "../disassembly/disassemblyState";
 
 const caps = (p: Partial<DebugCapabilities> = {}): DebugCapabilities => ({
   restartFrame: false,
@@ -116,6 +126,9 @@ const caps = (p: Partial<DebugCapabilities> = {}): DebugCapabilities => ({
   jsPage: false,
   liveEvaluate: false,
   streamTrace: false,
+  readMemory: false,
+  disassemble: false,
+  instructionStepping: false,
   ...p,
 });
 
@@ -197,6 +210,10 @@ describe("debugger actions (IDEA parity)", () => {
       "debug.memory.jumpToSource": undefined,
       "debug.memory.showReferrers": undefined,
       "debug.memory.closeInstances": undefined,
+      "debug.viewMemory": undefined,
+      "debug.showDisassembly": undefined,
+      "debug.stepOverInstruction": undefined,
+      "debug.stepIntoInstruction": undefined,
       "debug.toggleMethodBreakpoint": undefined,
       "debug.toggleFieldWatchpoint": undefined,
       "debug.traceStreamChain": undefined,
@@ -614,6 +631,80 @@ describe("debugger actions (IDEA parity)", () => {
     };
     await executeAction("debug.evaluate");
     expect(useOverlays.getState().evaluate?.expression).toBe("total = order.items\nfor i in x:");
+  });
+});
+
+describe("View Memory", () => {
+  const notify = vi.fn();
+  const show = vi.fn();
+  beforeEach(() => {
+    provideNotificationService({ notify });
+    provideToolWindowService({ show } as unknown as ToolWindowService);
+    useMemoryView.setState({ bySession: {}, revealPending: false });
+  });
+
+  it("says when the session's debugger cannot read memory", async () => {
+    paused({ adapter: "debugpy" });
+    await executeAction("debug.viewMemory", "0x7fffffff9f69");
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: "View Memory is not supported by debugpy" }));
+    expect(ipc.debugReadMemory).not.toHaveBeenCalled();
+    expect(show).not.toHaveBeenCalled();
+  });
+
+  it("opens the Memory View at a variable's memory reference", async () => {
+    paused({ adapter: "lldb-dap", caps: caps({ readMemory: true }) });
+    await executeAction("debug.viewMemory", "0x7fffffff9f69");
+    expect(show).toHaveBeenCalledWith("debug", true);
+    expect(useMemoryView.getState().revealPending).toBe(true);
+    await settle();
+    expect(ipc.debugReadMemory).toHaveBeenCalledWith(3, "0x7fffffff9f69", -9, 256);
+    expect(useMemoryView.getState().bySession[3]).toMatchObject({ expression: "0x7fffffff9f69", start: -9 });
+    expect(notify).not.toHaveBeenCalled();
+    forgetMemoryView(3);
+  });
+});
+
+describe("Disassembly and instruction steps", () => {
+  const notify = vi.fn();
+  const show = vi.fn();
+  beforeEach(() => {
+    provideNotificationService({ notify });
+    provideToolWindowService({ show } as unknown as ToolWindowService);
+    useDisassembly.setState({ bySession: {}, revealPending: false });
+  });
+
+  it.each([
+    ["debug.stepOverInstruction", "Step Over Instruction"],
+    ["debug.stepIntoInstruction", "Step Into Instruction"],
+    ["debug.showDisassembly", "Disassembly"],
+  ])("%s says when the session's debugger cannot do it", async (id, what) => {
+    paused({ adapter: "debugpy" });
+    await executeAction(id);
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: `${what} is not supported by debugpy` }));
+    expect(ipc.debugStepInstruction).not.toHaveBeenCalled();
+    expect(show).not.toHaveBeenCalled();
+    expect(useDebug.getState().sessions[3]?.status).toBe("paused");
+  });
+
+  it.each([
+    ["debug.stepOverInstruction", "over"],
+    ["debug.stepIntoInstruction", "into"],
+  ] as const)("%s steps the paused thread by one instruction", async (id, kind) => {
+    paused({ adapter: "gdb", caps: caps({ instructionStepping: true }) });
+    await executeAction(id);
+    await settle();
+    expect(ipc.debugStepInstruction).toHaveBeenCalledWith(3, 1, kind);
+    expect(ipc.debugStep).not.toHaveBeenCalled();
+    expect(useDebug.getState().sessions[3]).toMatchObject({ status: "running", frames: [] });
+  });
+
+  it("opens the Disassembly view at a frame of the Frames list", async () => {
+    paused({ adapter: "lldb-dap", caps: caps({ disassemble: true }) });
+    await executeAction("debug.showDisassembly", 70);
+    expect(show).toHaveBeenCalledWith("debug", true);
+    expect(useDisassembly.getState().revealPending).toBe(true);
+    expect(useDebug.getState().sessions[3]?.selectedFrame).toBe(70);
+    expect(notify).not.toHaveBeenCalled();
   });
 });
 

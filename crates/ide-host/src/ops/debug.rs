@@ -509,6 +509,17 @@ pub async fn debug_step(host: &Host, session: DebugSessionId, thread_id: i64, ki
     host.debugger.step(session, thread_id, kind).await
 }
 
+/// Step Over / Into Instruction: a step by one machine instruction.
+#[command(trust = trusted)]
+pub async fn debug_step_instruction(
+    host: &Host,
+    session: DebugSessionId,
+    thread_id: i64,
+    kind: StepKind,
+) -> IdeResult<()> {
+    host.debugger.step_instruction(session, thread_id, kind).await
+}
+
 #[command(trust = trusted)]
 pub async fn debug_run_to(
     host: &Host,
@@ -549,6 +560,32 @@ pub async fn debug_evaluate_in(
     context: Option<String>,
 ) -> IdeResult<Variable> {
     host.debugger.evaluate_in(session, frame_id, expression, context).await
+}
+
+/// Memory View: `count` bytes from `offset` bytes after `memory_reference` (a variable's,
+/// an evaluation result's or an earlier read's address).
+#[command(trust = trusted)]
+pub async fn debug_read_memory(
+    host: &Host,
+    session: DebugSessionId,
+    memory_reference: String,
+    offset: i64,
+    count: u32,
+) -> IdeResult<ide_dap::MemoryBlock> {
+    host.debugger.read_memory(session, memory_reference, offset, count).await
+}
+
+/// Disassembly view: `count` instructions from `before` instructions ahead of `memory_reference`
+/// (a frame's instruction pointer or an instruction's address).
+#[command(trust = trusted)]
+pub async fn debug_disassemble(
+    host: &Host,
+    session: DebugSessionId,
+    memory_reference: String,
+    before: u32,
+    count: u32,
+) -> IdeResult<Vec<ide_dap::Instruction>> {
+    host.debugger.disassemble(session, memory_reference, before, count).await
 }
 
 /// Last known verification states of a file's breakpoints (refetch on `breakpointsChanged`).
@@ -1060,6 +1097,7 @@ ide_command::domain!(
     debug_capabilities,
     debug_completions,
     debug_data_breakpoint_info,
+    debug_disassemble,
     debug_evaluate,
     debug_evaluate_in,
     debug_exception_filters,
@@ -1077,6 +1115,7 @@ ide_command::domain!(
     debug_jvm_thread_dump,
     debug_listen_for_jvm,
     debug_pause,
+    debug_read_memory,
     debug_redefine_classes,
     debug_replace_breakpoints,
     debug_resolve_variable,
@@ -1097,6 +1136,7 @@ ide_command::domain!(
     debug_step,
     debug_step_in_target,
     debug_step_in_targets,
+    debug_step_instruction,
     debug_stop,
     debug_threads,
     debug_unity_processes,

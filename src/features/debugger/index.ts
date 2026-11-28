@@ -55,6 +55,8 @@ import { heapEditorKind } from "./heap/heapEditorKind";
 import { streamTraceKind } from "./streams/streamTraceKind";
 import { installHeapContext } from "./heap/heapDumpFiles";
 import { forgetMemory } from "./memory/memoryState";
+import { forgetMemoryView } from "./memoryView/memoryViewState";
+import { forgetDisassembly } from "./disassembly/disassemblyState";
 import { closeStaleStreamChooser, forgetStreamTrace } from "./streams/streamState";
 
 /** Whether a breakpoint popover, debugger dialog or chooser is open. */
@@ -173,6 +175,8 @@ export function activate(): () => void {
       for (const id of Object.keys(prev.sessions)) {
         if (id in s.sessions) continue;
         forgetMemory(Number(id));
+        forgetMemoryView(Number(id));
+        forgetDisassembly(Number(id));
         forgetInstances(Number(id));
         forgetHeapCapture(Number(id));
         forgetStreamTrace(Number(id));

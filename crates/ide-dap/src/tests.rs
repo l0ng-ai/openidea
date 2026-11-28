@@ -6,6 +6,7 @@ mod stream_trace;
 
 use super::*;
 use crate::adapter::{AdapterIo, LaunchFuture};
+use base64::Engine;
 use ide_core::IdeEvent;
 use ide_core::event::DebugEvent;
 use ide_jsonrpc::framing;
@@ -195,6 +196,21 @@ struct Script {
     accept: &'static [&'static str],
     /// Requests of the adapter's own answered with a body and followed by events.
     custom: Option<fn(&Value) -> Option<CustomReply>>,
+    /// Advertise `supportsReadMemoryRequest`: memory below 0x1010 reads as its low address byte,
+    /// memory from there on is unmapped.
+    read_memory: bool,
+    /// Advertise `supportsDisassembleRequest` and `supportsSteppingGranularity`, disassembling like
+    /// this adapter: 4-byte instructions from 0x1000 to 0x1100, nothing mapped around them.
+    disassemble: Option<FakeDisassembler>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum FakeDisassembler {
+    /// Negative instruction offsets work; unmapped places are `invalid` padding.
+    Lldb,
+    /// GDB 17: disassembles `instructionOffset + instructionCount` instructions from the reference and
+    /// drops the first `instructionOffset` of them, the way a Python slice does.
+    Gdb,
 }
 
 /// The answer to a request of the adapter's own: the response body, then events (name, body).
@@ -242,6 +258,8 @@ impl Default for Script {
             empty_thread_responses: 0,
             accept: &[],
             custom: None,
+            read_memory: false,
+            disassemble: None,
         }
     }
 }
@@ -328,6 +346,9 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                         "supportsDataBreakpoints": true,
                         "supportsStepInTargetsRequest": true,
                         "supportsRestartFrame": true,
+                        "supportsReadMemoryRequest": script.read_memory,
+                        "supportsDisassembleRequest": script.disassemble.is_some(),
+                        "supportsSteppingGranularity": script.disassemble.is_some(),
                         "exceptionBreakpointFilters": [
                             {"filter": "raised", "label": "Raised"},
                             {"filter": "uncaught", "label": "Uncaught", "default": true, "description": "Uncaught exceptions"},
@@ -570,7 +591,58 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                     ]})
                 ),
             },
+            "evaluate" if msg["arguments"]["expression"] == "&msg[0]" => ok!(
+                msg,
+                json!({"result": "0x1000 \"Hello\"", "type": "char *", "variablesReference": 1, "memoryReference": "0x1000"})
+            ),
             "evaluate" => ok!(msg, json!({"result": "42", "type": "int", "variablesReference": 0})),
+            "readMemory" => {
+                let args = &msg["arguments"];
+                let reference = args["memoryReference"].as_str().unwrap().trim_start_matches("0x");
+                let start = i64::from_str_radix(reference, 16).unwrap() + args["offset"].as_i64().unwrap_or(0);
+                let count = args["count"].as_i64().unwrap();
+                const END: i64 = 0x1010;
+                if start >= END {
+                    send!(
+                        json!({"type": "response", "request_seq": msg["seq"], "command": "readMemory", "success": false, "message": format!("Cannot access memory at address {start:#x}")})
+                    );
+                } else {
+                    let bytes: Vec<u8> = (start..(start + count).min(END)).map(|a| a as u8).collect();
+                    ok!(
+                        msg,
+                        json!({"address": format!("{start:#x}"), "data": base64::engine::general_purpose::STANDARD.encode(&bytes), "unreadableBytes": count - bytes.len() as i64})
+                    );
+                }
+            }
+            "disassemble" => {
+                let args = &msg["arguments"];
+                let reference = args["memoryReference"].as_str().unwrap().trim_start_matches("0x");
+                let pc = i64::from_str_radix(reference, 16).unwrap() + args["offset"].as_i64().unwrap_or(0);
+                let (offset, count) =
+                    (args["instructionOffset"].as_i64().unwrap(), args["instructionCount"].as_i64().unwrap());
+                let insn = |a: i64| {
+                    if (0x1000..0x1100).contains(&a) {
+                        json!({"address": format!("{a:#x}"), "instruction": format!("insn {}", (a - 0x1000) / 4), "instructionBytes": "90909090"})
+                    } else {
+                        json!({"address": format!("{a:#x}"), "instruction": "", "presentationHint": "invalid"})
+                    }
+                };
+                let addresses: Option<Vec<i64>> = match script.disassemble.unwrap() {
+                    FakeDisassembler::Lldb => Some((0..count).map(|i| pc + 4 * (offset + i)).collect()),
+                    FakeDisassembler::Gdb if offset + count < 0 => None,
+                    FakeDisassembler::Gdb => {
+                        let all: Vec<i64> = (0..offset + count).map(|i| pc + 4 * i).collect();
+                        let from = if offset >= 0 { offset } else { (all.len() as i64 + offset).max(0) };
+                        Some(all[from as usize..].to_vec())
+                    }
+                };
+                match addresses {
+                    Some(a) => ok!(msg, json!({"instructions": a.into_iter().map(insn).collect::<Vec<_>>()})),
+                    None => send!(
+                        json!({"type": "response", "request_seq": msg["seq"], "command": "disassemble", "success": false, "message": "Argument 'count' should be an non-negative integer."})
+                    ),
+                }
+            }
             "completions" => ok!(
                 msg,
                 json!({"targets": [
@@ -1950,6 +2022,146 @@ async fn function_and_data_breakpoints_are_stored_and_sent() {
     assert!(caps.function_breakpoints && caps.data_breakpoints && caps.restart_frame && caps.step_in_targets);
     assert!(caps.set_value && !caps.log_points);
     h.manager.stop(id).await.unwrap();
+}
+
+#[tokio::test]
+async fn memory_view_reads_memory_from_a_reference() {
+    let h = harness(Script { read_memory: true, ..Script::default() });
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    assert_eq!(
+        h.request("initialize")["arguments"]["supportsMemoryReferences"],
+        true,
+        "adapters only send references when asked"
+    );
+    assert!(h.manager.capabilities(id).unwrap().read_memory);
+
+    let pointer = h.manager.evaluate_in(id, Some(10), "&msg[0]".into(), Some("watch".into())).await.unwrap();
+    assert_eq!(pointer.memory_reference.as_deref(), Some("0x1000"));
+    let plain = h.manager.evaluate(id, Some(10), "n".into()).await.unwrap();
+    assert_eq!(plain.memory_reference, None);
+
+    let block = h.manager.read_memory(id, "0x1000".into(), 0, 8).await.unwrap();
+    assert_eq!(block, MemoryBlock { address: "0x1000".into(), data: (0..8).collect(), unreadable_bytes: 0 });
+    assert_eq!(h.request("readMemory")["arguments"], json!({"memoryReference": "0x1000", "offset": 0, "count": 8}));
+
+    // Paging back and forth goes through `offset` on the same reference; the end of the mapping
+    // comes back as unreadable bytes.
+    let block = h.manager.read_memory(id, "0x1000".into(), 8, 16).await.unwrap();
+    assert_eq!((block.address.as_str(), block.data.len(), block.unreadable_bytes), ("0x1008", 8, 8));
+    assert_eq!(block.data[0], 0x08);
+
+    // Unmapped memory is the adapter's error, and the session goes on.
+    let err = h.manager.read_memory(id, "0x1000".into(), 0x20, 16).await.unwrap_err();
+    assert!(err.to_string().contains("Cannot access memory at address 0x1020"), "{err}");
+    assert!(!h.manager.threads(id).await.unwrap().is_empty());
+
+    let _ = h.manager.read_memory(id, "0x1000".into(), 0, u32::MAX).await;
+    let last = h.log.lock().iter().rev().find(|m| m["command"] == "readMemory").cloned().unwrap();
+    assert_eq!(last["arguments"]["count"], MAX_READ, "one read never asks for more than a few pages");
+    h.manager.stop(id).await.unwrap();
+}
+
+#[tokio::test]
+async fn memory_view_says_when_the_adapter_cannot_read_memory() {
+    let h = harness(Script::default());
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    assert!(!h.manager.capabilities(id).unwrap().read_memory);
+    let err = h.manager.read_memory(id, "0x1000".into(), 0, 16).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
+    assert!(err.to_string().contains("debug adapter `debugpy` cannot read memory"), "{err}");
+    assert!(!h.commands().iter().any(|c| c == "readMemory"), "nothing is sent to an adapter without support");
+    h.manager.stop(id).await.unwrap();
+}
+
+#[test]
+fn variables_keep_their_memory_reference() {
+    let v = variable_from(
+        &json!({"name": "words", "value": "0x4010", "variablesReference": 3, "memoryReference": "0x4010"}),
+    );
+    assert_eq!(v.memory_reference.as_deref(), Some("0x4010"));
+    assert_eq!(variable_from(&json!({"name": "n", "value": "1", "memoryReference": ""})).memory_reference, None);
+    let json = serde_json::to_value(variable_from(&json!({"name": "n", "value": "1"}))).unwrap();
+    assert!(json.get("memoryReference").is_none(), "absent, not null, for the UI's optional field");
+}
+
+#[tokio::test]
+async fn disassembly_reads_instructions_around_the_instruction_pointer() {
+    let h = harness(Script { disassemble: Some(FakeDisassembler::Lldb), ..Script::default() });
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    let caps = h.manager.capabilities(id).unwrap();
+    assert!(caps.disassemble && caps.instruction_stepping);
+
+    let list = h.manager.disassemble(id, "0x1010".into(), 2, 5).await.unwrap();
+    let addresses: Vec<&str> = list.iter().map(|i| i.address.as_str()).collect();
+    assert_eq!(addresses, ["0x1008", "0x100c", "0x1010", "0x1014", "0x1018"]);
+    assert_eq!((list[2].instruction.as_str(), list[2].bytes.as_deref()), ("insn 4", Some("90909090")));
+    assert_eq!(
+        requests(&h, "disassemble")[0],
+        json!({"memoryReference": "0x1010", "offset": 0, "instructionOffset": -2, "instructionCount": 5, "resolveSymbols": true})
+    );
+
+    // Before the first mapped instruction the adapter pads; the padding is not shown.
+    let list = h.manager.disassemble(id, "0x1004".into(), 4, 6).await.unwrap();
+    let addresses: Vec<&str> = list.iter().map(|i| i.address.as_str()).collect();
+    assert_eq!(addresses, ["0x1000", "0x1004", "0x1008"]);
+
+    let _ = h.manager.disassemble(id, "0x1000".into(), 0, u32::MAX).await;
+    assert_eq!(requests(&h, "disassemble").last().unwrap()["instructionCount"], MAX_INSTRUCTIONS);
+    h.manager.stop(id).await.unwrap();
+}
+
+#[tokio::test]
+async fn disassembly_starts_at_the_instruction_pointer_when_the_adapter_cannot_go_back() {
+    let h = harness(Script { disassemble: Some(FakeDisassembler::Gdb), ..Script::default() });
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    // GDB's answer to "4 before" leaves out the instruction pointer; the view asks again from it.
+    let list = h.manager.disassemble(id, "0x1010".into(), 4, 10).await.unwrap();
+    assert_eq!(list.first().map(|i| i.address.as_str()), Some("0x1010"));
+    assert_eq!(list.len(), 6);
+    let offsets: Vec<Value> = requests(&h, "disassemble").iter().map(|r| r["instructionOffset"].clone()).collect();
+    assert_eq!(offsets, [json!(-4), json!(0)]);
+    h.manager.stop(id).await.unwrap();
+}
+
+#[tokio::test]
+async fn instruction_steps_send_the_granularity_and_line_steps_do_not() {
+    let h = harness(Script { disassemble: Some(FakeDisassembler::Lldb), ..Script::default() });
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    h.manager.step_instruction(id, 1, StepKind::Into).await.unwrap();
+    assert_eq!(requests(&h, "stepIn").last().unwrap(), &json!({"threadId": 1, "granularity": "instruction"}));
+    h.manager.step(id, 1, StepKind::Over).await.unwrap();
+    assert_eq!(requests(&h, "next").last().unwrap(), &json!({"threadId": 1}));
+    h.manager.stop(id).await.unwrap();
+}
+
+#[tokio::test]
+async fn disassembly_and_instruction_steps_say_when_the_adapter_cannot() {
+    let h = harness(Script::default());
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    let caps = h.manager.capabilities(id).unwrap();
+    assert!(!caps.disassemble && !caps.instruction_stepping);
+    let err = h.manager.disassemble(id, "0x1000".into(), 0, 16).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
+    assert!(err.to_string().contains("debug adapter `debugpy` cannot disassemble"), "{err}");
+    let err = h.manager.step_instruction(id, 1, StepKind::Over).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
+    let sent = h.commands();
+    assert!(!sent.iter().any(|c| c == "disassemble" || c == "next"), "nothing is sent to an adapter without support");
+    h.manager.stop(id).await.unwrap();
+}
+
+#[test]
+fn frames_keep_their_instruction_pointer() {
+    let f = frame_from(&json!({"id": 1, "name": "atoi", "line": 0, "instructionPointerReference": "0x7ffff7c4a2e0"}));
+    assert_eq!(f.instruction_pointer_reference.as_deref(), Some("0x7ffff7c4a2e0"));
+    let json = serde_json::to_value(frame_from(&json!({"id": 1, "name": "main"}))).unwrap();
+    assert!(json.get("instructionPointerReference").is_none());
 }
 
 #[tokio::test]

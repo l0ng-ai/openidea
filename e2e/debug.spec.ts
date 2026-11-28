@@ -192,6 +192,171 @@ test("Memory gives class filtering the available toolbar width and exposes chang
   await expect(changed).toBeChecked();
 });
 
+test("Memory View shows the bytes at an address expression with hex and ASCII aligned", async ({ workbench: page }) => {
+  await stubDesktop(page);
+  await page.evaluate(async (id) => {
+    // The reporter's `msg` (#5921) where GDB put it, 9 bytes into its row; other bytes count up.
+    const msg = "Hello, World!\n\0";
+    const at = 0x7fffffff9f69;
+    const h = window.__ipc.handlers;
+    const caps = { readMemory: true };
+    h.debug_capabilities = () => caps;
+    h.debug_evaluate_in = (args) => ({
+      name: args.expression,
+      value: '0x7fffffff9f69 "Hello, World!\\n"',
+      typeName: "const char *",
+      variablesReference: 0,
+      evaluateName: args.expression,
+      memoryReference: "0x7fffffff9f69",
+    });
+    h.debug_read_memory = (args) => {
+      const start = Number(args.memoryReference) + (args.offset as number);
+      const data = Array.from({ length: args.count as number }, (_, i) => {
+        const a = start + i;
+        return a >= at && a < at + msg.length ? msg.charCodeAt(a - at) : a & 0xff;
+      });
+      return { address: `0x${start.toString(16)}`, data, unreadableBytes: 0 };
+    };
+    const debugPath = "/src/features/debugger/state.ts";
+    const { adoptSession } = await import(/* @vite-ignore */ debugPath);
+    adoptSession(id, { adapter: "gdb", name: "app-c", status: "paused", stops: 1, caps });
+    const dockPath = "/src/workbench/toolwindows/store.ts";
+    const layout = await import(/* @vite-ignore */ dockPath);
+    layout.moveToolWindow("debug", "bottom");
+    layout.setToolWindowSize("bottom", 360);
+    layout.showToolWindow("debug", true);
+  }, SESSION);
+
+  const debug = page.getByRole("region", { name: "Debug", exact: true });
+  await debug.getByRole("tab", { name: "Memory View" }).click();
+  const field = debug.getByRole("textbox", { name: "Address or expression" });
+  await field.fill("&msg[0]");
+  await field.press("Enter");
+  const grid = debug.getByRole("grid", { name: "Memory", exact: true });
+  await expect(grid.getByRole("rowheader", { name: "0x00007FFFFFFF9F60" })).toBeVisible();
+  expect(await ipcCalls(page, "debug_read_memory")).toEqual([
+    { session: SESSION, memoryReference: "0x7fffffff9f69", offset: -9, count: 256 },
+  ]);
+  // Monospaced columns: each row's hex and ASCII start where the row above starts them.
+  const rows = grid.getByRole("row");
+  const left = async (row: number, cell: number) =>
+    (await rows.nth(row).getByRole("gridcell").nth(cell).boundingBox())!.x;
+  for (const cell of [0, 1]) expect(await left(2, cell)).toBeCloseTo(await left(1, cell), 0);
+  await expect(rows.nth(1).getByRole("gridcell").nth(1)).toHaveText("`abcdefghHello, ");
+  await expect(rows.nth(2).getByRole("gridcell").nth(1)).toHaveText(/^World!\.\./);
+});
+
+test("Disassembly shows the selected frame's instructions with the current one highlighted", async ({
+  workbench: page,
+}) => {
+  await stubDesktop(page);
+  await page.evaluate(async (id) => {
+    // GDB 17.1's `disassemble /r sum` of a C program (#5922), stopped at `sum+78` on the loop line.
+    const SUM = 0x5555555551a7;
+    const code: [number, string, string][] = [
+      [62, "c745e000000000", "movl   $0x0,-0x20(%rbp)"],
+      [69, "c745e400000000", "movl   $0x0,-0x1c(%rbp)"],
+      [76, "eb26", "jmp    0x55555555521b <sum+116>"],
+      [78, "8b45e4", "mov    -0x1c(%rbp),%eax"],
+      [81, "4898", "cltq"],
+      [83, "488d14c500000000", "lea    0x0(,%rax,8),%rdx"],
+      [91, "488b45d8", "mov    -0x28(%rbp),%rax"],
+      [95, "4801d0", "add    %rdx,%rax"],
+      [98, "488b00", "mov    (%rax),%rax"],
+      [101, "4889c7", "mov    %rax,%rdi"],
+      [104, "e875ffffff", "call   0x555555555189 <parse>"],
+      [109, "0145e0", "add    %eax,-0x20(%rbp)"],
+      [112, "8345e401", "addl   $0x1,-0x1c(%rbp)"],
+      [116, "8b45e4", "mov    -0x1c(%rbp),%eax"],
+      [119, "3b45d4", "cmp    -0x2c(%rbp),%eax"],
+      [122, "7cd2", "jl     0x5555555551f5 <sum+78>"],
+      [124, "8b45e0", "mov    -0x20(%rbp),%eax"],
+      [127, "488b55f8", "mov    -0x8(%rbp),%rdx"],
+      [131, "64482b142528000000", "sub    %fs:0x28,%rdx"],
+      [140, "7405", "je     0x55555555523a <sum+147>"],
+      [142, "e836feffff", "call   0x555555555070 <__stack_chk_fail@plt>"],
+      [147, "c9", "leave"],
+      [148, "c3", "ret"],
+    ];
+    const instructions = code.map(([offset, bytes, instruction]) => ({
+      address: `0x${(SUM + offset).toString(16)}`,
+      instruction,
+      bytes,
+    }));
+    const h = window.__ipc.handlers;
+    const caps = { disassemble: true, instructionStepping: true };
+    h.debug_capabilities = () => caps;
+    h.debug_disassemble = (args) => {
+      const at = instructions.findIndex((i) => BigInt(i.address) === BigInt(args.memoryReference as string));
+      const from = Math.max(0, at - (args.before as number));
+      return instructions.slice(from, from + (args.count as number));
+    };
+    h.debug_step_instruction = () => null;
+    const frame = (fid: number, name: string, line: number, pc: number) => ({
+      id: fid,
+      name,
+      path: "/proj/main.c",
+      line,
+      column: 0,
+      presentationHint: null,
+      instructionPointerReference: `0x${pc.toString(16)}`,
+    });
+    const debugPath = "/src/features/debugger/state.ts";
+    const { adoptSession } = await import(/* @vite-ignore */ debugPath);
+    adoptSession(id, {
+      adapter: "gdb",
+      name: "app-c",
+      status: "paused",
+      stops: 1,
+      caps,
+      stoppedThread: 1,
+      selectedThread: 1,
+      threads: [{ id: 1, name: "main" }],
+      frames: [frame(0, "sum", 13, SUM + 78), frame(1, "run", 20, SUM + 109)],
+      selectedFrame: 0,
+    });
+    const dockPath = "/src/workbench/toolwindows/store.ts";
+    const layout = await import(/* @vite-ignore */ dockPath);
+    layout.moveToolWindow("debug", "bottom");
+    layout.setToolWindowSize("bottom", 360);
+    layout.showToolWindow("debug", true);
+  }, SESSION);
+
+  const debug = page.getByRole("region", { name: "Debug", exact: true });
+  await debug.getByRole("tab", { name: "Disassembly" }).click();
+  const grid = debug.getByRole("grid", { name: "Disassembly" });
+  const current = grid.locator("[aria-current=location]");
+  await expect(current.getByRole("rowheader")).toHaveText("0x00005555555551F5");
+  await expect(current.getByRole("gridcell").nth(0)).toHaveText("8B 45 E4");
+  await expect(current.getByRole("gridcell").nth(1)).toHaveText("mov    -0x1c(%rbp),%eax");
+  expect(await ipcCalls(page, "debug_disassemble")).toEqual([
+    { session: SESSION, memoryReference: "0x5555555551f5", before: 32, count: 128 },
+  ]);
+  // Monospaced columns: every row's instruction starts where the row above starts it.
+  const rows = grid.getByRole("row");
+  const left = async (row: number) => (await rows.nth(row).getByRole("gridcell").nth(1).boundingBox())!.x;
+  expect(await left(5)).toBeCloseTo(await left(4), 0);
+
+  await debug.getByRole("button", { name: "Step Over Instruction" }).click();
+  expect(await ipcCalls(page, "debug_step_instruction")).toEqual([{ session: SESSION, threadId: 1, kind: "over" }]);
+
+  // An adapter that cannot step by instruction: the button is disabled and its tooltip says why.
+  await page.evaluate(async (id) => {
+    const debugPath = "/src/features/debugger/state.ts";
+    const { useDebug } = await import(/* @vite-ignore */ debugPath);
+    useDebug.setState((st: { sessions: Record<number, object> }) => ({
+      sessions: {
+        ...st.sessions,
+        [id]: { ...st.sessions[id], status: "paused", caps: { disassemble: true, instructionStepping: false } },
+      },
+    }));
+  }, SESSION);
+  const stepInto = debug.getByRole("button", { name: "Step Into Instruction" });
+  await expect(stepInto).toBeDisabled();
+  await stepInto.hover({ force: true });
+  await expect(page.getByRole("tooltip")).toContainText("Instruction stepping is not supported by gdb");
+});
+
 test("Evaluate keeps a multiline expression and its result visible in a short dialog", async ({ workbench: page }) => {
   await page.setViewportSize({ width: 580, height: 420 });
   await stubDesktop(page);

@@ -45,6 +45,7 @@ fn frame(line: u32) -> StackFrame {
         line,
         column: 8,
         presentation_hint: None,
+        instruction_pointer_reference: None,
     }
 }
 

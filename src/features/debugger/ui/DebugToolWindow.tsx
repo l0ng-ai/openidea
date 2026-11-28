@@ -59,6 +59,10 @@ import { NetworkView } from "../js/NetworkView";
 import { liveWatchesApply, useLiveWatches } from "../js/liveWatches";
 import { pageProfileItems, useJsProfile } from "../js/profile";
 import { MemoryView } from "../memory/MemoryView";
+import { MemoryViewPane } from "../memoryView/MemoryViewPane";
+import { memoryViewRevealed, useMemoryView } from "../memoryView/memoryViewState";
+import { DisassemblyPane } from "../disassembly/DisassemblyPane";
+import { disassemblyRevealed, useDisassembly } from "../disassembly/disassemblyState";
 import { DebugConsole } from "./DebugConsole";
 import { VariablesView, type VarRoot } from "./VariablesView";
 import { useExpressionCompletion } from "./ExpressionCompletion";
@@ -129,7 +133,7 @@ function MoreActions() {
   );
 }
 
-type Tab = "variables" | "console" | "memory" | "network";
+type Tab = "variables" | "console" | "memory" | "memoryView" | "disassembly" | "network";
 
 /** The view the user last picked; the tool window opens on it again (Console until one is picked). */
 let chosenTab: Tab = "console";
@@ -225,19 +229,51 @@ function DebugView({ consolePane, sideDocked = false }: { consolePane?: ReactNod
     session: number | undefined;
     status: DebugSession["status"] | undefined;
     tab: Tab;
-  }>({ session: undefined, status: undefined, tab: chosenTab });
+  }>(() => ({
+    session: undefined,
+    status: undefined,
+    tab: useDisassembly.getState().revealPending
+      ? "disassembly"
+      : useMemoryView.getState().revealPending
+        ? "memoryView"
+        : chosenTab,
+  }));
+  // View Memory brings the Memory View to the front, also in the tool window it opens (above).
+  useEffect(() => {
+    const reveal = (pending: boolean, shown: boolean) => {
+      if (!pending) return;
+      memoryViewRevealed();
+      chosenTab = "memoryView";
+      if (!shown) setView((v) => (v.tab === "memoryView" ? v : { ...v, tab: "memoryView" }));
+    };
+    reveal(useMemoryView.getState().revealPending, true);
+    return useMemoryView.subscribe((s) => reveal(s.revealPending, false));
+  }, []);
+  // Show Disassembly does the same for the Disassembly view.
+  useEffect(() => {
+    const reveal = (pending: boolean, shown: boolean) => {
+      if (!pending) return;
+      disassemblyRevealed();
+      chosenTab = "disassembly";
+      if (!shown) setView((v) => (v.tab === "disassembly" ? v : { ...v, tab: "disassembly" }));
+    };
+    reveal(useDisassembly.getState().revealPending, true);
+    return useDisassembly.subscribe((s) => reveal(s.revealPending, false));
+  }, []);
   if (active && (view.session !== active.startedAt || view.status !== active.status))
     setView({
       session: active.startedAt,
       status: active.status,
       // A breakpoint or exception brings Threads & Variables to the front unless its Focus On Breakpoint
       // is off; finishing a step keeps the tab the user is on (e.g. Console, to watch the output while
-      // stepping), and so does Memory.
+      // stepping), and so do Memory, the Memory View and the Disassembly view.
       tab:
         active.status === "starting"
           ? "console"
           : active.status === "paused" &&
               view.tab !== "memory" &&
+              view.tab !== "memoryView" &&
+              view.tab !== "disassembly" &&
               active.stopReason !== "step" &&
               workflowSettings().debugger.variablesOnBreakpoint
             ? "variables"
@@ -247,9 +283,18 @@ function DebugView({ consolePane, sideDocked = false }: { consolePane?: ReactNod
   const memoryPending = !!active && !active.caps && JVM_ADAPTERS.has(rootOf(active).adapter);
   const hasMemory = !!active && (sessionSupports("jvmMemory", active) || memoryPending);
   const hasNetwork = !!active && sessionSupports("jsPage", active);
-  // The selected session may be one without the Memory or the Network tab.
+  // The native Memory View follows the adapter's `readMemory` support.
+  const hasMemoryView = !!active && sessionSupports("readMemory", active);
+  // So does the Disassembly view, its `disassemble` support.
+  const hasDisassembly = !!active && sessionSupports("disassemble", active);
+  // The selected session may be one without the Memory, Memory View, Disassembly or Network tab.
   const tab: Tab =
-    (view.tab === "memory" && !hasMemory) || (view.tab === "network" && !hasNetwork) ? "variables" : view.tab;
+    (view.tab === "memory" && !hasMemory) ||
+    (view.tab === "memoryView" && !hasMemoryView) ||
+    (view.tab === "disassembly" && !hasDisassembly) ||
+    (view.tab === "network" && !hasNetwork)
+      ? "variables"
+      : view.tab;
 
   if (!active) {
     return (
@@ -307,6 +352,8 @@ function DebugView({ consolePane, sideDocked = false }: { consolePane?: ReactNod
               ["variables", "Threads & Variables"],
               ["console", "Console"],
               ...(hasMemory ? [["memory", "Memory"] as const] : []),
+              ...(hasMemoryView ? [["memoryView", "Memory View"] as const] : []),
+              ...(hasDisassembly ? [["disassembly", "Disassembly"] as const] : []),
               ...(hasNetwork ? [["network", "Network"] as const] : []),
             ] as const
           ).map(([id, label]) => (
@@ -355,6 +402,10 @@ function DebugView({ consolePane, sideDocked = false }: { consolePane?: ReactNod
           ) : (
             <MemoryView key={active.id} session={active} />
           )
+        ) : tab === "memoryView" ? (
+          <MemoryViewPane key={active.id} session={active} />
+        ) : tab === "disassembly" ? (
+          <DisassemblyPane key={active.id} session={active} />
         ) : tab === "network" ? (
           <NetworkView key={active.id} session={active.id} />
         ) : (
@@ -534,6 +585,15 @@ function FramesPane({ session }: { session: DebugSession }) {
                     disabled: !paused || !sessionSupports("restartFrame", session),
                     run: () => void executeAction("debug.resetFrame"),
                   },
+                  ...(sessionSupports("disassemble", session)
+                    ? [
+                        {
+                          label: "Show Disassembly",
+                          disabled: !paused || !item.frame.instructionPointerReference,
+                          run: () => void executeAction("debug.showDisassembly", item.frame.id),
+                        },
+                      ]
+                    : []),
                   { kind: "separator" },
                   {
                     label: showAll ? "Hide Library Frames" : "Show All Frames",
