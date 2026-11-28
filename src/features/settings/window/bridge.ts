@@ -12,11 +12,13 @@
 import { emitTo } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { allActions, executeAction, getAction, registerActions, useActions, type Action } from "@/platform/actions";
+import { t } from "@/platform/i18n";
 import { isTauri } from "@/platform/ipc";
-import { useProject } from "@/platform/project";
+import { basename, useProject } from "@/platform/project";
 import {
   editorService,
   maybeEditorService,
+  notifications,
   provideEditorService,
   type EditorService,
   type OpenOptions,
@@ -112,7 +114,14 @@ export function installSettingsHost(): () => void {
     listen<null>(REQUEST_ACTIONS, send),
     listen<{ id: string; arg?: unknown }>(EXEC, ({ id, arg }) => void executeAction(id, arg)),
     listen<{ path: string; options?: OpenOptions }>(OPEN_FILE, ({ path, options }) => {
-      void openFileInParent(path, options).catch((error) => console.error("cannot open file from settings", error));
+      void openFileInParent(path, options).catch((error: unknown) => {
+        notifications().notify({
+          level: "error",
+          title: t("app.window.openFailed", { name: basename(path) }),
+          body: error instanceof Error ? error.message : String(error),
+          key: `app.open:${path}`,
+        });
+      });
     }),
     // Pushed on every change (and once now, for a settings window that outlived a reload of this one).
     useActions.subscribe((s, prev) => {
@@ -143,7 +152,7 @@ export function installEditorProxy(parent: string): () => void {
   provideEditorService(proxy);
   return () => {
     if (maybeEditorService() === proxy) {
-      provideEditorService(previous as EditorService);
+      provideEditorService(previous);
     }
   };
 }

@@ -37,7 +37,9 @@ import { useProject } from "@/platform/project";
 import {
   editorService,
   maybeEditorService,
+  notifications,
   provideEditorService,
+  provideNotificationService,
   registerSettingsPage,
   registerSettingsPages,
   useSettingsPages,
@@ -149,7 +151,42 @@ describe("settings window editor bridge", () => {
       await vi.waitFor(() => expect(windowControls.setFocus).toHaveBeenCalledTimes(1));
     } finally {
       dispose();
-      provideEditorService(previous as EditorService);
+      provideEditorService(previous);
+      useProject.setState({ project: null, lightEdit: false });
+      windowControls.label = "settings-main";
+    }
+  });
+
+  it("notifies the user when opening a forwarded file fails in the parent window", async () => {
+    windowControls.label = "main";
+    const openFile = vi.fn(async () => {
+      throw new Error("permission denied");
+    });
+    const notify = vi.fn();
+    const previousEditor = maybeEditorService();
+    const previousNotifications = notifications();
+    provideEditorService({ openFile } as unknown as EditorService);
+    provideNotificationService({ notify });
+    useProject.setState({ project: { root: "/repo", name: "repo", trusted: true, isGit: true } as ProjectInfo });
+    const dispose = installSettingsHost();
+    try {
+      await vi.waitFor(() => expect(listeners.has("openidea://settings/open-file")).toBe(true));
+      listeners.get("openidea://settings/open-file")!({
+        payload: { path: "/Users/dev/.copilot/skills/azure-storage/SKILL.md", options: { focus: true } },
+      });
+      await vi.waitFor(() =>
+        expect(notify).toHaveBeenCalledWith(
+          expect.objectContaining({
+            level: "error",
+            body: "permission denied",
+            key: "app.open:/Users/dev/.copilot/skills/azure-storage/SKILL.md",
+          }),
+        ),
+      );
+    } finally {
+      dispose();
+      provideEditorService(previousEditor);
+      provideNotificationService(previousNotifications);
       useProject.setState({ project: null, lightEdit: false });
       windowControls.label = "settings-main";
     }
