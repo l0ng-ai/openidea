@@ -78,9 +78,8 @@ def stop_waiter(name):
     if os.name == "nt":
         import _winapi
 
-        pipe = _winapi.CreateNamedPipe(
-            name, _winapi.PIPE_ACCESS_INBOUND, _winapi.PIPE_TYPE_BYTE | _winapi.PIPE_WAIT, 1, 0, 0, 0, _winapi.NULL
-        )
+        # A byte pipe: PIPE_TYPE_BYTE is 0, and _winapi doesn't export it.
+        pipe = _winapi.CreateNamedPipe(name, _winapi.PIPE_ACCESS_INBOUND, _winapi.PIPE_WAIT, 1, 0, 0, 0, _winapi.NULL)
 
         def wait():
             try:
