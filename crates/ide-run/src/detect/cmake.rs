@@ -2,6 +2,7 @@
 
 use super::{ConfigExt, config};
 use crate::{BeforeLaunchTask, RunConfig};
+use ide_core::build_jobs::append_default_jobs;
 use ide_core::settings::CMakeProfile;
 use serde_json::Value;
 use std::fs;
@@ -108,6 +109,7 @@ fn detect_configs(root: &Path, profiles: Option<&[CMakeProfile]>, out: &mut Vec<
         names.push(out, configure, &dir, "");
         let mut all =
             config(&build_id, "CMake Build", "cmake", "cmake", &["--build", &dir, "--config", &configuration]);
+        append_default_jobs(&mut all.args);
         // `cmake --build` regenerates by itself once a build directory is configured.
         if !build.join("CMakeCache.txt").is_file() {
             before(&mut all, &configure_id);
@@ -149,6 +151,7 @@ fn detect_profile(root: &Path, profile: &CMakeProfile, index: usize, out: &mut V
     let mut all =
         config(&build_id, "CMake Build", "cmake", "cmake", &["--build", &dir, "--config", &profile.build_type]);
     all.args.extend_from_slice(&profile.build_args);
+    append_default_jobs(&mut all.args);
     if !build.join("CMakeCache.txt").is_file() {
         before(&mut all, &configure_id);
     }
@@ -236,6 +239,7 @@ fn targets(
                     before(&mut build_config, &format!("{prefix}:configure"));
                 }
             }
+            append_default_jobs(&mut build_config.args);
             let label = profile.map_or(name, |p| p.name.as_str());
             names.push(out, build_config, dir, label);
             let binary = build.join(artifact);
