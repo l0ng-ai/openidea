@@ -236,6 +236,29 @@ pub fn table_comment(driver: DbDriver, schema: &str, table: &str) -> Option<Stri
     }
 }
 
+/// One row: `owner, tablespace, access method, storage options (name=value per line),
+/// partition key, persistence (p/u/t)` of a table. `None` for the engines whose tables have none
+/// of these the IDE reads (all but PostgreSQL).
+pub fn table_properties(driver: DbDriver, schema: &str, table: &str) -> Option<String> {
+    let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
+    match driver {
+        // `reltablespace` 0 is the database's default tablespace; the TOAST table's options are
+        // set as `toast.name`.
+        DbDriver::Postgres => Some(format!(
+            "SELECT pg_get_userbyid(c.relowner), COALESCE(ts.spcname, (SELECT dt.spcname FROM pg_database d \
+             JOIN pg_tablespace dt ON dt.oid = d.dattablespace WHERE d.datname = current_database())), \
+             am.amname, array_to_string(array_cat(c.reloptions, \
+             (SELECT array_agg('toast.' || o) FROM unnest(tc.reloptions) o)), chr(10)), \
+             pg_get_partkeydef(c.oid), c.relpersistence \
+             FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+             LEFT JOIN pg_class tc ON tc.oid = c.reltoastrelid \
+             LEFT JOIN pg_tablespace ts ON ts.oid = c.reltablespace LEFT JOIN pg_am am ON am.oid = c.relam \
+             WHERE n.nspname = {s} AND c.relname = {t} AND c.relkind IN ('r', 'p')"
+        )),
+        _ => None,
+    }
+}
+
 /// Rows: `index name, unique (0/1), column, key` (one row per indexed column, in order); `key` is
 /// `p` for the primary key's index, `u` for a unique constraint's, NULL otherwise (ClickHouse: absent).
 // Key columns are paired from one series up to `max_index_keys` (the server's INDEX_MAX_KEYS, the
@@ -812,7 +835,12 @@ pub fn sqlite_trigger_event(sql: &str) -> (String, String) {
 pub fn postgres_legacy(sql: &str) -> Option<String> {
     let legacy = sql
         .replace("CASE WHEN p.prokind = 'p' THEN 'procedure' ELSE 'function' END", "'function'")
-        .replace("p.prokind IN ('f', 'p')", "NOT p.proisagg AND NOT p.proiswindow");
+        .replace("p.prokind IN ('f', 'p')", "NOT p.proisagg AND NOT p.proiswindow")
+        // Table access methods (PostgreSQL 12) and partitioned tables (10).
+        .replace(" LEFT JOIN pg_am am ON am.oid = c.relam", "")
+        .replace("am.amname", "NULL")
+        .replace("pg_get_partkeydef(c.oid)", "NULL")
+        .replace("c.relkind IN ('r', 'p')", "c.relkind = 'r'");
     (legacy != sql).then_some(legacy)
 }
 
@@ -1534,5 +1562,7 @@ mod tests {
         let routines = postgres_legacy(&routines(pg, "s").unwrap()).unwrap();
         assert!(!routines.contains("prokind") && routines.contains("NOT p.proisagg"));
         assert_eq!(postgres_legacy(&indexes(pg, "s", "t")), None);
+        let properties = postgres_legacy(&table_properties(pg, "s", "t").unwrap()).unwrap();
+        assert!(!properties.contains("relam") && !properties.contains("partkeydef"), "{properties}");
     }
 }

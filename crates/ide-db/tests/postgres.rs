@@ -2,7 +2,7 @@
 //! `OPENIDEA_TEST_POSTGRES=host:port:user:password` names a throwaway server.
 
 use ide_core::{CancellationToken, IdeResult};
-use ide_db::{DataSource, DbDriver, DbManager};
+use ide_db::{DataSource, DbDriver, DbManager, DbPersistence};
 
 fn server() -> Option<(String, u16, String, String)> {
     endpoint("OPENIDEA_TEST_POSTGRES")
@@ -808,6 +808,75 @@ async fn table_grants_expand_the_acl_per_grantee() -> IdeResult<()> {
     assert!(private.iter().all(|g| g.grantee == owner), "{private:?}");
     assert!(private.iter().any(|g| g.privilege == "SELECT"), "{private:?}");
     for stmt in ["DROP SCHEMA oi_grants CASCADE", "DROP ROLE oi_grant_reader", "DROP ROLE oi_grant_writer"] {
+        db.execute("p", stmt, 10, &c).await?;
+    }
+    Ok(())
+}
+
+/// Modify Table's properties: owner, tablespace, access method, storage options (the TOAST
+/// table's too), partition key and persistence, read again after the statements it runs.
+#[tokio::test]
+async fn table_details_read_the_storage_properties() -> IdeResult<()> {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(db) = manager(&tmp).await else { return Ok(()) };
+    let c = CancellationToken::new();
+    for stmt in [
+        "DROP SCHEMA IF EXISTS oi_props CASCADE",
+        "DROP ROLE IF EXISTS oi_props_owner",
+        "CREATE ROLE oi_props_owner",
+        "CREATE SCHEMA oi_props",
+        "CREATE UNLOGGED TABLE oi_props.bulk (id INT, v TEXT) WITH (fillfactor = 70, toast.autovacuum_enabled = false)",
+        "CREATE TABLE oi_props.events (id INT, at DATE) PARTITION BY RANGE (at)",
+        "CREATE VIEW oi_props.recent AS SELECT 1 AS n",
+    ] {
+        db.execute("p", stmt, 10, &c).await?;
+    }
+    let owner = db.execute("p", "SELECT current_user", 1, &c).await?.rows[0][0].clone().unwrap();
+    let default_tablespace = db
+        .execute(
+            "p",
+            "SELECT t.spcname FROM pg_database d JOIN pg_tablespace t ON t.oid = d.dattablespace \
+             WHERE d.datname = current_database()",
+            1,
+            &c,
+        )
+        .await?
+        .rows[0][0]
+        .clone();
+    let options = |pairs: &[(&str, &str)]| Some(pairs.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect());
+
+    let bulk = db.table_details("p", "oi_props", "bulk").await?;
+    assert_eq!(bulk.owner.as_deref(), Some(owner.as_str()));
+    assert_eq!(bulk.tablespace, default_tablespace);
+    assert_eq!(bulk.access_method.as_deref(), Some("heap"));
+    assert_eq!(bulk.storage_options, options(&[("fillfactor", "70"), ("toast.autovacuum_enabled", "false")]));
+    assert_eq!(bulk.partitioning, None);
+    assert_eq!(bulk.persistence, Some(DbPersistence::Unlogged));
+
+    let events = db.table_details("p", "oi_props", "events").await?;
+    assert_eq!(events.partitioning.as_deref(), Some("RANGE (at)"));
+    assert_eq!(events.storage_options, options(&[]));
+    assert_eq!(events.persistence, Some(DbPersistence::Permanent));
+    // A view has none of a table's storage.
+    let recent = db.table_details("p", "oi_props", "recent").await?;
+    assert_eq!((recent.owner, recent.storage_options, recent.persistence), (None, None, None));
+
+    // The statements Modify Table generates (objects.ts `tablePropertiesSql`).
+    for stmt in [
+        "alter table oi_props.bulk set logged;",
+        "alter table oi_props.bulk reset (toast.autovacuum_enabled);",
+        "alter table oi_props.bulk set (fillfactor = 50, autovacuum_enabled = false);",
+        "alter table oi_props.bulk set tablespace pg_default;",
+        "alter table oi_props.bulk owner to oi_props_owner;",
+    ] {
+        db.execute("p", stmt, 10, &c).await?;
+    }
+    let bulk = db.table_details("p", "oi_props", "bulk").await?;
+    assert_eq!(bulk.owner.as_deref(), Some("oi_props_owner"));
+    assert_eq!(bulk.tablespace.as_deref(), Some("pg_default"));
+    assert_eq!(bulk.storage_options, options(&[("fillfactor", "50"), ("autovacuum_enabled", "false")]));
+    assert_eq!(bulk.persistence, Some(DbPersistence::Permanent));
+    for stmt in ["DROP SCHEMA oi_props CASCADE", "DROP ROLE oi_props_owner"] {
         db.execute("p", stmt, 10, &c).await?;
     }
     Ok(())

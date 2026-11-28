@@ -104,6 +104,59 @@ describe("Modify Table's list (DataGrip)", () => {
     expect(preview).toContain("comment on column public.orders.note is null;");
   });
 
+  it("shows a PostgreSQL table's properties and previews the statements changing them", () => {
+    useDatabase.setState({
+      sources: [{ id: "pg", name: "pg", driver: "postgres" }],
+      details: {
+        [detailsKey("pg", "public", "events")]: {
+          status: "ok",
+          value: {
+            columns: [column("id", "integer")],
+            indexes: [],
+            foreignKeys: [],
+            triggers: [],
+            owner: "postgres",
+            tablespace: "pg_default",
+            storageOptions: [["fillfactor", "70"]],
+            partitioning: "RANGE (at)",
+            persistence: "unlogged",
+          },
+        },
+      },
+    } as never);
+    openDialog({ kind: "modifyTable", id: "pg", schema: "public", table: "events" });
+    render(<ObjectDialogs />);
+    fireEvent.click(screen.getByRole("tab", { name: "Properties" }));
+    expect(screen.getByLabelText("Owner")).toHaveProperty("value", "postgres");
+    expect(screen.getByLabelText("Partitioning")).toHaveProperty("value", "RANGE (at)");
+    expect(screen.getByLabelText("Partitioning")).toHaveProperty("disabled", true);
+    // A partitioned table has no access method of its own: no field.
+    expect(screen.queryByLabelText("Access method")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Owner"), { target: { value: "loader" } });
+    fireEvent.change(screen.getByLabelText("Tablespace"), { target: { value: "fast" } });
+    fireEvent.change(screen.getByLabelText("Storage options"), { target: { value: "fillfactor=50" } });
+    fireEvent.click(screen.getByRole("button", { name: "Persistence" }));
+    fireEvent.click(within(screen.getByRole("listbox")).getByText("Logged"));
+    expect(screen.getByLabelText("Preview SQL").textContent).toBe(
+      [
+        "alter table public.events set logged;",
+        "alter table public.events set (fillfactor = 50);",
+        "alter table public.events set tablespace fast;",
+        "alter table public.events owner to loader;",
+      ].join("\n"),
+    );
+    // The edits stay when switching tabs.
+    fireEvent.click(screen.getByRole("tab", { name: "Columns" }));
+    expect(screen.getByLabelText("Preview SQL").textContent).toContain("owner to loader;");
+  });
+
+  it("has no Properties tab where the engine reports none", () => {
+    open();
+    expect(screen.queryByRole("tab", { name: "Properties" })).toBeNull();
+    expect(screen.queryByLabelText("Owner")).toBeNull();
+  });
+
   it("adds and drops the primary key, unique keys and indexes of an existing table, previewing each statement", () => {
     useDatabase.setState({
       sources: [{ id: "pg", name: "pg", driver: "postgres" }],

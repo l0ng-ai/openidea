@@ -5691,6 +5691,9 @@ export type DbPackageInfo = {
 	name: string,
 };
 
+/**  Whether a table's changes are written to the write-ahead log, and whether it outlives the session. */
+export type DbPersistence = "permanent" | "unlogged" | "temporary";
+
 /**  Name lists hold `pg_dump` patterns (`*`, `?`, quoted names). */
 export type DbPgDumpOptions = {
 	format: DbDumpFormat,
@@ -5927,6 +5930,24 @@ export type DbTableDetails = {
 	indexes: DbIndexInfo[],
 	foreignKeys: DbForeignKey[],
 	triggers: DbTriggerInfo[],
+	/**  The role owning the table (PostgreSQL); `None` where the schema owns its tables. */
+	owner?: string | null,
+	/**  The table's tablespace, the database's default one when it names none (PostgreSQL). */
+	tablespace?: string | null,
+	/**
+	 *  The table access method (PostgreSQL's `heap`, …); `None` for a partitioned table, and on
+	 *  the engines without one.
+	 */
+	accessMethod?: string | null,
+	/**
+	 *  The storage parameters set on the table, as `(name, value)`: PostgreSQL's reloptions,
+	 *  its TOAST table's prefixed `toast.`. `None` on the engines without any.
+	 */
+	storageOptions?: ([string, string])[] | null,
+	/**  The partition key (`RANGE (created)`); `None` when the table isn't partitioned. */
+	partitioning?: string | null,
+	/**  Whether the table is logged, unlogged or temporary (PostgreSQL). */
+	persistence?: DbPersistence | null,
 };
 
 /**

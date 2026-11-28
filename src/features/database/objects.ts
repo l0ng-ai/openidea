@@ -3,7 +3,7 @@
  * Drop, Truncate, SQL Scripts › …, Modify Table, Copy Reference), per dialect.
  * Pure functions.
  */
-import type { DbColumnInfo, DbDriver, DbIndexInfo, DbTableGrant } from "@/platform/ipc";
+import type { DbColumnInfo, DbDriver, DbIndexInfo, DbPersistence, DbTableDetails, DbTableGrant } from "@/platform/ipc";
 import { isReserved } from "./sql/dialect";
 
 export function quoteIdent(driver: DbDriver, name: string): string {
@@ -620,11 +620,118 @@ export function createTableKeySql(
   return keySql(driver, schema, name, [], { indexes: indexes.filter((d) => !d.original) }).adds;
 }
 
+// ---- Table properties ----------------------------------------------------------
+
+/**
+ * The table properties Modify Table changes, per engine. Access method and partitioning are
+ * shown read-only where the catalog reports them: changing either rewrites the table.
+ */
+export interface PropertySupport {
+  owner: boolean;
+  tablespace: boolean;
+  storageOptions: boolean;
+  /** Logged / unlogged (a temporary table stays temporary). */
+  persistence: boolean;
+}
+
+export function propertySupport(driver: DbDriver): PropertySupport {
+  // Only PostgreSQL's are read (`sql::table_properties`).
+  const on = driver === "postgres";
+  return { owner: on, tablespace: on, storageOptions: on, persistence: on };
+}
+
+/** The table properties Modify Table edits, as its fields show them. */
+export interface TableProperties {
+  owner: string;
+  tablespace: string;
+  /** `name=value, …`. */
+  storageOptions: string;
+  persistence: DbPersistence | null;
+}
+
+/** Whether the catalog reported any table property, so the dialog has a Properties tab. */
+export function hasTableProperties(d: DbTableDetails | undefined): boolean {
+  if (!d) return false;
+  return [d.owner, d.tablespace, d.accessMethod, d.storageOptions, d.partitioning, d.persistence].some(
+    (v) => v !== undefined && v !== null,
+  );
+}
+
+export function tablePropertiesOf(d: DbTableDetails | undefined): TableProperties {
+  return {
+    owner: d?.owner ?? "",
+    tablespace: d?.tablespace ?? "",
+    storageOptions: (d?.storageOptions ?? []).map(([k, v]) => `${k}=${v}`).join(", "),
+    persistence: d?.persistence ?? null,
+  };
+}
+
+/** `name=value, …` as typed: names trimmed, the last value of a name wins, entries without `=` left out. */
+function parseStorageOptions(text: string): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const entry of text.split(",")) {
+    const at = entry.indexOf("=");
+    const name = entry.slice(0, Math.max(0, at)).trim();
+    const value = entry.slice(at + 1).trim();
+    if (at > 0 && name && value) out.set(name, value);
+  }
+  return out;
+}
+
+/** A storage parameter's value: a word or number as is, anything else as a string literal. */
+const optionValue = (v: string) => (/^[\w.+-]+$/.test(v) ? v : `'${v.replace(/'/g, "''")}'`);
+
+/** The table's properties as the dialog started (`original`) and as edited. */
+export interface PropertyEdits {
+  original: TableProperties;
+  value: TableProperties;
+}
+
+/**
+ * The statements changing `table`'s properties: storage first (`storage`, naming the table as
+ * it was), the owner last (`owner`, after any rename: renaming needs the table's ownership).
+ */
+function propertySql(
+  driver: DbDriver,
+  schema: string,
+  table: string,
+  { original: o, value: v }: PropertyEdits,
+): { storage: string[]; owner: (name: string) => string[] } {
+  const s = propertySupport(driver);
+  const q = qualifiedName(driver, schema, table);
+  const storage: string[] = [];
+  if (s.persistence && v.persistence !== o.persistence && o.persistence !== "temporary") {
+    if (v.persistence === "unlogged") storage.push(`alter table ${q} set unlogged;`);
+    else if (v.persistence === "permanent") storage.push(`alter table ${q} set logged;`);
+  }
+  if (s.storageOptions) {
+    const before = parseStorageOptions(o.storageOptions);
+    const after = parseStorageOptions(v.storageOptions);
+    const reset = [...before.keys()].filter((k) => !after.has(k));
+    const set = [...after].filter(([k, value]) => before.get(k) !== value);
+    if (reset.length) storage.push(`alter table ${q} reset (${reset.join(", ")});`);
+    if (set.length)
+      storage.push(`alter table ${q} set (${set.map(([k, value]) => `${k} = ${optionValue(value)}`).join(", ")});`);
+  }
+  const tablespace = v.tablespace.trim();
+  if (s.tablespace && tablespace && tablespace !== o.tablespace)
+    storage.push(`alter table ${q} set tablespace ${ident(driver, tablespace)};`);
+  const owner = v.owner.trim();
+  return {
+    storage,
+    owner: (name) =>
+      s.owner && owner && owner !== o.owner
+        ? [`alter table ${qualifiedName(driver, schema, name)} owner to ${ident(driver, owner)};`]
+        : [],
+  };
+}
+
 /**
  * The statements turning the table `table` into `name` with `columns`
  * (Modify Table): renames, added / dropped columns, and — PostgreSQL / MySQL /
  * Oracle / Snowflake — type, nullability, default and comment changes, and the table's comment;
- * with `keys`, the primary key, unique keys and indexes (see `keySupport`).
+ * with `keys`, the primary key, unique keys and indexes (see `keySupport`); with `properties`,
+ * the owner, tablespace, storage options and persistence (see `propertySupport`).
  */
 export function alterTableSql(
   driver: DbDriver,
@@ -634,6 +741,7 @@ export function alterTableSql(
   columns: readonly ColumnDraft[],
   comment?: CommentEdit,
   keys?: KeyEdits,
+  properties?: PropertyEdits,
 ): string[] {
   if (!canModifyTable(driver)) return [];
   const { drops, adds } = keys ? keySql(driver, schema, table, columns, keys) : { drops: [], adds: [] };
@@ -712,9 +820,12 @@ export function alterTableSql(
   }
   out.push(...adds);
   out.push(...commentSql(driver, schema, table, columns, comment));
+  const props = properties && propertySql(driver, schema, table, properties);
+  if (props) out.push(...props.storage);
   // Renamed last: the column statements above name the table as it was.
-  if (name.trim() && name.trim() !== table)
-    out.push(renameSql(driver, { kind: "table", schema, name: table }, name.trim()));
+  const renamed = name.trim() && name.trim() !== table;
+  if (renamed) out.push(renameSql(driver, { kind: "table", schema, name: table }, name.trim()));
+  if (props) out.push(...props.owner(renamed ? name.trim() : table));
   return out;
 }
 

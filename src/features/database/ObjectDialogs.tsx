@@ -9,6 +9,7 @@ import {
   commands,
   type DbColumnInfo,
   type DbDriver,
+  type DbPersistence,
   type DbSourceFolder,
   type DbTableDetails,
   type DbTableGrant,
@@ -46,17 +47,21 @@ import {
   dropDatabaseSql,
   grantMatrix,
   grantsSupported,
+  hasTableProperties,
   indexDraftOf,
   keyName,
   keySupport,
+  propertySupport,
   renameDatabaseSql,
   dropSql,
   ident,
   reference,
   renameSql,
+  tablePropertiesOf,
   truncateSql,
   type ColumnDraft,
   type IndexDraft,
+  type TableProperties,
   templateOf,
   type CreateOptions,
   type DbObjectRef,
@@ -710,6 +715,7 @@ function ModifyTableForm({
   const [comment, setComment] = useState(details?.comment ?? "");
   const support = keySupport(driver);
   const pkIndex = details?.indexes.find((i) => i.key === "primary")?.name;
+  const [properties, setProperties] = useState<TableProperties>(() => tablePropertiesOf(details));
 
   const statements = useMemo(() => {
     if (!table) {
@@ -728,8 +734,9 @@ function ModifyTableForm({
       columns,
       { original: details?.comment ?? "", value: comment },
       { primaryKeyName: pkIndex, indexes },
+      { original: tablePropertiesOf(details), value: properties },
     );
-  }, [columns, indexes, driver, schema, table, name, comment, details?.comment, pkIndex]);
+  }, [columns, indexes, driver, schema, table, name, comment, details, pkIndex, properties]);
 
   const current = (selected?.group === "column" && columns.find((c) => c.key === selected.key)) || null;
   const currentIndex = (selected?.group === "index" && indexes.find((d) => d.key === selected.key)) || null;
@@ -812,7 +819,8 @@ function ModifyTableForm({
     </div>
   );
   const showGrants = !!table && grantsSupported(driver);
-  const [tab, setTab] = useState<"columns" | "grants">("columns");
+  const showProperties = !!table && hasTableProperties(details);
+  const [tab, setTab] = useState<"columns" | "properties" | "grants">("columns");
   const title = table ? `Modify Table ${table}` : "Create Table";
   const typeList = `db-types-${driver}`;
 
@@ -866,20 +874,28 @@ function ModifyTableForm({
             />
           </div>
         )}
-        {showGrants && (
+        {(showGrants || showProperties) && (
           <Tabs
             variant="compact"
             aria-label={tx("Table properties")}
             activeId={tab}
-            onSelect={(t) => setTab(t as "columns" | "grants")}
+            onSelect={(t) => setTab(t as typeof tab)}
             items={[
               { id: "columns", label: tx("Columns") },
-              { id: "grants", label: tx("Grants") },
+              ...(showProperties ? [{ id: "properties", label: tx("Properties") }] : []),
+              ...(showGrants ? [{ id: "grants", label: tx("Grants") }] : []),
             ]}
           />
         )}
         {showGrants && tab === "grants" ? (
           <GrantsPanel id={id} schema={schema} table={table} />
+        ) : showProperties && tab === "properties" ? (
+          <PropertiesPanel
+            driver={driver}
+            details={details}
+            value={properties}
+            onChange={(p) => setProperties((v) => ({ ...v, ...p }))}
+          />
         ) : (
           <div className={styles.modifyMain}>
             <div className={styles.modifyColumns}>
@@ -1117,6 +1133,109 @@ function ModifyTableForm({
         <SqlPreview sql={statements.join("\n") || "-- no changes"} />
       </div>
     </Dialog>
+  );
+}
+
+const PERSISTENCE: Record<DbPersistence, string> = {
+  permanent: "Logged",
+  unlogged: "Unlogged",
+  temporary: "Temporary",
+};
+
+/**
+ * The Modify Table dialog's Properties tab: the owner, tablespace, storage options and
+ * persistence the engine reports (editable per `propertySupport`), its access method and partition key read-only.
+ */
+function PropertiesPanel({
+  driver,
+  details,
+  value,
+  onChange,
+}: {
+  driver: DbDriver;
+  details: DbTableDetails | undefined;
+  value: TableProperties;
+  onChange: (p: Partial<TableProperties>) => void;
+}) {
+  const support = propertySupport(driver);
+  const reported = (v: unknown) => v !== undefined && v !== null;
+  const original = details?.persistence;
+  // A temporary table can't be made permanent, nor a permanent one temporary.
+  const persistence: DbPersistence[] = original === "temporary" ? ["temporary"] : ["permanent", "unlogged"];
+  return (
+    <div className={styles.propertiesPanel}>
+      {reported(details?.owner) && (
+        <>
+          <label className={styles.formLabel} htmlFor="db-table-owner">
+            <T>Owner</T>
+          </label>
+          <Input
+            id="db-table-owner"
+            value={value.owner}
+            disabled={!support.owner}
+            onChange={(e) => onChange({ owner: e.target.value })}
+          />
+        </>
+      )}
+      {reported(details?.tablespace) && (
+        <>
+          <label className={styles.formLabel} htmlFor="db-table-tablespace">
+            <T>Tablespace</T>
+          </label>
+          <Input
+            id="db-table-tablespace"
+            value={value.tablespace}
+            disabled={!support.tablespace}
+            onChange={(e) => onChange({ tablespace: e.target.value })}
+          />
+        </>
+      )}
+      {reported(details?.persistence) && (
+        <>
+          <label className={styles.formLabel} htmlFor="db-table-persistence">
+            <T>Persistence</T>
+          </label>
+          <Select
+            id="db-table-persistence"
+            value={value.persistence}
+            options={persistence.map((p) => ({ value: p, label: PERSISTENCE[p] }))}
+            disabled={!support.persistence || original === "temporary"}
+            onChange={(p) => onChange({ persistence: p })}
+          />
+        </>
+      )}
+      {reported(details?.storageOptions) && (
+        <>
+          <label className={styles.formLabel} htmlFor="db-table-options">
+            <T>Storage options</T>
+          </label>
+          <Input
+            id="db-table-options"
+            mono
+            placeholder="fillfactor=70, autovacuum_enabled=false"
+            value={value.storageOptions}
+            disabled={!support.storageOptions}
+            onChange={(e) => onChange({ storageOptions: e.target.value })}
+          />
+        </>
+      )}
+      {reported(details?.accessMethod) && (
+        <>
+          <label className={styles.formLabel} htmlFor="db-table-access-method">
+            <T>Access method</T>
+          </label>
+          <Input id="db-table-access-method" mono value={details?.accessMethod ?? ""} readOnly disabled />
+        </>
+      )}
+      {reported(details?.partitioning) && (
+        <>
+          <label className={styles.formLabel} htmlFor="db-table-partitioning">
+            <T>Partitioning</T>
+          </label>
+          <Input id="db-table-partitioning" mono value={details?.partitioning ?? ""} readOnly disabled />
+        </>
+      )}
+    </div>
   );
 }
 
