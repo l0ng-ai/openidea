@@ -395,6 +395,7 @@ describe("language pages", () => {
       "Java",
       "JavaScript Runtime",
       "Markdown",
+      "JSON Schema Mappings",
       "Python",
       "PHP",
       "Prettier",

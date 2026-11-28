@@ -10962,5 +10962,16 @@
   "Keep Key": "保留键",
   "Drop Index": "删除索引",
   "Keep Index": "保留索引",
-  "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite 无法删除主键或唯一约束的索引。"
+  "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite 无法删除主键或唯一约束的索引。",
+  "JSON Schema Mappings": "JSON Schema 映射",
+  "JSON schema mappings actions": "JSON Schema 映射操作",
+  "JSON schema mappings": "JSON Schema 映射",
+  "No schema mappings. Click + to add one.": "没有 Schema 映射。点击 + 添加。",
+  "Schema file or URL": "Schema 文件或 URL",
+  "A URL, or a path relative to the project. The schema's own $schema picks the JSON Schema version.": "URL，或相对于项目的路径。JSON Schema 版本由 Schema 自身的 $schema 决定。",
+  "schemas/app.schema.json": "schemas/app.schema.json",
+  "Select Schema File": "选择 Schema 文件",
+  "Paths or glob patterns, relative to the project: config/*.json, **/*.app.yaml. Wins over the built-in mapping for the same files.": "相对于项目的路径或 glob 模式：config/*.json、**/*.app.yaml。对相同的文件优先于内置映射。",
+  "config/*.json": "config/*.json",
+  "Mapping": "映射"
 }

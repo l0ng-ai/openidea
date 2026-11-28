@@ -9332,6 +9332,15 @@ export type JsResponseRule = {
 	body: string,
 };
 
+/**  A schema for the JSON and YAML files matching `files`; wins over a built-in SchemaStore mapping. */
+export type JsonSchemaMapping = {
+	name?: string,
+	/**  A URL, or a file path relative to the project. */
+	schema?: string,
+	/**  Project-relative paths or glob patterns (`config/*.json`, `**\/*.app.yaml`). */
+	files?: string[],
+};
+
 /**  The test JVM of OpenIDEA's JUnit runner. */
 export type JunitLaunch = {
 	classPaths: string[],
@@ -13648,6 +13657,8 @@ export type Settings_Deserialize = {
 	 *  options on top of the language definition, or a server defined here.
 	 */
 	languageServers?: { [key in string]: LanguageServerSettings_Deserialize },
+	/**  Languages & Frameworks › JSON Schema Mappings: schemas for JSON and YAML files. */
+	jsonSchemas?: JsonSchemaMapping[],
 	/**  Tools › Download sources: a mirror prefix for the release archives the installer fetches. */
 	toolDownloads?: ToolDownloadSettings,
 	/**  Editor › Inspections profiles. */
@@ -13725,6 +13736,8 @@ export type Settings_Serialize = {
 	 *  options on top of the language definition, or a server defined here.
 	 */
 	languageServers: { [key in string]: LanguageServerSettings_Serialize },
+	/**  Languages & Frameworks › JSON Schema Mappings: schemas for JSON and YAML files. */
+	jsonSchemas: JsonSchemaMapping[],
 	/**  Tools › Download sources: a mirror prefix for the release archives the installer fetches. */
 	toolDownloads: ToolDownloadSettings,
 	/**  Editor › Inspections profiles. */

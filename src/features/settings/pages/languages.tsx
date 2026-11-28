@@ -46,6 +46,9 @@ const TypeScriptPage = lazyPage("languages.typescript", () =>
 const FlutterPage = lazyPage("languages.flutter", () =>
   import("../languages/LanguagePages").then((m) => m.FlutterPage),
 );
+const JsonSchemasEditor = lazyPage("languages.jsonSchemas", () =>
+  import("./JsonSchemasBody").then((m) => m.JsonSchemasEditor),
+);
 const ZigPage = lazyPage("languages.zig", () => import("../languages/LanguagePages").then((m) => m.ZigPage));
 
 export const LANGUAGES_GROUP = "Languages & Frameworks";
@@ -205,6 +208,28 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "code block",
     ],
     component: MarkdownPage,
+  },
+  {
+    // IDEA's Schemas and DTDs › JSON Schema Mappings; project settings, so they can be shared.
+    id: "languages.jsonSchemas",
+    projectScope: true,
+    defaultScope: "project",
+    title: "JSON Schema Mappings",
+    group: LANGUAGES_GROUP,
+    order: 400.5,
+    keywords: ["json", "yaml", "schema", "schemastore", "validation", "completion", "file match", "dtd"],
+    sections: [
+      {
+        options: [
+          {
+            kind: "custom",
+            label: "JSON Schema Mappings",
+            keywords: ["Name", "Schema file or URL", "Files"],
+            component: JsonSchemasEditor,
+          },
+        ],
+      },
+    ],
   },
   {
     id: "languages.prettier",
