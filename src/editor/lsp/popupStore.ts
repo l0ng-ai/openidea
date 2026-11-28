@@ -91,6 +91,12 @@ export type LspPopup =
       themeClasses: string;
     }
   | {
+      /** Read-only file contents shown without creating an editor tab (Project Quick Preview). */
+      kind: "filePreview";
+      path: string;
+      anchor: PopupPoint;
+    }
+  | {
       kind: "definition";
       anchor: PopupPoint;
       /** Every target (⌥Space on an overloaded / multiply defined symbol); `index` is shown. */
@@ -200,6 +206,11 @@ export function closePopup() {
   const previous = useLspPopup.getState().popup;
   useLspPopup.setState({ popup: null });
   disposed(previous);
+}
+
+/** Dismiss Project Quick Preview without closing an unrelated editor popup. */
+export function closeFilePreview() {
+  if (useLspPopup.getState().popup?.kind === "filePreview") closePopup();
 }
 
 /** Replaces the open popup's state without remounting it (doc history, definition switching). */

@@ -274,6 +274,7 @@ export const intellijWindows: Record<string, string[]> = {
   "project.paste": ["Ctrl+V", "Shift+Insert"],
   "project.copyAbsolutePath": ["Ctrl+Shift+C"],
   "project.open": ["F4"],
+  "project.quickPreview": ["Space"],
   "project.openInRightSplit": ["Shift+Enter"],
   "project.findUsages": ["Alt+F7"],
   "project.reformatCode": ["Ctrl+Alt+L"],

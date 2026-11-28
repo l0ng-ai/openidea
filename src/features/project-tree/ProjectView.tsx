@@ -20,6 +20,7 @@ import {
 import { createPortal } from "react-dom";
 import clsx from "clsx";
 import { revealRange, useEditorRegistry } from "@/editor/api";
+import { closeFilePreview, openPopup } from "@/editor/lsp/popupStore";
 import { executeAction } from "@/platform/actions";
 import { tx, useTxTemplate } from "@/platform/i18n";
 import { isTauri } from "@/platform/ipc";
@@ -88,6 +89,7 @@ import {
   commitEditing,
   dropPaths,
   importExternal,
+  leadNode,
   openFile,
   refreshOsClipboard,
   targetFolder,
@@ -133,6 +135,24 @@ export function showNewPopup(): boolean {
   )?.getBoundingClientRect();
   if (!rect) return false;
   openNewPopup({ x: rect.left + 24, y: rect.bottom }, newMenuItems(targetFolder()));
+  return true;
+}
+
+/** Space in the Project tree: read one selected file without opening an editor tab. */
+export function showQuickPreview(path?: string): boolean {
+  const state = useProjectTree.getState();
+  const model = selectModel(state);
+  const key = path ? model.keyOfPath.get(path) : state.lead;
+  const node = key ? model.byKey.get(key) : path ? null : leadNode();
+  if (!node || node.dir || node.placeholder || node.member || (!path && state.selected.size !== 1)) return false;
+  const row = [...document.querySelectorAll<HTMLElement>("[data-project-view] [data-project-key]")].find(
+    (el) => el.dataset.projectKey === node.key,
+  );
+  const rect = (
+    row ?? document.querySelector<HTMLElement>('[data-project-view] [role="tree"]')
+  )?.getBoundingClientRect();
+  if (!rect) return false;
+  openPopup({ kind: "filePreview", path: node.path, anchor: { x: rect.right + 4, y: rect.top } });
   return true;
 }
 
@@ -500,6 +520,7 @@ export function ProjectView() {
   const fileColors = useFileColors("projectView");
   const expanded = useProjectTree((s) => s.expanded);
   const selected = useProjectTree((s) => s.selected);
+  const lead = useProjectTree((s) => s.lead);
   const editing = useProjectTree((s) => s.editing);
   const clipboard = useProjectTree((s) => s.clipboard);
   const dropTarget = useProjectTree((s) => s.dropTarget);
@@ -526,6 +547,9 @@ export function ProjectView() {
 
   // Open Files / All Changed Files: show new files' folders expanded.
   useEffect(() => autoExpand(model), [model]);
+
+  // Quick Preview belongs to this selection and project only; also releases it when the view unmounts.
+  useEffect(() => () => closeFilePreview(), [root, selected, lead]);
 
   // Load folders that are expanded (restored state, reveal, chains) but not read yet.
   useEffect(() => {
@@ -882,11 +906,12 @@ export function ProjectView() {
     return () => window.removeEventListener("focus", refresh);
   }, []);
 
-  // The keymap owns the action keys (Delete, Shift+F6, F6, F4, copy/paste, New …):
-  // the global dispatcher runs them from the presets in the capture phase, so a
-  // cleared binding stays cleared and a rebound one follows the user (issue #2801).
-  // Only the strokes no preset binds stay local: ⌘Z undoing the last file
-  // refactoring (`project.undoMove` is unbound) and ⌃Enter's New popup on macOS.
+  // The keymap owns the action keys (Delete, Shift+F6, F6, F4, Space Quick Preview,
+  // copy/paste, New …): the global dispatcher runs them from the presets in the
+  // capture phase, so a cleared binding stays cleared and a rebound one follows
+  // the user (issue #2801). Only the strokes no preset binds stay local: ⌘Z
+  // undoing the last file refactoring (`project.undoMove` is unbound) and ⌃Enter's
+  // New popup on macOS.
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if ((e.target as HTMLElement).tagName === "INPUT") return;
     const stroke = strokeOf(e.nativeEvent);
@@ -955,6 +980,14 @@ export function ProjectView() {
       data-project-view=""
       {...OWNS_FILE_DROP}
       onKeyDown={onKeyDown}
+      onBlur={(e) => {
+        const next = e.relatedTarget;
+        if (
+          (e.target as HTMLElement).getAttribute("role") === "tree" &&
+          !(next instanceof Element && next.closest('[role="dialog"]'))
+        )
+          closeFilePreview();
+      }}
       // The native Edit menu may take ⌘C/⌘X/⌘V before the keymap sees them; it then sends DOM clipboard events.
       onCopy={(e) => onClipboard(e, "project.copy")}
       onCut={(e) => onClipboard(e, "project.cut")}

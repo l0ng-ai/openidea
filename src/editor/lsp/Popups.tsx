@@ -42,6 +42,7 @@ import fieldsetStyles from "@/ui/DialogFieldset.module.css";
 import { tx } from "@/platform/i18n";
 import { executeAction } from "@/platform/actions";
 import { useRowHeight } from "@/ui/density";
+import { FilePreviewPopup } from "./FilePreviewPopup";
 
 export function BulbIcon({ fix }: { fix?: boolean }) {
   return <Icon name={fix ? "bulb-fix" : "bulb"} size={16} className={styles.bulb} />;
@@ -925,6 +926,8 @@ export function LspPopups() {
       return <DocPopup key={seq} popup={popup} />;
     case "definition":
       return <DefinitionPopup key={seq} popup={popup} />;
+    case "filePreview":
+      return <FilePreviewPopup key={seq} popup={popup} />;
     case "preview":
       return <PreviewDialog key={seq} popup={popup} />;
     case "reformat":

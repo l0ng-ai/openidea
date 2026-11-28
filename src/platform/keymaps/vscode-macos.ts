@@ -305,6 +305,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "project.paste": ["Meta+V"],
   "project.copyAbsolutePath": ["Meta+Alt+C"],
   "project.open": ["Meta+Down"],
+  "project.quickPreview": ["Space"],
   // Explorer: Open to the Side.
   "project.openInRightSplit": ["Meta+Enter"],
   "project.reloadFromDisk": [],

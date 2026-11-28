@@ -514,6 +514,67 @@
   font: inherit;
 }
 
+.filePreviewPopup {
+  width: min(720px, 90vw);
+  height: min(480px, 70vh);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.filePreviewFrame {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.filePreviewHeader {
+  min-height: var(--h-field);
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  background: var(--bg-popup-inline, var(--bg-elev));
+  border-bottom: 1px solid var(--border-popup);
+  font-size: var(--fs-ui);
+  color: var(--fg-muted);
+}
+.filePreviewHeader > svg {
+  flex: none;
+}
+.filePreviewPath {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.filePreviewBody {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.filePreviewEditor {
+  height: 100%;
+}
+.filePreviewStatus {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  background: var(--bg-popup-inline, var(--bg-elev));
+  color: var(--fg-muted);
+  font-size: var(--fs-ui);
+}
+.filePreviewError {
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
 .previewDialog [data-dialog-body] {
   display: flex;
   flex-direction: column;
