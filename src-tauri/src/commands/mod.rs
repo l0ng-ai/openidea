@@ -18,7 +18,6 @@ pub mod doc;
 pub mod file_dialog;
 pub mod fonts;
 pub mod fs;
-pub mod github;
 pub mod hotkeys;
 pub mod http;
 pub mod lsp;
@@ -200,7 +199,6 @@ fn catalogue() -> (tauri_specta::Commands<tauri::Wry>, Vec<Command>) {
         desktop file_dialog;
         desktop fonts;
         desktop fs;
-        desktop github;
         desktop hotkeys;
         desktop http;
         desktop lsp;
