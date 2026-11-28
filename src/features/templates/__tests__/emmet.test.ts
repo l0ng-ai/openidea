@@ -25,6 +25,10 @@ describe("emmet context", () => {
     expect(syntaxAt("django-html", "{% if user")).toBeNull();
     expect(syntaxAt("django-html", "{{ value|date")).toBeNull();
     expect(syntaxAt("django-html", "{# note")).toBeNull();
+    expect(syntaxAt("jinja-html", "{% block content %}\n  ul>li")).toEqual({ type: "markup", syntax: "html" });
+    expect(syntaxAt("jinja-html", "{{ value|upper")).toBeNull();
+    // Not in a config file or source: `listen` + Tab in an nginx.conf.j2 stays text.
+    expect(syntaxAt("jinja", "server {\n    listen")).toBeNull();
     expect(syntaxAt("django-html", '<a href="{% url "home" %}">x</a>\nnav')).toEqual({
       type: "markup",
       syntax: "html",

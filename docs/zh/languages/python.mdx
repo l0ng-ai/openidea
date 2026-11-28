@@ -169,6 +169,10 @@ Django 项目（上层目录有 `manage.py`）中 `templates` 目录里的 HTML 
 
 其他位置含有 Django 标签的 HTML 文件会显示一个横幅，可以切换为 Django Template 或保留为 HTML；两种选择都会成为该文件的 **覆盖文件类型**。
 
+### Jinja2 模板
+
+`.jinja`、`.jinja2` 和 `.j2` 文件以 Jinja2 模板打开，标签之间是什么由前面的扩展名决定：`page.html.j2`、`base.html.jinja` 以及其他 `.html.*` / `.htm.*` 文件是 **Jinja2 HTML**，其他文件（`nginx.conf.j2`、`values.yaml.jinja2`、`base.jinja`）是纯文本的 **Jinja2 Template**。标签、表达式、过滤器和注释会高亮，块语句（`{% block %}`、`{% if %}`、`{% for %}`、`{% macro %}` 等）可以折叠并缩进内容，Jinja 的标签、过滤器和测试可以补全。在花括号之间输入 `%` 会变成 `{% %}`。**使用行注释** 和 **使用块注释** 都用 `{# … #}`。在 Jinja2 HTML 中，标记也会高亮，标签成对闭合、成对重命名，HTML 语言服务器和 Emmet 在模板标签之间照常工作。两种模板中的断点都会让 Python 调试配置暂停。要把其他文件当作 Jinja2 模板打开（例如内容是 HTML 的 `base.jinja`），使用该文件的 **覆盖文件类型**。
+
 ## 限制
 
 - 同一时间只运行一个类型检查器。Ruff 只在有 Ruff 配置的项目中运行。
