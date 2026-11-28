@@ -4,11 +4,15 @@
 import json
 import os
 import reprlib
+import signal
 import sys
 import textwrap
 import types
 
 RS = "\x1e"
+# In a container (`docker compose run` has no `--init`) the driver is PID 1, which ignores
+# SIGTERM without a handler: Stop would wait for docker's SIGKILL after 10 s.
+signal.signal(signal.SIGTERM, lambda *_: os._exit(128 + signal.SIGTERM))
 _out = sys.stdout
 _repr = reprlib.Repr()
 _repr.maxstring = _repr.maxother = 200

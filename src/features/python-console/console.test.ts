@@ -130,3 +130,12 @@ it.skipIf(!DJANGO)(
   },
   30_000,
 );
+it.skipIf(!PYTHON)("exits on SIGTERM itself, also as a container's PID 1, which ignores it without a handler", () => {
+  const result = spawnSync(PYTHON!, ["-I", "-S", "-u", DRIVER], {
+    input: request("import os, signal, time\nos.kill(os.getpid(), signal.SIGTERM)\ntime.sleep(5)"),
+    encoding: "utf8",
+    timeout: 4000,
+  });
+  expect(result.signal).toBeNull();
+  expect(result.status).toBe(143);
+});
