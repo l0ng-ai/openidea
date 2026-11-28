@@ -65,6 +65,23 @@ describe("typedCommand", () => {
     expect(typedCommand(term, prompt)?.text).toBe("pytest -q  -x");
   });
 
+  it.each([
+    ["dim", "\x1b[2m"],
+    ["bright black", "\x1b[90m"],
+    ["palette grey (fg=244)", "\x1b[38;5;244m"],
+    ["RGB grey (#666)", "\x1b[38;2;102;102;102m"],
+  ])("leaves out a %s autosuggestion", async (_, style) => {
+    const { term, prompt } = await prompted();
+    await write(term, `pyt${style}est -x\x1b[0m\x1b[6D`);
+    expect(typedCommand(term, prompt)?.text).toBe("pyt");
+  });
+
+  it("keeps coloured text after the cursor (syntax highlighting)", async () => {
+    const { term, prompt } = await prompted();
+    await write(term, "pytest \x1b[32m-x\x1b[0m\x1b[3D");
+    expect(typedCommand(term, prompt)?.text).toBe("pytest -x");
+  });
+
   it("is off in the alternate buffer", async () => {
     const { term, prompt } = await prompted();
     await write(term, "pytest\x1b[?1049h");
@@ -79,16 +96,17 @@ describe("recognised commands", () => {
       id: "test",
       group: "Test",
       items: () => [],
-      accepts: (line, cwd) => line.startsWith("pytest") && cwd === "/p",
+      accepts: (line, terminal) => line.startsWith("pytest") && terminal?.cwd === "/p",
       execute,
     });
+    const at = (cwd: string) => ({ cwd, env: {} });
     try {
-      expect(recognised("pytest -x", "/p")).toBe(true);
-      expect(recognised("pytest -x", "/q")).toBe(false);
-      expect(recognised("pytest -x && ls", "/p")).toBe(false);
-      expect(await runRecognised("pytest -x", "/p")).toBe(true);
-      expect(execute).toHaveBeenCalledWith("pytest -x", "/p");
-      expect(await runRecognised("ls", "/p")).toBe(false);
+      expect(recognised("pytest -x", at("/p"))).toBe(true);
+      expect(recognised("pytest -x", at("/q"))).toBe(false);
+      expect(recognised("pytest -x && ls", at("/p"))).toBe(false);
+      expect(await runRecognised("pytest -x", at("/p"))).toBe(true);
+      expect(execute).toHaveBeenCalledWith("pytest -x", at("/p"));
+      expect(await runRecognised("ls", at("/p"))).toBe(false);
     } finally {
       dispose();
     }

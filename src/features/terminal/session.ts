@@ -12,7 +12,12 @@ import screenCss from "./sessionScreen.css?inline";
 import { Channel } from "@tauri-apps/api/core";
 import { call, commands, isTauri, type TerminalId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
-import { editorService, notifications, registerFontZoomSurface } from "@/workbench/contributions";
+import {
+  editorService,
+  notifications,
+  registerFontZoomSurface,
+  type TerminalCommandContext,
+} from "@/workbench/contributions";
 import { OutputActivity } from "./activity";
 import { fitScheduler, settledResize } from "./fit";
 import { OutputGate, type TerminalMaxFps } from "./outputGate";
@@ -146,6 +151,11 @@ const MOUSE_MODES = new Set([9, 1000, 1001, 1002, 1003, 1005, 1006, 1015, 1016])
 /** Bracketed paste and the alternate screen: DEC private modes of a program that reads the keyboard itself. */
 const INPUT_MODES = new Set([47, 1047, 1049, 2004]);
 const CLEAR_SCROLLBACK_MARKER = "\x1b]133;OpenIDEA;ClearScrollback\x07";
+/** Shell integration binds this key to clearing the command line, in emacs and vi modes alike. */
+const CLEAR_LINE_KEY = "\x1b[9999~";
+/** `OSC 133;OpenIDEA;Env;NAME=value` at each prompt: the shell's `PATH` and Python environment. */
+const ENV_MARK = "OpenIDEA;Env;";
+const REPORTED_ENV = new Set(["PATH", "VIRTUAL_ENV", "CONDA_PREFIX"]);
 
 let audio: AudioContext | null = null;
 
@@ -272,6 +282,8 @@ export class TerminalSession {
   private readonly smartCommands: SmartCommandController;
   /** Where the command being typed starts (OSC 133 B), until it runs (C). */
   private promptEnd: PromptEnd | null = null;
+  /** The shell's `PATH`, `VIRTUAL_ENV` and `CONDA_PREFIX`, as shell integration reports them. */
+  private shellEnv: Record<string, string> = {};
   private opts: SessionOptions;
   private snapshot: SessionSnapshot;
   private ptyId: TerminalId | null = null;
@@ -427,7 +439,16 @@ export class TerminalSession {
       // OSC 133 (shell integration): C = a command starts, D;<status> = it
       // finished (plain D carries no status; both are accepted).
       this.term.parser.registerOscHandler(133, (data) => {
-        if (data === "B") {
+        if (data.startsWith(ENV_MARK)) {
+          const assignment = data.slice(ENV_MARK.length);
+          const eq = assignment.indexOf("=");
+          const name = assignment.slice(0, eq);
+          if (eq > 0 && REPORTED_ENV.has(name)) {
+            const { [name]: _, ...rest } = this.shellEnv;
+            const value = assignment.slice(eq + 1);
+            this.shellEnv = value ? { ...rest, [name]: value } : rest;
+          }
+        } else if (data === "B") {
           this.setPromptEnd(this.term.registerMarker(0));
         } else if (data === "C") {
           this.setPromptEnd(undefined);
@@ -500,7 +521,7 @@ export class TerminalSession {
     this.smartCommands = installSmartCommands(
       this.term,
       () => (this.snapshot.commandRunning ? null : this.promptEnd),
-      () => this.snapshot.cwd,
+      () => this.commandContext(),
     );
     this.disposables.push(this.selectionHighlights, this.linkHighlights, this.pathLinks, this.smartCommands, {
       dispose: () => this.setPromptEnd(undefined),
@@ -1096,19 +1117,55 @@ export class TerminalSession {
     this.smartCommands.refresh();
   }
 
-  /**
-   * Run Highlighted Command: runs the recognised command typed at the prompt with the IDE and
-   * empties the shell's line; false (nothing sent) when no such command is typed.
-   */
-  async runTypedCommand(): Promise<boolean> {
+  private commandContext(): TerminalCommandContext {
+    return { cwd: this.snapshot.cwd, env: this.shellEnv };
+  }
+
+  /** The command typed at the prompt when the IDE recognises it (Run Highlighted Command). */
+  private recognisedCommand(): { prompt: PromptEnd; text: string } | null {
     const prompt = this.snapshot.commandRunning ? null : this.promptEnd;
     const typed = smartCommandsEnabled() && prompt ? typedCommand(this.term, prompt) : null;
-    const cwd = this.snapshot.cwd;
-    if (!typed || !recognised(typed.text, cwd)) return false;
-    // End of line, then kill the line (zsh, bash and fish alike).
-    this.send("\x05\x15");
-    if (!(await runRecognised(typed.text, cwd))) this.send(typed.text);
+    return prompt && typed && recognised(typed.text, this.commandContext()) ? { prompt, text: typed.text } : null;
+  }
+
+  /** A command the IDE recognises is typed at the prompt. */
+  get hasRecognisedCommand(): boolean {
+    return !!this.recognisedCommand();
+  }
+
+  /**
+   * Run Highlighted Command: runs the recognised command typed at the prompt with the IDE once the
+   * shell has emptied its line; false (nothing sent) when no such command is typed.
+   */
+  async runTypedCommand(): Promise<boolean> {
+    const found = this.recognisedCommand();
+    if (!found) return false;
+    const context = this.commandContext();
+    this.send(CLEAR_LINE_KEY);
+    // A line the shell kept would run again on the next Enter: then nothing runs here.
+    if (!(await this.lineCleared(found.prompt))) {
+      notifications().notify({
+        level: "warning",
+        title: tx("Cannot run the command using the IDE"),
+        body: tx("The shell did not clear its command line."),
+      });
+      return true;
+    }
+    if (!(await runRecognised(found.text, context))) this.send(found.text);
     return true;
+  }
+
+  /** Waits for the shell to redraw its prompt without the typed command (up to 1.5 s). */
+  private lineCleared(prompt: PromptEnd): Promise<boolean> {
+    const deadline = Date.now() + 1500;
+    return new Promise((resolve) => {
+      const timer = setInterval(() => {
+        const cleared = !this.disposed && !typedCommand(this.term, this.promptEnd ?? prompt);
+        if (!cleared && !this.disposed && Date.now() < deadline) return;
+        clearInterval(timer);
+        resolve(cleared);
+      }, 25);
+    });
   }
 
   /** Asks xterm to take the caret. Remembered when the textarea does not exist yet. */

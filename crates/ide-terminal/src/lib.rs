@@ -1418,6 +1418,62 @@ mod tests {
         assert!(format!("{out}{rest}").contains("\x1b]7;file://"), "{out:?}");
     }
 
+    /// Shell integration in a real shell: OSC 133 B after the prompt, the Python environment at
+    /// each prompt, and the key Run Highlighted Command clears the line with, in emacs and vi
+    /// command mode (where Ctrl-E Ctrl-U would not), so the next Enter runs nothing.
+    #[cfg(unix)]
+    fn check_prompt_integration(shell: &str, vi: &str) {
+        if !Path::new(shell).exists() {
+            return;
+        }
+        let home = std::env::temp_dir().join(format!("openidea-prompt-test-{}-{}", std::process::id(), vi.len()));
+        std::fs::create_dir_all(&home).unwrap();
+        for vi_mode in [false, true] {
+            let h = harness();
+            let mut opts = sh("");
+            opts.shell = Some(shell.into());
+            opts.args = Vec::new();
+            opts.shell_integration = true;
+            opts.env.insert("HOME".into(), home.to_string_lossy().into_owned());
+            opts.env.insert("ZDOTDIR".into(), home.to_string_lossy().into_owned());
+            opts.env.insert("VIRTUAL_ENV".into(), "/tmp/openidea-venv".into());
+            let (info, rx) = spawn_collect(&h, opts);
+            let mut out = read_until(&rx, "\x1b]133;B\x07");
+            if vi_mode {
+                h.manager.write(info.id, &format!("{vi}\n")).unwrap();
+                out += &read_until(&rx, "\x1b]133;B\x07");
+            }
+            h.manager.write(info.id, "echo RAN_$((40+2))").unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            if vi_mode {
+                h.manager.write(info.id, "\x1b").unwrap();
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            h.manager.write(info.id, "\x1b[9999~").unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            h.manager.write(info.id, "\n").unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            h.manager.write(info.id, "exit\n").unwrap();
+            let _ = wait_exit(&h, info.id);
+            out.extend(rx.try_iter());
+            assert!(out.contains("\x1b]133;OpenIDEA;Env;VIRTUAL_ENV=/tmp/openidea-venv\x07"), "{shell}: {out:?}");
+            assert!(!out.contains("RAN_42"), "{shell} (vi: {vi_mode}) ran the cleared line: {out:?}");
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bash_integration_marks_the_prompt_and_clears_the_line() {
+        check_prompt_integration("/bin/bash", "set -o vi");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zsh_integration_marks_the_prompt_and_clears_the_line() {
+        check_prompt_integration("/bin/zsh", "bindkey -v");
+    }
+
     #[test]
     fn write_echo_round_trip() {
         let h = harness();

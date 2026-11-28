@@ -6,7 +6,7 @@
  */
 import { Channel } from "@tauri-apps/api/core";
 import { create } from "zustand";
-import { parseArgs } from "@/platform/commandLine";
+import { activePython, parseArgs } from "@/platform/commandLine";
 import {
   call,
   commands,
@@ -24,6 +24,7 @@ import {
   notifications,
   type RunAnythingItem,
   type RunAnythingProvider,
+  type TerminalCommandContext,
 } from "@/workbench/contributions";
 
 export interface ManageCommand {
@@ -180,13 +181,26 @@ export function loadCommands(manage: string, python: string, retry = false): Pro
   return read;
 }
 
+/**
+ * A line typed in a terminal: only where its manage.py sits (elsewhere the shell would not find
+ * it), with `python` / `python3` (a versioned one may not be the project's interpreter).
+ */
+const terminalLine = (line: string, manage: string, terminal: TerminalCommandContext) =>
+  dirname(manage) === terminal.cwd && !/^(?:py\b|python[\d.]*\.exe|python(?!3?\s)[\d.])/.test(line.trim());
+
 /** Runs a manage.py line in the Run tool window (not waiting for the command list); false when it isn't one or there's no manage.py. */
-export async function runManageLine(line: string, run: (config: RunConfig) => unknown): Promise<boolean> {
+export async function runManageLine(
+  line: string,
+  run: (config: RunConfig) => unknown,
+  terminal?: TerminalCommandContext,
+): Promise<boolean> {
   const args = manageArgs(line);
   if (!args) return false;
   const { manage, python } = await locateManage();
-  if (!manage || !python) return false;
-  await run(manageConfig(python, manage, args));
+  if (!manage || !python || (terminal && !terminalLine(line, manage, terminal))) return false;
+  // A terminal's active environment (`VIRTUAL_ENV` / `CONDA_PREFIX`) is what its `python` runs.
+  const active = terminal ? activePython(terminal.env, usePlatform.getState().os === "windows") : null;
+  await run(manageConfig(active ?? python, manage, args));
   return true;
 }
 
@@ -230,12 +244,16 @@ export function manageRunAnything(run: (config: RunConfig) => unknown): RunAnyth
       } else void loadCommands(manage, python);
       return commandItems(query, (manage && lists[manage]) || [], (line) => void runManageLine(line, run));
     },
-    accepts(line) {
+    accepts(line, terminal) {
       if (!manageArgs(line)) return false;
-      void loadManage();
-      return !!useManage.getState().manage;
+      const { manage } = useManage.getState();
+      if (!manage || near() !== lookedUpFrom)
+        locating ??= locateManage()
+          .then(() => undefined)
+          .finally(() => (locating = null));
+      return !!manage && (!terminal || terminalLine(line, manage, terminal));
     },
-    execute: (line) => runManageLine(line, run),
+    execute: (line, terminal) => runManageLine(line, run, terminal),
     subscribe: (listener) =>
       useManage.subscribe((s, prev) => (s.commands !== prev.commands || s.manage !== prev.manage) && listener()),
   };

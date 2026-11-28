@@ -16,11 +16,14 @@
  * there is no terminal, so there is nothing to handle.
  */
 import { executeAction } from "@/platform/actions";
+import { setContext } from "@/platform/context";
 import { effectiveBindings, isMacHost, letterOf, registerKeyClaim, strokeOf } from "@/platform/keymap";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { terminalRuntime } from "./loader";
 import { isImeKey } from "@/platform/ime";
 import { usePlatform } from "@/platform/platformInfo";
+
+const RUN_COMMAND = "terminal.runHighlightedCommand";
 
 export type TerminalKeyResult =
   | { kind: "send"; data: string }
@@ -168,13 +171,17 @@ export function installTerminalKeys(target: Window = window): () => void {
       rt.sessionFromElement(e.target as Element | null) ?? rt.cliSessionFromElement(e.target as Element | null);
     if (!session) return;
     const inEditorTab = rt.isCliSession(session);
+    // Run Highlighted Command takes its key (⌘↩) only with a recognised command typed; otherwise
+    // the key reaches the shell or program as before. Set here, just before the keymap looks.
+    const stroke = strokeOf(e);
+    if (stroke && effectiveBindings().some(([b, id]) => id === RUN_COMMAND && b === stroke))
+      setContext("terminalCommandRecognised", session.hasRecognisedCommand);
     const action = terminalKeyAction(e, session.hasSelection);
     // "Override IDE shortcuts" off: Ctrl+key and Escape reach the IDE keymap first;
     // keys it doesn't bind still get to xterm through its own key handling.
     const t = workflowSettings().terminal;
     if (action.kind === "send" && (e.ctrlKey || e.key === "Escape") && !t.overrideIdeShortcuts) return;
     if (action.kind === "send" && (e.ctrlKey || e.key === "Escape")) {
-      const stroke = strokeOf(e);
       if (stroke && isAllowedIdeShortcut(stroke, effectiveBindings(), inEditorTab)) return;
     }
     // "Move focus to the Editor with Escape": the IDE keymap's Escape (Focus Editor) runs instead.

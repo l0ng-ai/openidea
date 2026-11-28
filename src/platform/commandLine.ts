@@ -93,3 +93,15 @@ export function quotePath(path: string): string {
 export function formatArgs(args: readonly string[]): string {
   return args.map((a) => (a === "" ? "''" : /[\s'"\\$`]/.test(a) ? `'${a.replace(/'/g, `'\\''`)}'` : a)).join(" ");
 }
+
+/**
+ * The interpreter of the Python environment a terminal's shell has active: `VIRTUAL_ENV`, else
+ * `CONDA_PREFIX` (from its environment, as shell integration reports it); null when none is.
+ */
+export function activePython(env: Readonly<Record<string, string>>, windows: boolean): string | null {
+  const venv = env.VIRTUAL_ENV;
+  const conda = env.CONDA_PREFIX;
+  if (venv) return windows ? `${venv}\\Scripts\\python.exe` : `${venv}/bin/python`;
+  if (conda) return windows ? `${conda}\\python.exe` : `${conda}/bin/python`;
+  return null;
+}

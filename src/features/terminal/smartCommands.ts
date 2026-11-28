@@ -10,7 +10,7 @@
  */
 import type { IBufferCell, IBufferLine, IDecoration, IDisposable, IMarker, Terminal } from "@xterm/xterm";
 import { workflowSettings } from "@/platform/workflowSettings";
-import { runAnythingProviderList } from "@/workbench/contributions";
+import { runAnythingProviderList, type TerminalCommandContext } from "@/workbench/contributions";
 
 export const SMART_COMMAND_CLASS = "openidea-terminal-smart-command";
 
@@ -29,8 +29,23 @@ export interface TypedCommand {
   rows: { y: number; start: number; end: number }[];
 }
 
-/** An autosuggestion's cell: dim, or the palette's bright black (zsh-autosuggestions' `fg=8`). */
-const suggested = (cell: IBufferCell) => cell.isDim() !== 0 || (cell.isFgPalette() && cell.getFgColor() === 8);
+/** The 256-colour palette's greys: bright black, the cube's diagonal (but black and white) and the grey ramp. */
+const GREY_PALETTE = new Set([8, 59, 102, 145, 188, ...Array.from({ length: 24 }, (_, i) => 232 + i)]);
+
+/** A grey `0xRRGGBB` (`#666`): channels within a few steps of one another, neither near black nor white. */
+function greyRgb(rgb: number): boolean {
+  const [r, g, b] = [(rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff];
+  return Math.max(r, g, b) - Math.min(r, g, b) <= 12 && r > 40 && r < 220;
+}
+
+/**
+ * An autosuggestion's cell: dim, or grey (zsh-autosuggestions' default `fg=8`, `fg=244`, fish's
+ * `555`). Typed text keeps the default colour or syntax highlighting's, which are not grey.
+ */
+export const suggested = (cell: IBufferCell) =>
+  cell.isDim() !== 0 ||
+  (cell.isFgPalette() && GREY_PALETTE.has(cell.getFgColor())) ||
+  (cell.isFgRGB() && greyRgb(cell.getFgColor()));
 
 /** The cell after the last non-blank one of `line`. */
 function trimmedEnd(line: IBufferLine, cell: IBufferCell): number {
@@ -105,17 +120,17 @@ export function typedCommand(term: Terminal, prompt: PromptEnd): TypedCommand | 
   return { text: command, rows };
 }
 
-/** Whether a Run Anything provider runs `line` (typed in the absolute folder `cwd`) as a command it recognises. */
-export function recognised(line: string, cwd: string): boolean {
+/** Whether a Run Anything provider runs `line`, typed in a terminal, as a command it recognises. */
+export function recognised(line: string, terminal: TerminalCommandContext): boolean {
   if (SHELL_SYNTAX.test(line)) return false;
-  return runAnythingProviderList().some((p) => !!p.execute && !!p.accepts?.(line, cwd));
+  return runAnythingProviderList().some((p) => !!p.execute && !!p.accepts?.(line, terminal));
 }
 
 /** Runs `line` with the first provider that takes it; false when none did. */
-export async function runRecognised(line: string, cwd: string): Promise<boolean> {
+export async function runRecognised(line: string, terminal: TerminalCommandContext): Promise<boolean> {
   if (SHELL_SYNTAX.test(line)) return false;
   for (const p of runAnythingProviderList())
-    if (p.accepts?.(line, cwd) && p.execute && (await p.execute(line, cwd))) return true;
+    if (p.accepts?.(line, terminal) && p.execute && (await p.execute(line, terminal))) return true;
   return false;
 }
 
@@ -133,7 +148,7 @@ export interface SmartCommandController extends IDisposable {
 export function installSmartCommands(
   term: Terminal,
   prompt: () => PromptEnd | null,
-  cwd: () => string,
+  context: () => TerminalCommandContext,
 ): SmartCommandController {
   const shown: { marker: IMarker; decoration: IDecoration }[] = [];
   let key = "";
@@ -152,7 +167,7 @@ export function installSmartCommands(
     if (disposed) return;
     const at = smartCommandsEnabled() ? prompt() : null;
     const typed = at ? typedCommand(term, at) : null;
-    const match = typed && recognised(typed.text, cwd()) ? typed : null;
+    const match = typed && recognised(typed.text, context()) ? typed : null;
     const next = match ? JSON.stringify(match.rows) : "";
     if (next === key && shown.every((s) => !s.marker.isDisposed)) return;
     key = next;

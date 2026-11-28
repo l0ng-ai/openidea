@@ -2102,6 +2102,16 @@ export interface RunAnythingItem {
   run(): void | Promise<void>;
 }
 
+/**
+ * Where a terminal command line was typed: its shell's folder, `PATH` and Python environment
+ * (`VIRTUAL_ENV` / `CONDA_PREFIX`), as shell integration reports them at each prompt.
+ */
+export interface TerminalCommandContext {
+  /** Absolute. */
+  cwd: string;
+  env: Readonly<Record<string, string>>;
+}
+
 export interface RunAnythingProvider {
   id: string;
   /** Group heading, e.g. "Run Configurations". */
@@ -2112,15 +2122,16 @@ export interface RunAnythingProvider {
   items(query: string): RunAnythingItem[];
   /**
    * Runs `line` when it belongs to this provider (`mvn clean`); false leaves it to the next one.
-   * `cwd` is the absolute folder it was typed in (a terminal's), the project root when omitted.
+   * `terminal` is given for a line typed in the terminal: it runs as the shell would run it there.
    */
-  execute?(line: string, cwd?: string): boolean | Promise<boolean>;
+  execute?(line: string, terminal?: TerminalCommandContext): boolean | Promise<boolean>;
   /**
    * Whether `execute` runs `line` as a command this provider recognizes (cheap,
    * synchronous): Markdown offers run icons for such lines in code blocks, and the
-   * terminal highlights them to run with the IDE.
+   * terminal highlights them to run with the IDE. A provider that cannot run a
+   * terminal's line from its folder declines it.
    */
-  accepts?(line: string, cwd?: string): boolean;
+  accepts?(line: string, terminal?: TerminalCommandContext): boolean;
   /**
    * For providers whose entries arrive later (a plugin's answer): `listener` is called when
    * `items` would return something new, so the open popup asks again. Returns the unsubscribe.

@@ -4,9 +4,11 @@
  * and task completion in the selected project).
  */
 import type { BuildTool } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
 import type { RunAnythingItem, RunAnythingProvider } from "@/workbench/contributions";
 import {
   goalCompletions,
+  gradleProjectKey,
   gradleTaskConfig,
   gradleProjectForKey,
   mavenGoalConfig,
@@ -40,6 +42,30 @@ function mavenProjectFor(key?: string | null) {
 function gradleProjectFor(key?: string | null) {
   const { model, current } = useBuild.getState();
   return gradleProjectForKey(model?.gradle ?? [], key ?? current.gradle);
+}
+
+/**
+ * The project a terminal's line runs in, as `mvn` / `gradle` started in the absolute folder `cwd`
+ * would: the module or subproject whose directory most closely contains it; null when none does.
+ */
+export function projectKeyAt(tool: BuildTool, cwd: string): string | null {
+  const root = useProject.getState().project?.root ?? "";
+  const depth = (base: string, dir: string) => {
+    const abs = dir ? `${base}/${dir}` : base;
+    return cwd === abs || cwd.startsWith(`${abs}/`) ? abs.length : -1;
+  };
+  let best: { key: string; depth: number } | null = null;
+  const consider = (key: string, d: number) => {
+    if (d >= 0 && (!best || d > best.depth)) best = { key, depth: d };
+  };
+  const { model } = useBuild.getState();
+  if (tool === "maven")
+    for (const p of model?.maven?.projects ?? [])
+      if ("pom" in p) consider(p.pom, depth(p.projectRoot ?? root, p.dir));
+      else
+        for (const build of model?.gradle ?? [])
+          for (const p of build.projects) consider(gradleProjectKey(build, p), depth(root, p.dir));
+  return (best as { key: string } | null)?.key ?? null;
 }
 
 /** Runs goals / tasks typed for `tool` in a project; false when there is nothing to run. */
@@ -93,12 +119,14 @@ export const buildToolsRunAnything: RunAnythingProvider = {
         run: () => void executeBuildLine(tool, c.line),
       }));
   },
-  execute(line) {
+  execute(line, terminal) {
     const tool = lineTool(line);
-    return !!tool && executeBuildLine(tool, line);
+    const key = tool && terminal ? projectKeyAt(tool, terminal.cwd) : undefined;
+    return !!tool && key !== null && executeBuildLine(tool, line, key);
   },
-  accepts(line) {
+  accepts(line, terminal) {
     const tool = lineTool(line);
-    return !!tool && (tool === "maven" ? parseGoalLine(line) : parseTaskLine(line)).length > 0;
+    if (!tool || (terminal && projectKeyAt(tool, terminal.cwd) === null)) return false;
+    return (tool === "maven" ? parseGoalLine(line) : parseTaskLine(line)).length > 0;
   },
 };

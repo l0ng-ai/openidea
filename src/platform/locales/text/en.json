@@ -4441,5 +4441,7 @@
   "Install django-types into this project's virtual environment to complete Django model fields and managers": "Install django-types into this project's virtual environment to complete Django model fields and managers",
   "Run Highlighted Command Using IDE": "Run Highlighted Command Using IDE",
   "Run commands using IDE": "Run commands using IDE",
-  "Highlights typed commands the IDE recognises (pytest, npm run, Gradle tasks…), so Run Highlighted Command Using IDE runs them in the Run tool window.": "Highlights typed commands the IDE recognises (pytest, npm run, Gradle tasks…), so Run Highlighted Command Using IDE runs them in the Run tool window."
+  "Highlights typed commands the IDE recognises (pytest, npm run, Gradle tasks…), so Run Highlighted Command Using IDE runs them in the Run tool window.": "Highlights typed commands the IDE recognises (pytest, npm run, Gradle tasks…), so Run Highlighted Command Using IDE runs them in the Run tool window.",
+  "Cannot run the command using the IDE": "Cannot run the command using the IDE",
+  "The shell did not clear its command line.": "The shell did not clear its command line."
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { commandItems, manageArgs, manageConfig, parseHelp } from "./manage";
+import { commandItems, manageArgs, manageConfig, manageRunAnything, parseHelp, useManage } from "./manage";
 
 const HELP = `
 Type 'manage.py help <subcommand>' for help on a specific subcommand.
@@ -73,5 +73,17 @@ describe("manage.py tasks", () => {
     expect(first).toMatchObject({ detail: "django", completion: "manage.py check " });
     first!.run();
     expect(run).toHaveBeenCalledWith("manage.py check");
+  });
+
+  it("accepts a terminal's line only in manage.py's folder, with python or python3", () => {
+    useManage.setState({ manage: "/p/site/manage.py", python: "/p/.venv/bin/python" });
+    const provider = manageRunAnything(vi.fn());
+    const at = (cwd: string) => ({ cwd, env: {} });
+    expect(provider.accepts?.("manage.py migrate")).toBe(true);
+    expect(provider.accepts?.("./manage.py migrate", at("/p/site"))).toBe(true);
+    expect(provider.accepts?.("python3 manage.py migrate", at("/p/site"))).toBe(true);
+    expect(provider.accepts?.("manage.py migrate", at("/p"))).toBe(false);
+    expect(provider.accepts?.("python3.11 manage.py migrate", at("/p/site"))).toBe(false);
+    expect(provider.accepts?.("py -3 manage.py migrate", at("/p/site"))).toBe(false);
   });
 });
