@@ -9,6 +9,10 @@ const config: Record<string, string | null> = {};
 let mergeBase: string | null = "head";
 let diffHunks: (oldText: string, newText: string) => LineHunk[] = () => [];
 const checkout = vi.fn();
+/** The repository of each git config, remotes and merge-base call. */
+const gitRepos: Array<string | null> = [];
+/** `isTauri()`: on only while a test reads the local repositories' remotes. */
+const ipc = vi.hoisted(() => ({ tauri: false }));
 
 vi.mock("@tauri-apps/api/core", async (original) => ({
   ...(await original<typeof import("@tauri-apps/api/core")>()),
@@ -22,18 +26,29 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
   const ok = <T,>(data: T) => Promise.resolve({ status: "ok" as const, data });
   return {
     ...real,
+    isTauri: () => ipc.tauri,
     commands: {
       ...real.commands,
+      vcsRoots: () => ok([{ root: "/p" }, { root: "/p/wt" }]),
+      ghAvailability: () => ok({ kind: "notInstalled" }),
       ghApi: (_repo: unknown, req: unknown) => ghApi(req),
       vcsFileAt: () => ok(HEAD),
       vcsDiffHunks: (a: string, b: string) => Promise.resolve(diffHunks(a, b)),
-      vcsConfigGet: (_repo: string | null, key: string) => ok(config[key] ?? null),
-      vcsRemotes: () =>
-        ok([
+      vcsConfigGet: (repo: string | null, key: string) => {
+        gitRepos.push(repo);
+        return ok(config[key] ?? null);
+      },
+      vcsRemotes: (repo: string | null) => {
+        gitRepos.push(repo);
+        return ok([
           { name: "origin", url: "git@github.com:o/r.git" },
           { name: "fork", url: "https://github.com/alice/r.git" },
-        ]),
-      vcsMergeBase: () => ok(mergeBase),
+        ]);
+      },
+      vcsMergeBase: (repo: string | null) => {
+        gitRepos.push(repo);
+        return ok(mergeBase);
+      },
       ghPrCheckout: (...args: unknown[]) => {
         checkout(...args);
         return ok(null);
@@ -58,7 +73,7 @@ import type {
 import { clearNewComments, useNewComments } from "../diff/newComments";
 import { parsePatch } from "../diff/model";
 import { clearPullRequests, setPullRequestData } from "../data/pullRequest";
-import { useGhRepository } from "../data/repository";
+import { refreshConnection, resetConnection, useGhRepository } from "../data/repository";
 import { activeReviewEditor, reviewModeEditorExtension } from "./editor";
 import {
   documentChanges,
@@ -288,6 +303,7 @@ beforeEach(() => {
   mergeBase = "head";
   diffHunks = () => [];
   for (const k of Object.keys(config)) delete config[k];
+  gitRepos.length = 0;
   setCurrentRepository({ owner: "o", name: "r", id: "R1" });
   useVcs.setState({
     available: true,
@@ -306,6 +322,10 @@ beforeEach(() => {
     },
   });
   useReviewModeSettings.setState({ enabled: true, threads: "unresolved" });
+  setPullRequestFixtures();
+});
+
+function setPullRequestFixtures() {
   setPullRequestData(
     N,
     "details",
@@ -314,7 +334,7 @@ beforeEach(() => {
   setPullRequestData(N, "changes", () => [file]);
   setPullRequestData(N, "pendingReview", () => null);
   setPullRequestData(N, "threads", () => [thread("T1", 3), thread("T2", 5, { isResolved: true })]);
-});
+}
 
 afterEach(async () => {
   deactivate?.();
@@ -328,9 +348,52 @@ afterEach(async () => {
   clearPullRequests();
   useEditorRegistry.setState({ active: null });
   useReviewBranch.setState({ number: null, branch: null, updateRequired: false });
-  useGhRepository.setState({ connection: null });
-  useVcs.setState({ available: false, branch: null, repo: null, roots: [], root: null });
+  resetConnection();
+  useVcs.setState({ available: false, branch: null, repo: null, roots: [], root: null, branchRoot: null, heads: {} });
 });
+
+/** Repository A is selected in the VCS widgets; the pull requests are of B, on the pull request's branch. */
+function connectNestedRepository() {
+  useVcs.setState({
+    root: "/a",
+    roots: ["/a", "/b"],
+    repo: "/a",
+    branchRoot: "/a",
+    branch: { head: "main", headCommit: "m", upstream: "origin/main", ahead: 0, behind: 0, operation: null },
+    heads: {
+      "/a": { head: "main", headCommit: "m", shallow: false, interactiveRebase: false },
+      "/b": { head: "feature", headCommit: "head", shallow: false, interactiveRebase: false },
+    },
+  });
+  useGhRepository.setState((s) => ({ connection: { ...s.connection!, root: "/b" } }));
+}
+
+/**
+ * The project clone `/p` (where the connection is) on `main` and its worktree `/p/wt`, selected,
+ * on the pull request's branch: both have the connected repository as a remote.
+ */
+async function selectSecondCheckout() {
+  const { connection } = useGhRepository.getState();
+  useGhRepository.setState({ connection: null });
+  // Reads every local repository's remotes (gh itself is unavailable here).
+  ipc.tauri = true;
+  await refreshConnection();
+  ipc.tauri = false;
+  useGhRepository.setState({ connection: { ...connection!, root: "/p" } });
+  // Dropping the connection cleared them.
+  setPullRequestFixtures();
+  useVcs.setState({
+    root: "/p",
+    roots: ["/p", "/p/wt"],
+    repo: "/p/wt",
+    branchRoot: "/p/wt",
+    heads: {
+      "/p": { head: "main", headCommit: "m", shallow: false, interactiveRebase: false },
+      "/p/wt": { head: "feature", headCommit: "head", shallow: false, interactiveRebase: false },
+    },
+  });
+  gitRepos.length = 0;
+}
 
 describe("the pull request of the current branch", () => {
   it("finds the open pull request whose head the branch tracks and checks the sync state", async () => {
@@ -362,6 +425,55 @@ describe("the pull request of the current branch", () => {
     restPulls = [];
     await refreshCurrentBranchPullRequest();
     expect(useReviewBranch.getState().number).toBeNull();
+  });
+
+  it("follows the branch of the connected repository, not the one selected in the VCS widgets", async () => {
+    connectNestedRepository();
+    config["branch.feature.remote"] = "origin";
+    config["branch.feature.merge"] = "refs/heads/feature";
+    mergeBase = null;
+    await refreshCurrentBranchPullRequest();
+    expect(useReviewBranch.getState()).toEqual({ number: N, branch: "feature", updateRequired: true });
+    expect(new Set(gitRepos)).toEqual(new Set(["/b"]));
+  });
+
+  it("follows the selected checkout when it is another local repository of the connected one", async () => {
+    await selectSecondCheckout();
+    config["branch.feature.remote"] = "origin";
+    config["branch.feature.merge"] = "refs/heads/feature";
+    await refreshCurrentBranchPullRequest();
+    expect(useReviewBranch.getState()).toEqual({ number: N, branch: "feature", updateRequired: false });
+    expect(new Set(gitRepos)).toEqual(new Set(["/p/wt"]));
+    deactivate = activateReviewMode();
+    const ext = () => useBranchWidgetExtensions.getState().extensions.get("github.pullRequest");
+    await waitFor(() => expect(ext()?.presentation?.text).toBe("#12 on feature"));
+  });
+
+  it("looks the pull request up again when the connected repository's branch changes", async () => {
+    connectNestedRepository();
+    const onB = (head: string) => (s: ReturnType<typeof useVcs.getState>) => ({
+      heads: { ...s.heads, "/b": { ...s.heads["/b"]!, head } },
+    });
+    useVcs.setState(onB("other"));
+    config["branch.feature.remote"] = "origin";
+    config["branch.feature.merge"] = "refs/heads/feature";
+    deactivate = activateReviewMode();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(useReviewBranch.getState().number).toBeNull();
+    act(() => useVcs.setState(onB("feature")));
+    await waitFor(() => expect(useReviewBranch.getState()).toMatchObject({ number: N, branch: "feature" }));
+  });
+
+  it("presents the pull request only in the branch widget of the connected repository", async () => {
+    connectNestedRepository();
+    config["branch.feature.remote"] = "origin";
+    config["branch.feature.merge"] = "refs/heads/feature";
+    deactivate = activateReviewMode();
+    await waitFor(() => expect(useReviewBranch.getState().number).toBe(N));
+    const ext = () => useBranchWidgetExtensions.getState().extensions.get("github.pullRequest");
+    expect(ext()).toBeUndefined();
+    act(() => useVcs.setState({ repo: "/b" }));
+    await waitFor(() => expect(ext()?.presentation?.text).toBe("#12 on feature"));
   });
 
   it("shows the pull request in the branch widget and adds its popup actions", async () => {
@@ -420,8 +532,8 @@ describe("the pull request of the current branch", () => {
 
 // ---------------------------------------------------------------------------
 
-function openEditor(doc: string) {
-  const ctx = { doc: 1, path: `/p/${PATH}`, language: "typescript", uiMode: null, readOnly: false };
+function openEditor(doc: string, root = "/p") {
+  const ctx = { doc: 1, path: `${root}/${PATH}`, language: "typescript", uiMode: null, readOnly: false };
   const view = new EditorView({
     state: EditorState.create({ doc, extensions: [reviewModeEditorExtension(ctx)] }),
     parent: document.body,
@@ -465,6 +577,18 @@ describe("review in the editor", () => {
     act(() => useReviewModeSettings.setState({ threads: "all" }));
     await waitFor(() => expect(inlay("T2")).not.toBeNull());
     expect(lineOf(inlay("T2")!)).toBe("line 5");
+  });
+
+  it("reviews the files of the connected repository, not the one selected in the VCS widgets", async () => {
+    connectNestedRepository();
+    openEditor(HEAD, "/b");
+    await waitFor(() => expect(inlay("T1")).not.toBeNull());
+  });
+
+  it("reviews the files of the selected checkout of the connected repository", async () => {
+    await selectSecondCheckout();
+    openEditor(HEAD, "/p/wt");
+    await waitFor(() => expect(inlay("T1")).not.toBeNull());
   });
 
   it("puts the Review Mode group in the editor's corner and hides the review when disabled", async () => {
