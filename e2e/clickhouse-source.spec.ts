@@ -26,6 +26,11 @@ test("configures a ClickHouse HTTP source and keeps transaction controls unavail
   await expect(dialog.locator("#db-port")).toHaveValue("8443");
   await expect(dialog.locator("#db-user")).toHaveValue("reader");
   await expect(dialog.locator("#db-database")).toHaveValue("analytics");
+  await dialog.getByRole("tab", { name: "Advanced", exact: true }).click();
+  await expect(dialog.locator('#db-property-names option[value="http_read_timeout"]')).toHaveCount(1);
+  await dialog.getByRole("button", { name: "Add Property", exact: true }).click();
+  await dialog.getByLabel("Property name").fill("http_read_timeout");
+  await dialog.getByLabel("Property value").fill("900");
   await dialog.getByRole("button", { name: "Test Connection", exact: true }).click();
   await expect(dialog.getByRole("status")).toHaveText("Succeeded: ClickHouse");
   expect(await page.evaluate(() => JSON.parse(document.documentElement.dataset.testedSource!))).toMatchObject({
@@ -35,6 +40,7 @@ test("configures a ClickHouse HTTP source and keeps transaction controls unavail
     user: "reader",
     database: "analytics",
     ssl: "verifyFull",
+    properties: [{ name: "http_read_timeout", value: "900" }],
   });
   await dialog.screenshot({ path: info.outputPath("clickhouse-source.png") });
   await dialog.getByRole("tab", { name: "Options", exact: true }).click();

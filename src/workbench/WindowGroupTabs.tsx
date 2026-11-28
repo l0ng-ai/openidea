@@ -1,13 +1,35 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
+import type { RemoteTarget } from "@/platform/ipc";
 import { basename } from "@/platform/project";
-import { parseRemoteLocation } from "@/platform/remote";
+import { parseRemoteLocation, recentRemotes, sameTarget, targetName } from "@/platform/remote";
 import { refreshWindowGroup, reorderedTabs, useWindowGroup } from "@/platform/windowGroups";
-import { dropIndex, IconButton, registerDropTarget, showContextMenu, startPointerDrag } from "@/ui";
+import { dropIndex, Icon, IconButton, registerDropTarget, showContextMenu, startPointerDrag } from "@/ui";
 import { notifications } from "./contributions";
 import { subscribeTabColors, tabColorOverride, tabColorVars, tabColorsVersion } from "./tabColors";
 import styles from "./WindowGroupTabs.module.css";
+
+const REMOTE_KIND_LABEL: Record<RemoteTarget["kind"], string> = {
+  ssh: "SSH",
+  wsl: "WSL",
+  devContainer: "Dev Container",
+};
+
+function resolveTabRemote(root: string | null, remoteHost: string | null | undefined) {
+  const parsed = root ? parseRemoteLocation(root) : null;
+  if (!parsed) return null;
+  const host =
+    remoteHost ||
+    recentRemotes().find((x) => sameTarget(x.target, parsed.target) && x.path === parsed.path)?.host ||
+    targetName(parsed.target);
+  return {
+    kind: parsed.target.kind,
+    kindLabel: REMOTE_KIND_LABEL[parsed.target.kind],
+    host,
+    path: parsed.path,
+  };
+}
 
 const PROJECT_TAB_DRAG = "application/x-openidea-project-tab";
 
@@ -128,8 +150,9 @@ export function WindowGroupTabs() {
         data-dragging={dragging ? "" : undefined}
       >
         {tabs.map((tab, index) => {
-          const remote = tab.root ? parseRemoteLocation(tab.root) : null;
+          const remote = resolveTabRemote(tab.root, tab.remoteHost);
           const colorName = remote ? basename(remote.path) || tab.name : tab.name;
+          const tabTitle = remote ? `${remote.kindLabel}: ${remote.host} — ${remote.path}` : (tab.root ?? tab.name);
           return (
             <div
               ref={(el) => {
@@ -201,7 +224,7 @@ export function WindowGroupTabs() {
                 role="tab"
                 aria-selected={tab.current}
                 tabIndex={tab.current ? 0 : -1}
-                title={tab.root ?? tab.name}
+                title={tabTitle}
                 onClick={() => {
                   if (!dragEnded.current) run(executeAction("window.selectTab", tab.label));
                 }}
@@ -217,7 +240,15 @@ export function WindowGroupTabs() {
                   run(executeAction("window.selectTab", tabs[next]!.label));
                 }}
               >
-                <span>{tab.name}</span>
+                <span className={styles.name}>{tab.name}</span>
+                {remote && (
+                  <span className={styles.remoteChip} data-remote-kind={remote.kind}>
+                    <Icon name="remote" size={12} />
+                    <span className={styles.remoteHost}>
+                      {remote.kindLabel} · {remote.host}
+                    </span>
+                  </span>
+                )}
               </button>
               <IconButton
                 icon="close"

@@ -2,8 +2,8 @@
 //! the agent reports them over ACP.
 
 use crate::model::{
-    AgentCommand, AgentCommandSource, AgentConfigOption, AgentConfigValue, AgentConfigVia, AgentCost, AgentLimit,
-    AgentModelPricing, AgentTokens, AgentUsage,
+    AgentCommand, AgentCommandChoice, AgentCommandSource, AgentConfigOption, AgentConfigValue, AgentConfigVia,
+    AgentCost, AgentLimit, AgentModelPricing, AgentTokens, AgentUsage,
 };
 use serde_json::{Value, json};
 
@@ -278,11 +278,30 @@ pub(crate) fn commands_of(update: &Value, provider: &str) -> Vec<AgentCommand> {
             } else {
                 c.get("source").and_then(|s| serde_json::from_value(s.clone()).ok()).unwrap_or_default()
             };
+            let mut seen_choices = std::collections::HashSet::new();
+            let choices = c
+                .pointer("/input/choices")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|ch| {
+                    let choice_name =
+                        ch.get("name").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty())?;
+                    if !seen_choices.insert(choice_name.to_ascii_lowercase()) {
+                        return None;
+                    }
+                    Some(AgentCommandChoice {
+                        name: choice_name.to_owned(),
+                        description: str_of(ch, "description").unwrap_or_default(),
+                    })
+                })
+                .collect();
             Some(AgentCommand {
                 name: name.to_owned(),
                 source,
                 description: str_of(c, "description").unwrap_or_default(),
                 hint: c.pointer("/input/hint").and_then(Value::as_str).filter(|h| !h.is_empty()).map(str::to_owned),
+                choices,
             })
         })
         .collect()
@@ -654,6 +673,7 @@ mod tests {
         let old: AgentCommand =
             serde_json::from_value(json!({"name": "review", "description": "Review", "hint": null})).unwrap();
         assert_eq!(old.source, AgentCommandSource::Command);
+        assert!(old.choices.is_empty());
         let skill = AgentCommand { source: AgentCommandSource::Skill, ..old };
         assert_eq!(serde_json::from_value::<AgentCommand>(serde_json::to_value(&skill).unwrap()).unwrap(), skill);
     }
@@ -663,13 +683,30 @@ mod tests {
         let cmds = commands_of(
             &json!({"availableCommands": [
                 {"name": "review", "description": "Review changes", "input": {"hint": "what to review"}},
-                {"name": "/init", "description": "Write CLAUDE.md", "input": null}
+                {"name": "/init", "description": "Write CLAUDE.md", "input": null},
+                {"name": "skills", "description": "Manage skills", "input": {
+                    "hint": "[list|info]",
+                    "choices": [
+                        {"name": "list", "description": "List all available skills"},
+                        {"name": "LIST", "description": "Duplicate ignored"},
+                        {"name": " ", "description": "Blank ignored"},
+                        {"name": "info", "description": "Show details for a skill"}
+                    ]
+                }}
             ]}),
             "claude",
         );
         assert_eq!(cmds[0].source, AgentCommandSource::Command);
         assert_eq!(cmds[0].hint.as_deref(), Some("what to review"));
+        assert!(cmds[0].choices.is_empty());
         assert_eq!((cmds[1].name.as_str(), cmds[1].hint.as_ref()), ("init", None));
+        assert_eq!(
+            cmds[2].choices,
+            vec![
+                AgentCommandChoice { name: "list".into(), description: "List all available skills".into() },
+                AgentCommandChoice { name: "info".into(), description: "Show details for a skill".into() },
+            ]
+        );
         let u = usage_of(&json!({"used": 1200, "size": 200000, "cost": {"amount": 0.42, "currency": "USD"}})).unwrap();
         assert_eq!((u.used, u.size), (1200, 200000));
         assert!(usage_of(&json!({"used": 1, "size": 0})).is_none());

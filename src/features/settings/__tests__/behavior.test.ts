@@ -250,3 +250,23 @@ it("loads an old attach setting as ask", () => {
   expect(validateGeneralExtras({ openProjectIn: "attach" }).openProjectIn).toBe("ask");
   expect(validateGeneralExtras({ openProjectIn: "tab" }).openProjectIn).toBe("tab");
 });
+
+it("clamps projectColorStrength to 10–70% and scales the header wash only when it leaves the 22% default", () => {
+  expect(validateAppearanceExtras({}).projectColorStrength).toBe(22);
+  expect(validateAppearanceExtras({ projectColorStrength: 2 }).projectColorStrength).toBe(10);
+  expect(validateAppearanceExtras({ projectColorStrength: 95 }).projectColorStrength).toBe(70);
+  expect(validateAppearanceExtras({ projectColorStrength: "loud" }).projectColorStrength).toBe(22);
+
+  const root = document.createElement("div");
+  applyAppearanceOptions(validateSettings({}), root);
+  expect(root.style.getPropertyValue("--project-gradient-strength")).toBe("");
+
+  applyAppearanceOptions(validateSettings({ appearance: { projectColorStrength: 15 } }), root);
+  expect(root.style.getPropertyValue("--project-gradient-strength")).toBe("15%");
+
+  applyAppearanceOptions(validateSettings({ appearance: { projectColorStrength: 36 } }), root);
+  expect(root.style.getPropertyValue("--project-gradient-strength")).toBe("36%");
+
+  applyAppearanceOptions(validateSettings({}), root);
+  expect(root.style.getPropertyValue("--project-gradient-strength")).toBe("");
+});

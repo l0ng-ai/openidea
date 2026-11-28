@@ -198,7 +198,11 @@ impl Handler for FakeAgent {
             }
             "session/new" => {
                 if self.hold_session_new.load(Ordering::Acquire) {
-                    std::thread::sleep(Duration::from_secs(5));
+                    let peer = self.latest();
+                    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                    while !peer.is_closed() && std::time::Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
                 }
                 if self.empty_config.load(Ordering::Acquire) {
                     return Ok(json!({"sessionId": "s1"}));
@@ -457,8 +461,9 @@ impl Handler for FakeAgent {
                     return Ok(json!({ "stopReason": "end_turn" }));
                 }
                 if text == "wait" {
-                    // Works until cancelled.
-                    while !self.calls.lock().iter().any(|c| c == "session/cancel") {
+                    // Works until cancelled or the client closes the connection.
+                    let peer = self.latest();
+                    while !peer.is_closed() && !self.calls.lock().iter().any(|c| c == "session/cancel") {
                         std::thread::sleep(Duration::from_millis(5));
                     }
                     return Ok(json!({"stopReason": "cancelled"}));
@@ -1327,6 +1332,7 @@ async fn builtin_commands_only_fill_verified_gaps_and_preserve_advertised_metada
         description: "Agent supplied description".into(),
         hint: Some("instructions".into()),
         source: AgentCommandSource::Command,
+        choices: Vec::new(),
     };
     mgr.task(&task.id).unwrap().state.lock().task.commands = vec![advertised.clone()];
     // The task's provider wins over the caller's provider; metadata is not replaced.
@@ -1835,6 +1841,184 @@ async fn shutdown_skips_rewriting_untouched_restored_tasks() {
         "pending persist_soon task must still be flushed on shutdown"
     );
     assert_eq!(saved_title(&dirty_path).as_deref(), Some("updated"));
+}
+
+/// Closing a project while a turn is in flight must not let the killed turn wake up and
+/// mark the persisted task as `Failed` with "The agent process exited.".
+#[tokio::test(flavor = "multi_thread")]
+async fn shutdown_during_running_turn_does_not_mark_task_failed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("wait"),
+            provider: "claude".into(),
+            isolation: Isolation::Local,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Running).await;
+    for _ in 0..500 {
+        if agent.calls.lock().iter().any(|c| c == "session/prompt") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(agent.calls.lock().iter().any(|c| c == "session/prompt"));
+
+    mgr.shutdown();
+    // Wait past TURN_GRACE so any unguarded Task::run continuation would have settled and failed.
+    tokio::time::sleep(TURN_GRACE * 3).await;
+
+    let path = task_file(tmp.path(), &task.id);
+    assert_eq!(saved_task(&path).map(|(status, _)| status), Some(serde_json::to_value(AgentStatus::Ready).unwrap()));
+
+    let restored = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let restored_task = restored.task(&task.id).unwrap();
+    assert_eq!(restored_task.state.lock().task.status, AgentStatus::Ready);
+    assert_eq!(restored_task.state.lock().task.error, None);
+    let entries = restored.entries(&task.id, None).unwrap();
+    assert!(
+        !entries.iter().any(|e| matches!(e, AgentEntry::Error { .. })),
+        "shutdown must not append an exit error entry: {entries:?}"
+    );
+    assert!(
+        entries.iter().any(|e| matches!(e, AgentEntry::User { text, done_ms: None, .. } if text == "wait")),
+        "interrupted turn must not stamp a bogus completion timestamp: {entries:?}"
+    );
+
+    restored.prompt(&task.id, text("again"), false).await.unwrap();
+    wait_for(&restored, &task.id, AgentStatus::Ready).await;
+    restored.shutdown();
+}
+
+/// Shutting down while `open_session` is still mid-handshake kills the connecting peer
+/// immediately and leaves the task `Ready` rather than failing or leaking the process.
+#[tokio::test(flavor = "multi_thread")]
+async fn shutdown_during_session_open_kills_connecting_peer_without_failing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    agent.hold_session_new.store(true, Ordering::Release);
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("again"),
+            provider: "claude".into(),
+            isolation: Isolation::Local,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    for _ in 0..500 {
+        if agent.calls.lock().iter().any(|c| c == "session/new") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(agent.calls.lock().iter().any(|c| c == "session/new"));
+
+    mgr.shutdown();
+    tokio::time::sleep(TURN_GRACE * 3).await;
+
+    assert!(agent.latest().is_closed(), "shutdown must kill the in-flight connecting peer");
+    let handle = mgr.task(&task.id).unwrap();
+    assert!(handle.live.lock().is_none(), "opening peer must not be published after shutdown");
+    assert_eq!(handle.state.lock().task.status, AgentStatus::Ready);
+    assert_eq!(handle.state.lock().task.error, None);
+
+    let restored = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let restored_task = restored.task(&task.id).unwrap();
+    assert_eq!(restored_task.state.lock().task.status, AgentStatus::Ready);
+    assert_eq!(restored_task.state.lock().task.error, None);
+    let entries = restored.entries(&task.id, None).unwrap();
+    assert!(
+        !entries.iter().any(|e| matches!(e, AgentEntry::Error { .. })),
+        "shutdown during session open must not record an error: {entries:?}"
+    );
+    restored.shutdown();
+}
+
+/// Shutting down while the agent is blocked on a permission prompt settles the pending
+/// permission as Cancelled and leaves the task `Ready` without an exit error.
+#[tokio::test(flavor = "multi_thread")]
+async fn shutdown_during_permission_request_settles_without_failing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("decide"),
+            provider: "claude".into(),
+            isolation: Isolation::Local,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+
+    mgr.shutdown();
+    tokio::time::sleep(TURN_GRACE * 3).await;
+
+    let restored = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let restored_task = restored.task(&task.id).unwrap();
+    assert_eq!(restored_task.state.lock().task.status, AgentStatus::Ready);
+    assert_eq!(restored_task.state.lock().task.error, None);
+    let entries = restored.entries(&task.id, None).unwrap();
+    assert!(
+        !entries.iter().any(|e| matches!(e, AgentEntry::Error { .. })),
+        "shutdown during permission prompt must not append an exit error: {entries:?}"
+    );
+    assert!(
+        entries.iter().any(|e| matches!(e, AgentEntry::Permission { chosen: Some(c), .. } if c == "Cancelled")),
+        "unanswered permission should be settled as Cancelled: {entries:?}"
+    );
+    restored.shutdown();
+}
+
+/// Revoking and restoring project trust calls `shutdown()` on a manager that stays in use;
+/// interrupting a running turn must leave the manager ready to accept later prompts.
+#[tokio::test(flavor = "multi_thread")]
+async fn manager_can_run_new_turns_after_shutdown_replaces_an_interrupted_turn() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("wait"),
+            provider: "claude".into(),
+            isolation: Isolation::Local,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Running).await;
+    for _ in 0..500 {
+        if agent.calls.lock().iter().any(|c| c == "session/prompt") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    mgr.shutdown();
+    tokio::time::sleep(TURN_GRACE * 3).await;
+
+    let handle = mgr.task(&task.id).unwrap();
+    assert_eq!(handle.state.lock().task.status, AgentStatus::Ready);
+    assert!(!handle.state.lock().busy);
+
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let entries = mgr.entries(&task.id, None).unwrap();
+    assert!(
+        entries.iter().any(|e| matches!(e, AgentEntry::Agent { text } if text == "second turn")),
+        "follow-up turn on the same manager after shutdown should succeed: {entries:?}"
+    );
+    assert!(
+        !entries.iter().any(|e| matches!(e, AgentEntry::Error { .. })),
+        "no stale shutdown error should appear: {entries:?}"
+    );
+    mgr.shutdown();
 }
 
 /// Archiving saves the task as it is, including changes nobody asked to be saved.
@@ -2813,7 +2997,7 @@ async fn startup_warnings_survive_replay_and_restart_without_failing_the_task() 
     let handle = mgr.task(&task.id).unwrap();
     handle.replaying.store(true, Ordering::Release);
     handle.turn_started.store(false, Ordering::Release);
-    let client = Client::new(&handle, None);
+    let client = Client::new(&handle, handle.shared.shutdown_epoch(), None);
     client.on_notification(WARNING_NOTIFICATION, json!({"message": "Project MCP config is disabled until trusted."}));
     client.on_notification(WARNING_NOTIFICATION, json!({"message": "  "}));
     client.on_notification(WARNING_NOTIFICATION, json!({}));
@@ -2849,7 +3033,8 @@ async fn persistent_project_trust_needs_confirmation_even_with_bypass() {
     let asking = {
         let handle = handle.clone();
         let params = params.clone();
-        tokio::task::spawn_blocking(move || handle.ask_permission(&params))
+        let epoch = handle.shared.shutdown_epoch();
+        tokio::task::spawn_blocking(move || handle.ask_permission(&params, epoch))
     };
     wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
     assert!(!asking.is_finished());

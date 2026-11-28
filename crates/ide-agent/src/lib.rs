@@ -256,6 +256,11 @@ struct Shared {
     skills_policy_hook: RwLock<Option<Arc<SkillsPolicyFn>>>,
     /// Monotonic id for [`AgentEvent::Attention`] episodes.
     attention_seq: AtomicU64,
+    /// Bumped on every [`AgentManager::shutdown`]: in-flight turns, session opens,
+    /// permissions, notifications and delayed saves started before a shutdown check
+    /// their captured epoch and exit quietly instead of failing the task or overwriting
+    /// what shutdown persisted.
+    shutdown_epoch: AtomicU64,
 }
 
 /// What an agent offered, for the New Task page.
@@ -294,6 +299,14 @@ impl Shared {
 
     fn env_secrets(&self) -> Option<&dyn EnvSecrets> {
         self.paths.env_secrets.as_deref()
+    }
+
+    fn shutdown_epoch(&self) -> u64 {
+        self.shutdown_epoch.load(Ordering::Acquire)
+    }
+
+    fn shut_down_since(&self, epoch: u64) -> bool {
+        self.shutdown_epoch.load(Ordering::Acquire) != epoch
     }
 
     fn copilot_binary_key(&self, spec: &provider::ProviderSpec) -> CopilotBinaryKey {
@@ -710,8 +723,7 @@ impl StoredHistory {
         Self { file: Some(file), history: std::cell::OnceCell::new() }
     }
 
-    /// Whether the history is in memory (tests).
-    #[cfg(test)]
+    /// Whether the history is already loaded in memory.
     fn is_loaded(&self) -> bool {
         self.history.get().is_some()
     }
@@ -834,6 +846,9 @@ struct Task {
     shared: Arc<Shared>,
     state: Mutex<TaskState>,
     live: Mutex<Option<Live>>,
+    /// Peer currently running `open_session` before it is published to `live`, so `kill()`
+    /// can terminate it immediately during shutdown, archive or delete.
+    connecting_peer: Mutex<Option<Peer>>,
     /// Serializes starting the agent.
     connecting: tokio::sync::Mutex<()>,
     /// Serializes replies from multiple windows to the same async question.
@@ -929,6 +944,7 @@ impl AgentManager {
             mcp_executable_hook: RwLock::new(None),
             skills_policy_hook: RwLock::new(None),
             attention_seq: AtomicU64::new(0),
+            shutdown_epoch: AtomicU64::new(0),
         });
         shared.paths.catalogs.subscribe(&shared);
         let mut tasks = HashMap::new();
@@ -1433,12 +1449,17 @@ impl AgentManager {
             pending_native_fork: Some(ForkStart { source: session_id.to_owned(), target }),
         };
         let handle = Task::restore(file, self.shared.clone());
-        self.tasks.write().insert(task.id.clone(), handle.clone());
+        let epoch = {
+            let mut tasks = self.tasks.write();
+            let epoch = self.shared.shutdown_epoch();
+            tasks.insert(task.id.clone(), handle.clone());
+            epoch
+        };
         handle.emit_task();
         handle.persist();
         // Loading the session replays its history into the task, so it shows before a first message.
         self.shared.runtime.spawn(async move {
-            match handle.ensure_session().await {
+            match handle.ensure_session(epoch).await {
                 Ok(_) => handle.release_when_idle(),
                 Err(e) => tracing::info!("agent task {}: loading the imported session failed: {e}", handle.id),
             }
@@ -1564,11 +1585,16 @@ impl AgentManager {
         };
         let handle = Task::restore(file, self.shared.clone());
         handle.state.lock().busy = !req.idle;
-        self.tasks.write().insert(task.id.clone(), handle.clone());
+        let epoch = {
+            let mut tasks = self.tasks.write();
+            let epoch = self.shared.shutdown_epoch();
+            tasks.insert(task.id.clone(), handle.clone());
+            epoch
+        };
         handle.emit_task();
         handle.persist();
         if !req.idle {
-            self.shared.runtime.spawn(async move { handle.run(prompt).await });
+            self.shared.runtime.spawn(async move { handle.run(prompt, epoch).await });
         }
         Ok(task)
     }
@@ -1603,13 +1629,14 @@ impl AgentManager {
                 }
                 None
             } else {
+                let epoch = self.shared.shutdown_epoch();
                 s.busy = true;
-                Some(prompt)
+                Some((prompt, epoch))
             }
         };
         match start {
-            Some(prompt) => {
-                self.shared.runtime.spawn(async move { task.run(prompt).await });
+            Some((prompt, epoch)) => {
+                self.shared.runtime.spawn(async move { task.run(prompt, epoch).await });
             }
             None => {
                 task.persist();
@@ -1645,16 +1672,16 @@ impl AgentManager {
 
     /// Drops a queued message.
     pub fn unqueue(&self, id: &str, queued: &str) -> IdeResult<AgentQueued> {
-        self.task(id)?.take_queued(queued, false).map(|(item, _)| item)
+        self.task(id)?.take_queued(queued, false).map(|(item, _, _)| item)
     }
 
     /// Sends queued message `queued` now: into the running turn when the agent takes
     /// messages mid-turn, else next, cancelling the current turn if there is one.
     pub async fn send_queued_now(&self, id: &str, queued: &str) -> IdeResult<()> {
         let task = self.task(id)?;
-        let (item, busy) = task.take_queued(queued, true)?;
+        let (item, busy, epoch) = task.take_queued(queued, true)?;
         if !busy {
-            self.shared.runtime.spawn(async move { task.run(item.prompt).await });
+            self.shared.runtime.spawn(async move { task.run(item.prompt, epoch).await });
             return Ok(());
         }
         // Out of the queue while it is steered, so the turn ending meanwhile doesn't send it twice.
@@ -1669,13 +1696,14 @@ impl AgentManager {
                 None
             } else {
                 // The turn ended while steering was tried: nothing is left to interrupt.
+                let epoch = self.shared.shutdown_epoch();
                 s.busy = true;
-                Some(prompt)
+                Some((prompt, epoch))
             }
         };
         match start {
-            Some(prompt) => {
-                self.shared.runtime.spawn(async move { task.run(prompt).await });
+            Some((prompt, epoch)) => {
+                self.shared.runtime.spawn(async move { task.run(prompt, epoch).await });
             }
             None => {
                 task.persist();
@@ -1856,7 +1884,8 @@ impl AgentManager {
         if source.state.lock().busy {
             return Err(IdeError::invalid("wait until the agent is done"));
         }
-        let live = source.ensure_session().await.map_err(IdeError::internal)?;
+        let epoch = self.shared.shutdown_epoch();
+        let live = source.ensure_session(epoch).await.map_err(IdeError::internal)?;
         let total = turn_starts(&source.state.lock().history.conversation.main.entries).len() as u32;
         let keep = turns.unwrap_or(total).min(total);
         if !live.capabilities.fork || (keep < total && !live.capabilities.rollback) {
@@ -1993,7 +2022,8 @@ impl AgentManager {
             self.prune_turn_copies(dir, kept).await;
             return Ok(first);
         }
-        let live = task.ensure_session().await.map_err(IdeError::internal)?;
+        let epoch = self.shared.shutdown_epoch();
+        let live = task.ensure_session(epoch).await.map_err(IdeError::internal)?;
         if !live.capabilities.rollback {
             return Err(IdeError::invalid("this agent can't undo turns"));
         }
@@ -2711,19 +2741,17 @@ impl AgentManager {
         self.shared.sinks.write().clear();
     }
 
-    /// Stops every agent (project closed).
+    /// Stops every agent (project closed or trust revoked).
     pub fn shutdown(&self) {
+        let tasks: Vec<_> = {
+            let tasks = self.tasks.read();
+            self.shared.shutdown_epoch.fetch_add(1, Ordering::AcqRel);
+            tasks.values().cloned().collect()
+        };
         self.detach_sinks();
-        let tasks: Vec<_> = self.tasks.read().values().cloned().collect();
         for task in tasks {
             let was_live = task.kill().is_some();
-            if was_live {
-                // Persist late subagent updates and cleared live background state.
-                task.persist();
-            } else {
-                // Flush pending delayed saves without rewriting untouched or archived tasks.
-                task.save();
-            }
+            task.finish_shutdown(was_live);
         }
     }
 }
@@ -2857,6 +2885,7 @@ impl Task {
                 shell_context: Vec::new(),
             }),
             live: Mutex::new(None),
+            connecting_peer: Mutex::new(None),
             connecting: tokio::sync::Mutex::new(()),
             answering_questions: tokio::sync::Mutex::new(()),
             permissions: Mutex::new(HashMap::new()),
@@ -2901,7 +2930,7 @@ impl Task {
 
     /// Records the checkout as a turn starts (its message shown): what the turn's changes are
     /// compared with, and what rolling back to its message puts back.
-    async fn checkout_before_turn(self: &Arc<Self>) {
+    async fn checkout_before_turn(self: &Arc<Self>, epoch: u64) {
         let (cwd, dir, index, earlier) = {
             let s = self.state.lock();
             let index = turn_starts(&s.history.conversation.main.entries).len().saturating_sub(1);
@@ -2924,16 +2953,19 @@ impl Task {
         };
         {
             let mut s = self.state.lock();
+            if self.shared.shut_down_since(epoch) {
+                return;
+            }
             s.history.turns = earlier;
             s.history.turns.resize(index, None);
             s.history.turns.push(turn);
         }
-        self.persist_soon();
+        self.persist_soon_for_epoch(epoch);
     }
 
     /// Records the files that changed in the checkout while the turn ran: the turn's, and in
     /// the project's own checkout also the task's.
-    async fn record_turn_changes(self: &Arc<Self>) {
+    async fn record_turn_changes(self: &Arc<Self>, epoch: u64) {
         let (cwd, turn, _) = self.last_turn();
         let Some(turn) = turn else { return };
         let start = turn.clone();
@@ -2942,6 +2974,9 @@ impl Task {
         };
         {
             let mut s = self.state.lock();
+            if self.shared.shut_down_since(epoch) {
+                return;
+            }
             if !in_worktree.is_empty()
                 && let Some(touched) = &s.touched
             {
@@ -2953,7 +2988,7 @@ impl Task {
                 *last = Some(Arc::new(worktree::TurnStart { changed: Some(all), ..(*turn).clone() }));
             }
         }
-        self.persist_soon();
+        self.persist_soon_for_epoch(epoch);
     }
 
     fn base(&self) -> worktree::TaskBase {
@@ -2973,7 +3008,7 @@ impl Task {
     }
 
     /// Takes the item and, for Send now, claims an idle turn under the same lock.
-    fn take_queued(&self, id: &str, for_send: bool) -> IdeResult<(AgentQueued, bool)> {
+    fn take_queued(&self, id: &str, for_send: bool) -> IdeResult<(AgentQueued, bool, u64)> {
         let mut s = self.state.lock();
         let Some(index) = s.task.queue.iter().position(|item| item.id == id) else {
             drop(s);
@@ -2982,11 +3017,12 @@ impl Task {
         };
         let item = s.task.queue.remove(index);
         let was_busy = s.busy;
+        let epoch = self.shared.shutdown_epoch();
         s.busy |= for_send;
         drop(s);
         self.persist();
         self.emit_task();
-        Ok((item, was_busy))
+        Ok((item, was_busy, epoch))
     }
 
     /// Shows (or clears) the agent's pending retry; emitted only when it changes.
@@ -3041,11 +3077,32 @@ impl Task {
         self.emit_task();
     }
 
+    /// Like [`Self::set_status`], but drops the update if `shutdown()` ran since `epoch`.
+    fn set_status_for_epoch(&self, status: AgentStatus, error: Option<String>, epoch: u64) -> bool {
+        let mut file = self.file.lock();
+        if self.shared.shut_down_since(epoch) {
+            return false;
+        }
+        self.state.lock().change_status(status, error);
+        // Saved first: whoever reacts to the status change finds it on disk.
+        self.saves_asked.fetch_add(1, Ordering::AcqRel);
+        self.save_locked(&mut file);
+        drop(file);
+        self.emit_task();
+        true
+    }
+
     /// `Running` again after the agent started or a request was answered: the turn's next stop
     /// saves what changed, and the turn start saved the message that began it.
-    fn resume_running(self: &Arc<Self>) {
-        self.state.lock().change_status(AgentStatus::Running, None);
-        self.persist_soon();
+    fn resume_running(self: &Arc<Self>, epoch: u64) {
+        {
+            let mut s = self.state.lock();
+            if self.shared.shut_down_since(epoch) {
+                return;
+            }
+            s.change_status(AgentStatus::Running, None);
+        }
+        self.persist_soon_for_epoch(epoch);
         self.emit_task();
     }
 
@@ -3065,7 +3122,11 @@ impl Task {
 
     /// After NeedsInput + optional auto-approve: notify only when the user must still answer.
     fn emit_attention_if_input_pending(&self) {
-        let waiting = !self.permissions.lock().is_empty() && self.state.lock().task.status == AgentStatus::NeedsInput;
+        // One lock at a time: `approve_pending` takes state then permissions, so holding the
+        // permissions guard (a temporary that lives to the end of the statement) while taking
+        // state could deadlock against it.
+        let pending = !self.permissions.lock().is_empty();
+        let waiting = pending && self.state.lock().task.status == AgentStatus::NeedsInput;
         if waiting {
             self.emit_attention(AgentAttentionReason::Input);
         }
@@ -3077,17 +3138,38 @@ impl Task {
         self.save();
     }
 
+    fn persist_for_epoch(&self, epoch: u64) {
+        let mut file = self.file.lock();
+        if self.shared.shut_down_since(epoch) {
+            return;
+        }
+        self.saves_asked.fetch_add(1, Ordering::AcqRel);
+        self.save_locked(&mut file);
+    }
+
     /// Has the task file written within `SAVE_DELAY`, once for every change asked for by then:
     /// for what the next `persist` (the turn's next stop, shutdown) saves anyway, and a crash
     /// before it costs at most what changed in this window.
+    #[cfg(test)]
     fn persist_soon(self: &Arc<Self>) {
+        let epoch = self.shared.shutdown_epoch();
+        self.persist_soon_for_epoch(epoch);
+    }
+
+    fn persist_soon_for_epoch(self: &Arc<Self>, epoch: u64) {
+        if self.shared.shut_down_since(epoch) {
+            return;
+        }
         self.saves_asked.fetch_add(1, Ordering::AcqRel);
         if !self.save_scheduled.swap(true, Ordering::AcqRel) {
             let task = self.clone();
             self.shared.runtime.spawn(async move {
                 tokio::time::sleep(SAVE_DELAY).await;
+                if task.shared.shut_down_since(epoch) {
+                    return;
+                }
                 task.save_scheduled.store(false, Ordering::Release);
-                let _ = tokio::task::spawn_blocking(move || task.save()).await;
+                let _ = tokio::task::spawn_blocking(move || task.save_for_epoch(epoch)).await;
             });
         }
     }
@@ -3097,6 +3179,18 @@ impl Task {
     fn save(&self) {
         // Held from the copy to the rename, so saves land in order and none follows a delete.
         let mut file = self.file.lock();
+        self.save_locked(&mut file);
+    }
+
+    fn save_for_epoch(&self, epoch: u64) {
+        let mut file = self.file.lock();
+        if self.shared.shut_down_since(epoch) {
+            return;
+        }
+        self.save_locked(&mut file);
+    }
+
+    fn save_locked(&self, file: &mut SavedFile) {
         // Read before the copy: whatever was asked for up to now is in it.
         let asked = self.saves_asked.load(Ordering::Acquire);
         // A throwaway task is never written: one its caller couldn't delete (a window closed
@@ -3136,6 +3230,40 @@ impl Task {
             Ok(()) => file.saved = asked,
             Err(e) => tracing::warn!("saving agent task {}: {e}", self.id),
         }
+    }
+
+    /// Settles any turn interrupted by `shutdown()` and flushes unsaved state without
+    /// rewriting untouched or archived tasks.
+    fn finish_shutdown(&self, was_live: bool) {
+        let mut file = self.file.lock();
+        let settled = {
+            let mut s = self.state.lock();
+            let in_flight = s.busy
+                || matches!(s.task.status, AgentStatus::Running | AgentStatus::NeedsInput | AgentStatus::Starting);
+            if was_live || in_flight {
+                s.busy = false;
+                if matches!(s.task.status, AgentStatus::Running | AgentStatus::NeedsInput | AgentStatus::Starting) {
+                    s.task.status = AgentStatus::Ready;
+                    s.task.error = None;
+                }
+                s.task.retry = None;
+                s.task.background.clear();
+                s.background_tasks.clear();
+                if s.history.is_loaded() {
+                    s.history.conversation.settle(now_ms());
+                }
+                true
+            } else {
+                false
+            }
+        };
+        if settled {
+            self.cancel_pending.store(false, Ordering::Release);
+            self.send_now.store(false, Ordering::Release);
+            self.saves_asked.fetch_add(1, Ordering::AcqRel);
+        }
+        self.save_locked(&mut file);
+        self.save_scheduled.store(false, Ordering::Release);
     }
 
     fn mark_dirty(self: &Arc<Self>, indices: impl IntoIterator<Item = (Session, usize)>) {
@@ -3216,21 +3344,41 @@ impl Task {
 
     /// Runs `prompt`, then the queued messages, until the queue is empty, a turn fails, or
     /// the user stops one. The caller set `busy`.
-    async fn run(self: Arc<Self>, mut prompt: AgentPrompt) {
+    async fn run(self: Arc<Self>, mut prompt: AgentPrompt, epoch: u64) {
         loop {
+            if self.shared.shut_down_since(epoch) {
+                return;
+            }
             // The message shows before the checkout is recorded, which can take a while in a large repository.
-            self.show_prompt(&prompt);
-            self.checkout_before_turn().await;
-            let result = self.turn(&prompt).await;
+            if !self.show_prompt(&prompt, epoch) {
+                return;
+            }
+            self.checkout_before_turn(epoch).await;
+            if self.shared.shut_down_since(epoch) {
+                return;
+            }
+            let result = self.turn(&prompt, epoch).await;
+            if self.shared.shut_down_since(epoch) {
+                return;
+            }
             self.cancel_pending.store(false, Ordering::Release);
             tokio::time::sleep(TURN_GRACE).await;
-            self.record_turn_changes().await;
-            let changed = self.state.lock().history.conversation.end_turn(Some(now_ms()));
-            self.mark_dirty(changed);
+            if self.shared.shut_down_since(epoch) {
+                return;
+            }
+            self.record_turn_changes(epoch).await;
+            if self.shared.shut_down_since(epoch) {
+                return;
+            }
             let send_now = self.send_now.swap(false, Ordering::AcqRel);
-            let next = {
+            let (changed, next, archived) = {
                 let mut s = self.state.lock();
-                let go_on = s.task.status != AgentStatus::Archived
+                if self.shared.shut_down_since(epoch) {
+                    return;
+                }
+                let changed = s.history.conversation.end_turn(Some(now_ms()));
+                let archived = s.task.status == AgentStatus::Archived;
+                let go_on = !archived
                     && match &result {
                         Ok(stop) => stop != "cancelled" || send_now,
                         Err(_) => false,
@@ -3239,24 +3387,33 @@ impl Task {
                 if next.is_none() {
                     s.busy = false;
                 }
-                next
+                (changed, next, archived)
             };
-            if self.state.lock().task.status == AgentStatus::Archived {
-                self.persist();
+            self.mark_dirty(changed);
+            if archived {
+                self.persist_for_epoch(epoch);
                 return;
             }
             if let Ok(stop) = &result
                 && stop == "refusal"
             {
+                if self.shared.shut_down_since(epoch) {
+                    return;
+                }
                 self.push_entry(AgentEntry::Error { message: "The agent declined to continue.".into() });
             }
             match (next, result) {
                 (Some(queued), _) => {
+                    if self.shared.shut_down_since(epoch) {
+                        return;
+                    }
                     self.emit_task();
                     prompt = queued.prompt;
                 }
                 (None, Ok(stop)) => {
-                    self.set_status(AgentStatus::Ready, None);
+                    if !self.set_status_for_epoch(AgentStatus::Ready, None, epoch) {
+                        return;
+                    }
                     if stop != "cancelled" {
                         self.emit_attention(AgentAttentionReason::Finished);
                     }
@@ -3269,7 +3426,7 @@ impl Task {
                     }
                     return self.release_when_idle();
                 }
-                (None, Err(failure)) => return self.fail(failure),
+                (None, Err(failure)) => return self.fail(failure, epoch),
             }
         }
     }
@@ -3434,12 +3591,14 @@ impl Task {
     fn release_when_idle(self: &Arc<Self>) {
         let turn = self.turns.load(Ordering::Acquire);
         let epoch = self.idle_epoch.load(Ordering::Acquire);
+        let shutdown = self.shared.shutdown_epoch();
         let delay = Duration::from_millis(self.shared.idle_release_ms.load(Ordering::Relaxed));
         let task = Arc::downgrade(self);
         self.shared.runtime.spawn(async move {
             tokio::time::sleep(delay).await;
             let Some(task) = task.upgrade() else { return };
-            if task.turns.load(Ordering::Acquire) != turn
+            if task.shared.shut_down_since(shutdown)
+                || task.turns.load(Ordering::Acquire) != turn
                 || task.idle_epoch.load(Ordering::Acquire) != epoch
                 || task.state.lock().busy
                 || !task.permissions.lock().is_empty()
@@ -3468,27 +3627,41 @@ impl Task {
     }
 
     /// Ends a turn that failed: nothing it started stays open.
-    fn fail(self: &Arc<Self>, failure: Failure) {
+    fn fail(self: &Arc<Self>, failure: Failure, epoch: u64) {
+        if self.shared.shut_down_since(epoch) {
+            return;
+        }
         self.cancel_permissions();
         let gone = self.live.lock().as_ref().is_none_or(|l| l.peer.is_closed());
-        if gone {
-            let changed = self.state.lock().history.conversation.settle(now_ms());
-            self.mark_dirty(changed);
-        }
-        self.push_entry(AgentEntry::Error { message: failure.message.clone() });
         // The next message starts the agent again (loading the session): what failed may
         // be fixed outside it meanwhile (signed in, updated, another model chosen).
         if !gone && let Some(live) = self.live.lock().take() {
             live.peer.kill();
         }
-        self.clear_shown_background();
-        match failure.limit {
-            Some(resets) => {
-                self.state.lock().task.resets_ms = resets;
-                self.set_status(AgentStatus::Limited, Some(failure.message));
-            }
-            None => self.set_status(AgentStatus::Failed, Some(failure.message)),
+        let mut file = self.file.lock();
+        if self.shared.shut_down_since(epoch) {
+            return;
         }
+        let dirty = {
+            let mut s = self.state.lock();
+            let mut dirty = if gone { s.history.conversation.settle(now_ms()) } else { Vec::new() };
+            let i = s.history.conversation.main.push(AgentEntry::Error { message: failure.message.clone() });
+            dirty.push((None, i));
+            s.task.background.clear();
+            match failure.limit {
+                Some(resets) => {
+                    s.task.resets_ms = resets;
+                    s.change_status(AgentStatus::Limited, Some(failure.message));
+                }
+                None => s.change_status(AgentStatus::Failed, Some(failure.message)),
+            }
+            dirty
+        };
+        self.saves_asked.fetch_add(1, Ordering::AcqRel);
+        self.save_locked(&mut file);
+        drop(file);
+        self.mark_dirty(dirty);
+        self.emit_task();
         self.emit_attention(AgentAttentionReason::Failed);
     }
 
@@ -3540,37 +3713,54 @@ impl Task {
     }
 
     /// Adds the user's message to the conversation and shows the task starting.
-    fn show_prompt(self: &Arc<Self>, prompt: &AgentPrompt) {
+    fn show_prompt(self: &Arc<Self>, prompt: &AgentPrompt, epoch: u64) -> bool {
         let attachments = prompt
             .files
             .iter()
             .map(|f| file_name(&f.0))
             .chain(prompt.images.iter().map(|i| i.name.clone().unwrap_or_else(|| "image".into())))
             .collect();
-        self.push_entry(AgentEntry::User {
-            text: prompt.text.clone(),
-            attachments,
-            images: prompt.images.clone(),
-            sent_ms: Some(now_ms()),
-            done_ms: None,
-            steered: false,
-        });
         // Launching the agent can take a while (`npx` fetches its adapter on first use).
         let starting = self.live.lock().as_ref().is_none_or(|l| l.peer.is_closed());
-        self.set_status(if starting { AgentStatus::Starting } else { AgentStatus::Running }, None);
+        let mut file = self.file.lock();
+        if self.shared.shut_down_since(epoch) {
+            return false;
+        }
+        let i = {
+            let mut s = self.state.lock();
+            let i = s.history.conversation.main.push(AgentEntry::User {
+                text: prompt.text.clone(),
+                attachments,
+                images: prompt.images.clone(),
+                sent_ms: Some(now_ms()),
+                done_ms: None,
+                steered: false,
+            });
+            s.change_status(if starting { AgentStatus::Starting } else { AgentStatus::Running }, None);
+            i
+        };
+        self.saves_asked.fetch_add(1, Ordering::AcqRel);
+        self.save_locked(&mut file);
+        drop(file);
+        self.mark_dirty([(None, i)]);
+        self.emit_task();
+        true
     }
 
     /// Sends one prompt, starting the agent first if needed; returns the stop reason.
-    async fn turn(self: &Arc<Self>, prompt: &AgentPrompt) -> Result<String, Failure> {
+    async fn turn(self: &Arc<Self>, prompt: &AgentPrompt, epoch: u64) -> Result<String, Failure> {
         self.turns.fetch_add(1, Ordering::AcqRel);
         self.turn_started.store(false, Ordering::Release);
         self.state.lock().task.resets_ms = None;
-        let mut live = self.ensure_session().await.map_err(Failure::from)?;
+        let mut live = self.ensure_session(epoch).await.map_err(Failure::from)?;
+        if self.shared.shut_down_since(epoch) {
+            return Ok("cancelled".into());
+        }
         // Stopped while the agent started: the prompt is never sent.
         if self.cancel_pending.load(Ordering::Acquire) {
             return Ok("cancelled".into());
         }
-        self.resume_running();
+        self.resume_running(epoch);
         if !prompt.images.is_empty() && !live.capabilities.images {
             return Err(Failure::from("This agent can't read images.".to_owned()));
         }
@@ -3585,6 +3775,7 @@ impl Task {
         let mut result: Result<Value, RpcError> =
             live.peer.request("session/prompt", json!({ "sessionId": live.session, "prompt": content }), None).await;
         if live.driver == provider::Driver::Copilot
+            && !self.shared.shut_down_since(epoch)
             && !self.turn_started.load(Ordering::Acquire)
             && let Err(RpcError::Server { code, ref message, .. }) = result
             && is_headless_protocol_error(code)
@@ -3599,7 +3790,10 @@ impl Task {
             }
             live.peer.kill();
             *self.live.lock() = None;
-            live = self.ensure_session().await.map_err(Failure::from)?;
+            live = self.ensure_session(epoch).await.map_err(Failure::from)?;
+            if self.shared.shut_down_since(epoch) {
+                return Ok("cancelled".into());
+            }
             if !prompt.images.is_empty() && !live.capabilities.images {
                 return Err(Failure::from("This agent can't read images.".to_owned()));
             }
@@ -3608,6 +3802,9 @@ impl Task {
                 .peer
                 .request("session/prompt", json!({ "sessionId": live.session, "prompt": content }), None)
                 .await;
+        }
+        if self.shared.shut_down_since(epoch) {
+            return Ok("cancelled".into());
         }
         match result {
             Ok(v) => {
@@ -3683,8 +3880,11 @@ impl Task {
         first
     }
 
-    async fn ensure_session(self: &Arc<Self>) -> Result<Live, String> {
+    async fn ensure_session(self: &Arc<Self>, epoch: u64) -> Result<Live, String> {
         let _guard = self.connecting.lock().await;
+        if self.shared.shut_down_since(epoch) {
+            return Err("The agent manager shut down.".into());
+        }
         if let Some(live) = self.live.lock().clone()
             && !live.peer.is_closed()
         {
@@ -3703,34 +3903,46 @@ impl Task {
         } else {
             raw_spec.clone()
         };
-        let opened = match self.open_session(&provider_id, primary_spec, &cwd, saved.clone(), pending_model).await {
-            Ok(live) => Ok(live),
-            Err(err) if can_fallback && err.allow_acp_fallback => {
-                tracing::warn!(
-                    "agent task {}: Copilot headless session setup failed ({}); falling back to `copilot --acp`",
-                    self.id,
-                    err.message
-                );
-                self.shared.mark_copilot_acp_fallback(&raw_spec);
-                let acp_spec = native::copilot::acp_fallback_spec(&raw_spec);
-                self.open_session(&provider_id, acp_spec, &cwd, saved, pending_model).await
-            }
-            Err(err) => Err(err),
-        };
+        let opened =
+            match self.open_session(&provider_id, primary_spec, &cwd, saved.clone(), pending_model, epoch).await {
+                Ok(live) => Ok(live),
+                Err(err) if can_fallback && err.allow_acp_fallback && !self.shared.shut_down_since(epoch) => {
+                    tracing::warn!(
+                        "agent task {}: Copilot headless session setup failed ({}); falling back to `copilot --acp`",
+                        self.id,
+                        err.message
+                    );
+                    self.shared.mark_copilot_acp_fallback(&raw_spec);
+                    let acp_spec = native::copilot::acp_fallback_spec(&raw_spec);
+                    self.open_session(&provider_id, acp_spec, &cwd, saved, pending_model, epoch).await
+                }
+                Err(err) => Err(err),
+            };
         let live = match opened {
             Ok(live) => live,
             Err(err) => {
-                let mut s = self.state.lock();
-                if pending.is_some() && s.pending_model == pending {
-                    s.pending_model = None;
-                    drop(s);
-                    self.persist();
-                    self.emit_task();
+                if !self.shared.shut_down_since(epoch) {
+                    let mut s = self.state.lock();
+                    if pending.is_some() && s.pending_model == pending {
+                        s.pending_model = None;
+                        drop(s);
+                        self.persist_for_epoch(epoch);
+                        self.emit_task();
+                    }
                 }
                 return Err(err.message);
             }
         };
-        *self.live.lock() = Some(live.clone());
+        let mut slot = self.live.lock();
+        if self.shared.shut_down_since(epoch) || live.peer.is_closed() {
+            drop(slot);
+            *self.connecting_peer.lock() = None;
+            live.peer.kill();
+            return Err("The agent manager shut down.".into());
+        }
+        *slot = Some(live.clone());
+        drop(slot);
+        *self.connecting_peer.lock() = None;
         Ok(live)
     }
 
@@ -3741,6 +3953,7 @@ impl Task {
         cwd: &Path,
         saved: Option<String>,
         pending_model: Option<&PendingModel>,
+        epoch: u64,
     ) -> Result<Live, SessionOpenError> {
         let launch_cwd = cwd.to_path_buf();
         let mut spec = tokio::task::spawn_blocking(move || {
@@ -3749,6 +3962,9 @@ impl Task {
         .await
         .map_err(|e| SessionOpenError { message: e.to_string(), allow_acp_fallback: false })?
         .map_err(|e| SessionOpenError { message: e, allow_acp_fallback: false })?;
+        if self.shared.shut_down_since(epoch) {
+            return Err(SessionOpenError { message: "The agent manager shut down.".into(), allow_acp_fallback: false });
+        }
         if spec.driver == provider::Driver::Acp && provider::is_copilot_provider(provider_id) {
             let mcp_overrides = self.state.lock().task.mcp_overrides.clone();
             for name in self.shared.mcp_servers_off_for_session(provider_id, &mcp_overrides) {
@@ -3760,7 +3976,9 @@ impl Task {
         self.config_sent.lock().clear();
         let weak = Arc::downgrade(self);
         let on_stderr: Box<dyn Fn(String) + Send + Sync> = Box::new(move |line| {
-            if let Some(t) = weak.upgrade() {
+            if let Some(t) = weak.upgrade()
+                && !t.shared.shut_down_since(epoch)
+            {
                 let mut buf = t.stderr.lock();
                 if buf.len() == STDERR_LINES {
                     buf.pop_front();
@@ -3769,14 +3987,17 @@ impl Task {
             }
         });
         // Speaks ACP v1 or v2, whichever the agent chooses; the task sees v1 either way.
-        let client = Client::new(self, saved.as_deref().filter(|_| pending_model.is_some()));
+        let client = Client::new(self, epoch, saved.as_deref().filter(|_| pending_model.is_some()));
         let handler = acp::Dialect::wrap(client.clone());
         let raw_peer =
             (self.shared.connector)(&spec, cwd, handler.clone(), on_stderr).map_err(|e| SessionOpenError {
                 message: format!("Couldn't start {} (`{}`): {e}", spec.name, spec.command),
                 allow_acp_fallback: !native::copilot::is_missing_binary_error(&e),
             })?;
-        let mut stop_on_err = KillOnDrop(Some(raw_peer.clone()));
+        let mut stop_on_err = OpeningPeer::register(self, raw_peer.clone(), epoch).ok_or_else(|| SessionOpenError {
+            message: "The agent manager shut down.".into(),
+            allow_acp_fallback: false,
+        })?;
         let peer = acp::Conn::new(raw_peer, handler);
 
         let init = peer.initialize(&client_info()).await.map_err(|e| {
@@ -3888,6 +4109,12 @@ impl Task {
                     Ok(v) => session = Some((id, v)),
                     // Not silently: a new session would lose the conversation and replace the saved id.
                     Err(e) => {
+                        if self.shared.shut_down_since(epoch) {
+                            return Err(SessionOpenError {
+                                message: "The agent manager shut down.".into(),
+                                allow_acp_fallback: false,
+                            });
+                        }
                         tracing::info!("agent task {}: session/load failed: {e}", self.id);
                         if let Some(message) = self.sign_in_error(&e, Some(&sign_in_message)) {
                             return Err(SessionOpenError { message, allow_acp_fallback: false });
@@ -4087,10 +4314,19 @@ impl Task {
                 Err(e) => tracing::warn!("agent task {}: setting {} to {} failed: {e}", self.id, o.id, choice.value),
             }
         }
+        if self.shared.shut_down_since(epoch) {
+            return Err(SessionOpenError { message: "The agent manager shut down.".into(), allow_acp_fallback: false });
+        }
         let model = model_of(&options).filter(|_| model_options);
         self.shared.remember(provider_id, Some(&options), None, model.as_deref());
         {
             let mut s = self.state.lock();
+            if self.shared.shut_down_since(epoch) {
+                return Err(SessionOpenError {
+                    message: "The agent manager shut down.".into(),
+                    allow_acp_fallback: false,
+                });
+            }
             if let Some(pending) = pending_model {
                 if s.pending_model.as_ref() != Some(pending) {
                     return Err(SessionOpenError {
@@ -4114,9 +4350,9 @@ impl Task {
             s.task.background.clear();
             *client.opening_config.lock() = None;
         }
-        self.persist_soon();
+        self.persist_soon_for_epoch(epoch);
         self.emit_task();
-        stop_on_err.0 = None;
+        stop_on_err.hand_off();
         Ok(Live {
             provider: provider_id.to_owned(),
             driver: spec.driver,
@@ -4153,13 +4389,20 @@ impl Task {
             return;
         }
         let task = self.clone();
+        let epoch = self.shared.shutdown_epoch();
         self.shared.runtime.spawn(async move {
             for (option, value) in due {
+                if task.shared.shut_down_since(epoch) {
+                    return;
+                }
                 let (method, mut params) = config::set_request(&option, &value);
                 params["sessionId"] = json!(live.session);
                 match live.peer.request::<_, Value>(method, params, None).await {
                     Ok(reply) => {
                         let mut s = task.state.lock();
+                        if task.shared.shut_down_since(epoch) {
+                            return;
+                        }
                         if let Some(fresh) = reply.get("configOptions") {
                             config::merge_update(&mut s.task.config, fresh);
                         } else if option.category.as_deref() == Some("model") {
@@ -4180,11 +4423,18 @@ impl Task {
                         drop(s);
                         task.shared.remember(&provider, Some(&options), None, model.as_deref());
                     }
+                    Err(e) if task.shared.shut_down_since(epoch) => {
+                        let _ = e;
+                        return;
+                    }
                     Err(e) => tracing::warn!("agent task {}: setting {} to {value} failed: {e}", task.id, option.id),
                 }
             }
+            if task.shared.shut_down_since(epoch) {
+                return;
+            }
             task.approve_pending();
-            task.persist_soon();
+            task.persist_soon_for_epoch(epoch);
             task.emit_task();
         });
     }
@@ -4206,12 +4456,20 @@ impl Task {
     }
 
     /// Applies a `session/update` of session `session` (the task's, or one of its subagents').
+    #[cfg(test)]
     fn on_update(self: &Arc<Self>, session: Option<&str>, update: &Value) {
+        self.on_update_for_epoch(session, update, self.shared.shutdown_epoch());
+    }
+
+    fn on_update_for_epoch(self: &Arc<Self>, session: Option<&str>, update: &Value, epoch: u64) {
+        if self.shared.shut_down_since(epoch) {
+            return;
+        }
         let kind = update.get("sessionUpdate").and_then(Value::as_str).unwrap_or_default();
         // A subagent's title, settings and usage are its own, not the task's.
         if self.state.lock().history.conversation.owner(session).is_some() {
             if !SESSION_STATE.contains(&kind) && (!self.replaying.load(Ordering::Acquire) || self.adopts_replay()) {
-                self.apply(session, kind, update);
+                self.apply(session, kind, update, epoch);
             }
             return;
         }
@@ -4246,7 +4504,7 @@ impl Task {
                     std::mem::replace(&mut s.task.stats.compressions, depth) != depth
                 };
                 if changed {
-                    self.persist_soon();
+                    self.persist_soon_for_epoch(epoch);
                     self.emit_task();
                 }
             }
@@ -4264,11 +4522,11 @@ impl Task {
                 if (user_named || !s.title_renamed) && s.task.title != title {
                     s.task.title = title.to_owned();
                     drop(s);
-                    self.persist_soon();
+                    self.persist_soon_for_epoch(epoch);
                     self.emit_task();
                 } else if flag_changed {
                     drop(s);
-                    self.persist_soon();
+                    self.persist_soon_for_epoch(epoch);
                     self.emit_task();
                 }
             }
@@ -4297,7 +4555,15 @@ impl Task {
                     true
                 }
                 "usage_update" => {
-                    s.task.usage = config::usage_of(update).or(s.task.usage.take());
+                    let prev_cost = s.task.usage.as_ref().and_then(|u| u.cost.clone());
+                    s.task.usage = config::usage_of(update)
+                        .map(|mut u| {
+                            if u.cost.is_none() {
+                                u.cost = prev_cost;
+                            }
+                            u
+                        })
+                        .or(s.task.usage.take());
                     true
                 }
                 _ => false,
@@ -4314,7 +4580,7 @@ impl Task {
             };
             self.shared.remember(&provider, Some(&config), Some(&commands), model.as_deref());
             if kind != "usage_update" {
-                self.persist_soon();
+                self.persist_soon_for_epoch(epoch);
             }
             self.emit_task();
             if kind == "config_option_update" && !self.replaying.load(Ordering::Acquire) {
@@ -4330,7 +4596,7 @@ impl Task {
                 if kind == "user_message_chunk" {
                     self.adopt_user_chunk(update);
                 } else {
-                    self.apply(session, kind, update);
+                    self.apply(session, kind, update, epoch);
                 }
             }
             return;
@@ -4342,7 +4608,7 @@ impl Task {
         {
             let _ = live.peer.notify("session/cancel", json!({ "sessionId": live.session }));
         }
-        self.apply(session, kind, update);
+        self.apply(session, kind, update, epoch);
     }
 
     fn adopts_replay(&self) -> bool {
@@ -4379,19 +4645,22 @@ impl Task {
         self.mark_dirty([(None, changed)]);
     }
 
-    fn apply(self: &Arc<Self>, session: Option<&str>, kind: &str, update: &Value) {
+    fn apply(self: &Arc<Self>, session: Option<&str>, kind: &str, update: &Value, epoch: u64) {
         // Output again: the retried request went through.
         self.set_retry(None);
         let applied = self.state.lock().history.conversation.apply(session, update, now_ms());
         self.mark_dirty(applied);
         // A subagent can start or finish after the turn that started it: nothing else saves it then.
         if matches!(kind, "subagent_update" | "user_question") {
-            self.persist_soon();
+            self.persist_soon_for_epoch(epoch);
         }
     }
 
     /// Blocks the calling (blocking-pool) thread until the user answers.
-    fn ask_permission(self: &Arc<Self>, params: &Value) -> Value {
+    fn ask_permission(self: &Arc<Self>, params: &Value, epoch: u64) -> Value {
+        if self.shared.shut_down_since(epoch) {
+            return json!({ "outcome": { "outcome": "cancelled" } });
+        }
         let id = self.next_permission.fetch_add(1, Ordering::Relaxed);
         let (questions, by_index) = asked_questions(params);
         let title = permission_title(params);
@@ -4465,21 +4734,39 @@ impl Task {
             }
         }
         let (tx, rx) = std::sync::mpsc::channel();
-        let entry = self.push_entry(AgentEntry::Permission {
-            id,
-            title,
-            command: shown,
-            options: options.clone(),
-            questions,
-            form: None,
-            chosen: None,
-        });
-        self.permissions.lock().insert(id, tx);
-        self.set_status(AgentStatus::NeedsInput, None);
+        let entry = {
+            let mut file = self.file.lock();
+            if self.shared.shut_down_since(epoch) {
+                return json!({ "outcome": { "outcome": "cancelled" } });
+            }
+            let entry = {
+                let mut s = self.state.lock();
+                let entry = s.history.conversation.main.push(AgentEntry::Permission {
+                    id,
+                    title,
+                    command: shown,
+                    options: options.clone(),
+                    questions,
+                    form: None,
+                    chosen: None,
+                });
+                self.permissions.lock().insert(id, tx);
+                s.change_status(AgentStatus::NeedsInput, None);
+                entry
+            };
+            self.saves_asked.fetch_add(1, Ordering::AcqRel);
+            self.save_locked(&mut file);
+            entry
+        };
+        self.mark_dirty([(None, entry)]);
+        self.emit_task();
         self.approve_pending();
         self.emit_attention_if_input_pending();
 
         let answer = rx.recv().ok().flatten();
+        if self.shared.shut_down_since(epoch) {
+            return json!({ "outcome": { "outcome": "cancelled" } });
+        }
         let answers = answer
             .as_deref()
             .filter(|_| !asked.is_empty())
@@ -4499,7 +4786,7 @@ impl Task {
                 .and_then(|reply| options.iter().find(|option| &option.id == reply))
                 .map_or_else(|| "Cancelled".to_owned(), |option| option.name.clone()),
         };
-        self.settle(entry, name);
+        self.settle(entry, name, epoch);
         // An agent that answers by index reads the answers beside the outcome, keyed by
         // question index, with its Submit option chosen; anything less cancels the request.
         if by_index {
@@ -4542,35 +4829,61 @@ impl Task {
 
     /// An agent's form (`elicitation/create`): asked in the conversation like a permission
     /// request, and answered with its values, declined or cancelled. Blocks like `ask_permission`.
-    fn elicit(self: &Arc<Self>, params: &Value, raw: Option<&[u8]>) -> Result<Value, String> {
+    fn elicit(self: &Arc<Self>, params: &Value, raw: Option<&[u8]>, epoch: u64) -> Result<Value, String> {
         let mut form = elicitation::form_of(params)?;
         if let Some(raw) = raw {
             elicitation::in_schema_order(&mut form, raw);
         }
+        if self.shared.shut_down_since(epoch) {
+            return Ok(elicitation::answer(&form, None).0);
+        }
         let id = self.next_permission.fetch_add(1, Ordering::Relaxed);
         let message = params.get("message").and_then(Value::as_str).unwrap_or_default().trim().to_owned();
         let (tx, rx) = std::sync::mpsc::channel();
-        let entry = self.push_entry(AgentEntry::Permission {
-            id,
-            title: self.labelled(params, message),
-            command: None,
-            options: elicitation::options(),
-            questions: Vec::new(),
-            form: Some(form.clone()),
-            chosen: None,
-        });
-        self.permissions.lock().insert(id, tx);
-        self.set_status(AgentStatus::NeedsInput, None);
+        let entry = {
+            let mut file = self.file.lock();
+            if self.shared.shut_down_since(epoch) {
+                return Ok(elicitation::answer(&form, None).0);
+            }
+            let title = self.labelled(params, message);
+            let entry = {
+                let mut s = self.state.lock();
+                let entry = s.history.conversation.main.push(AgentEntry::Permission {
+                    id,
+                    title,
+                    command: None,
+                    options: elicitation::options(),
+                    questions: Vec::new(),
+                    form: Some(form.clone()),
+                    chosen: None,
+                });
+                self.permissions.lock().insert(id, tx);
+                s.change_status(AgentStatus::NeedsInput, None);
+                entry
+            };
+            self.saves_asked.fetch_add(1, Ordering::AcqRel);
+            self.save_locked(&mut file);
+            entry
+        };
+        self.mark_dirty([(None, entry)]);
+        self.emit_task();
         self.emit_attention_if_input_pending();
         let reply = rx.recv().ok().flatten();
         let (response, chosen) = elicitation::answer(&form, reply.as_deref());
-        self.settle(entry, chosen);
+        if self.shared.shut_down_since(epoch) {
+            return Ok(response);
+        }
+        self.settle(entry, chosen, epoch);
         Ok(response)
     }
 
     /// Records the answer to the request at `entry`; the turn runs on once nothing else waits.
     /// Saved before it returns, which is before the agent is told: a restart after that keeps the answer.
-    fn settle(self: &Arc<Self>, entry: usize, chosen: String) {
+    fn settle(self: &Arc<Self>, entry: usize, chosen: String, epoch: u64) {
+        let mut file = self.file.lock();
+        if self.shared.shut_down_since(epoch) {
+            return;
+        }
         let resumed = {
             let mut s = self.state.lock();
             if let Some(AgentEntry::Permission { chosen: answer, .. }) =
@@ -4584,8 +4897,10 @@ impl Task {
             }
             resumed
         };
+        self.saves_asked.fetch_add(1, Ordering::AcqRel);
+        self.save_locked(&mut file);
+        drop(file);
         self.mark_dirty([(None, entry)]);
-        self.persist();
         if resumed {
             self.emit_task();
         }
@@ -4630,6 +4945,9 @@ impl Task {
     /// Stops the agent; returns its connection, to wait for its process to exit.
     fn kill(&self) -> Option<acp::Conn> {
         self.cancel_permissions();
+        if let Some(peer) = self.connecting_peer.lock().take() {
+            peer.kill();
+        }
         let live = self.live.lock().take()?;
         live.peer.kill();
         self.clear_shown_background();
@@ -4640,6 +4958,7 @@ impl Task {
 /// Answers the agent's requests on behalf of one task.
 struct Client {
     task: Weak<Task>,
+    epoch: u64,
     opening_config: Mutex<Option<OpeningConfig>>,
 }
 
@@ -4650,9 +4969,10 @@ struct OpeningConfig {
 }
 
 impl Client {
-    fn new(task: &Arc<Task>, opening_session: Option<&str>) -> Arc<Self> {
+    fn new(task: &Arc<Task>, epoch: u64, opening_session: Option<&str>) -> Arc<Self> {
         Arc::new(Self {
             task: Arc::downgrade(task),
+            epoch,
             opening_config: Mutex::new(
                 opening_session.map(|id| OpeningConfig { session: id.to_owned(), options: None }),
             ),
@@ -4668,16 +4988,20 @@ impl Handler for Client {
     fn on_notification(&self, method: &str, params: Value) {
         if method == WARNING_NOTIFICATION {
             if let Some(task) = self.task.upgrade()
+                && !task.shared.shut_down_since(self.epoch)
                 && let Some(message) = params.get("message").and_then(Value::as_str).filter(|s| !s.trim().is_empty())
             {
                 task.push_entry(AgentEntry::Error { message: message.to_owned() });
-                task.persist_soon();
+                task.persist_soon_for_epoch(self.epoch);
             }
             return;
         }
         if method == "session/update"
             && let (Some(task), Some(update)) = (self.task.upgrade(), params.get("update"))
         {
+            if task.shared.shut_down_since(self.epoch) {
+                return;
+            }
             if update.get("sessionUpdate").and_then(Value::as_str) == Some("config_option_update")
                 && let Some(opening) = self.opening_config.lock().as_mut()
             {
@@ -4686,15 +5010,15 @@ impl Handler for Client {
                 }
                 return;
             }
-            task.on_update(params.get("sessionId").and_then(Value::as_str), update);
+            task.on_update_for_epoch(params.get("sessionId").and_then(Value::as_str), update, self.epoch);
         }
     }
 
     fn on_request(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
         let task = self.task.upgrade().ok_or((codes::INTERNAL_ERROR, "task closed".to_owned()))?;
         match method {
-            "session/request_permission" => Ok(task.ask_permission(&params)),
-            "elicitation/create" => task.elicit(&params, None).map_err(|e| (codes::INVALID_PARAMS, e)),
+            "session/request_permission" => Ok(task.ask_permission(&params, self.epoch)),
+            "elicitation/create" => task.elicit(&params, None, self.epoch).map_err(|e| (codes::INVALID_PARAMS, e)),
             _ => Err((codes::METHOD_NOT_FOUND, format!("unsupported method {method}"))),
         }
     }
@@ -4704,7 +5028,7 @@ impl Handler for Client {
             return self.on_request_with_data(method, params);
         }
         let task = self.task.upgrade().ok_or((codes::INTERNAL_ERROR, "task closed".to_owned(), None))?;
-        task.elicit(&params, Some(raw)).map_err(|e| (codes::INVALID_PARAMS, e, None))
+        task.elicit(&params, Some(raw), self.epoch).map_err(|e| (codes::INVALID_PARAMS, e, None))
     }
 }
 
@@ -5067,6 +5391,7 @@ fn builtin_commands(provider: &str) -> Vec<AgentCommand> {
             description: "compact the conversation".into(),
             hint: None,
             source: AgentCommandSource::Command,
+            choices: Vec::new(),
         }],
         _ => Vec::new(),
     }
@@ -5348,11 +5673,36 @@ struct SessionOpenError {
     allow_acp_fallback: bool,
 }
 
-struct KillOnDrop(Option<Peer>);
+/// Registers an opening peer on `task.connecting_peer` so `kill()` can terminate it
+/// mid-handshake, and kills it on early error return.
+struct OpeningPeer<'a> {
+    task: &'a Task,
+    peer: Option<Peer>,
+}
 
-impl Drop for KillOnDrop {
+impl<'a> OpeningPeer<'a> {
+    fn register(task: &'a Task, peer: Peer, epoch: u64) -> Option<Self> {
+        let mut slot = task.connecting_peer.lock();
+        if task.shared.shut_down_since(epoch) {
+            drop(slot);
+            peer.kill();
+            return None;
+        }
+        *slot = Some(peer.clone());
+        Some(Self { task, peer: Some(peer) })
+    }
+
+    /// Hands ownership to `ensure_session`, which clears `connecting_peer` right after
+    /// publishing `live` so there is no gap where `kill()` could miss the peer.
+    fn hand_off(&mut self) {
+        self.peer = None;
+    }
+}
+
+impl Drop for OpeningPeer<'_> {
     fn drop(&mut self) {
-        if let Some(peer) = self.0.take() {
+        if let Some(peer) = self.peer.take() {
+            *self.task.connecting_peer.lock() = None;
             peer.kill();
         }
     }
