@@ -231,7 +231,7 @@ export function execItems(query: string, packages: readonly PackageBins[]): RunA
 }
 
 /** Characters a shell expands or interprets; quotes and backslashes are split by `parseArgs`. */
-const SHELL_SYNTAX = /[|&;<>$`*?~{}()[\]%!#\n]/;
+export const SHELL_SYNTAX = /[|&;<>$`*?~{}()[\]%!#\n]/;
 
 let cache: { key: string; promise: Promise<PackageBins[]>; value?: PackageBins[] } | null = null;
 const listeners = new Set<() => void>();
@@ -254,6 +254,26 @@ function packages(): Promise<PackageBins[]> {
   return cache.promise;
 }
 
+/**
+ * The package whose executable `parsed` runs: any that has it, or from a terminal's absolute
+ * folder `cwd`, the package that folder belongs to (as `npx` resolves it there).
+ */
+export function packageRunning(
+  parsed: { runner: Runner; name: string },
+  packages: readonly PackageBins[],
+  cwd?: string,
+): PackageBins | undefined {
+  const has = (p: PackageBins) => runnableBins(parsed.runner, p).some((b) => b.name === parsed.name);
+  if (cwd === undefined) return packages.find(has);
+  const root = useProject.getState().project?.root ?? "";
+  const rel = cwd === root ? "" : cwd.startsWith(`${root}/`) ? cwd.slice(root.length + 1) : null;
+  if (rel === null) return undefined;
+  const owner = packages
+    .filter((p) => !p.dir || rel === p.dir || rel.startsWith(`${p.dir}/`))
+    .sort((a, b) => b.dir.length - a.dir.length)[0];
+  return owner && has(owner) ? owner : undefined;
+}
+
 export const packageBinsRunAnything: RunAnythingProvider = {
   id: "run.packageBins",
   group: "Package Executables",
@@ -263,14 +283,22 @@ export const packageBinsRunAnything: RunAnythingProvider = {
     void packages();
     return execItems(query, cache?.value ?? []);
   },
-  async execute(line) {
+  accepts(line, terminal) {
+    const parsed = parseExecLine(line);
+    if (!parsed?.name || SHELL_SYNTAX.test(line)) return false;
+    void packages();
+    return !!packageRunning(parsed, cache?.value ?? [], terminal?.cwd);
+  },
+  async execute(line, terminal) {
     const parsed = parseExecLine(line);
     // Shell syntax (pipes, `&&`, variables, globs, `~`, braces, `%VAR%`…) stays with the shell.
     if (!parsed?.name || SHELL_SYNTAX.test(line)) return false;
-    const pkg = (await packages()).find((p) => runnableBins(parsed.runner, p).some((b) => b.name === parsed.name));
+    const pkg = packageRunning(parsed, await packages(), terminal?.cwd);
     if (!pkg) return false;
-    const args = parseArgs(parsed.rest, usePlatform.getState().os === "windows");
-    await executeAction("run.runConfig", execConfig(parsed.runner, parsed.name, args, pkg));
+    // A terminal's line is a POSIX shell's: backslashes escape.
+    const args = parseArgs(parsed.rest, !terminal && usePlatform.getState().os === "windows");
+    const config = execConfig(parsed.runner, parsed.name, args, pkg);
+    await executeAction("run.runConfig", terminal ? { ...config, cwd: terminal.cwd } : config);
     return true;
   },
   subscribe(onChange) {

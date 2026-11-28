@@ -4,7 +4,9 @@
 //! where a command starts and ends (OSC 133 C / D), so the tab shows the
 //! running program's title only while one runs. The end mark carries the
 //! command's exit status (`OSC 133;D;<status>`), so a finished long-running
-//! command can be reported as finished or failed.
+//! command can be reported as finished or failed. The prompt's end (OSC 133 B)
+//! tells the terminal where the typed command starts, for running recognised
+//! commands with the IDE.
 //!
 //! zsh starts with `ZDOTDIR` pointing at generated startup files that source
 //! the user's own ones first; bash gets an `--init-file` that replays the
@@ -36,11 +38,20 @@ ZDOTDIR=$OPENIDEA_USER_ZDOTDIR
 [[ -f $ZDOTDIR/.zshrc ]] && . $ZDOTDIR/.zshrc
 OPENIDEA_USER_ZDOTDIR=$ZDOTDIR
 ZDOTDIR=$_openidea_dir
-_openidea_osc7() { printf '\e]133;D;%s\a\e]7;file://%s%s\a' "$?" "${HOST}" "${PWD}" }
+_openidea_osc7() { printf '\e]133;D;%s\a\e]7;file://%s%s\a\e]133;OpenIDEA;Env;VIRTUAL_ENV=%s\a\e]133;OpenIDEA;Env;CONDA_PREFIX=%s\a\e]133;OpenIDEA;Env;PATH=%s\a' "$?" "${HOST}" "${PWD}" "${VIRTUAL_ENV-}" "${CONDA_PREFIX-}" "${PATH}" }
 _openidea_preexec() { printf '\e]133;C\a' }
 # First, so the command counts as finished before other hooks set the prompt's title.
 precmd_functions=(_openidea_osc7 ${precmd_functions:#_openidea_osc7})
 preexec_functions+=(_openidea_preexec)
+# The line editor starts once the prompt is drawn: the typed command begins here.
+_openidea_prompt_end() { printf '\e]133;B\a' }
+zle -N _openidea_prompt_end
+autoload -Uz add-zle-hook-widget 2>/dev/null && add-zle-hook-widget line-init _openidea_prompt_end
+# Run Highlighted Command empties the line with this key, in emacs and vi modes alike.
+_openidea_clear_line() { BUFFER= }
+zle -N _openidea_clear_line
+for _openidea_map in emacs viins vicmd; do bindkey -M $_openidea_map '\e[9999~' _openidea_clear_line; done
+unset _openidea_map
 # Startup files that ran before this one (e.g. /etc/zshrc's
 # HISTFILE=${ZDOTDIR:-$HOME}/.zsh_history) resolved HISTFILE against this
 # generated directory, since OpenIDEA starts zsh as a login shell (-l) and the
@@ -70,7 +81,7 @@ if [ "${OPENIDEA_LOGIN:-}" = 1 ]; then
 else
   [ -f ~/.bashrc ] && . ~/.bashrc
 fi
-__openidea_osc7() { printf '\e]133;D;%s\a\e]7;file://%s%s\a' "$?" "${HOSTNAME}" "${PWD}"; }
+__openidea_osc7() { printf '\e]133;D;%s\a\e]7;file://%s%s\a\e]133;OpenIDEA;Env;VIRTUAL_ENV=%s\a\e]133;OpenIDEA;Env;CONDA_PREFIX=%s\a\e]133;OpenIDEA;Env;PATH=%s\a' "$?" "${HOSTNAME}" "${PWD}" "${VIRTUAL_ENV-}" "${CONDA_PREFIX-}" "${PATH}"; }
 case ";${PROMPT_COMMAND:-};" in
   *";__openidea_osc7;"*) ;;
   *) PROMPT_COMMAND="__openidea_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
@@ -80,11 +91,25 @@ case "${PS0:-}" in
   *'133;C'*) ;;
   *) PS0="${PS0:-}\e]133;C\a" ;;
 esac
+# Last in PROMPT_COMMAND, after anything that rebuilds PS1 (starship…): the prompt's end.
+__openidea_prompt_end() {
+  case "$PS1" in
+    *'133;B'*) ;;
+    *) PS1="${PS1}\[\e]133;B\a\]" ;;
+  esac
+}
+PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND;}__openidea_prompt_end"
+# Run Highlighted Command empties the line with this key, in emacs and vi modes alike.
+for __openidea_map in emacs vi-insert vi-command; do bind -m "$__openidea_map" '"\e[9999~": kill-whole-line'; done
+unset __openidea_map
 "#;
 
 const FISH_INIT: &str = concat!(
-    r#"function __openidea_osc7 --on-event fish_prompt; printf '\e]133;D;%s\a\e]7;file://%s%s\a' "$status" "$hostname" $PWD; end; "#,
-    r#"function __openidea_preexec --on-event fish_preexec; printf '\e]133;C\a'; end"#,
+    r#"function __openidea_osc7 --on-event fish_prompt; printf '\e]133;D;%s\a\e]7;file://%s%s\a\e]133;OpenIDEA;Env;VIRTUAL_ENV=%s\a\e]133;OpenIDEA;Env;CONDA_PREFIX=%s\a\e]133;OpenIDEA;Env;PATH=%s\a' "$status" "$hostname" $PWD "$VIRTUAL_ENV" "$CONDA_PREFIX" (string join : $PATH); end; "#,
+    r#"function __openidea_preexec --on-event fish_preexec; printf '\e]133;C\a'; end; "#,
+    r#"if functions -q fish_prompt; functions -c fish_prompt __openidea_fish_prompt; "#,
+    r#"function fish_prompt; __openidea_fish_prompt; printf '\e]133;B\a'; end; end; "#,
+    r#"bind \e\[9999\~ 'commandline ""' 2>/dev/null; bind -M insert \e\[9999\~ 'commandline ""' 2>/dev/null"#,
 );
 
 const POWERSHELL_INIT: &str = r#"$openideaClearHost = (Get-Command Clear-Host).ScriptBlock; $openideaClearHandler = { & $openideaClearHost @args; [Console]::Write([char]27 + ']133;OpenIDEA;ClearScrollback' + [char]7) }.GetNewClosure(); Set-Item Function:global:Clear-Host -Value $openideaClearHandler"#;
@@ -195,6 +220,19 @@ mod tests {
         assert!(ZSHRC.contains(r"\e]133;D;%s\a") && ZSHRC.contains("\"$?\""));
         assert!(BASHRC.contains(r"\e]133;D;%s\a") && BASHRC.contains("\"$?\""));
         assert!(FISH_INIT.contains(r"\e]133;D;%s\a") && FISH_INIT.contains("\"$status\""));
+    }
+
+    #[test]
+    fn prompt_end_is_marked() {
+        // OSC 133 B after the prompt: where the typed command starts (run in real shells in lib.rs).
+        assert!(ZSHRC.contains(r"printf '\e]133;B\a'") && ZSHRC.contains("add-zle-hook-widget line-init"));
+        assert!(BASHRC.contains(r#"PS1="${PS1}\[\e]133;B\a\]""#));
+        assert!(FISH_INIT.contains(r"__openidea_fish_prompt; printf '\e]133;B\a'"));
+        // The Python environment and the line-clearing key, in every shell.
+        for script in [ZSHRC, BASHRC, FISH_INIT] {
+            assert!(script.contains(r"\e]133;OpenIDEA;Env;VIRTUAL_ENV=%s\a\e]133;OpenIDEA;Env;CONDA_PREFIX=%s\a"));
+            assert!(script.contains("9999"));
+        }
     }
 
     #[test]

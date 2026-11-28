@@ -16,6 +16,7 @@ import { _resetTerminalHomeForTests } from "./home";
 import { openFileLink, resolveStartCwd, TerminalSession } from "./session";
 import { usePlatform } from "@/platform/platformInfo";
 import { useRemote } from "@/platform/remote";
+import { registerRunAnythingProvider } from "@/workbench/contributions";
 
 const ipc = vi.hoisted(() => ({
   call: vi.fn(async (v: unknown) => v),
@@ -111,6 +112,101 @@ describe("Windows PTY metadata", () => {
       term.resize(80, 8);
       expect(terminalText()).toBe(content);
     } finally {
+      session.dispose();
+    }
+  });
+});
+
+describe("Run Highlighted Command", () => {
+  beforeEach(() => vi.clearAllMocks());
+  const write = (session: TerminalSession, data: string) =>
+    new Promise<void>((resolve) => session.term.write(data, resolve));
+  /** A started session whose shell printed `out`; returns the PTY input written since. */
+  const started = async (out: string) => {
+    let onmessage: ((chunk: string) => void) | null = null;
+    ipc.commands.termSpawn.mockImplementationOnce(
+      async (_options: unknown, channel: { onmessage: typeof onmessage }) => {
+        onmessage = (chunk) => channel.onmessage?.(chunk);
+        return { id: 5, title: "zsh" };
+      },
+    );
+    const session = new TerminalSession({ key: "smart", cwd: "/repo", onChange() {}, onFocus() {} });
+    await session.start();
+    const shell = async (chunk: string) => {
+      onmessage?.(chunk);
+      await write(session, "");
+    };
+    await shell(out);
+    const sent = () => ipc.commands.termWrite.mock.calls.map((c) => c[1] as string);
+    return { session, shell, sent };
+  };
+  const PROMPT = "\x1b]133;OpenIDEA;Env;VIRTUAL_ENV=/repo/.venv\x07$ \x1b]133;B\x07";
+
+  it("clears the shell's line, then runs the command with the terminal's folder and environment", async () => {
+    const execute = vi.fn(() => true);
+    const dispose = registerRunAnythingProvider({
+      id: "smart-test",
+      group: "Test",
+      items: () => [],
+      accepts: (line) => line === "pytest -q",
+      execute,
+    });
+    const { session, shell, sent } = await started(`${PROMPT}pytest -q`);
+    try {
+      expect(session.hasRecognisedCommand).toBe(true);
+      const running = session.runTypedCommand();
+      await new Promise((r) => setTimeout(r, 30));
+      expect(sent()).toEqual(["\x1b[9999~"]);
+      expect(execute).not.toHaveBeenCalled();
+      // The shell redraws an empty line.
+      await shell("\r$ \x1b[K");
+      expect(await running).toBe(true);
+      expect(execute).toHaveBeenCalledWith("pytest -q", { cwd: "/repo", env: { VIRTUAL_ENV: "/repo/.venv" } });
+      expect(session.hasRecognisedCommand).toBe(false);
+    } finally {
+      dispose();
+      session.dispose();
+    }
+  });
+
+  it("runs nothing when the shell keeps the line, and leaves other commands alone", async () => {
+    const execute = vi.fn(() => true);
+    const dispose = registerRunAnythingProvider({
+      id: "smart-test",
+      group: "Test",
+      items: () => [],
+      accepts: (line) => line === "pytest -q",
+      execute,
+    });
+    const { session, shell, sent } = await started(`${PROMPT}ls -la`);
+    try {
+      expect(session.hasRecognisedCommand).toBe(false);
+      expect(await session.runTypedCommand()).toBe(false);
+      expect(sent()).toEqual([]);
+      await shell("\r\x1b[K$ pytest -q");
+      expect(await session.runTypedCommand()).toBe(true);
+      expect(execute).not.toHaveBeenCalled();
+      expect(workbench.notify).toHaveBeenCalledWith(expect.objectContaining({ level: "warning" }));
+    } finally {
+      dispose();
+      session.dispose();
+    }
+  });
+
+  it("keeps the typed command when the buffer is cleared at the prompt", async () => {
+    const dispose = registerRunAnythingProvider({
+      id: "smart-test",
+      group: "Test",
+      items: () => [],
+      accepts: () => true,
+      execute: () => true,
+    });
+    const { session } = await started(`old\r\n${PROMPT}pytest -q`);
+    try {
+      session.clear();
+      expect(session.hasRecognisedCommand).toBe(true);
+    } finally {
+      dispose();
       session.dispose();
     }
   });

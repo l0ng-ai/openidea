@@ -45,6 +45,11 @@
   outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
   outline-offset: -1px;
 }
+/* Run Highlighted Command: a typed command the IDE recognises. */
+.openidea-terminal-smart-command {
+  border-radius: 2px;
+  background-color: color-mix(in srgb, var(--accent) 22%, transparent);
+}
 .xterm-decoration-container {
   pointer-events: none;
 }

@@ -207,6 +207,7 @@ export interface TerminalSettingsValid {
   shellIntegration: boolean;
   highlightHyperlinks: boolean;
   highlightSelection: boolean;
+  runCommandsUsingIde: boolean;
   optionAsMeta: boolean;
   escapeToEditor: boolean;
   cursorShape: CursorShape;
@@ -441,6 +442,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     shellIntegration: true,
     highlightHyperlinks: true,
     highlightSelection: true,
+    runCommandsUsingIde: true,
     optionAsMeta: false,
     escapeToEditor: false,
     cursorShape: "block",
@@ -684,6 +686,7 @@ export function validateTerminal(raw: unknown): TerminalSettingsValid {
     shellIntegration: bool(v.shellIntegration, d.shellIntegration),
     highlightHyperlinks: bool(v.highlightHyperlinks, d.highlightHyperlinks),
     highlightSelection: bool(v.highlightSelection, d.highlightSelection),
+    runCommandsUsingIde: bool(v.runCommandsUsingIde, d.runCommandsUsingIde),
     optionAsMeta: bool(v.optionAsMeta, d.optionAsMeta),
     escapeToEditor: bool(v.escapeToEditor, d.escapeToEditor),
     cursorShape: oneOf(v.cursorShape, ["block", "underline", "bar"] as const, d.cursorShape),

@@ -523,6 +523,7 @@ export const intellijMacos: Record<string, string[]> = {
   "db.collapseAll": [],
   // Terminal (keyWhen: terminalFocus); after VCS Update / Go to Test so it wins there.
   "terminal.new": ["Meta+T"],
+  "terminal.runHighlightedCommand": ["Meta+Enter"],
   // Last: later bindings win, so ⌘N is Generate in editors with Generate actions (keyWhen)
   // and New elsewhere (the project view, other editors: the New popup for the file).
   "code.generate": ["Meta+N"],

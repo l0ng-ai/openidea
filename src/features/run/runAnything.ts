@@ -30,9 +30,10 @@ export const runConfigsRunAnything: RunAnythingProvider = {
   group: "Run Configurations",
   order: 10,
   items: (query) => matchingConfigs(useRun.getState().configs, query).map(item),
-  accepts: (line) => useRun.getState().configs.some((c) => c.name === line.trim()),
-  execute(line) {
-    const config = useRun.getState().configs.find((c) => c.name === line.trim());
+  // A configuration's name is no shell command: the terminal leaves it to the shell, as IDEA does.
+  accepts: (line, terminal) => !terminal && useRun.getState().configs.some((c) => c.name === line.trim()),
+  execute(line, terminal) {
+    const config = !terminal && useRun.getState().configs.find((c) => c.name === line.trim());
     if (!config) return false;
     void executeAction("run.runConfig", config.id);
     return true;

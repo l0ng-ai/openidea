@@ -10970,5 +10970,10 @@
   "Keep Index": "保留索引",
   "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite 无法删除主键或唯一约束的索引。",
   "Cannot list the manage.py commands": "无法列出 manage.py 命令",
-  "Install django-types into this project's virtual environment to complete Django model fields and managers": "将 django-types 安装到此项目的虚拟环境，以补全 Django 模型字段和管理器"
+  "Install django-types into this project's virtual environment to complete Django model fields and managers": "将 django-types 安装到此项目的虚拟环境，以补全 Django 模型字段和管理器",
+  "Run Highlighted Command Using IDE": "使用 IDE 运行高亮的命令",
+  "Run commands using IDE": "使用 IDE 运行命令",
+  "Highlights typed commands the IDE recognises (pytest, npm run, Gradle tasks…), so Run Highlighted Command Using IDE runs them in the Run tool window.": "高亮 IDE 能识别的已输入命令（pytest、npm run、Gradle 任务等），以便“使用 IDE 运行高亮的命令”在“运行”工具窗口中运行它们。",
+  "Cannot run the command using the IDE": "无法使用 IDE 运行该命令",
+  "The shell did not clear its command line.": "Shell 没有清空命令行。"
 }

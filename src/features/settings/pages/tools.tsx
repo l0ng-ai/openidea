@@ -258,6 +258,11 @@ function TerminalOptions() {
               <BoundToggle k="terminal.shellIntegration" label="Shell integration" />
               <BoundToggle k="terminal.highlightHyperlinks" label="Highlight hyperlinks" />
               <BoundToggle k="terminal.highlightSelection" label="Highlight occurrences of selected text" />
+              <BoundToggle
+                k="terminal.runCommandsUsingIde"
+                label="Run commands using IDE"
+                hint="Highlights typed commands the IDE recognises (pytest, npm run, Gradle tasks…), so Run Highlighted Command Using IDE runs them in the Run tool window."
+              />
               {isMac && <BoundToggle k="terminal.optionAsMeta" label="Use Option as Meta key" />}
             </>
           }
