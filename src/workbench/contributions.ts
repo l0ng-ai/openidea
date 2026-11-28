@@ -1885,10 +1885,15 @@ export interface RunConfigTypeContribution {
   /**
    * What is launched for `params`; null when the type runs no process itself (Compound).
    * `stop`: a shell command line run on Stop before the process is signalled (`docker stop …`).
+   * `setEnv`: environment variables the params set (`FLASK_APP`); `null` removes one they set before.
    */
-  commandLine(
-    params: Readonly<Record<string, string>>,
-  ): { command: string; args: string[]; cwd?: string | null; stop?: string | null } | null;
+  commandLine(params: Readonly<Record<string, string>>): {
+    command: string;
+    args: string[];
+    cwd?: string | null;
+    stop?: string | null;
+    setEnv?: Readonly<Record<string, string | null>>;
+  } | null;
   /** Params that reproduce a configuration made elsewhere (detection, older files); null when it doesn't fit. */
   paramsFrom?(config: RunConfig): Record<string, string> | null;
   /** The type's fields set the working directory (no separate field). */

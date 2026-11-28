@@ -683,9 +683,22 @@ fn flask_and_fastapi_apps() {
         project(&[("requirements.txt", "flask\n"), ("app.py", "from flask import Flask\n\napp = Flask(__name__)\n")]);
     let c = detect(dir.path());
     let flask = find(&c, "flask:app");
-    assert_eq!(cmdline(flask), format!("{python} -m flask --app app --debug run"));
+    // `FLASK_APP` / `FLASK_DEBUG` rather than `--app` / `--debug`, which Flask before 2.2 rejects.
+    assert_eq!(cmdline(flask), format!("{python} -m flask run"));
+    assert_eq!(flask.env.get("FLASK_APP").map(String::as_str), Some("app"));
+    assert_eq!(flask.env.get("FLASK_DEBUG").map(String::as_str), Some("1"));
     assert_eq!(flask.kind, "flask");
     assert_eq!(flask.debug_adapter.as_deref(), Some("debugpy"));
+
+    // `flask.Flask(…)` and a src layout.
+    let dir = project(&[("requirements.txt", ""), ("src/main.py", "import flask\nserver = flask.Flask(__name__)\n")]);
+    let c = detect(dir.path());
+    let flask = find(&c, "flask:src/main.py:server");
+    assert_eq!(flask.env.get("FLASK_APP").map(String::as_str), Some("src/main.py:server"));
+    let dir = project(&[("requirements.txt", ""), ("src/main.py", "import fastapi\napp = fastapi.FastAPI()\n")]);
+    let c = detect(dir.path());
+    let api = find(&c, "fastapi:src/main:app");
+    assert_eq!(cmdline(api), format!("{python} -m uvicorn main:app --reload --app-dir src"));
 
     let dir = project(&[
         ("pyproject.toml", "[project]\nname = 'api'\n"),

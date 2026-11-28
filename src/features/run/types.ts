@@ -709,7 +709,17 @@ export function withParams(config: RunConfig, params: Record<string, string>, ty
         : {}),
     ...(type?.ownsWorkingDirectory ? { cwd: line.cwd ?? null } : {}),
     ...(line.stop ? { stopCommand: line.stop } : {}),
+    ...(line.setEnv ? { env: withEnv(config.env, line.setEnv) } : {}),
   };
+}
+
+function withEnv(env: Readonly<Record<string, string>>, set: Readonly<Record<string, string | null>>) {
+  const out = { ...env };
+  for (const [key, value] of Object.entries(set)) {
+    if (value === null) delete out[key];
+    else out[key] = value;
+  }
+  return out;
 }
 
 /** Whether "Emulate terminal in output console" applies to `config`. */

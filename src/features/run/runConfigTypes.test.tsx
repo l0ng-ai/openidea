@@ -1,6 +1,7 @@
 import { useBuildModel } from "@/platform/buildModel";
 import { useBuildPresentation } from "@/platform/projectPresentation";
 import { useProject } from "@/platform/project";
+import { usePlatform } from "@/platform/platformInfo";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { registerActions } from "@/platform/actions";
@@ -517,10 +518,12 @@ describe("configuration types", () => {
   it("Flask and FastAPI round-trip commandLine / paramsFrom", () => {
     const flask = typeFor("flask")!;
     const fastapi = typeFor("fastapi")!;
+    // FLASK_APP / FLASK_DEBUG, which every Flask reads; `--app` and `--debug` need Flask 2.2.
     expect(newConfigOfType(flask, [])).toMatchObject({
       kind: "flask",
       command: "python3",
-      args: ["-m", "flask", "--debug", "run"],
+      args: ["-m", "flask", "run"],
+      env: { FLASK_DEBUG: "1" },
       debugAdapter: "debugpy",
     });
     expect(newConfigOfType(fastapi, [])).toMatchObject({
@@ -528,31 +531,25 @@ describe("configuration types", () => {
       args: ["-m", "uvicorn", "main:app", "--reload"],
       debugAdapter: "debugpy",
     });
-    const cases: Array<{ kind: string; command: string; args: string[]; params: Record<string, string> }> = [
+    const cases: Array<{
+      kind: string;
+      command: string;
+      args: string[];
+      env?: Record<string, string>;
+      params: Record<string, string>;
+    }> = [
       {
         kind: "flask",
         command: "python3",
-        args: ["-m", "flask", "--app", "app", "--debug", "run"],
+        args: ["-m", "flask", "run"],
+        env: { FLASK_APP: "app", FLASK_DEBUG: "1" },
         params: { command: "python3", runnerArgs: "", app: "app", debug: "true", host: "", port: "", options: "" },
       },
       {
         kind: "flask",
         command: "uv",
-        args: [
-          "run",
-          "python",
-          "-m",
-          "flask",
-          "--app",
-          "hello:create_app()",
-          "run",
-          "--host",
-          "0.0.0.0",
-          "--port",
-          "8080",
-          "--cert",
-          "adhoc",
-        ],
+        args: ["run", "python", "-m", "flask", "run", "--host", "0.0.0.0", "--port", "8080", "--cert", "adhoc"],
+        env: { FLASK_APP: "hello:create_app()" },
         params: {
           command: "uv",
           runnerArgs: "run python",
@@ -577,24 +574,51 @@ describe("configuration types", () => {
         },
       },
     ];
-    for (const { kind, command, args, params } of cases) {
+    for (const { kind, command, args, env = {}, params } of cases) {
       const type = kind === "flask" ? flask : fastapi;
-      const c = cfg(kind, { kind, command, args, detected: true });
+      const c = cfg(kind, { kind, command, args, env: { PATH: "/bin", ...env }, detected: true });
       expect(type.paramsFrom!(c)).toEqual(params);
-      expect(type.commandLine(params)).toEqual({ command, args });
+      expect(type.commandLine(params)).toMatchObject({ command, args });
+      // Saved from the form, the variables the fields set follow them; others stay.
+      expect(withParams(c, params).env).toEqual({ PATH: "/bin", ...env });
     }
-    // `flask run --debug` (Flask 2.3+) and `--port=…` are read too.
+    // Clearing a field removes its variable.
+    const app = cfg("f", { kind: "flask", command: "python3", args: ["-m", "flask", "run"], env: { FLASK_APP: "a" } });
+    expect(withParams(app, { command: "python3", app: "" }).env).toEqual({});
+    // `-h` is `flask run`'s host, but uvicorn's help; `--port=…` is read too.
     expect(
-      flask.paramsFrom!(
-        cfg("f", { kind: "flask", command: "python3", args: ["-m", "flask", "run", "--debug", "--port=5001"] }),
-      ),
-    ).toMatchObject({ debug: "true", port: "5001", options: "" });
-    // An option of the `flask` group without a field: edited as a plain command.
+      flask.paramsFrom!(cfg("f", { kind: "flask", command: "python3", args: ["-m", "flask", "run", "-h", "0.0.0.0"] })),
+    ).toMatchObject({ host: "0.0.0.0", options: "" });
     expect(
-      flask.paramsFrom!(
-        cfg("f", { kind: "flask", command: "python3", args: ["-m", "flask", "--env-file", ".env", "run"] }),
-      ),
-    ).toBeNull();
+      fastapi.paramsFrom!(cfg("u", { kind: "fastapi", command: "python3", args: ["-m", "uvicorn", "m:a", "-h"] })),
+    ).toMatchObject({ host: "", options: "-h" });
+    expect(
+      flask.paramsFrom!(cfg("f", { kind: "flask", command: "python3", args: ["-m", "flask", "run", "--port=5001"] })),
+    ).toMatchObject({ port: "5001", options: "" });
+    // An option of the `flask` group (`--app`, `--env-file`) has no field: edited as a plain command.
+    for (const group of [
+      ["--app", "app"],
+      ["--env-file", ".env"],
+    ])
+      expect(
+        flask.paramsFrom!(cfg("f", { kind: "flask", command: "python3", args: ["-m", "flask", ...group, "run"] })),
+      ).toBeNull();
+  });
+
+  it("parses Windows paths in the options on Windows", () => {
+    const os = usePlatform.getState().os;
+    usePlatform.setState({ os: "windows" } as never);
+    try {
+      expect(typeFor("fastapi")!.commandLine({ app: "m:a", options: "--reload-dir C:\\proj\\app" })!.args).toEqual([
+        "-m",
+        "uvicorn",
+        "m:a",
+        "--reload-dir",
+        "C:\\proj\\app",
+      ]);
+    } finally {
+      usePlatform.setState({ os } as never);
+    }
   });
 
   it("pytest round-trips commandLine / paramsFrom and opens implicit context configs in the form", () => {
