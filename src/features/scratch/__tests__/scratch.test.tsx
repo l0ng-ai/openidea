@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { contributedIntentions, editorContributions } from "@/editor/api";
+import { lspDoc } from "@/editor/lsp/lsp";
 import { getAction } from "@/platform/actions";
 import { onIdeEvent } from "@/platform/ipc";
 import { IDEA_ACTIONS } from "@/platform/ideaActions";
@@ -13,13 +17,20 @@ import {
   pushRecent,
   scratchContent,
   scratchFileName,
+  scratchLanguageForSelection,
   scratchLanguages,
   type ScratchLanguage,
 } from "../model";
-import { createScratch, setScratchBackend, tauriScratchBackend, type ScratchBackend } from "../scratches";
+import {
+  createScratch,
+  createScratchFromSelection,
+  setScratchBackend,
+  tauriScratchBackend,
+  type ScratchBackend,
+} from "../scratches";
 import { useScratch } from "../store";
 import { ScratchChooserHost } from "../ScratchChooser";
-import { activate, newScratchBuffer } from "..";
+import { activate, newScratchBuffer, scratchFromSelectionIntentions } from "..";
 
 const LANGS: ScratchLanguage[] = scratchLanguages([
   {
@@ -32,6 +43,21 @@ const LANGS: ScratchLanguage[] = scratchLanguages([
   { id: "javascript", name: "JavaScript", extensions: ["js", "mjs"] },
   { id: "plaintext", name: "Plain Text", extensions: ["txt"] },
   { id: "dockerfile", name: "Dockerfile", extensions: [] },
+]);
+
+const SELECTION_LANGS = scratchLanguages([
+  { id: "plaintext", name: "Plain Text", extensions: ["txt"] },
+  { id: "markdown", name: "Markdown", extensions: ["md", "markdown"] },
+  { id: "json", name: "JSON", extensions: ["json", "jsonl", "json.map"] },
+  { id: "sql", name: "SQL", extensions: ["sql"] },
+  { id: "javascript", name: "JavaScript", extensions: ["js", "mjs"] },
+  { id: "java", name: "Java", extensions: ["java"] },
+  {
+    id: "python",
+    name: "Python",
+    extensions: ["py", "pyi", "pyw"],
+    firstLine: "^#!.*\\bpython[0-9.]*\\b",
+  },
 ]);
 
 describe("scratch naming", () => {
@@ -92,6 +118,53 @@ describe("language chooser rows", () => {
   });
 });
 
+describe("scratch language from a selection", () => {
+  const source = (language: string, path: string) => ({ language, path });
+
+  it("recognises a fragment before falling back to the source language", () => {
+    expect(scratchLanguageForSelection(source("markdown", "/p/README.md"), '{"answer": 42}', SELECTION_LANGS)?.id).toBe(
+      "json",
+    );
+    expect(
+      scratchLanguageForSelection(
+        source("markdown", "/p/README.md"),
+        "#!/usr/bin/env python3\nprint(42)",
+        SELECTION_LANGS,
+      )?.id,
+    ).toBe("python");
+    expect(
+      scratchLanguageForSelection(source("plaintext", "/p/notes.txt"), "SELECT id FROM users", SELECTION_LANGS)?.id,
+    ).toBe("sql");
+  });
+
+  it("uses the source language before its extension for ambiguous text", () => {
+    expect(scratchLanguageForSelection(source("python", "/p/misnamed.js"), "print(42)", SELECTION_LANGS)?.id).toBe(
+      "python",
+    );
+  });
+
+  it("matches every source extension, including compound and upper-case extensions", () => {
+    expect(scratchLanguageForSelection(source("unknown", "/p/types.PYI"), "value = 42", SELECTION_LANGS)?.id).toBe(
+      "python",
+    );
+    expect(
+      scratchLanguageForSelection(source("unknown", "/p/data.JSON.MAP"), "ambiguous text", SELECTION_LANGS)?.id,
+    ).toBe("json");
+  });
+
+  it("falls back to plain text, or the source language when the inferred one cannot be a scratch", () => {
+    expect(scratchLanguageForSelection(source("unknown", "/p/file.unknown"), "some notes", SELECTION_LANGS)?.id).toBe(
+      "plaintext",
+    );
+    expect(scratchLanguageForSelection(source("java", "/p/A.java"), '{"answer": 42}', LANGS)?.id).toBe("java");
+    expect(
+      scratchLanguageForSelection(source("unknown", "/p/file.unknown"), "some notes", [
+        SELECTION_LANGS.find((lang) => lang.id === "json")!,
+      ]),
+    ).toBeNull();
+  });
+});
+
 describe("creating scratch files", () => {
   let files: Set<string>;
   let contents: Map<string, string>;
@@ -99,6 +172,18 @@ describe("creating scratch files", () => {
   let carets: ({ line: number; col: number } | null)[];
   let backend: ScratchBackend;
   let notify: ReturnType<typeof vi.fn<NotificationService["notify"]>>;
+  const views: EditorView[] = [];
+  const editor = (doc: string, from: number, to: number, path = "/p/README.md", language = "markdown") => {
+    const view = new EditorView({
+      state: EditorState.create({
+        doc,
+        selection: { anchor: from, head: to },
+        extensions: [lspDoc.of({ doc: 7, path, language, uiMode: null, readOnly: false })],
+      }),
+    });
+    views.push(view);
+    return view;
+  };
   beforeEach(() => {
     localStorage.clear();
     useScratch.setState({ languages: null, recent: [] });
@@ -124,6 +209,7 @@ describe("creating scratch files", () => {
     setScratchBackend(backend);
   });
   afterEach(() => {
+    views.splice(0).forEach((view) => view.destroy());
     setScratchBackend(tauriScratchBackend);
     provideNotificationService(notificationServiceImpl);
   });
@@ -146,6 +232,88 @@ describe("creating scratch files", () => {
     );
     expect(contents.get("/data/scratches/scratch.py")).toBe("");
     expect(carets).toEqual([{ line: 2, col: 8 }, null]);
+  });
+
+  it("uses initial text verbatim instead of a template, including $END$ and line endings", async () => {
+    const selected = "const value = '$END$';\r\n  // 中文 😀\r\n";
+    expect(
+      await createScratch(
+        LANGS.find((lang) => lang.id === "java")!,
+        selected,
+      ),
+    ).toBe("/data/scratches/scratch_1.java");
+    expect(contents.get("/data/scratches/scratch_1.java")).toBe(selected);
+    expect(carets).toEqual([null]);
+  });
+
+  it("registers a selection intention that creates and opens a numbered scratch outside the project", async () => {
+    backend.languages = async () => SELECTION_LANGS;
+    files.add("/data/scratches/scratch.json");
+    const selected = '\n  { "snippet": "$END$ 中文 😀" }\n';
+    const doc = `before\n${selected}after`;
+    const from = doc.indexOf(selected);
+    const dispose = activate();
+    try {
+      const contribution = editorContributions().find((entry) => entry.id === "scratch.fromSelection")!;
+      const ctx = { doc: 7, path: "/p/README.md", language: "markdown", uiMode: null, readOnly: false };
+      const view = new EditorView({
+        state: EditorState.create({
+          doc,
+          selection: { anchor: from, head: from + selected.length },
+          extensions: [lspDoc.of(ctx), contribution.extensions(ctx)],
+        }),
+      });
+      views.push(view);
+      const selectedText = view.state.doc.sliceString(from, from + selected.length);
+      expect(selectedText).toBe(selected);
+      expect(scratchLanguageForSelection(ctx, selectedText, SELECTION_LANGS)?.id).toBe("json");
+      const [intention] = contributedIntentions(view);
+      expect(intention).toMatchObject({
+        id: "scratch.createFromSelection",
+        label: "Create new scratch file from selection",
+        icon: "scratches",
+      });
+      await intention!.run();
+      expect(opened).toEqual(["/data/scratches/scratch_1.json"]);
+      expect(contents.get("/data/scratches/scratch_1.json")).toBe(selectedText);
+      expect(carets).toEqual([null]);
+      expect([...files].every((path) => path.startsWith("/data/scratches/"))).toBe(true);
+      expect(useScratch.getState().languages).toBeNull();
+      expect(useScratch.getState().recent).toEqual([]);
+      expect(notify).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("uses the source language or extension when the selection is ambiguous", async () => {
+    backend.languages = async () => SELECTION_LANGS;
+    const dispose = activate();
+    try {
+      const byLanguage = editor("print(42)", 0, "print(42)".length, "/p/misnamed.js", "python");
+      await scratchFromSelectionIntentions(byLanguage)[0]!.run();
+      const byExtension = editor("value = 42", 0, 10, "/p/types.PYI", "unknown");
+      await scratchFromSelectionIntentions(byExtension)[0]!.run();
+      expect(opened).toEqual(["/data/scratches/scratch.py", "/data/scratches/scratch_1.py"]);
+      expect(contents.get("/data/scratches/scratch.py")).toBe("print(42)");
+      expect(contents.get("/data/scratches/scratch_1.py")).toBe("value = 42");
+      expect(useScratch.getState().languages).toBeNull();
+      expect(notify).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("offers nothing and does no work for an empty selection", async () => {
+    const languages = vi.spyOn(backend, "languages");
+    const createFile = vi.spyOn(backend, "createFile");
+    const open = vi.spyOn(backend, "open");
+    const view = editor("some text", 2, 2);
+    expect(scratchFromSelectionIntentions(view)).toEqual([]);
+    expect(await createScratchFromSelection({ language: "markdown", path: "/p/README.md" }, "")).toBeNull();
+    expect(languages).not.toHaveBeenCalled();
+    expect(createFile).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
   });
 
   it("registers the action and the Scratches root; the chooser creates the picked language", async () => {

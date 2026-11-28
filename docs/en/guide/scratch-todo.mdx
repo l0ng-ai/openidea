@@ -23,6 +23,10 @@ A scratch file is a throwaway file in any language: a place to try a snippet, ke
   </Step>
 </Steps>
 
+### Create a scratch from a selection
+
+Select text in the editor and choose **Create new scratch file from selection** from **Show Context Actions** (`⌥↵` on macOS, `Alt+Enter` on Windows / Linux). OpenIDEA copies the selection exactly as it is, without the language template, and opens it in a new numbered scratch file. It recognises the fragment's language when possible; otherwise it uses the source file's language or extension. There is no language chooser.
+
 Scratch files are saved in a `scratches` folder in OpenIDEA's application data directory, not in the project, so they are shared by all projects and are not seen by Git:
 
 | OS      | Folder                                                     |

@@ -1,4 +1,4 @@
-/** Pure parts of Scratch Files: naming and the language chooser list. */
+/** Pure parts of Scratch Files: naming, language selection and the chooser list. */
 import { fuzzyMatch } from "@/ui";
 
 export interface ScratchLanguage {
@@ -6,6 +6,10 @@ export interface ScratchLanguage {
   name: string;
   /** Extension (without the dot) new scratch files of this language get. */
   ext: string;
+  /** Every extension the language claims, for matching a selection's source file. */
+  extensions: readonly string[];
+  /** First-line pattern used to recognise fragments such as hashbang scripts. */
+  firstLine?: string;
   /** Initial content; `$END$` marks where the caret goes. */
   template?: string;
 }
@@ -23,14 +27,106 @@ export function scratchFileName(existing: Iterable<string>, ext: string): string
 
 /** Languages a scratch file can be created for (those with an extension), by name. */
 export function scratchLanguages(
-  langs: ReadonlyArray<{ id: string; name: string; extensions: readonly string[]; scratchTemplate?: string | null }>,
+  langs: ReadonlyArray<{
+    id: string;
+    name: string;
+    extensions: readonly string[];
+    firstLine?: string | null;
+    scratchTemplate?: string | null;
+  }>,
 ): ScratchLanguage[] {
   const out: ScratchLanguage[] = [];
   for (const l of langs) {
-    const ext = l.extensions.find((e) => e.trim())?.replace(/^\./, "");
-    if (ext) out.push({ id: l.id, name: l.name, ext, ...(l.scratchTemplate && { template: l.scratchTemplate }) });
+    const extensions = l.extensions.map((e) => e.trim().replace(/^\./, "")).filter(Boolean);
+    const ext = extensions[0];
+    if (ext)
+      out.push({
+        id: l.id,
+        name: l.name,
+        ext,
+        extensions,
+        ...(l.firstLine && { firstLine: l.firstLine }),
+        ...(l.scratchTemplate && { template: l.scratchTemplate }),
+      });
   }
   return out.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+}
+
+const normalExt = (ext: string) => ext.trim().replace(/^\./, "").toLowerCase();
+
+/** High-confidence syntax fingerprints; ambiguous prose keeps the source file's language. */
+function inferFragmentLanguage(text: string, byId: ReadonlyMap<string, ScratchLanguage>): ScratchLanguage | undefined {
+  const firstLine = text.split(/\r?\n/, 1)[0] ?? "";
+  for (const lang of byId.values()) {
+    if (!lang.firstLine) continue;
+    try {
+      if (new RegExp(lang.firstLine).test(firstLine)) return lang;
+    } catch {
+      // A plugin's invalid pattern must not stop the source-language fallback.
+    }
+  }
+
+  const fragment = text.trim();
+  if (!fragment) return undefined;
+  if (/^[{[]/.test(fragment)) {
+    try {
+      JSON.parse(fragment);
+      return byId.get("json");
+    } catch {
+      // Object literals and incomplete fragments are not necessarily JSON.
+    }
+  }
+  if (/^<\?xml\b/i.test(fragment)) return byId.get("xml");
+  if (/^<!doctype\s+html\b|^<(?:html|head|body|div|span|main|section|script|style)\b/i.test(fragment))
+    return byId.get("html");
+  if (
+    /^(?:select\b[\s\S]+\bfrom\b|insert\s+into\b|update\b[\s\S]+\bset\b|delete\s+from\b|create\s+(?:table|view|index)\b|with\b[\s\S]+\bselect\b)/i.test(
+      fragment,
+    )
+  )
+    return byId.get("sql");
+  if (/^(?:async\s+def\s+\w+\s*\(|def\s+\w+\s*\([^)]*\)\s*(?:->[^:]+)?:|from\s+[\w.]+\s+import\s+)/m.test(fragment))
+    return byId.get("python");
+  if (
+    /^(?:package\s+[\w.]+\s*;|import\s+(?:java|javax)\.|(?:public|protected|private)\s+(?:\w+\s+)*(?:class|interface|enum|record)\s+)/m.test(
+      fragment,
+    )
+  )
+    return byId.get("java");
+  if (/^package\s+\w+\s*$/m.test(fragment) || /^func\s+(?:\([^)]*\)\s*)?\w+\s*\(/m.test(fragment))
+    return byId.get("go");
+  if (/^(?:fn\s+\w+\s*\(|use\s+(?:std|core|alloc)::|pub\s+(?:struct|enum|trait|fn)\s+)/m.test(fragment))
+    return byId.get("rust");
+  if (/^#\s*include\s*[<"]/m.test(fragment))
+    return /\b(?:std::|iostream|vector|string)\b/.test(fragment) ? byId.get("cpp") : byId.get("c");
+  if (
+    /^(?:console\.log\s*\(|import\s+.+\s+from\s+["']|export\s+(?:default\s+)?(?:function|const|class)\b)/m.test(
+      fragment,
+    )
+  )
+    return byId.get("javascript");
+  return undefined;
+}
+
+/** Language for a selection: recognise the fragment, then its source language, extension, or plain text. */
+export function scratchLanguageForSelection(
+  source: { language: string; path: string },
+  text: string,
+  languages: readonly ScratchLanguage[],
+): ScratchLanguage | null {
+  const byId = new Map(languages.map((lang) => [lang.id.toLowerCase(), lang]));
+  const inferred = inferFragmentLanguage(text, byId);
+  if (inferred) return inferred;
+  const sourceLanguage = byId.get(source.language.toLowerCase());
+  if (sourceLanguage) return sourceLanguage;
+
+  const name = source.path.slice(source.path.lastIndexOf("/") + 1).toLowerCase();
+  for (let rest = name, dot = rest.indexOf("."); dot >= 0; dot = rest.indexOf(".")) {
+    rest = rest.slice(dot + 1);
+    const matched = languages.find((lang) => lang.extensions.some((ext) => normalExt(ext) === rest));
+    if (matched) return matched;
+  }
+  return byId.get("plaintext") ?? languages.find((lang) => lang.ext === "txt") ?? null;
 }
 
 const CARET = "$END$";
