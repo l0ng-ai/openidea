@@ -17,7 +17,7 @@ import { MemoryFs, setProjectFsForTests } from "./fs";
 import { MessagesHost } from "@/workbench/messages";
 import { FileRefactorDialogHost } from "./FileRefactorDialogs";
 import { setRefactorBackendForTests } from "./fileRefactor";
-import { ProjectView } from "./ProjectView";
+import { ProjectView, formatFileDetails } from "./ProjectView";
 import { beginNew, beginRename, canPaste } from "./operations";
 import { initProjectTree, selectModel, setSelection, setViewOption, useProjectTree } from "./store";
 import type { OutlineItem } from "@/bindings";
@@ -1182,6 +1182,82 @@ it("hides the path beside workspace roots when Show Root Paths is off, keeping i
   const root = document.querySelector('[data-project-path="/a/service"]');
   expect(root?.getAttribute("title")).toBe("/a/service");
   act(() => setViewOption("showRootPaths", true));
+});
+
+describe("File Details", () => {
+  const modifiedAt = new Date(2026, 10, 28, 12).getTime();
+  const modifiedDate = "28.11.2026";
+
+  beforeEach(() => {
+    useProject.setState({
+      settings: {
+        general: {
+          dateFormat: { overrideSystem: true, pattern: "dd.MM.yyyy", use24Hour: true, pretty: false },
+        },
+      },
+    });
+  });
+
+  it("formats concise sizes and the configured modification date", () => {
+    expect(formatFileDetails(null)).toBeNull();
+    expect(formatFileDetails({ size: 0, mtimeMs: modifiedAt })).toBe(`0 B · ${modifiedDate}`);
+    expect(formatFileDetails({ size: 1023, mtimeMs: modifiedAt })).toBe(`1023 B · ${modifiedDate}`);
+    expect(formatFileDetails({ size: 1024, mtimeMs: modifiedAt })).toBe(`1 KB · ${modifiedDate}`);
+    expect(formatFileDetails({ size: 1536, mtimeMs: modifiedAt })).toBe(`1.5 KB · ${modifiedDate}`);
+    expect(formatFileDetails({ size: 1_048_575, mtimeMs: modifiedAt })).toBe(`1 MB · ${modifiedDate}`);
+  });
+
+  it.each([null, 0])("shows only the size when mtimeMs is %s", (mtimeMs) => {
+    expect(formatFileDetails({ size: 512, mtimeMs })).toBe("512 B");
+  });
+
+  it("toggles File Details from Appearance and persists the option", () => {
+    const { result } = renderHook(() => useProjectHeaderMenu());
+    type Item = Extract<MenuItem, { id?: string }>;
+    const toggle = () =>
+      ((result.current.find((item) => "label" in item && item.label === "Appearance") as Item).submenu as Item[]).find(
+        (item) => item.id === "showFileDetails",
+      )!;
+    expect(toggle()).toMatchObject({ label: "File Details", checked: false });
+
+    act(() => toggle().run!());
+    expect(toggle().checked).toBe(true);
+    expect(JSON.parse(localStorage.getItem("openidea.projectTree.options")!)).toMatchObject({ showFileDetails: true });
+    const action = getAction("project.option.showFileDetails")!;
+    expect(action.toggled!()).toBe(true);
+
+    act(() => void executeAction(action.id));
+    expect(toggle().checked).toBe(false);
+    expect(JSON.parse(localStorage.getItem("openidea.projectTree.options")!)).toMatchObject({ showFileDetails: false });
+  });
+
+  it("renders metadata on file rows only without changing root paths", async () => {
+    const readDir = fs.readDir.bind(fs);
+    vi.spyOn(fs, "readDir").mockImplementation(async (path) =>
+      (await readDir(path)).map((entry) => ({
+        ...entry,
+        size: entry.kind === "file" ? 1536 : 2048,
+        mtimeMs: modifiedAt,
+      })),
+    );
+    const { row, rows } = setup();
+    await waitFor(() => expect(rows()).toContain("README.md"));
+    expect(row("acme").textContent).toBe("acme/w/acme");
+    expect(row("src").textContent).toBe("src");
+    expect(row("build").textContent).toBe("build");
+
+    act(() => setViewOption("showFileDetails", true));
+    const detail = `1.5 KB · ${modifiedDate}`;
+    expect(row("README.md").textContent).toBe(`README.md${detail}`);
+    expect(within(row("README.md")).getByTitle(detail)).toBeInTheDocument();
+    expect(row("acme").textContent).toBe("acme/w/acme");
+    expect(row("src").textContent).toBe("src");
+    expect(row("build").textContent).toBe("build");
+
+    act(() => setViewOption("showFileDetails", false));
+    expect(row("README.md").textContent).toBe("README.md");
+    expect(row("acme").textContent).toBe("acme/w/acme");
+  });
 });
 
 it("shows a decoration's suffix after the root name, with icons and struck-out segments", async () => {

@@ -8737,6 +8737,7 @@
   "{names} need {name} and stop while it is disabled. Disable it anyway?": "{names} 依赖 {name}，在其被禁用期间将停止运行。仍要禁用吗？",
   "{names} needs {name} and stops while it is disabled. Disable it anyway?": "{names} 依赖 {name}，在其被禁用期间将停止运行。仍要禁用吗？",
   "Show Root Paths": "显示根路径",
+  "File Details": "显示文件详细信息",
   "Workspace": "工作区",
   "Disable Server": "禁用服务器",
   "Enable Server": "启用服务器",

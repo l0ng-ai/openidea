@@ -73,6 +73,7 @@ const APPEARANCE_OPTIONS: Array<[ToggleOption, string]> = [
   ["showMembers", "Show Members"],
   ["showScratches", "Show Scratches and Consoles"],
   ["showRootPaths", "Show Root Paths"],
+  ["showFileDetails", "File Details"],
   ["horizontalScroll", "Horizontal Scrolling"],
   ["compact", "Compact Middle Packages"],
 ];
