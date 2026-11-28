@@ -10,6 +10,47 @@ pub fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
+/// `script` as the command of an exec request, run by POSIX `sh` whatever the account's login
+/// shell is. sshd hands every exec request to the login shell, and fish (like csh) rejects POSIX
+/// syntax such as `if …; then`, `${VAR:-}`, `X=$(…)` or a glob that matches nothing; `sh -c`
+/// with the script as one argument is a plain command to every shell.
+pub fn posix_command(script: &str) -> String {
+    format!("sh -c {}", login_shell_quote(script))
+}
+
+/// Single-quotes `s` so that POSIX shells and fish read the same text. Inside `'…'` fish still
+/// takes `\\` and `\'` as escapes, so quotes and backslashes are written outside the quotes, where
+/// every shell reads `\'` and `\\` alike.
+fn login_shell_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        match c {
+            '\'' => out.push_str(r"'\''"),
+            '\\' => out.push_str(r"'\\'"),
+            c => out.push(c),
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// The script of a [`posix_command`] (the test server runs what the client asked for).
+#[cfg(any(test, feature = "testing"))]
+pub(crate) fn posix_script(command: &str) -> Option<String> {
+    let quoted = command.strip_prefix("sh -c ")?;
+    let (mut out, mut chars, mut inside) = (String::new(), quoted.chars(), false);
+    while let Some(c) = chars.next() {
+        match (inside, c) {
+            (_, '\'') => inside = !inside,
+            (false, '\\') => out.push(chars.next()?),
+            (true, c) => out.push(c),
+            (false, _) => return None,
+        }
+    }
+    (!inside).then_some(out)
+}
+
 /// `cd <cwd> && exec env K=V … <program> <args…>`. A program starting with `~/`
 /// is left to the shell's tilde expansion.
 pub fn command_line(cwd: Option<&str>, env: &BTreeMap<String, String>, program: &str, args: &[String]) -> String {
@@ -55,6 +96,24 @@ mod tests {
         assert_eq!(quote("a b"), "'a b'");
         assert_eq!(quote("it's"), r"'it'\''s'");
         assert_eq!(quote(""), "''");
+    }
+
+    #[test]
+    fn a_posix_command_round_trips_through_sh() {
+        for script in
+            ["echo hi", "it's", r"a\b", r"printf '%s\n' \'x\'", "if [ -x ~/bin ]; then echo ${HOME:-/x}; fi", ""]
+        {
+            let command = posix_command(script);
+            assert_eq!(posix_script(&command).as_deref(), Some(script), "{command}");
+            // What `sh` passes on to the inner `sh -c` is the script itself.
+            let out = std::process::Command::new("sh")
+                .args(["-c", &format!("printf %s {}", login_shell_quote(script))])
+                .output()
+                .unwrap();
+            assert_eq!(String::from_utf8_lossy(&out.stdout), script);
+        }
+        assert_eq!(posix_command("it's"), r"sh -c 'it'\''s'");
+        assert_eq!(posix_command(r"a\b"), r"sh -c 'a'\\'b'");
     }
 
     #[test]

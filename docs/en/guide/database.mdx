@@ -38,7 +38,11 @@ Add a named profile with the vendor's driver JAR, any dependency JARs, the fully
 
 When switching to JDBC, configure TLS and driver-specific settings in the JDBC URL or **Advanced** properties. If the built-in source used an SSH tunnel, configure an equivalent route for the JDBC connection. JDBC uses auto-commit. Review the built-in startup script, default schema, and time zone, and configure equivalent settings supported by your JDBC driver or database. For enforced read-only access, use a database account with read-only privileges. Enter a separate JDBC password when converting a Snowflake source that used key pair, token, or browser authentication and your JDBC driver needs a password.
 
-Select the profile, enter the vendor's JDBC URL, and use the **User**, **Password**, and **Advanced** fields for credentials and driver properties. The URL and Advanced properties are stored in the data source configuration. Put credentials in the password field to use the existing OS credential store. On Linux, saving a password requires a running Secret Service. You can also enter the password for the current session. The **Read-only** option asks the JDBC driver for a read-only connection. Use a database account with read-only privileges to enforce it. Cancelling a query keeps the session and its temporary tables when the driver stops the statement. If the driver does not respond within three seconds, OpenIDEA closes the session. A submitted statement can still finish on the server. **Test Connection** reports the database product and version. Schema, table and column browsing use JDBC metadata; the SQL console supports auto-commit queries and updates. Vendor-specific DDL, execution plans and table-grid writes are unavailable for custom drivers.
+Select the profile, enter the vendor's JDBC URL, and use the **User**, **Password**, and **Advanced** fields for credentials and driver properties. The URL and Advanced properties are stored in the data source configuration. Put credentials in the password field to use the existing OS credential store. On Linux, saving a password requires a running Secret Service. You can also enter the password for the current session. The **Read-only** option asks the JDBC driver for a read-only connection. Use a database account with read-only privileges to enforce it. Cancelling a query keeps the session and its temporary tables when the driver stops the statement. If the driver does not respond within three seconds, OpenIDEA closes the session. A submitted statement can still finish on the server. **Test Connection** reports the database product and version. Schema, table and column browsing use JDBC metadata; the SQL console supports auto-commit queries and updates. Generic JDBC sources do not offer vendor-specific DDL, execution plans or table-grid writes. The DuckDB preset also supports **Explain Plan**.
+
+Each SQL console uses its own JDBC connection. Use the same console for statements that need its temporary tables or session settings. Other consoles can run queries while it is busy. OpenIDEA keeps the connection until you close the console and its result tabs.
+
+DuckDB consoles share the same database, including an in-memory database. Anonymous SQLite and H2 databases belong to one connection, so their consoles share that connection. For independent consoles on the same in-memory database, use a named URL such as `jdbc:sqlite:file:work?mode=memory&cache=shared` or `jdbc:h2:mem:work`.
 
 For a file-backed database, use an absolute path to choose its location. Relative paths start in the persistent `jdbc/files` folder inside OpenIDEA’s application data directory.
 
@@ -135,11 +139,12 @@ Each data source has a query console, a `.sql` file kept under `consoles/db` in 
 The console toolbar has:
 
 - **Execute** (`⌘Enter` / `Ctrl+Enter`): runs the selected statements, or the statement at the caret.
-- **Explain Plan**: shows the plan in a **Query Plan** tab.
+- **Explain Plan**: shows the plan in a **Query Plan** tab. For a named DuckDB source, the tab shows DuckDB's operators, their inputs, and estimated row counts on the current connection.
 - **Cancel Running Statement**. Cancelling inside a manual transaction rolls it back.
 - **Browse Query History**: the last 500 statements per data source, with search and **Paste**.
 - A row limit (100 to 50,000; default 500).
 - **Tx: Auto** / **Tx: Manual**. In manual mode **Commit** and **Roll Back** appear.
+  With the built-in PostgreSQL driver, each console owns its manual transaction. Retained result tabs keep access to that console until its last tab closes. Closing the last tab rolls back pending work. Switching the console to **Tx: Auto** also releases its transaction slot, including after a read-only query.
 - A schema picker (PostgreSQL, MySQL, SQL Server, Oracle, Snowflake) and the data source picker. Snowflake consoles also have warehouse and role pickers.
 
 Statements are split on `;`, respecting strings, comments and PostgreSQL dollar quoting. Oracle PL/SQL blocks are kept whole, and a line with only `/` ends a statement. Snowflake `$$` bodies and Snowflake Scripting blocks (`BEGIN … END`, `DECLARE …`) are kept whole too. Parameters such as `:id`, `?`, `$1` or `@name` open a **Parameters** dialog; values are inserted as SQL text, so quote strings.
@@ -195,9 +200,11 @@ The export button offers **Export Data…** and quick copies: **Copy as CSV**, *
 
 The built-in HTTP driver uses a named session by default (`use_http_session=true`). Route requests to one node or enable session affinity. If the session expires or another node reports code 372, OpenIDEA shows a reconnect error and never replays the statement.
 
+The HTTP driver waits up to 600 seconds for response headers or the next part of a response body. To change this interval, set `http_read_timeout` in **Advanced** to a positive whole number of seconds. The interval restarts when body data arrives, so a streaming query can run longer. If the response times out, OpenIDEA reports that the query outcome is unknown and shows its `query_id`. Verify the outcome before retrying a write.
+
 For endpoints that route each request to a different node, add **Advanced** property `use_http_session` with value `false`. Each request omits `session_id`, `session_check` and `session_timeout`, and sends the configured database (or **Default schema**), time zone and Advanced settings again. **Read-only** sends `readonly=1` on every request.
 
-Stateless statements must be independent: `USE`, standalone `SET`, temporary tables and other session state cannot carry over to later requests. Configure the database and settings on the data source. Startup scripts and explicit session properties (`session_id`, `session_check`, `session_timeout`) are rejected. SQL transactions and statement caching are unsupported in either mode.
+In stateless mode, the driver rejects standalone session changes such as `SET max_threads = 2` before sending them. A console script stops there. Set a data source property for all requests or add a `SETTINGS` clause to a query that supports it. Choose the database on the data source. `USE` and temporary tables cannot carry state between requests. Startup scripts and explicit session properties (`session_id`, `session_check`, `session_timeout`) are rejected. SQL transactions and statement caching are unsupported in either mode.
 
 For strict read-only accounts behind a load balancer, set `use_http_session=false` and enable **Read-only**. If the initial connection check receives ClickHouse code 164 for a driver-managed result setting, OpenIDEA repeats the check without its result-limit and JSON number-format settings. Each request still sends `readonly=1`, and the grid still retains only the requested page. Configure server-side limits in the account's settings profile. With the server's default JSON settings, `NaN` and infinities may appear as `NULL`.
 

@@ -313,6 +313,15 @@ export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
       "Reports paths in HTML attributes, CSS url() and @import that do not name an existing file, resolved relative to the file, the project root and its resource roots.",
   },
   {
+    id: "builtin:thymeleaf-references",
+    producer: "thymeleaf-references",
+    name: "Unresolved template and fragment references",
+    group: "Thymeleaf",
+    description:
+      "Reports Thymeleaf fragment expressions under src/main/resources/templates that name a missing template, or a fragment the template does not define. Off when application.properties or .yml sets spring.thymeleaf.prefix or suffix.",
+    defaultLevel: "warning",
+  },
+  {
     id: "builtin:build",
     producer: "build",
     name: "Build problems",

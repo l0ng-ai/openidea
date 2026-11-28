@@ -5558,7 +5558,7 @@ async fn jar_library_sources_reload_with_another_encoding() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn class_file_opening_routes_sources_and_binary_documents() {
+async fn class_file_opening_routes_archive_and_output_classes() {
     let mut caps = incremental_caps();
     caps["workspaceSymbolProvider"] = json!(true);
     let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
@@ -5581,18 +5581,14 @@ async fn class_file_opening_routes_sources_and_binary_documents() {
             .is_err()
     );
 
+    // An output class opens as its decompiled class document even when the project source exists.
     let sources = h.root.join("src/main/java");
     std::fs::create_dir_all(sources.join("p")).unwrap();
-    let source = sources.join("p/Outer.java");
-    std::fs::write(&source, "package p; class Outer {} ").unwrap();
+    std::fs::write(sources.join("p/Outer.java"), "package p; class Outer {} ").unwrap();
     s.respond("java/classFileContents", json!("// Source code is decompiled from a .class file using FernFlower decompiler (from Intellij IDEA).\npackage p;\npublic class Outer {}"));
-    s.respond("workspace/executeCommand", json!({ "org.eclipse.jdt.ls.core.sourcePaths": [sources] }));
     for class in ["Outer", "Outer$Nested", "Outer$1"] {
         let path = h.root.join(format!("target/classes/p/{class}.class"));
-        let resolved = h.mgr.java_class_file(&path, None).await.unwrap();
-        // Compare as paths: the manager joins the relative source path with std::path, so
-        // separators can differ from the literal "p/Outer.java" used to build `source` on Windows.
-        assert_eq!(Path::new(&resolved), source.as_path());
+        assert_eq!(h.mgr.java_class_file(&path, None).await.unwrap(), uri_of(&path));
     }
     let path = h.root.join("build/classes/java/main/p/Missing.class");
     let uri = uri_of(&path);

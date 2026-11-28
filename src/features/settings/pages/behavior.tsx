@@ -22,6 +22,7 @@ import { ColorSwatches, FormGroup, NumberInput, Row, SearchLabel, Select, Toggle
 import { useLabelMatch, useSearchQuery, useSetting } from "../components/context";
 import {
   IDLE_LIMITS,
+  PROJECT_COLOR_STRENGTH,
   type Antialiasing,
   type BackgroundImageAnchor,
   type BackgroundImageFill,
@@ -334,6 +335,47 @@ function MainMenuStyleRow() {
   );
 }
 
+function ProjectColorsOption() {
+  const [on, setOn] = useSetting<boolean>("appearance.projectColorsInToolbar");
+  const [strength, setStrength] = useSetting<number>("appearance.projectColorStrength");
+  const id = useId();
+  return (
+    <>
+      <Toggle
+        label="Use project colors in main toolbar"
+        hint="Distinguish projects with different colors in the main toolbar"
+        checked={on}
+        onChange={setOn}
+      />
+      <Indented>
+        <Row label="Project color strength" htmlFor={id} disabled={!on}>
+          <input
+            id={id}
+            type="range"
+            className={styles.strengthSlider}
+            min={PROJECT_COLOR_STRENGTH.min}
+            max={PROJECT_COLOR_STRENGTH.max}
+            step={1}
+            value={strength}
+            disabled={!on}
+            onChange={(e) => setStrength(Number(e.target.value))}
+          />
+          <NumberInput
+            value={strength}
+            min={PROJECT_COLOR_STRENGTH.min}
+            max={PROJECT_COLOR_STRENGTH.max}
+            integer
+            unit="%"
+            disabled={!on}
+            aria-label="Project color strength"
+            onChange={setStrength}
+          />
+        </Row>
+      </Indented>
+    </>
+  );
+}
+
 function UiOptionsGrid() {
   return (
     <Grid
@@ -341,11 +383,7 @@ function UiOptionsGrid() {
         <>
           <BoundToggle k="appearance.compactMode" label="Compact mode" hint="UI elements take up less screen space" />
           <BoundToggle k="appearance.fullPathInTitle" label="Always show full path in window header" />
-          <BoundToggle
-            k="appearance.projectColorsInToolbar"
-            label="Use project colors in main toolbar"
-            hint="Distinguish projects with different colors in the main toolbar"
-          />
+          <ProjectColorsOption />
         </>
       }
       right={
@@ -990,6 +1028,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             keywords: [
               "Always show full path in window header",
               "Use project colors in main toolbar",
+              "Project color strength",
               "Drag-and-drop with Alt pressed only",
               "Display icons in menu items",
               "Use smaller indents in trees",

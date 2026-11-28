@@ -30,6 +30,7 @@ pub(crate) struct Key {
     target: String,
     statement: String,
     schema: Option<String>,
+    console: Option<(String, String)>,
 }
 
 impl Key {
@@ -38,7 +39,13 @@ impl Key {
             target: target.to_owned(),
             statement: statement.to_owned(),
             schema: schema.filter(|s| !s.is_empty()).map(str::to_owned),
+            console: None,
         }
+    }
+
+    pub(crate) fn with_console(mut self, console: Option<crate::ConsoleId<'_>>) -> Self {
+        self.console = console.map(|console| (console.window.to_owned(), console.path.to_owned()));
+        self
     }
 }
 
@@ -184,6 +191,14 @@ impl Cursors {
     /// Closes the cursor of one statement of `target` (its result tab was closed), also when it is reading a page.
     pub(crate) fn release(&self, key: &Key) {
         self.registry.lock().slots.retain(|s| s.key != *key);
+    }
+
+    pub(crate) fn release_console(&self, console: crate::ConsoleId<'_>, target: Option<&str>) {
+        self.registry.lock().slots.retain(|slot| {
+            let key = &slot.key;
+            !target.is_none_or(|target| key.target == target)
+                || !key.console.as_ref().is_some_and(|(window, path)| window == console.window && path == console.path)
+        });
     }
 
     /// Closes the cursors of `target`: it disconnects, or a statement that changes
