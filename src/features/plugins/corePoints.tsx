@@ -191,8 +191,11 @@ function providePluginEndpoints(pluginId: string): () => void {
 /** Registers the editor-free UI points (commands, themes, icon themes, secrets, endpoints, search categories). */
 export function defineCoreUiPoints(): () => void {
   const disposers = [
+    // Read by the backend (or straight from the store) only: defined so their items aren't reported as unknown.
     defineUiPoint("mcpTools", {}),
     defineUiPoint("serverCommands", {}),
+    defineUiPoint("runConfigurations", {}),
+    defineUiPoint("locales", {}),
     defineUiPoint<{ id: string; title: string }>("searchCategories", {
       project: ({ pluginId, decl }) => {
         let active = true;
