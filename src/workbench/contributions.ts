@@ -810,8 +810,6 @@ export interface OpenOptions {
   focus?: boolean;
   /** Open in the text editor even when a file editor provider claims the file (SVG as text). */
   asText?: boolean;
-  /** Keep this path's existing tab, including a preview, when the new regular tab opens (Save As). */
-  keepOpen?: string;
   /** False: leave files that go to another application unopened (autoscroll must not launch apps). */
   external?: boolean;
 }
@@ -843,6 +841,8 @@ export interface EditorService {
   activeCursor(): { doc: number; path: string; line: number; col: number; offset: number } | null;
   /** Save all dirty documents; rejects with the failures once every save was tried. */
   saveAll(opts?: { skipUntitled?: boolean }): Promise<void>;
+  /** Copies an open file's current buffer to `target`; null when `path` is not open in an editor. */
+  copyAs?(path: string, target: string): Promise<boolean | null>;
   /** Doc ids of untitled buffers with unsaved changes (they follow the window, not a project). */
   untitledDirtyDocumentIds?(): number[];
   /** Includes local edits not yet acknowledged by the backend. */

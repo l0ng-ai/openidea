@@ -129,6 +129,30 @@ describe("EditorController", () => {
     expect(useProjectViewLead.getState().lead).toBeNull();
   });
 
+  it("copies an open file's unsaved buffer without saving or retargeting its source", async () => {
+    const backend = createMemoryBackend({ "/p/source.txt": "saved\n" });
+    ctrl = new EditorController(backend);
+    ctrl.start();
+    expect(await ctrl.copyAs("/p/not-open.txt", "/p/not-open-copy.txt")).toBeNull();
+
+    await ctrl.openFile("/p/source.txt", { focus: false });
+    const sourceTab = useTabs.getState().panes[useTabs.getState().activePane]!.active!;
+    const slot = ctrl.slotFor(sourceTab)!;
+    slot.dispatchLocal({
+      changes: { from: 0, to: slot.currentState().doc.length, insert: "dirty\n" },
+      userEvent: "input.type",
+    });
+    await vi.waitFor(() => expect(slot.model.getMeta().dirty).toBe(true));
+    const save = vi.spyOn(backend, "save");
+
+    expect(await ctrl.copyAs("/p/source.txt", "/p/copy.txt")).toBe(true);
+    expect(save).not.toHaveBeenCalled();
+    expect(backend.files.get("/p/source.txt")).toBe("saved\n");
+    expect(backend.files.get("/p/copy.txt")).toBe("dirty\n");
+    expect(ctrl.manager.get("/p/source.txt")?.getMeta()).toMatchObject({ path: "/p/source.txt", dirty: true });
+    expect(ctrl.manager.get("/p/copy.txt")).toBeUndefined();
+  });
+
   it("goes back to the line a stand-in view shows (Markdown Preview only), not the hidden caret", async () => {
     const text = Array.from({ length: 50 }, (_, i) => `line ${i}`).join("\n");
     ctrl = new EditorController(createMemoryBackend({ "/p/a.md": text, "/p/b.md": "b\n" }));

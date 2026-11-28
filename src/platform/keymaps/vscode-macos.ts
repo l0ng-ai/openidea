@@ -223,6 +223,7 @@ export const vscodeMacos: Record<string, string[]> = {
 
   // File / editor tabs
   "file.save": ["Meta+S"],
+  "file.saveAs": ["Meta+Shift+S"],
   "file.newUntitled": ["Meta+N"],
   "file.new": [],
   "file.settings": ["Meta+,"],

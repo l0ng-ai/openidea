@@ -51,6 +51,7 @@ export function activate(): void | (() => void) {
     activePath: () => ctrl.activePath(),
     activeCursor: () => ctrl.activeCursor(),
     saveAll: (opts) => ctrl.saveAll(opts),
+    copyAs: (path, target) => ctrl.copyAs(path, target),
     dirtyDocumentIds: () => [...ctrl.manager.byId.values()].filter((m) => m.getMeta().dirty).map((m) => m.doc),
     untitledDirtyDocumentIds: () =>
       [...ctrl.manager.byId.values()].filter((m) => isUntitledUri(m.path) && m.getMeta().dirty).map((m) => m.doc),

@@ -22,6 +22,7 @@ import { beginLocalImport, projectFs } from "./fs";
 import { renameCopiedJavaType } from "./javaCopy";
 import { javaPackageAt, pastedJavaClass, withJavaPackage } from "./javaPaste";
 import { currentRoots } from "@/platform/projectRoots";
+import { notifyFileOperation } from "@/platform/fileOps";
 import { IpcError, isCancelled, isTauri } from "@/platform/ipc";
 import { MEMBER_PREFIX, type ProjectNode } from "./model";
 import {
@@ -772,11 +773,38 @@ function openCopyDialogFor(paths: string[], target: string, dir?: boolean) {
     target,
     dir,
     copy: async (to, name, openInEditor) => {
-      const first = await transfer(paths, to, "copy", name ?? undefined);
+      const first = await copyDialogPaths(paths, to, name, dir);
       if (typeof first === "string" && openInEditor) void openFile(first, { focus: true });
       return !!first;
     },
   });
+}
+
+/** A single open file is copied from its document buffer; closed files keep the filesystem copy path. */
+async function copyDialogPaths(
+  paths: string[],
+  target: string,
+  name: string | null,
+  dir?: boolean,
+): Promise<string | boolean> {
+  const source = !dir && paths.length === 1 ? paths[0]! : null;
+  if (!source) return transfer(paths, target, "copy", name ?? undefined);
+  const to = joinPath(target, name ?? nameOf(source));
+  try {
+    const copied = await maybeEditorService()?.copyAs?.(source, to);
+    if (copied === undefined || copied === null) return transfer(paths, target, "copy", name ?? undefined);
+    if (!copied) return false;
+    notifyFileOperation({ kind: "created", paths: [to] });
+    // Preserve the Copy dialog's Java class rename for buffer-backed copies too.
+    await renameCopiedJavaType(source, to).catch(() => undefined);
+    await loadDir(target, true);
+    expandFolder(target);
+    revealPath(to, false);
+    return to;
+  } catch (e) {
+    fail("Some items could not be copied", e);
+    return false;
+  }
 }
 
 type ConflictChoice = "overwrite" | "skip" | "copy";

@@ -11,7 +11,7 @@ import { EditorSelection } from "@codemirror/state";
 import { create } from "zustand";
 import { setContext } from "@/platform/context";
 import { formatBinding, hostBinding, shortcutLabel } from "@/platform/keymap";
-import { ipcPath, isSameOrInside } from "@/platform/paths";
+import { isSameOrInside } from "@/platform/paths";
 import { basename, dirname, relativePath, useProject } from "@/platform/project";
 import { editorPrefs } from "@/platform/editorSettings";
 import {
@@ -55,7 +55,6 @@ import { openLightweightEditor } from "./openLightweightEditor";
 import { windowBackgroundHex } from "@/workbench/theme";
 import { hoverActionsAt } from "@/platform/hoverActions";
 import { chooseSavePath } from "@/platform/choosePath";
-import { notifyFileOperation } from "@/platform/fileOps";
 import type { DialogFilter as SaveDialogFilter } from "@/platform/dialog";
 import { isUntitledUri, untitledTitle } from "@/platform/virtualDocs";
 import { isRemoteWindow, projectLocation } from "@/platform/remote";
@@ -331,8 +330,6 @@ export class EditorController implements SlotHost {
   private restoring = false;
   private closeRequests = 0;
   private projectTransition: Promise<void> = Promise.resolve();
-  /** Sources in a Save As chooser/copy: autosave must not write them before the copy opens. */
-  private saveAsSources = new Set<number>();
 
   constructor(backend: DocBackend = docBackend(), scheduler?: Scheduler) {
     this.manager = new DocumentManager(
@@ -492,7 +489,7 @@ export class EditorController implements SlotHost {
       this.disposers.push(this.manager.backend.onDiskConflict((e) => this.onDiskConflict(e.path)));
     const onWindowBlur = () => {
       if (this.autoSave() && !this.closeSession) {
-        void this.manager.saveAll("auto", false, this.saveAsSources);
+        void this.manager.saveAll("auto");
         void this.saveCustomDocuments(true).catch((e) => this.documentError(e));
       }
     };
@@ -575,7 +572,7 @@ export class EditorController implements SlotHost {
         const now = next.panes[paneId];
         if (pane.active && now && now.active !== pane.active) {
           const slot = this.slots.get(pane.active);
-          if (slot && !this.saveAsSources.has(slot.model.doc)) void slot.model.save("auto").catch(() => {});
+          if (slot) void slot.model.save("auto").catch(() => {});
           const input = pane.tabs.find((t) => t.id === pane.active)?.input;
           if (input && open.has(input.key) && !saved.has(input.key) && !this.preparedDocuments.has(input.key)) {
             saved.add(input.key);
@@ -855,9 +852,7 @@ export class EditorController implements SlotHost {
   onBlur(slot: EditorSlot) {
     setContext("editorTextFocus", false);
     if (!this.autoSave()) return;
-    const save = () => {
-      if (!this.saveAsSources.has(slot.model.doc)) void slot.model.save("auto").catch(() => {});
-    };
+    const save = () => void slot.model.save("auto").catch(() => {});
     saveOnBlur(() => !!slot.view?.hasFocus, save);
   }
 
@@ -1444,76 +1439,12 @@ export class EditorController implements SlotHost {
     }
   }
 
-  /** Whether the active editor is a real file that Save As can copy. */
-  canSaveAs(): boolean {
-    const model = this.activeSlot?.model;
-    return !!model && !model.closed && !model.virtual && !isUntitledUri(model.path) && !focusedCellEditor();
-  }
-
-  /** Copies the current buffer to a chosen path and opens it without saving or retargeting the source. */
-  async saveAs(): Promise<boolean> {
-    const model = this.activeSlot?.model;
-    if (!model || !this.canSaveAs()) return false;
-    const source = model.path;
-    // The native chooser can blur the window, and activating the copy normally
-    // autosaves the tab being left. Neither may write the source during Save As.
-    this.saveAsSources.add(model.doc);
-    try {
-      let path: string;
-      try {
-        const picked = await chooseSavePath({
-          title: tx("Save As"),
-          defaultPath: this.saveAsSuggestion(model),
-          filters: await languageFilters(),
-        });
-        if (!picked) return false;
-        path = ipcPath(picked);
-        if (path === source || model.closed) return false;
-        // The native document service copies the backend buffer, so flush local
-        // editor changes first without running save cleanup or saving the source.
-        await model.sync.whenIdle();
-        if (!(await this.manager.backend.copyAs(model.doc, path))) return false;
-      } catch (e) {
-        notifications().notify({
-          level: "error",
-          title: "Cannot save file",
-          body: e instanceof Error ? e.message : String(e),
-        });
-        return false;
-      }
-      notifyFileOperation({ kind: "created", paths: [path] });
-      try {
-        this.recordLeaving();
-        const options = { focus: true, keepOpen: source };
-        // Save As always opens a text file tab, never an external app or a
-        // contributed binary viewer for the destination's extension.
-        await this.admitInput(fileInput(path), options, this.openingGeneration(options));
-      } catch (e) {
-        notifications().notify({
-          level: "error",
-          title: "Cannot open file",
-          body: e instanceof Error ? e.message : String(e),
-        });
-        return false;
-      }
-      if (this.manager.get(path)) return true;
-      const failed = findTab(useTabs.getState(), fileKey(path));
-      const message = failed ? useTabErrors.getState()[failed.tab.id] : undefined;
-      if (failed) await this.closeTab(failed.paneId, failed.tab.id);
-      notifications().notify({
-        level: "error",
-        title: "Cannot open file",
-        body: message ?? "The copy could not be opened.",
-      });
-      return false;
-    } finally {
-      this.saveAsSources.delete(model.doc);
-    }
-  }
-
-  /** Existing files keep their path; new buffers start in the project root or LightEdit folder. */
+  /**
+   * Where the save dialog opens for a new buffer: the project root, or, in a
+   * LightEdit window, the folder of its most recently open real file. The file
+   * type comes from the dialog's own type dropdown (see `languageFilters`).
+   */
   private saveAsSuggestion(model: import("./model/document").DocModel): string {
-    if (!isUntitledUri(model.path)) return model.path;
     const root = useProject.getState().project?.root;
     const dir =
       root ??
@@ -1647,7 +1578,7 @@ export class EditorController implements SlotHost {
             pinned: o.pinned,
             activate,
             preservePreview: !activate,
-            keepPreview: (t) => !isTextInput(t.input) || t.input.path === o.keepOpen,
+            keepPreview: (t) => !isTextInput(t.input),
             ...(o.index !== undefined
               ? { index: o.index }
               : tabs.openAtEnd
@@ -1671,11 +1602,7 @@ export class EditorController implements SlotHost {
       const replaced = preview && closedDocuments(before, s, kinds);
       if (replaced && replaced.length) await this.releaseDocuments(replaced).catch((e) => this.documentError(e));
       const canFocus = () => this.isCurrentOpening(generation) && this.activeTabOf()?.id === tabId;
-      await this.enforcePaneTabLimit(
-        paneId,
-        activate ? tabId : (useTabs.getState().panes[paneId]?.active ?? tabId),
-        o.keepOpen ? new Set([fileKey(o.keepOpen)]) : undefined,
-      );
+      await this.enforcePaneTabLimit(paneId, activate ? tabId : (useTabs.getState().panes[paneId]?.active ?? tabId));
       if (!isTextInput(input)) {
         if (o.focus !== false)
           requestAnimationFrame(() => {
@@ -1720,14 +1647,13 @@ export class EditorController implements SlotHost {
    * running process unasked): their answers are resolved first, so the sync
    * and the async ones are protected alike.
    */
-  private enforcePaneTabLimit(paneId: string, keep?: string, liveKeys?: ReadonlySet<string>) {
+  private enforcePaneTabLimit(paneId: string, keep?: string) {
     const kinds = useContributions.getState().editorKinds;
     const busyCapable = (useTabs.getState().panes[paneId]?.tabs ?? []).filter((t) => kinds.get(t.input.kind)?.isBusy);
     const evict = (busy: ReadonlySet<string>) => {
       const prefs = editorPrefs().tabs;
       // A tab whose kind reports a running process is never evicted: that would end it unasked.
-      const protect = (tab: Tab) =>
-        busy.has(tab.input.key) || inputDirty(tab.input, kinds) === true || !!liveKeys?.has(tab.input.key);
+      const protect = (tab: Tab) => busy.has(tab.input.key) || inputDirty(tab.input, kinds) === true;
       return this.removeGuarded(
         (current) =>
           current.panes[paneId]
@@ -2489,6 +2415,14 @@ export class EditorController implements SlotHost {
     return this.activeSlot?.model.path ?? this.activeTabOf()?.input.path ?? null;
   }
 
+  /** Copies an open file's current buffer without saving it; null when no editor document owns `path`. */
+  async copyAs(path: string, target: string): Promise<boolean | null> {
+    const model = this.manager.get(path);
+    if (!model || model.closed || model.virtual || isUntitledUri(path)) return null;
+    await model.sync.whenIdle();
+    return this.manager.backend.copyAs(model.doc, target);
+  }
+
   activeCursor() {
     const slot = this.activeSlot;
     if (!slot) return null;
@@ -2508,7 +2442,7 @@ export class EditorController implements SlotHost {
 
   async saveAll(opts?: { skipUntitled?: boolean }): Promise<void> {
     const results = await Promise.allSettled([
-      this.manager.saveAll("explicit", opts?.skipUntitled, this.saveAsSources),
+      this.manager.saveAll("explicit", opts?.skipUntitled),
       this.saveCustomDocuments(),
     ]);
     const errors = failures(results);
