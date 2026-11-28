@@ -2110,13 +2110,17 @@ export interface RunAnythingProvider {
   order?: number;
   /** Matching entries for the field's text (cheap, synchronous). */
   items(query: string): RunAnythingItem[];
-  /** Runs `line` when it belongs to this provider (`mvn clean`); false leaves it to the next one. */
-  execute?(line: string): boolean | Promise<boolean>;
+  /**
+   * Runs `line` when it belongs to this provider (`mvn clean`); false leaves it to the next one.
+   * `cwd` is the absolute folder it was typed in (a terminal's), the project root when omitted.
+   */
+  execute?(line: string, cwd?: string): boolean | Promise<boolean>;
   /**
    * Whether `execute` runs `line` as a command this provider recognizes (cheap,
-   * synchronous): Markdown offers run icons for such lines in code blocks.
+   * synchronous): Markdown offers run icons for such lines in code blocks, and the
+   * terminal highlights them to run with the IDE.
    */
-  accepts?(line: string): boolean;
+  accepts?(line: string, cwd?: string): boolean;
   /**
    * For providers whose entries arrive later (a plugin's answer): `listener` is called when
    * `items` would return something new, so the open popup asks again. Returns the unsubscribe.

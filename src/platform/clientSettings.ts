@@ -66,6 +66,7 @@ export const CLIENT_SETTINGS_KEYS = [
   "terminal.pasteOnMiddleClick",
   "terminal.overrideIdeShortcuts",
   "terminal.highlightHyperlinks",
+  "terminal.runCommandsUsingIde",
   "terminal.optionAsMeta",
   "terminal.escapeToEditor",
   "terminal.cursorShape",

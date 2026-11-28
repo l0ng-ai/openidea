@@ -5,7 +5,7 @@
  */
 import { writeClipboardText } from "@/platform/clipboard";
 import { noteCopySource } from "@/platform/clipboardSource";
-import { Terminal, type IDisposable, type ILink, type ILinkHandler } from "@xterm/xterm";
+import { Terminal, type IDisposable, type ILink, type ILinkHandler, type IMarker } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
 import screenCss from "./sessionScreen.css?inline";
@@ -23,6 +23,15 @@ import { installDomRowCache } from "./domRowCache";
 import { installSelectionHighlights, type SelectionHighlightController } from "./highlight";
 import { installLinkHighlights, xtermLink, type LinkHighlightController } from "./linkHighlights";
 import { installModifierPathLinks, type ModifierPathLinksController } from "./pathLinks";
+import {
+  installSmartCommands,
+  recognised,
+  runRecognised,
+  smartCommandsEnabled,
+  typedCommand,
+  type PromptEnd,
+  type SmartCommandController,
+} from "./smartCommands";
 import { installTerminalPaste, pasteIntoTerminal, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
 import { installImeAnchor } from "./imeAnchor";
@@ -260,6 +269,9 @@ export class TerminalSession {
   private readonly selectionHighlights: SelectionHighlightController;
   private readonly linkHighlights: LinkHighlightController;
   private readonly pathLinks: ModifierPathLinksController;
+  private readonly smartCommands: SmartCommandController;
+  /** Where the command being typed starts (OSC 133 B), until it runs (C). */
+  private promptEnd: PromptEnd | null = null;
   private opts: SessionOptions;
   private snapshot: SessionSnapshot;
   private ptyId: TerminalId | null = null;
@@ -415,7 +427,10 @@ export class TerminalSession {
       // OSC 133 (shell integration): C = a command starts, D;<status> = it
       // finished (plain D carries no status; both are accepted).
       this.term.parser.registerOscHandler(133, (data) => {
-        if (data === "C") {
+        if (data === "B") {
+          this.setPromptEnd(this.term.registerMarker(0));
+        } else if (data === "C") {
+          this.setPromptEnd(undefined);
           this.commandStartedAt = Date.now();
           this.commandInterrupted = false;
           // A new command in the tab: the previous completion has been seen, and
@@ -482,7 +497,14 @@ export class TerminalSession {
       cwd: () => this.snapshot.cwd,
       color: readLinkColor,
     });
-    this.disposables.push(this.selectionHighlights, this.linkHighlights, this.pathLinks);
+    this.smartCommands = installSmartCommands(
+      this.term,
+      () => (this.snapshot.commandRunning ? null : this.promptEnd),
+      () => this.snapshot.cwd,
+    );
+    this.disposables.push(this.selectionHighlights, this.linkHighlights, this.pathLinks, this.smartCommands, {
+      dispose: () => this.setPromptEnd(undefined),
+    });
     this.disposables.push(
       { dispose: installTerminalPaste(this.host, (text) => this.paste(text), this.clipboardTarget) },
       { dispose: installTerminalDrop(this.host, (text) => this.paste(text), this.clipboardTarget) },
@@ -555,6 +577,7 @@ export class TerminalSession {
     this.selectionHighlights.refresh();
     this.linkHighlights.refresh();
     this.pathLinks.refresh();
+    this.smartCommands.refresh();
     this.scheduleFit();
   }
 
@@ -1060,7 +1083,32 @@ export class TerminalSession {
   }
 
   clear() {
+    // xterm keeps the cursor's row: a prompt there keeps its typed command.
+    const buf = this.term.buffer.active;
+    const prompt = this.promptEnd?.marker.line === buf.baseY + buf.cursorY ? this.promptEnd : null;
     this.term.clear();
+    if (prompt) this.setPromptEnd(this.term.registerMarker(0), prompt.x);
+  }
+
+  private setPromptEnd(marker: IMarker | undefined, x = this.term.buffer.active.cursorX) {
+    this.promptEnd?.marker.dispose();
+    this.promptEnd = marker ? { marker, x } : null;
+    this.smartCommands.refresh();
+  }
+
+  /**
+   * Run Highlighted Command: runs the recognised command typed at the prompt with the IDE and
+   * empties the shell's line; false (nothing sent) when no such command is typed.
+   */
+  async runTypedCommand(): Promise<boolean> {
+    const prompt = this.snapshot.commandRunning ? null : this.promptEnd;
+    const typed = smartCommandsEnabled() && prompt ? typedCommand(this.term, prompt) : null;
+    const cwd = this.snapshot.cwd;
+    if (!typed || !recognised(typed.text, cwd)) return false;
+    // End of line, then kill the line (zsh, bash and fish alike).
+    this.send("\x05\x15");
+    if (!(await runRecognised(typed.text, cwd))) this.send(typed.text);
+    return true;
   }
 
   /** Asks xterm to take the caret. Remembered when the textarea does not exist yet. */

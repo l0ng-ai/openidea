@@ -375,6 +375,21 @@ export function activate(): () => void {
         },
       },
       {
+        id: "terminal.runHighlightedCommand",
+        title: "Run Highlighted Command Using IDE",
+        category: "Terminal",
+        icon: "run",
+        when: "terminalFocus",
+        keywords: ["smart command", "run anything", "pytest", "npm run"],
+        // Settings › Tools › Terminal › Run commands using IDE; anything else is a plain Enter.
+        run: async () => {
+          const rt = terminalRuntime();
+          const focused = document.activeElement;
+          const s = rt && (rt.sessionFromElement(focused) ?? rt.cliSessionFromElement(focused) ?? rt.activeSession());
+          if (s && !(await s.runTypedCommand())) s.send("\r");
+        },
+      },
+      {
         id: "terminal.clear",
         title: "Clear Terminal Buffer",
         category: "Terminal",

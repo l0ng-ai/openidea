@@ -230,6 +230,11 @@ export function manageRunAnything(run: (config: RunConfig) => unknown): RunAnyth
       } else void loadCommands(manage, python);
       return commandItems(query, (manage && lists[manage]) || [], (line) => void runManageLine(line, run));
     },
+    accepts(line) {
+      if (!manageArgs(line)) return false;
+      void loadManage();
+      return !!useManage.getState().manage;
+    },
     execute: (line) => runManageLine(line, run),
     subscribe: (listener) =>
       useManage.subscribe((s, prev) => (s.commands !== prev.commands || s.manage !== prev.manage) && listener()),

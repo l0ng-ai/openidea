@@ -617,6 +617,8 @@ pub struct TerminalSettings {
     pub shell_integration: bool,
     pub highlight_hyperlinks: bool,
     pub highlight_selection: bool,
+    /// Highlights typed commands the IDE recognises; Run Highlighted Command runs them with it.
+    pub run_commands_using_ide: bool,
     pub option_as_meta: bool,
     /// Escape moves focus to the editor instead of reaching the shell.
     pub escape_to_editor: bool,
@@ -653,6 +655,7 @@ impl Default for TerminalSettings {
             shell_integration: true,
             highlight_hyperlinks: true,
             highlight_selection: true,
+            run_commands_using_ide: true,
             option_as_meta: false,
             escape_to_editor: false,
             cursor_shape: "block".into(),

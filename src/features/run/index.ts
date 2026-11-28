@@ -57,6 +57,7 @@ import { invalidatePythonPackages } from "./pythonPackages";
 import { RunWidget } from "./RunWidget";
 import { packageBinsRunAnything, watchPackageBinsChanges } from "./packageBins";
 import { runConfigsRunAnything } from "./runAnything";
+import { commandLinesRunAnything } from "./commandLines";
 import { runDirectory } from "./navigate";
 import {
   cleanupRemovedProject,
@@ -469,6 +470,7 @@ export function activate(): () => void {
     registerTitleItem({ id: "run.widget", title: "Run Widget", align: "right", priority: 0, component: RunWidget }),
     registerRunAnythingProvider(runConfigsRunAnything),
     registerRunAnythingProvider(packageBinsRunAnything),
+    registerRunAnythingProvider(commandLinesRunAnything),
     watchPackageBinsChanges(),
     registerBuiltinTypes(),
     registerRunConfigType(junitType),

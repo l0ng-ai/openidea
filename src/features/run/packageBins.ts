@@ -231,7 +231,7 @@ export function execItems(query: string, packages: readonly PackageBins[]): RunA
 }
 
 /** Characters a shell expands or interprets; quotes and backslashes are split by `parseArgs`. */
-const SHELL_SYNTAX = /[|&;<>$`*?~{}()[\]%!#\n]/;
+export const SHELL_SYNTAX = /[|&;<>$`*?~{}()[\]%!#\n]/;
 
 let cache: { key: string; promise: Promise<PackageBins[]>; value?: PackageBins[] } | null = null;
 const listeners = new Set<() => void>();
@@ -262,6 +262,12 @@ export const packageBinsRunAnything: RunAnythingProvider = {
     if (!parseExecLine(query)) return [];
     void packages();
     return execItems(query, cache?.value ?? []);
+  },
+  accepts(line) {
+    const parsed = parseExecLine(line);
+    if (!parsed?.name || SHELL_SYNTAX.test(line)) return false;
+    void packages();
+    return !!cache?.value?.some((p) => runnableBins(parsed.runner, p).some((b) => b.name === parsed.name));
   },
   async execute(line) {
     const parsed = parseExecLine(line);

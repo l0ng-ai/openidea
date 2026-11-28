@@ -14483,6 +14483,8 @@ export type TerminalSettings = {
 	shellIntegration?: boolean,
 	highlightHyperlinks?: boolean,
 	highlightSelection?: boolean,
+	/**  Highlights typed commands the IDE recognises; Run Highlighted Command runs them with it. */
+	runCommandsUsingIde?: boolean,
 	optionAsMeta?: boolean,
 	/**  Escape moves focus to the editor instead of reaching the shell. */
 	escapeToEditor?: boolean,
