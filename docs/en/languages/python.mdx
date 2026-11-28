@@ -89,6 +89,8 @@ The **Python Packages** tool window (**View | Tool Windows**, or Find Action) ma
 
 When it has a package's details from PyPI, the pane also lists the project's links (its PyPI page, homepage, documentation, source, …) and its description from PyPI: rendered when it is Markdown, as plain text otherwise. Links open in the browser.
 
+The **+** button in its toolbar installs a package from elsewhere: **Install from Version Control…** takes a repository URL (`git+https://…`; a plain `https://`, `ssh://` or `git@host:path` URL is installed with Git), **Install from Disk…** a project directory or a wheel or source archive. With **Install as editable (-e)**, a local project is installed in editable mode, so changes to its sources apply without reinstalling; an editable install from version control needs `#egg=<name>` at the end of the URL.
+
 Other options on the page:
 
 - **Activate virtualenv** (section **Terminal**): new terminal sessions run the virtualenv's activate script.

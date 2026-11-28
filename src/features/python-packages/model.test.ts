@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isPackageName, listRows, normalize, requirementOf, rowKey } from "./model";
+import { isPackageName, listRows, normalize, requirementOf, rowKey, vcsRequirement } from "./model";
 
 const INSTALLED = [
   { name: "requests", version: "2.31.0" },
@@ -70,5 +70,16 @@ describe("names and requirements", () => {
   it("pins a chosen version", () => {
     expect(requirementOf("six", "1.16.0")).toBe("six==1.16.0");
     expect(requirementOf("six", null)).toBe("six");
+  });
+});
+
+describe("vcsRequirement", () => {
+  it("installs a repository URL with Git unless it names a VCS", () => {
+    expect(vcsRequirement(" https://github.com/psf/requests.git ")).toBe("git+https://github.com/psf/requests.git");
+    expect(vcsRequirement("git@github.com:psf/requests.git")).toBe("git+ssh://git@github.com/psf/requests.git");
+    expect(vcsRequirement("git+https://github.com/psf/requests@v2.32.0#egg=requests")).toBe(
+      "git+https://github.com/psf/requests@v2.32.0#egg=requests",
+    );
+    expect(vcsRequirement("hg+https://hg.example.org/demo")).toBe("hg+https://hg.example.org/demo");
   });
 });
