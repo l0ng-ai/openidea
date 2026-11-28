@@ -201,7 +201,7 @@ impl DbKeyKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 #[serde(rename = "DbTableDetails")]
 pub struct TableDetails {
@@ -213,6 +213,53 @@ pub struct TableDetails {
     pub indexes: Vec<IndexInfo>,
     pub foreign_keys: Vec<ForeignKey>,
     pub triggers: Vec<TriggerInfo>,
+    /// The role owning the table (PostgreSQL); `None` where the schema owns its tables.
+    #[serde(default)]
+    #[specta(optional)]
+    pub owner: Option<String>,
+    /// The table's tablespace, the database's default one when it names none (PostgreSQL).
+    #[serde(default)]
+    #[specta(optional)]
+    pub tablespace: Option<String>,
+    /// The table access method (PostgreSQL's `heap`, …); `None` for a partitioned table, and on
+    /// the engines without one.
+    #[serde(default)]
+    #[specta(optional)]
+    pub access_method: Option<String>,
+    /// The storage parameters set on the table, as `(name, value)`: PostgreSQL's reloptions,
+    /// its TOAST table's prefixed `toast.`. `None` on the engines without any.
+    #[serde(default)]
+    #[specta(optional)]
+    pub storage_options: Option<Vec<(String, String)>>,
+    /// The partition key (`RANGE (created)`); `None` when the table isn't partitioned.
+    #[serde(default)]
+    #[specta(optional)]
+    pub partitioning: Option<String>,
+    /// Whether the table is logged, unlogged or temporary (PostgreSQL).
+    #[serde(default)]
+    #[specta(optional)]
+    pub persistence: Option<DbPersistence>,
+}
+
+/// Whether a table's changes are written to the write-ahead log, and whether it outlives the session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DbPersistence {
+    Permanent,
+    Unlogged,
+    Temporary,
+}
+
+impl DbPersistence {
+    /// PostgreSQL's `pg_class.relpersistence`.
+    fn from_catalog(v: &str) -> Option<Self> {
+        match v {
+            "p" => Some(Self::Permanent),
+            "u" => Some(Self::Unlogged),
+            "t" => Some(Self::Temporary),
+            _ => None,
+        }
+    }
 }
 
 /// One object privilege on a table: `grantee` may run `privilege` (`SELECT`, …), granted
@@ -377,6 +424,25 @@ async fn catalog_rows(pool: &Pool, q: &str) -> IdeResult<Vec<Vec<Option<String>>
         },
         rows => rows,
     }
+}
+
+/// One [`sql::table_properties`] row into `details`.
+fn read_table_properties(details: &mut TableDetails, row: Vec<Option<String>>) {
+    let mut it = row.into_iter().map(|v| v.filter(|v| !v.is_empty()));
+    let mut next = || it.next().flatten();
+    details.owner = next();
+    details.tablespace = next();
+    details.access_method = next();
+    details.storage_options = Some(
+        next()
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|o| o.split_once('='))
+            .map(|(name, value)| (name.to_owned(), value.to_owned()))
+            .collect(),
+    );
+    details.partitioning = next();
+    details.persistence = next().as_deref().and_then(DbPersistence::from_catalog);
 }
 
 fn flag(v: &Option<String>) -> bool {
@@ -1287,13 +1353,7 @@ impl DbManager {
             })
             .collect();
         if driver == DbDriver::Jdbc {
-            return Ok(TableDetails {
-                comment: None,
-                columns,
-                indexes: vec![],
-                foreign_keys: vec![],
-                triggers: vec![],
-            });
+            return Ok(TableDetails { columns, ..Default::default() });
         }
         let mut indexes: Vec<IndexInfo> = Vec::new();
         for r in pool.rows(&sql::indexes(driver, schema, table), MAX_META_ROWS).await? {
@@ -1360,7 +1420,18 @@ impl DbManager {
             ),
             None => None,
         };
-        Ok(TableDetails { comment, columns, indexes, foreign_keys, triggers })
+        let mut details = TableDetails { comment, columns, indexes, foreign_keys, triggers, ..Default::default() };
+        if let Some(q) = sql::table_properties(driver, schema, table) {
+            match catalog_rows(pool, &q).await {
+                Ok(rows) => {
+                    if let Some(row) = rows.into_iter().next() {
+                        read_table_properties(&mut details, row);
+                    }
+                }
+                Err(e) => tracing::warn!("table properties: {}", e.message),
+            }
+        }
+        Ok(details)
     }
 
     /// The object privileges granted on `table`; empty, without a query, on the engines

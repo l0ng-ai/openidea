@@ -10962,5 +10962,15 @@
   "Keep Key": "保留键",
   "Drop Index": "删除索引",
   "Keep Index": "保留索引",
-  "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite 无法删除主键或唯一约束的索引。"
+  "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite 无法删除主键或唯一约束的索引。",
+  "Owner": "所有者",
+  "Tablespace": "表空间",
+  "Persistence": "持久性",
+  "Logged": "记录日志",
+  "Unlogged": "不记录日志",
+  "Temporary": "临时",
+  "Storage options": "存储选项",
+  "Access method": "访问方法",
+  "Partitioning": "分区",
+  "fillfactor=70, autovacuum_enabled=false": "fillfactor=70, autovacuum_enabled=false"
 }

@@ -4430,5 +4430,16 @@
   "Keep Key": "Keep Key",
   "Drop Index": "Drop Index",
   "Keep Index": "Keep Index",
-  "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite cannot drop the index of a primary key or unique constraint."
+  "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite cannot drop the index of a primary key or unique constraint.",
+  "Properties": "Properties",
+  "Owner": "Owner",
+  "Tablespace": "Tablespace",
+  "Persistence": "Persistence",
+  "Logged": "Logged",
+  "Unlogged": "Unlogged",
+  "Temporary": "Temporary",
+  "Storage options": "Storage options",
+  "Access method": "Access method",
+  "Partitioning": "Partitioning",
+  "fillfactor=70, autovacuum_enabled=false": "fillfactor=70, autovacuum_enabled=false"
 }

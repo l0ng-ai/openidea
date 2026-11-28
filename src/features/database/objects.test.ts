@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { DbColumnInfo, DbDriver, DbIndexInfo } from "@/platform/ipc";
+import type { DbColumnInfo, DbDriver, DbIndexInfo, DbTableDetails } from "@/platform/ipc";
 import {
   canAlterIndex,
   canChangePrimaryKey,
@@ -12,6 +12,10 @@ import {
   type IndexDraft,
   grantMatrix,
   grantsSupported,
+  hasTableProperties,
+  propertySupport,
+  tablePropertiesOf,
+  type TableProperties,
   alterTableSql,
   canDrop,
   canModifyTable,
@@ -717,6 +721,102 @@ describe("database and schema SQL", () => {
       "alter database shop set single_user with rollback immediate;\ndrop database shop;",
     );
   });
+});
+
+describe("table properties in Modify Table", () => {
+  const details = (extra: Partial<DbTableDetails> = {}): DbTableDetails => ({
+    columns: users,
+    indexes: [],
+    foreignKeys: [],
+    triggers: [],
+    ...extra,
+  });
+  const bulk = details({
+    owner: "loader",
+    tablespace: "pg_default",
+    accessMethod: "heap",
+    storageOptions: [
+      ["fillfactor", "70"],
+      ["toast.autovacuum_enabled", "false"],
+    ],
+    persistence: "unlogged",
+  });
+  const original = tablePropertiesOf(bulk);
+  const alter = (value: Partial<TableProperties>, name = "bulk", driver: DbDriver = "postgres") =>
+    alterTableSql(driver, "public", "bulk", name, users.map(draftOf), undefined, undefined, {
+      original,
+      value: { ...original, ...value },
+    });
+
+  it("shows the properties the catalog reports", () => {
+    expect(original).toEqual({
+      owner: "loader",
+      tablespace: "pg_default",
+      storageOptions: "fillfactor=70, toast.autovacuum_enabled=false",
+      persistence: "unlogged",
+    });
+    expect(hasTableProperties(bulk)).toBe(true);
+    // SQLite reports none, so the dialog has no Properties tab and no empty Owner field.
+    expect(hasTableProperties(details())).toBe(false);
+    expect(hasTableProperties(undefined)).toBe(false);
+  });
+
+  it.each<[string, Partial<TableProperties>, string[]]>([
+    ["nothing changed", {}, []],
+    ["the owner", { owner: "Reporting" }, ['alter table public.bulk owner to "Reporting";']],
+    ["the tablespace", { tablespace: "fast_ssd" }, ["alter table public.bulk set tablespace fast_ssd;"]],
+    ["logged", { persistence: "permanent" }, ["alter table public.bulk set logged;"]],
+    [
+      "a storage option",
+      { storageOptions: "fillfactor=50, toast.autovacuum_enabled=false" },
+      ["alter table public.bulk set (fillfactor = 50);"],
+    ],
+    [
+      "options removed and added",
+      { storageOptions: " autovacuum_enabled = off, vacuum_truncate=true" },
+      [
+        "alter table public.bulk reset (fillfactor, toast.autovacuum_enabled);",
+        "alter table public.bulk set (autovacuum_enabled = off, vacuum_truncate = true);",
+      ],
+    ],
+    [
+      "a quoted option value",
+      { storageOptions: "fillfactor=70, x=a b" },
+      ["alter table public.bulk reset (toast.autovacuum_enabled);", "alter table public.bulk set (x = 'a b');"],
+    ],
+    // A cleared field is left as it was: a table always has an owner and a tablespace.
+    ["cleared owner and tablespace", { owner: " ", tablespace: "" }, []],
+  ])("changes %s", (_, value, sql) => {
+    expect(alter(value)).toEqual(sql);
+  });
+
+  it("changes the owner after a rename, the storage before it", () => {
+    expect(alter({ owner: "admin", persistence: "permanent" }, "bulk_load")).toEqual([
+      "alter table public.bulk set logged;",
+      "alter table public.bulk rename to bulk_load;",
+      "alter table public.bulk_load owner to admin;",
+    ]);
+  });
+
+  it("keeps a temporary table temporary", () => {
+    const temp = tablePropertiesOf(details({ persistence: "temporary" }));
+    expect(
+      alterTableSql("postgres", "public", "t", "t", [], undefined, undefined, {
+        original: temp,
+        value: { ...temp, persistence: "unlogged" },
+      }),
+    ).toEqual([]);
+  });
+
+  it.each<DbDriver>(["mysql", "sqlite", "oracle", "sqlServer", "snowflake", "clickhouse"])(
+    "changes no property on %s",
+    (driver) => {
+      expect(Object.values(propertySupport(driver)).some(Boolean)).toBe(false);
+      expect(
+        alter({ owner: "x", tablespace: "y", storageOptions: "", persistence: "permanent" }, "bulk", driver),
+      ).toEqual([]);
+    },
+  );
 });
 
 describe("table grants", () => {

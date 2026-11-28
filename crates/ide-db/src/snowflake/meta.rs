@@ -154,7 +154,7 @@ pub(crate) async fn table_details(pool: &SnowflakePool, schema: &str, table: &st
             .and_then(|r| r.get("comment").filter(|c| !c.is_empty()).map(str::to_owned)),
         Err(_) => None,
     };
-    Ok(TableDetails { comment, columns, indexes: Vec::new(), foreign_keys, triggers: Vec::new() })
+    Ok(TableDetails { comment, columns, foreign_keys, ..Default::default() })
 }
 
 fn foreign_keys(shown: &Shown) -> Vec<ForeignKey> {
