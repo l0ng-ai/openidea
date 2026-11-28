@@ -468,7 +468,8 @@ pub struct ToolDownloadSettings {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct SettingsSyncSettings {
-    /// Clone URL (a private GitHub Gist's works too); empty = sync off.
+    /// Clone URL (a secret GitHub Gist's works too, though anyone with its link can read it);
+    /// empty = sync off.
     pub repository: String,
     pub appearance: bool,
     /// Editor settings, color schemes, code style, inspections and spelling.

@@ -1,5 +1,5 @@
 /**
- * Settings Sync: the Git repository the IDE settings sync through (a private Gist's clone URL
+ * Settings Sync: the Git repository the IDE settings sync through (a secret Gist's clone URL
  * works too) and what syncs. Sync Now runs `file.syncSettings` in the project window.
  */
 import clsx from "clsx";
@@ -45,7 +45,7 @@ export const SETTINGS_SYNC_PAGE: PageSpec = {
           kind: "text",
           key: "settingsSync.repository",
           label: "Repository URL",
-          hint: "A Git repository only you can write to, or a private Gist's clone URL. Git signs in with your own credentials; OpenIDEA stores none.",
+          hint: "A Git repository only you can read and write. A secret Gist's clone URL works too, but anyone with its link can read it. Git signs in with your own credentials; OpenIDEA stores none.",
         },
         { kind: "custom", label: "Sync Now", component: SyncNowRow },
       ],
@@ -68,7 +68,7 @@ export const SETTINGS_SYNC_PAGE: PageSpec = {
           kind: "toggle",
           key: "settingsSync.other",
           label: "Other settings",
-          hint: "Never synced: passwords and tokens, interpreter, SDK and tool paths, proxy, SSH, deployment, run targets, the MCP server and agent permissions.",
+          hint: "Never synced: passwords and tokens, environment variables, arguments, commands and paths, proxy, SSH, deployment, run targets, the download mirror, the MCP server and agent permissions.",
         },
       ],
     },

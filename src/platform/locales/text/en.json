@@ -4451,12 +4451,12 @@
   "Apply the changes first.": "Apply the changes first.",
   "Enter a repository URL first.": "Enter a repository URL first.",
   "Sync Now": "Sync Now",
-  "A Git repository only you can write to, or a private Gist's clone URL. Git signs in with your own credentials; OpenIDEA stores none.": "A Git repository only you can write to, or a private Gist's clone URL. Git signs in with your own credentials; OpenIDEA stores none.",
+  "A Git repository only you can read and write. A secret Gist's clone URL works too, but anyone with its link can read it. Git signs in with your own credentials; OpenIDEA stores none.": "A Git repository only you can read and write. A secret Gist's clone URL works too, but anyone with its link can read it. Git signs in with your own credentials; OpenIDEA stores none.",
   "Appearance and themes": "Appearance and themes",
   "Fonts, color schemes, code style, inspections and spelling.": "Fonts, color schemes, code style, inspections and spelling.",
   "Keymaps": "Keymaps",
   "Live, file and postfix templates": "Live, file and postfix templates",
   "Tool window layouts and view options": "Tool window layouts and view options",
   "Other settings": "Other settings",
-  "Never synced: passwords and tokens, interpreter, SDK and tool paths, proxy, SSH, deployment, run targets, the MCP server and agent permissions.": "Never synced: passwords and tokens, interpreter, SDK and tool paths, proxy, SSH, deployment, run targets, the MCP server and agent permissions."
+  "Never synced: passwords and tokens, environment variables, arguments, commands and paths, proxy, SSH, deployment, run targets, the download mirror, the MCP server and agent permissions.": "Never synced: passwords and tokens, environment variables, arguments, commands and paths, proxy, SSH, deployment, run targets, the download mirror, the MCP server and agent permissions."
 }

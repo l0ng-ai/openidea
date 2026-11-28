@@ -36,7 +36,7 @@ async fn two_machines_sync_through_a_bare_repository() {
         &tmp.path().join("a"),
         &remote,
         "[general]\nconfirmExit = false\nlastRunVersion = \"a\"\n[editor]\nfontSize = 15\n\
-         [languages.python]\ninterpreter = \"/a/bin/python\"\n[proxy]\npassword = \"p\"\n",
+         [languages.python]\ninterpreter = \"/a/bin/python\"\n[proxy]\npassword = \"p\"\n[terminal.env]\nAWS_ACCESS_KEY_ID = \"AKIA-SECRET\"\n",
     );
     let b = machine(
         &tmp.path().join("b"),
@@ -66,7 +66,8 @@ async fn two_machines_sync_through_a_bare_repository() {
         log.contains("\"fontSize\": 15")
             && !log.contains("python")
             && !log.contains("password")
-            && !log.contains("lastRunVersion"),
+            && !log.contains("lastRunVersion")
+            && !log.contains("AKIA-SECRET"),
         "{log}"
     );
 

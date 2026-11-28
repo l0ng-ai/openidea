@@ -47,6 +47,9 @@ pub fn sync_now(
     if url.is_empty() {
         return Err(IdeError::invalid("choose a settings repository first"));
     }
+    // One sync at a time, whichever window asks: they share the clone and the settings file.
+    static RUNNING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
     let repo = SettingsRepo::open(&host.data_dir.join("settings-sync"), url)?;
     let enabled: Vec<&str> = CATEGORIES.into_iter().filter(|c| sync::enabled(&config, c)).collect();
     match sync_once(host, &repo, &enabled, storage, mode) {
@@ -63,12 +66,13 @@ fn sync_once(
     storage: &BTreeMap<String, BTreeMap<String, String>>,
     mode: Option<SettingsSyncMode>,
 ) -> IdeResult<SettingsSyncResult> {
+    let names: Vec<String> = CATEGORIES.iter().map(|c| sync::file_name(c)).collect();
     let branch = repo.fetch()?;
     let remote_files = match &branch.commit {
-        Some(commit) => repo.files(commit)?,
+        Some(commit) => repo.files(commit, &names)?,
         None => BTreeMap::new(),
     };
-    let base_files = repo.synced().map(|commit| repo.files(&commit)).transpose()?;
+    let base_files = repo.synced().map(|commit| repo.files(&commit, &names)).transpose()?;
     if base_files.is_none() && mode.is_none() && enabled.iter().any(|c| remote_files.contains_key(&sync::file_name(c)))
     {
         return Ok(SettingsSyncResult { needs_choice: true, ..Default::default() });
@@ -102,7 +106,7 @@ fn sync_once(
             let entries = serde_json::from_value(merged).map_err(|e| IdeError::internal(e.to_string()))?;
             result.storage.insert(category.to_owned(), entries);
         } else {
-            layer_changes.extend(sync::changes(&local, &merged));
+            layer_changes.extend(sync::local_changes(&layer, category, &local, &merged));
         }
     }
     // Check before anything leaves this machine that the merged settings load here.

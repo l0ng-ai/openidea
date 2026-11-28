@@ -13640,7 +13640,10 @@ export type SettingsSyncResult = {
 
 /**  Settings › Settings Sync: the Git repository the IDE settings sync through, and what syncs. */
 export type SettingsSyncSettings = {
-	/**  Clone URL (a private GitHub Gist's works too); empty = sync off. */
+	/**
+	 *  Clone URL (a secret GitHub Gist's works too, though anyone with its link can read it);
+	 *  empty = sync off.
+	 */
 	repository?: string,
 	appearance?: boolean,
 	/**  Editor settings, color schemes, code style, inspections and spelling. */

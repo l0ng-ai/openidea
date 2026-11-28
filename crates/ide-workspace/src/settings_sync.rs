@@ -10,10 +10,10 @@ pub const CATEGORIES: [&str; 7] = ["appearance", "editor", "keymaps", "other", "
 pub const STORAGE_CATEGORIES: [&str; 3] = ["templates", "macros", "ui"];
 
 /// Global settings that never sync: Settings Sync's own, what this machine serves or reaches
-/// (MCP server, remote development, proxy, SSH hosts, deployment servers, run targets), the
-/// tools it runs (external tools, diff tools, language servers and tools at a chosen location),
-/// what agents may do here, this machine's own state (the version it last ran, Power Save Mode)
-/// and per-project or plugin-defined values.
+/// (MCP server, remote development, proxy, SSH hosts, deployment servers, run targets, download
+/// mirror), the tools and shells it runs, what agents may do here, this machine's own state (the
+/// version it last ran, Power Save Mode) and per-project or plugin-defined values. Besides these,
+/// [`is_local_key`] drops every environment, argument, command and path setting.
 const NEVER: &[&[&str]] = &[
     &["settingsSync"],
     &["general", "lastRunVersion"],
@@ -33,6 +33,9 @@ const NEVER: &[&[&str]] = &[
     &["agents", "defaults"],
     &["agents", "newTaskApprovals"],
     &["agents", "mcpServers"],
+    &["agents", "skills"],
+    &["terminal", "shellPath"],
+    &["toolDownloads", "githubMirror"],
     &["notifications", "systemNotifications"],
     &["projectStructure"],
     &["plugins"],
@@ -64,10 +67,49 @@ fn settings_category(top: &str) -> &'static str {
     }
 }
 
+fn normalized(key: &str) -> String {
+    key.to_ascii_lowercase().replace(['_', '-'], "")
+}
+
 /// Keys whose values are credentials (`proxy.password`, an `apiToken`).
 fn is_secret_key(key: &str) -> bool {
-    let key = key.to_ascii_lowercase().replace(['_', '-'], "");
+    let key = normalized(key);
     ["password", "passphrase", "secret", "token", "apikey", "credential"].iter().any(|word| key.contains(word))
+}
+
+/// Settings that hold what runs here or where: environment variables (which often carry keys),
+/// arguments, commands, programs, paths, homes, directories, mirrors and URLs. Only text, lists
+/// and tables count: a switch such as `smartHome` still syncs.
+fn is_local_key(key: &str, value: &Json) -> bool {
+    const ENDINGS: [&str; 19] = [
+        "env",
+        "environment",
+        "args",
+        "arguments",
+        "command",
+        "commands",
+        "commandline",
+        "program",
+        "executable",
+        "shell",
+        "script",
+        "path",
+        "paths",
+        "home",
+        "dir",
+        "directory",
+        "mirror",
+        "url",
+        "urls",
+    ];
+    let key = normalized(key);
+    matches!(value, Json::String(_) | Json::Array(_) | Json::Object(_)) && ENDINGS.iter().any(|end| key.ends_with(end))
+}
+
+/// A URL with a user name or password in it (`https://user:token@host/`).
+fn has_credentials(text: &str) -> bool {
+    text.split_once("://")
+        .is_some_and(|(_, rest)| rest.split(['/', '?', '#']).next().is_some_and(|host| host.contains('@')))
 }
 
 /// A path on this machine: absolute, home-relative or a Windows drive or share.
@@ -80,15 +122,22 @@ fn is_local_path(text: &str) -> bool {
         || (bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && matches!(bytes[2], b'\\' | b'/'))
 }
 
-/// Drops credentials and machine paths (interpreters, SDK and tool homes) wherever they are:
-/// path strings, arrays holding one, map entries keyed by one, and tables left empty by that.
+/// Drops credentials and what belongs to this machine wherever they are: secret and
+/// [`is_local_key`] settings, path strings and URLs with credentials, map entries keyed by a
+/// path, and tables left empty by that. A list syncs whole or not at all: one that holds any of
+/// these (a CMake profile with its build folder) stays on this machine.
 fn scrub(value: &mut Json) -> bool {
     match value {
-        Json::String(text) => !is_local_path(text),
-        Json::Array(items) => items.iter_mut().all(scrub),
+        Json::String(text) => !is_local_path(text) && !has_credentials(text),
+        Json::Array(items) => items.iter().all(|item| {
+            let mut copy = item.clone();
+            scrub(&mut copy) && copy == *item
+        }),
         Json::Object(map) => {
             let had_entries = !map.is_empty();
-            map.retain(|key, item| !is_secret_key(key) && !is_local_path(key) && scrub(item));
+            map.retain(|key, item| {
+                !is_secret_key(key) && !is_local_key(key, item) && !is_local_path(key) && scrub(item)
+            });
             !had_entries || !map.is_empty()
         }
         _ => true,
@@ -181,6 +230,38 @@ pub fn changes(from: &Json, to: &Json) -> Vec<(Vec<String>, Option<Json>)> {
     out
 }
 
+/// [`changes`] from `local` (what `category` synced of the global settings `layer`) to `merged`,
+/// without those that would write over or inside a value `clean` kept on this machine.
+pub fn local_changes(layer: &Json, category: &str, local: &Json, merged: &Json) -> Vec<(Vec<String>, Option<Json>)> {
+    fn leaves(value: &Json, path: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
+        match value {
+            Json::Object(map) if !map.is_empty() => {
+                for (key, item) in map {
+                    path.push(key.clone());
+                    leaves(item, path, out);
+                    path.pop();
+                }
+            }
+            Json::Object(_) => {}
+            _ => out.push(path.clone()),
+        }
+    }
+    let mut own = Map::new();
+    for (key, value) in layer.as_object().into_iter().flatten() {
+        if settings_category(key) == category {
+            own.insert(key.clone(), value.clone());
+        }
+    }
+    let (mut all, mut synced) = (Vec::new(), Vec::new());
+    leaves(&Json::Object(own), &mut Vec::new(), &mut all);
+    leaves(local, &mut Vec::new(), &mut synced);
+    let kept: Vec<Vec<String>> = all.into_iter().filter(|leaf| !synced.contains(leaf)).collect();
+    changes(local, merged)
+        .into_iter()
+        .filter(|(path, _)| !kept.iter().any(|leaf| leaf.starts_with(path) || path.starts_with(leaf)))
+        .collect()
+}
+
 /// A category file's text: stable, pretty JSON so the repository history reads as a diff.
 pub fn to_file(value: &Json) -> String {
     let mut text = serde_json::to_string_pretty(value).unwrap_or_else(|_| "{}".into());
@@ -237,6 +318,67 @@ mod tests {
         assert_eq!(clean("other", &local_state), json!({}));
         let storage = json!({ "openidea.macros.v1": "[]", "openidea.fileTemplates.v1.project:/p": "{}", "x": 1 });
         assert_eq!(clean("macros", &storage), json!({ "openidea.macros.v1": "[]" }));
+    }
+
+    #[test]
+    fn never_syncs_secrets_in_values_or_settings_that_run_code() {
+        let layer = json!({
+            "terminal": {
+                "env": { "AWS_ACCESS_KEY_ID": "AKIA", "PROMPT_COMMAND": "curl x | sh" },
+                "shellPath": "bash -c evil",
+                "fontSize": 13,
+            },
+            "languages": {
+                "java": { "jdtlsVmArgs": "-Dhttp.proxyPassword=p -XX:OnOutOfMemoryError=x", "completion": true },
+                "go": { "modules": { "env": { "NPM_CONFIG__AUTH": "x" } } },
+                "rust": { "checkCommand": "clippy; rm -rf ~", "rustfmtArgs": "--edition 2024" },
+            },
+            "cmake": { "profiles": [{ "name": "Debug", "cmakeArgs": ["-DX=1"] }] },
+            "toolDownloads": { "githubMirror": "https://mirror.example/", "configuredRegistriesOnly": true },
+            "database": { "url": "postgres://u:p@h/db", "note": "https://u:p@h/x" },
+            "agents": { "skills": { "deploy": { "allowed": true } }, "showCost": true },
+            "editor": { "smartHome": true },
+        });
+        assert_eq!(
+            clean("other", &layer),
+            json!({
+                "terminal": { "fontSize": 13 },
+                "languages": { "java": { "completion": true } },
+                "toolDownloads": { "configuredRegistriesOnly": true },
+                "agents": { "showCost": true },
+            })
+        );
+        assert_eq!(clean("editor", &layer), json!({ "editor": { "smartHome": true } }));
+    }
+
+    #[test]
+    fn keeps_lists_and_values_that_stay_on_this_machine() {
+        // A's profile holds its build folder: the list stays here, and B's never replaces it.
+        let layer = json!({
+            "cmake": { "profiles": [{ "name": "Debug", "buildDir": "/a/build", "env": { "GITHUB_TOKEN": "t" } }] },
+            "languages": { "python": { "interpreters": ["/a/python"], "docstringFormat": "rest" } },
+            "scopes": [{ "name": "Tests", "pattern": "file:tests//*" }],
+        });
+        let local = clean("other", &layer);
+        assert_eq!(
+            local,
+            json!({
+                "languages": { "python": { "docstringFormat": "rest" } },
+                "scopes": [{ "name": "Tests", "pattern": "file:tests//*" }],
+            })
+        );
+        let merged = json!({
+            "cmake": { "profiles": [{ "name": "Release" }] },
+            "languages": { "python": { "interpreters": ["python3"], "docstringFormat": "google" } },
+            "scopes": [],
+        });
+        assert_eq!(
+            local_changes(&layer, "other", &local, &merged),
+            vec![
+                (vec!["languages".into(), "python".into(), "docstringFormat".into()], Some(json!("google"))),
+                (vec!["scopes".into()], Some(json!([]))),
+            ]
+        );
     }
 
     #[test]
