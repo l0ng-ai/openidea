@@ -1862,3 +1862,116 @@ fn without_encoding_mappings_files_open_as_before() {
         assert_eq!((doc.encoding, doc.text), (detected.encoding, detected.text), "{name}");
     }
 }
+
+fn disk_conflicts(f: &Fixture, path: &Path) -> usize {
+    let path = path.to_string_lossy();
+    f.events.lock().iter().filter(|e| matches!(e, IdeEvent::DocDiskConflict { path: p, .. } if *p == path)).count()
+}
+
+#[test]
+fn a_file_replaced_by_binary_content_keeps_its_text_and_reports_the_change() {
+    // Valid UTF-8 and windows-1252, so only the binary check can tell it apart from text.
+    let binary = b"\x7FELF\x02\x01\x01\x00\x00\x00binary\x00".to_vec();
+    let mut failures = Vec::new();
+    for case in ["chosen", "remembered", "remembered, not text on open", "ide operation"] {
+        let f = fixture();
+        let path = f.root.join("notes.txt");
+        fs::write(&path, b"caf\xe9\n").unwrap();
+        match case {
+            "remembered" => encoding_mappings(&f, &[("notes.txt", "windows-1252")]),
+            // The file is not UTF-8, so it opens detected; reloads still try the mapping first.
+            "remembered, not text on open" => encoding_mappings(&f, &[("notes.txt", "utf-8")]),
+            _ => {}
+        }
+        let doc = f.docs.open(&path).unwrap();
+        if case == "chosen" {
+            f.docs.set_encoding(doc.id, "windows-1252", true).unwrap();
+        }
+        let before = f.docs.snapshot(doc.id).unwrap();
+        fs::write(&path, &binary).unwrap();
+        if case == "ide operation" {
+            f.docs.sync_after_disk_change();
+        } else {
+            f.docs.on_disk_changed(std::slice::from_ref(&path));
+        }
+        let after = f.docs.snapshot(doc.id).unwrap();
+        // The same disk state again, through every sync path: reported once.
+        f.docs.on_disk_changed(std::slice::from_ref(&path));
+        f.docs.sync_after_disk_change();
+        f.docs.sync_from_disk();
+        let conflicts = disk_conflicts(&f, &path);
+        f.docs.edit(doc.id, after.version, change(0, 0, "x")).unwrap();
+        let autosaved = f.docs.autosave(doc.id).unwrap();
+        let on_disk = fs::read(&path).unwrap();
+        if after.text != before.text || after.dirty || conflicts != 1 || autosaved || on_disk != binary {
+            failures.push(format!(
+                "{case}: text {:?} dirty {} conflicts {conflicts} autosaved {autosaved} disk kept {}",
+                after.text,
+                after.dirty,
+                on_disk == binary
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+#[test]
+fn nul_bytes_written_under_a_chosen_encoding_are_reported_and_can_be_loaded() {
+    let f = fixture();
+    let path = f.root.join("notes.txt");
+    fs::write(&path, "key=value\n").unwrap();
+    let doc = f.docs.open(&path).unwrap();
+    f.docs.set_encoding(doc.id, "windows-1252", true).unwrap();
+    fs::write(&path, b"key\0value\n").unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    assert_eq!(f.docs.snapshot(doc.id).unwrap().text, "key=value\n");
+    assert_eq!(disk_conflicts(&f, &path), 1);
+    f.docs.discard_and_reload(doc.id).unwrap();
+    let loaded = f.docs.snapshot(doc.id).unwrap();
+    assert_eq!((loaded.text.as_str(), loaded.dirty), ("key\0value\n", false));
+}
+
+#[test]
+fn a_utf16_document_reloads_mostly_non_ascii_text_without_a_bom() {
+    let utf16 = |text: &str| text.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>();
+    // A NUL byte outside the ASCII-heavy UTF-16 pattern: the head check alone calls it binary.
+    let (first, changed) = (utf16("plain 中文\n"), utf16("中文中文中文\n"));
+    assert!(ide_vfs::looks_binary(&changed));
+    for remembered in [false, true] {
+        let f = fixture();
+        let path = f.root.join("wide.txt");
+        fs::write(&path, &first).unwrap();
+        if remembered {
+            encoding_mappings(&f, &[("wide.txt", "utf-16le")]);
+        }
+        let doc = f.docs.open(&path).unwrap();
+        if remembered {
+            assert_eq!(doc.text, "plain 中文\n");
+        } else {
+            f.docs.set_encoding(doc.id, "utf-16le", true).unwrap();
+        }
+        fs::write(&path, &changed).unwrap();
+        f.docs.on_disk_changed(std::slice::from_ref(&path));
+        let reloaded = f.docs.snapshot(doc.id).unwrap();
+        assert_eq!(
+            (reloaded.text.as_str(), reloaded.encoding.as_str()),
+            ("中文中文中文\n", "utf-16le"),
+            "{remembered}"
+        );
+    }
+}
+
+#[test]
+fn a_file_opened_as_text_despite_nul_bytes_keeps_reloading() {
+    let f = fixture();
+    let path = f.root.join("dump.txt");
+    fs::write(&path, b"key\0value\n").unwrap();
+    encoding_mappings(&f, &[("dump.txt", "windows-1252")]);
+    assert!(ide_vfs::looks_binary(b"key\0other value\n"));
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.text, "key\0value\n");
+    fs::write(&path, b"key\0other value\n").unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    assert_eq!(f.docs.snapshot(doc.id).unwrap().text, "key\0other value\n");
+    assert_eq!(disk_conflicts(&f, &path), 0);
+}
