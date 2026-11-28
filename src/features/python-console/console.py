@@ -2,6 +2,7 @@
 # runs it in IPython when installed, else in a plain namespace, and after each run writes
 # a record-separator line (\x1e + JSON) with the console's variables.
 import json
+import os
 import reprlib
 import sys
 import textwrap
@@ -80,7 +81,29 @@ except ImportError:
             _console.showtraceback()
 
 
-_send({"ready": {"version": sys.version.split()[0], "ipython": flavour}})
+ready = {"version": sys.version.split()[0], "ipython": flavour}
+# A Django project (PyCharm's Django Console): set Django up and import what `manage.py shell` does.
+if os.environ.get("OPENIDEA_DJANGO_SETTINGS"):
+    if not os.environ.get("DJANGO_SETTINGS_MODULE"):  # as manage.py: the environment's own wins
+        os.environ["DJANGO_SETTINGS_MODULE"] = os.environ["OPENIDEA_DJANGO_SETTINGS"]
+    try:
+        import django
+
+        django.setup()
+        ready["django"] = django.get_version()
+        try:
+            from django.core.management.commands.shell import Command
+
+            imports = Command().get_namespace()  # Django 5.2+: the models and common utilities
+        except Exception:
+            imports = {}
+        namespace.update(imports)
+        _hidden.update(imports)
+    except Exception:
+        import traceback
+
+        traceback.print_exc()
+_send({"ready": ready})
 while True:
     line = sys.stdin.readline()
     if not line:

@@ -522,6 +522,7 @@ impl CopilotShim {
             "session/set_config_option" => self.set_config(&params).await,
             "session/prompt" => self.prompt(&params, false).await,
             "_openidea/steer" => self.prompt(&params, true).await,
+            "_openidea/context_usage" => self.context_usage(&params).await,
             "_openidea/stop_task" => self.stop_task(&params).await,
             "session/close" => self.close_session(&params).await,
             _ => Err(error(codes::METHOD_NOT_FOUND, format!("unsupported method {method}"))),
@@ -537,7 +538,7 @@ impl CopilotShim {
                 "promptCapabilities": { "image": true, "audio": false, "embeddedContext": true },
                 "mcpCapabilities": { "http": true, "sse": true, "stdio": true },
                 "sessionCapabilities": { "close": {}, "list": {} },
-                "_meta": { "openidea": { "steer": true, "backgroundTasks": true } },
+                "_meta": { "openidea": { "steer": true, "backgroundTasks": true, "contextUsage": true } },
             },
             "agentInfo": {
                 "name": "copilot",
@@ -655,10 +656,45 @@ impl CopilotShim {
         let options = models::config_options(&catalog, &settings);
         self.state.lock().sessions.insert(actual_id.clone(), SessionEntry::new(settings));
         self.publish_commands(&actual_id, cwd);
+        self.sync_usage_metrics(&actual_id);
         Ok(json!({
             "sessionId": actual_id,
             "configOptions": options,
         }))
+    }
+
+    fn sync_usage_metrics(self: &Arc<Self>, session_id: &str) {
+        let shim = self.clone();
+        let sid = session_id.to_owned();
+        self.runtime.spawn(async move {
+            let Ok(metrics) = shim.call("session.usage.getMetrics", json!({ "sessionId": sid })).await else {
+                return;
+            };
+            let Some(nano_aiu) = metrics.get("totalNanoAiu").and_then(Value::as_f64) else {
+                return;
+            };
+            let catalog = shim.catalog.try_lock().ok().and_then(|g| g.clone());
+            let update = {
+                let mut st = shim.state.lock();
+                st.sessions.get_mut(&sid).and_then(|entry| {
+                    entry.translator.set_total_nano_aiu(nano_aiu);
+                    let used = entry.translator.last_used_tokens?;
+                    let size = entry
+                        .translator
+                        .last_usage_snapshot
+                        .as_ref()
+                        .map(|s| s.token_limit)
+                        .filter(|&s| s > 0)
+                        .or_else(|| {
+                            catalog.as_deref().and_then(|m| entry.settings.active_context_tokens(m)).filter(|&s| s > 0)
+                        })?;
+                    Some(entry.translator.usage_update(used, size))
+                })
+            };
+            if let Some(update) = update {
+                shim.send_update(&sid, update);
+            }
+        });
     }
 
     fn publish_commands(self: &Arc<Self>, session_id: &str, cwd: &str) {
@@ -735,24 +771,151 @@ impl CopilotShim {
 
         let new_limit = next_settings.active_context_tokens(&catalog);
         let options = models::config_options(&catalog, &next_settings);
-        {
+        let usage_update = {
             let mut st = self.state.lock();
             if let Some(entry) = st.sessions.get_mut(session_id) {
                 entry.settings = next_settings;
+                if matches!(option, MODEL | CONTEXT_TIER)
+                    && let (Some(used), Some(size)) = (last_used, new_limit.filter(|&s| s > 0))
+                {
+                    Some(entry.translator.usage_update(used, size))
+                } else {
+                    None
+                }
+            } else {
+                None
             }
-        }
-        if matches!(option, MODEL | CONTEXT_TIER)
-            && let (Some(used), Some(size)) = (last_used, new_limit.filter(|&s| s > 0))
-        {
-            self.send_update(session_id, json!({ "sessionUpdate": "usage_update", "used": used, "size": size }));
+        };
+        if let Some(update) = usage_update {
+            self.send_update(session_id, update);
         }
         Ok(json!({ "configOptions": options }))
+    }
+
+    async fn context_usage(&self, params: &Value) -> Result<Value, ResponseError> {
+        let session_id = str_param(params, "sessionId")?;
+        let catalog = self.models().await.ok();
+        let (model_id, fallback_limit, snapshot) = {
+            let st = self.state.lock();
+            let entry = st.sessions.get(session_id).ok_or_else(|| invalid(format!("unknown session {session_id}")))?;
+            let limit = catalog.as_deref().and_then(|models| entry.settings.active_context_tokens(models));
+            (entry.settings.model.clone(), limit, entry.translator.last_usage_snapshot.clone())
+        };
+
+        let (attr_res, metrics_res) = tokio::join!(
+            self.call("session.metadata.getContextAttribution", json!({ "sessionId": session_id })),
+            self.call("session.usage.getMetrics", json!({ "sessionId": session_id })),
+        );
+
+        if let Ok(metrics) = metrics_res
+            && let Some(nano_aiu) = metrics.get("totalNanoAiu").and_then(Value::as_f64)
+            && let Some(entry) = self.state.lock().sessions.get_mut(session_id)
+        {
+            entry.translator.set_total_nano_aiu(nano_aiu);
+        }
+
+        let mut usage =
+            attr_res.ok().and_then(|v| translate::context_usage_from_attribution(&v, &model_id, fallback_limit));
+
+        if usage.is_none()
+            && !model_id.is_empty()
+            && let Ok(info) = self
+                .call("session.metadata.contextInfo", json!({ "sessionId": session_id, "modelName": model_id }))
+                .await
+        {
+            usage = translate::context_usage_from_context_info(&info, &model_id, fallback_limit);
+        }
+
+        let usage = usage
+            .or_else(|| snapshot.as_ref().map(|snap| translate::context_usage_from_snapshot(snap, &model_id)))
+            .ok_or_else(|| error(codes::INTERNAL_ERROR, "Context details are not available yet"))?;
+
+        let meter_update = {
+            let mut st = self.state.lock();
+            st.sessions.get_mut(session_id).map(|entry| {
+                entry.translator.last_used_tokens = Some(usage.total_tokens);
+                entry.translator.usage_update(usage.total_tokens, usage.max_tokens)
+            })
+        };
+        if let Some(update) = meter_update {
+            self.send_update(session_id, update);
+        }
+
+        serde_json::to_value(usage).map_err(|e| error(codes::INTERNAL_ERROR, e.to_string()))
+    }
+
+    async fn compact_session(&self, session_id: &str, instructions: Option<&str>) -> Result<Value, ResponseError> {
+        let mut req = json!({
+            "sessionId": session_id,
+            "trigger": "manual",
+        });
+        if let Some(text) = instructions.map(str::trim).filter(|s| !s.is_empty()) {
+            req["customInstructions"] = json!(text);
+        }
+        let res = self.call("session.history.compact", req).await?;
+        let success = res.get("success").and_then(Value::as_bool).unwrap_or(true);
+        if !success {
+            let msg = res.get("error").and_then(Value::as_str).unwrap_or("Conversation compaction failed");
+            return Err(error(codes::INTERNAL_ERROR, msg));
+        }
+
+        let catalog = self.models().await.ok();
+        let meter_update = {
+            let mut st = self.state.lock();
+            st.sessions.get_mut(session_id).and_then(|entry| {
+                let cw = res.get("contextWindow")?;
+                let used = cw.get("currentTokens").and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok())?;
+                let fallback_limit = catalog.as_deref().and_then(|models| entry.settings.active_context_tokens(models));
+                let size = cw
+                    .get("tokenLimit")
+                    .and_then(Value::as_u64)
+                    .and_then(|n| u32::try_from(n).ok())
+                    .filter(|&n| n > 0)
+                    .or(fallback_limit.filter(|&n| n > 0))?;
+                let u32_field = |k: &str| cw.get(k).and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok());
+                entry.translator.record_snapshot(translate::UsageSnapshot {
+                    current_tokens: used,
+                    token_limit: size,
+                    system_tokens: u32_field("systemTokens"),
+                    tool_definitions_tokens: u32_field("toolDefinitionsTokens"),
+                    conversation_tokens: u32_field("conversationTokens"),
+                });
+                Some(entry.translator.usage_update(used, size))
+            })
+        };
+        if let Some(update) = meter_update {
+            self.send_update(session_id, update);
+        }
+
+        let tokens_removed = res.get("tokensRemoved").and_then(Value::as_u64).unwrap_or(0);
+        let messages_removed = res.get("messagesRemoved").and_then(Value::as_u64).unwrap_or(0);
+        let summary = if tokens_removed > 0 || messages_removed > 0 {
+            format!("Compacted conversation ({tokens_removed} tokens, {messages_removed} messages removed).")
+        } else {
+            "Conversation compacted.".to_owned()
+        };
+        self.send_update(
+            session_id,
+            json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": summary } }),
+        );
+        if let Some(entry) = self.state.lock().sessions.get_mut(session_id) {
+            entry.early_cancel = None;
+        }
+        Ok(json!({ "stopReason": "end_turn" }))
     }
 
     async fn prompt(&self, params: &Value, steer: bool) -> Result<Value, ResponseError> {
         let session_id = str_param(params, "sessionId")?.to_owned();
         let blocks = params.get("prompt").and_then(Value::as_array).ok_or_else(|| invalid("missing prompt"))?;
         let (text, attachments, temp_files) = build_prompt_payload(&session_id, blocks);
+
+        if !steer
+            && attachments.is_empty()
+            && let Some(instructions) = parse_compact_command(&text)
+        {
+            cleanup_files(&temp_files);
+            return self.compact_session(&session_id, instructions).await;
+        }
 
         if steer {
             let (is_running, main_busy) = {
@@ -1067,6 +1230,21 @@ impl CopilotShim {
             }
             _ => Err((codes::METHOD_NOT_FOUND, format!("unsupported request {method}"))),
         }
+    }
+}
+
+fn parse_compact_command(text: &str) -> Option<Option<&str>> {
+    let trimmed = text.trim();
+    if trimmed == "/compact" {
+        return Some(None);
+    }
+    let rest = trimmed.strip_prefix("/compact")?;
+    let first = rest.chars().next()?;
+    if first.is_whitespace() {
+        let focus = rest.trim();
+        Some((!focus.is_empty()).then_some(focus))
+    } else {
+        None
     }
 }
 

@@ -1,19 +1,28 @@
 import { describe, expect, it } from "vitest";
-import { isNavigating, navigationStarted, onNavigation } from "./foreground";
+import { foreground, foregroundStarted, inForeground, onForeground } from "./foreground";
 
-describe("navigation before background requests", () => {
-  it("reports the first navigation starting and the last one finishing", () => {
+describe("requests the user waits for before background requests", () => {
+  it("reports the first foreground request starting and the last one finishing", () => {
     const seen: boolean[] = [];
-    const off = onNavigation((n) => seen.push(n));
-    const a = navigationStarted();
-    const b = navigationStarted();
-    expect(isNavigating()).toBe(true);
+    const off = onForeground((n) => seen.push(n));
+    const a = foregroundStarted();
+    const b = foregroundStarted();
+    expect(inForeground()).toBe(true);
     a();
     a();
-    expect(isNavigating()).toBe(true);
+    expect(inForeground()).toBe(true);
     b();
-    expect(isNavigating()).toBe(false);
+    expect(inForeground()).toBe(false);
     expect(seen).toEqual([true, false]);
     off();
+  });
+
+  it("runs a request in the foreground until it settles, also when it fails", async () => {
+    let fail!: (e: Error) => void;
+    const running = foreground(() => new Promise((_, reject) => (fail = reject)));
+    expect(inForeground()).toBe(true);
+    fail(new Error("boom"));
+    await expect(running).rejects.toThrow("boom");
+    expect(inForeground()).toBe(false);
   });
 });

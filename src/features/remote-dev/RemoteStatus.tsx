@@ -61,6 +61,7 @@ export function RemoteStatus() {
         ]);
       }}
     >
+      <Icon name="remote" size={13} />
       {label}
     </BarButton>
   );

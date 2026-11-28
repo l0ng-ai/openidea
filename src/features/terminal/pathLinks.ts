@@ -14,12 +14,12 @@
 import type { IDecoration, IDisposable, IMarker, Terminal } from "@xterm/xterm";
 import { executeAction } from "@/platform/actions";
 import { revealInFileManager } from "@/platform/fileManager";
-import { call, commands, isTauri } from "@/platform/ipc";
+import { call, commands } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
-import { isRemoteWindow } from "@/platform/remote";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { editorService } from "@/workbench/contributions";
+import { isHomePath, terminalHome } from "./home";
 import { LINK_DECORATION_CLASS, linkCells } from "./linkHighlights";
 import { findPathCandidates, normalizeCandidatePath, resolvePath, type PathCandidate } from "./links";
 
@@ -36,23 +36,6 @@ export interface ResolvedPathTarget {
 export interface ResolvePathOptions {
   projectRoot?: string | null;
   home?: string | null;
-}
-
-let cachedHome: Promise<string | null> | null = null;
-
-function resolveLocalHome(): Promise<string | null> {
-  if (!isTauri() || isRemoteWindow()) return Promise.resolve(null);
-  return (cachedHome ??= import("@tauri-apps/api/path")
-    .then(({ homeDir }) => homeDir())
-    .then((h) => h.replace(/[\\/]+$/, "") || null)
-    .catch(() => {
-      cachedHome = null;
-      return null;
-    }));
-}
-
-export function _resetPathLinksHomeForTests() {
-  cachedHome = null;
 }
 
 /** `⌘` on macOS, `Ctrl` on Windows and Linux (with no competing modifiers). */
@@ -104,8 +87,8 @@ export async function resolvePathTarget(
   if (!cleaned) return null;
 
   let home: string | null | undefined = opts.home;
-  if (home === undefined && (cleaned === "~" || cleaned.startsWith("~/") || cleaned.startsWith("~\\"))) {
-    home = await resolveLocalHome();
+  if (home === undefined && isHomePath(cleaned)) {
+    home = await terminalHome();
     if (!home) return null;
   }
 

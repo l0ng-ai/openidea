@@ -39,6 +39,7 @@ describe(".icls schemes", () => {
   it("round trips Diff & Merge change types, error stripes and the separator wave", () => {
     const { scheme } = parseIcls(`<scheme name="Diff" parent_scheme="Darcula"><colors>
       <option name="DIFF_SEPARATOR_WAVE" value="555555"/>
+      <option name="ANNOTATIONS_LAST_COMMIT_COLOR" value="ced0d6"/>
     </colors><attributes>
       <option name="DIFF_MODIFIED"><value>
         <option name="BACKGROUND" value="385570"/><option name="ERROR_STRIPE_COLOR" value="43698d"/>
@@ -54,9 +55,11 @@ describe(".icls schemes", () => {
     expect(scheme.attributes.diffChanged).toEqual({ background: "#385570", errorStripeColor: "#43698d" });
     expect(scheme.attributes.diffConflict).toEqual({ errorStripeColor: "#8f5247" });
     expect(scheme.attributes.diffSeparatorWave).toEqual({ foreground: "#555555" });
+    expect(scheme.attributes.gitAnnotationsLastCommit).toEqual({ foreground: "#ced0d6" });
     const { id, customs } = importScheme({}, scheme);
     const xml = exportIcls(id, customs);
     expect(xml).toContain('<option name="DIFF_SEPARATOR_WAVE" value="555555" />');
+    expect(xml).toContain('<option name="ANNOTATIONS_LAST_COMMIT_COLOR" value="ced0d6" />');
     expect(xml).toContain('name="DIFF_MODIFIED"');
     expect(xml).toContain('<option name="ERROR_STRIPE_COLOR" value="43698d" />');
     expect(parseIcls(xml).scheme.attributes).toMatchObject(scheme.attributes);

@@ -76,7 +76,7 @@ function showCaption(caption: string) {
 }
 
 /** Hands `path` to the project window's editor, which owns the project's documents and tabs. */
-function openSource(parent: string, path: string, options?: OpenOptions) {
+export function openSource(parent: string, path: string, options?: OpenOptions) {
   return emitTo(parent, OPEN_SOURCE, { path, options });
 }
 

@@ -13,6 +13,7 @@ import { remoteBadge } from "./RemoteStatus";
 import {
   canMonitorRemoteHost,
   compactResourceText,
+  diskUsedBytes,
   diskUsedPercent,
   endRemoteProcess,
   formatRate,
@@ -275,12 +276,26 @@ export function RemoteResourcesDashboard({
       : "–";
 
   const hasDiskIo = m?.diskReadBytesPerSec != null || m?.diskWriteBytesPerSec != null;
-  const diskValue = m?.diskAvailableBytes != null ? tx`${formatSize(m.diskAvailableBytes)} free` : "–";
-  const diskSub = hasDiskIo
+  const diskUsed = diskUsedBytes(m);
+  const diskValue =
+    diskUsed != null && m?.diskTotalBytes != null
+      ? `${formatBytes(diskUsed)} / ${formatBytes(m.diskTotalBytes)}`
+      : m?.diskAvailableBytes != null
+        ? tx`${formatSize(m.diskAvailableBytes)} free`
+        : "–";
+  const diskIoText = hasDiskIo
     ? `R ${formatBytes(m?.diskReadBytesPerSec)}/s · W ${formatBytes(m?.diskWriteBytesPerSec)}/s`
-    : m?.diskTotalBytes != null && diskPct != null
-      ? tx`${formatPercent(diskPct)} of ${formatSize(m.diskTotalBytes)} used`
-      : "–";
+    : null;
+  const diskFree = formatBytes(m?.diskAvailableBytes);
+  const diskFreeSize = formatSize(m?.diskAvailableBytes);
+  const diskSub =
+    diskIoText && m?.diskAvailableBytes != null
+      ? tx`${diskFree} free · ${diskIoText}`
+      : diskIoText
+        ? diskIoText
+        : diskPct != null && m?.diskAvailableBytes != null
+          ? tx`${formatPercent(diskPct)} · ${diskFreeSize} free`
+          : "–";
 
   return (
     <div className={styles.panel}>

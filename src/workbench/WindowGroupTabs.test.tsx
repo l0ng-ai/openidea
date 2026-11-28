@@ -114,6 +114,51 @@ it("tints only tabs with a stored colour override", () => {
   expect(back.hasAttribute("data-tinted")).toBe(true);
 });
 
+it("keys remote project tab colours by remote location and hashes the remote folder name by default", () => {
+  const remoteRoot = "ssh://coder/home/coder/git/openidea_all";
+  useWindowGroup.setState({
+    tabs: [
+      { label: "main", name: "openidea_all", root: "/Users/me/openidea_all", current: false },
+      { label: "project-1", name: "openidea_all [dengliu@deng-devbox]", root: remoteRoot, current: true },
+    ],
+  });
+  const { rerender } = render(<WindowGroupTabs />);
+  const remoteItem = document.querySelector('[data-project-tab="project-1"]') as HTMLElement;
+  expect(remoteItem.style.getPropertyValue("--project-color")).toBe(
+    projectColorVars("openidea_all")["--project-color"],
+  );
+  expect(remoteItem.hasAttribute("data-tinted")).toBe(false);
+
+  setTabColorOverride(remoteRoot, "#d24b8f");
+  rerender(<WindowGroupTabs />);
+  expect(remoteItem.style.getPropertyValue("--project-color")).toBe("#d24b8f");
+  expect(remoteItem.hasAttribute("data-tinted")).toBe(true);
+});
+
+it("renders a flat remote host label on remote project tabs and leaves local tabs plain", () => {
+  useWindowGroup.setState({
+    tabs: [
+      { label: "main", name: "openidea_all", root: "/Users/me/openidea_all", current: false },
+      {
+        label: "project-1",
+        name: "openidea_all",
+        root: "ssh://thinkpad/home/deng/openidea_all",
+        remoteHost: "deng@deng-thinkpad.local",
+        current: true,
+      },
+    ],
+  });
+  render(<WindowGroupTabs />);
+  const localItem = document.querySelector('[data-project-tab="main"]')!;
+  const remoteItem = document.querySelector('[data-project-tab="project-1"]')!;
+  expect(localItem.querySelector("[data-remote-kind]")).toBeNull();
+  const chip = remoteItem.querySelector('[data-remote-kind="ssh"]');
+  expect(chip?.textContent).toContain("SSH · deng@deng-thinkpad.local");
+  expect(remoteItem.querySelector('[role="tab"]')?.getAttribute("title")).toBe(
+    "SSH: deng@deng-thinkpad.local — /home/deng/openidea_all",
+  );
+});
+
 describe("WindowGroupTabs drag reordering", () => {
   let hit: Element | null;
   const pointer = (el: Element | Window, type: string, x: number, y = 15, extra: MouseEventInit = {}) =>

@@ -11,6 +11,32 @@ fn write(root: &Path, rel: &str, text: &str) {
     fs::write(path, text).unwrap();
 }
 
+fn build_output_tail(events: &[BuildEvent]) -> String {
+    let mut lines: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            BuildEvent::Output { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .flat_map(str::lines)
+        .rev()
+        .take(150)
+        .collect();
+    lines.reverse();
+    lines.join("\n")
+}
+
+#[test]
+fn build_output_tail_keeps_the_last_150_lines_across_streams() {
+    let lines = |range: std::ops::Range<usize>| range.map(|n| n.to_string()).collect::<Vec<_>>().join("\n");
+    let events = [
+        BuildEvent::Output { text: lines(0..100), stderr: false },
+        BuildEvent::Progress { message: "building".into(), fraction: None },
+        BuildEvent::Output { text: lines(100..155), stderr: true },
+    ];
+    assert_eq!(build_output_tail(&events), lines(5..155));
+}
+
 /// A JDK (`JAVA_HOME`) and Maven on the search path, else `None` (the test is skipped).
 fn tools() -> Option<(PathBuf, PathBuf)> {
     let home = std::env::var_os("JAVA_HOME").map(PathBuf::from).filter(|h| h.join("bin").is_dir())?;
@@ -139,7 +165,10 @@ impl Fixture {
         let on_event = |e: BuildEvent| self.events.lock().unwrap().push(e);
         match build.build(target, BuildKind::Build, &CancellationToken::new(), &on_event) {
             Ok(Built::Done(outputs)) => outputs,
-            Ok(Built::Unsupported(reason)) => panic!("unsupported: {reason}"),
+            Ok(Built::Unsupported(reason)) => {
+                let output = build_output_tail(&self.events.lock().unwrap());
+                panic!("unsupported: {reason}\n{output}");
+            }
             Err(e) => panic!("{e:?}"),
         }
     }

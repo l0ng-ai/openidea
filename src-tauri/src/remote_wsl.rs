@@ -230,7 +230,7 @@ pub(crate) async fn ensure_server(
     }
     let (local, build) = match local_server(state, version, &os, &arch, &probe.installed, progress.clone()).await? {
         LocalServer::Installed(bin) => return Ok(bin),
-        LocalServer::Binary(local, build) => (local, build),
+        LocalServer::Binary { path, build, .. } => (path, build),
     };
     if let Some(bin) = probe.installed.iter().find(|b| b.ends_with(&format!("/{build}/{SERVER_BIN}"))) {
         return Ok(bin.clone());

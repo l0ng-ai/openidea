@@ -138,6 +138,14 @@
   flex-direction: column;
   min-width: 0;
 }
+.strengthSlider {
+  flex: 1 1 80px;
+  width: 110px;
+  min-width: 56px;
+  max-width: 120px;
+  margin: 0;
+  accent-color: var(--accent);
+}
 
 @container settings-content (max-width: 580px) {
   .grid {

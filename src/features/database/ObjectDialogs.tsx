@@ -34,15 +34,21 @@ import { nodeTarget, schemaObjectOf, tableOf, type DbNode } from "./nodes";
 import {
   alterTableSql,
   canAlterColumn,
+  canAlterIndex,
+  canChangePrimaryKey,
   createDatabaseSql,
   createSchemaSql,
   commentsSupported,
   createTableCommentSql,
+  createTableKeySql,
   createTableSql,
   draftOf,
   dropDatabaseSql,
   grantMatrix,
   grantsSupported,
+  indexDraftOf,
+  keyName,
+  keySupport,
   renameDatabaseSql,
   dropSql,
   ident,
@@ -50,6 +56,7 @@ import {
   renameSql,
   truncateSql,
   type ColumnDraft,
+  type IndexDraft,
   templateOf,
   type CreateOptions,
   type DbObjectRef,
@@ -581,29 +588,51 @@ function ModifyTableDialog(props: ModifyProps) {
   );
 }
 
-/** A read-only row of the Modify Table list (a key, foreign key, index or trigger). */
+/** A row of the Modify Table list after Columns: a key, foreign key, index or trigger. */
 interface ObjectRow {
   key: string;
   name: string;
   detail: string;
+  /** The unique key or index draft it shows (selectable); absent: read-only. */
+  draft?: IndexDraft;
+}
+
+/** A key / index draft of the dialog; a new one names its columns by their drafts' keys, so a rename carries over. */
+type KeyDraft = IndexDraft & { columnKeys: number[] };
+
+/** What the Modify Table list has selected: a column or a key / index draft, by its draft key. */
+interface Selection {
+  group: "column" | "index";
+  key: number;
 }
 
 /**
- * The groups after Columns, as DataGrip lists them: the primary key of the columns as edited,
- * then the foreign keys, indexes and triggers the table has (shown, not edited here).
+ * The groups after Columns, as DataGrip lists them: the primary key of the columns as edited and
+ * the unique keys, then the foreign keys and triggers the table has (shown, not edited here), and the indexes.
  */
 function objectGroups(
   columns: readonly ColumnDraft[],
+  indexes: readonly IndexDraft[],
   details: DbTableDetails | null | undefined,
 ): Array<{ id: string; label: string; icon: string; rows: ObjectRow[] }> {
   const pk = columns.filter((c) => c.primaryKey && !c.dropped).map((c) => c.name);
   const list = (names: readonly string[]) => `(${names.join(", ")})`;
+  const draftRow = (d: IndexDraft): ObjectRow => ({
+    key: `d-${d.key}`,
+    name: d.name,
+    // `UNIQUE` is SQL, not UI text.
+    detail: d.unique ? ["UNIQUE", list(d.columns)].join(" ") : list(d.columns),
+    draft: d,
+  });
   return [
     {
       id: "keys",
       label: "Keys",
       icon: "db-key",
-      rows: pk.length ? [{ key: "primary", name: "PRIMARY KEY", detail: list(pk) }] : [],
+      rows: [
+        ...(pk.length ? [{ key: "primary", name: "PRIMARY KEY", detail: list(pk) }] : []),
+        ...indexes.filter((d) => d.kind === "unique").map(draftRow),
+      ],
     },
     {
       id: "foreignKeys",
@@ -619,12 +648,7 @@ function objectGroups(
       id: "indexes",
       label: "Indexes",
       icon: "db-index",
-      rows: (details?.indexes ?? []).map((ix) => ({
-        key: `ix-${ix.name}`,
-        name: ix.name,
-        // `UNIQUE` is SQL, not UI text.
-        detail: ix.unique ? ["UNIQUE", list(ix.columns)].join(" ") : list(ix.columns),
-      })),
+      rows: indexes.filter((d) => d.kind === "index").map(draftRow),
     },
     {
       id: "triggers",
@@ -657,13 +681,35 @@ function ModifyTableForm({
     if (addColumn) drafts.push(blankColumn(driver, drafts.length + 1));
     return drafts;
   });
-  const [selected, setSelected] = useState<number | null>(() => {
+  const [drafts, setDrafts] = useState<KeyDraft[]>(() =>
+    (details?.indexes ?? []).flatMap((i) => {
+      const d = indexDraftOf(i, nextDraftKey++);
+      return d ? [{ ...d, columnKeys: [] }] : [];
+    }),
+  );
+  // New keys and indexes list their columns as named now; existing ones as the catalog has them.
+  const indexes = useMemo(
+    () =>
+      drafts.map((d): KeyDraft => {
+        if (d.original) return d;
+        const named = d.columnKeys.flatMap((k) => {
+          const c = columns.find((c) => c.key === k);
+          return c && !c.dropped && c.name.trim() ? [c.name.trim()] : [];
+        });
+        return { ...d, columns: named };
+      }),
+    [drafts, columns],
+  );
+  const [selected, setSelected] = useState<Selection | null>(() => {
     const focus = addColumn ? columns.length - 1 : columns.findIndex((c) => c.name === focusColumn);
-    return columns[Math.max(0, focus)]?.key ?? null;
+    const key = columns[Math.max(0, focus)]?.key;
+    return key === undefined ? null : { group: "column", key };
   });
   const { busy, runAndClose } = useRunner();
   const comments = commentsSupported(driver);
   const [comment, setComment] = useState(details?.comment ?? "");
+  const support = keySupport(driver);
+  const pkIndex = details?.indexes.find((i) => i.key === "primary")?.name;
 
   const statements = useMemo(() => {
     if (!table) {
@@ -671,36 +717,85 @@ function ModifyTableForm({
       return [
         createTableSql(driver, schema, created, columns, comment),
         ...createTableCommentSql(driver, schema, created, columns, comment),
+        ...createTableKeySql(driver, schema, created, indexes),
       ];
     }
-    return alterTableSql(driver, schema, table, name, columns, { original: details?.comment ?? "", value: comment });
-  }, [columns, driver, schema, table, name, comment, details?.comment]);
+    return alterTableSql(
+      driver,
+      schema,
+      table,
+      name,
+      columns,
+      { original: details?.comment ?? "", value: comment },
+      { primaryKeyName: pkIndex, indexes },
+    );
+  }, [columns, indexes, driver, schema, table, name, comment, details?.comment, pkIndex]);
 
-  const current = columns.find((c) => c.key === selected) ?? null;
-  const patch = (p: Partial<ColumnDraft>) =>
-    setColumns((cs) => cs.map((c) => (c.key === selected ? { ...c, ...p } : c)));
+  const current = (selected?.group === "column" && columns.find((c) => c.key === selected.key)) || null;
+  const currentIndex = (selected?.group === "index" && indexes.find((d) => d.key === selected.key)) || null;
+  const patch = (p: Partial<ColumnDraft>) => {
+    if (!current) return;
+    setColumns((cs) => cs.map((c) => (c.key === current.key ? { ...c, ...p } : c)));
+  };
+  const patchIndex = (p: Partial<KeyDraft>) =>
+    setDrafts((ds) => ds.map((d) => (d.key === currentIndex?.key ? { ...d, ...p } : d)));
   const add = () => {
     const c = blankColumn(driver, columns.length + 1);
     setColumns((cs) => [...cs, c]);
-    setSelected(c.key);
+    setSelected({ group: "column", key: c.key });
+  };
+  /** Adds a unique key or an index on the selected column, named as DataGrip names them. */
+  const addIndex = (kind: IndexDraft["kind"]) => {
+    const base = name.trim() || table || "table_name";
+    const taken = new Set(indexes.map((d) => d.name));
+    const suffix = kind === "unique" ? "uk" : "index";
+    let indexName = keyName(driver, base, suffix);
+    for (let n = 2; taken.has(indexName); n++) indexName = keyName(driver, base, `${suffix}_${n}`);
+    const d: KeyDraft = {
+      key: nextDraftKey++,
+      kind,
+      original: null,
+      name: indexName,
+      columns: [],
+      columnKeys: current && !current.dropped ? [current.key] : [],
+      unique: kind === "unique",
+      dropped: false,
+    };
+    setDrafts((ds) => [...ds, d]);
+    setSelected({ group: "index", key: d.key });
   };
   const remove = () => {
+    if (currentIndex) {
+      if (currentIndex.original) patchIndex({ dropped: !currentIndex.dropped });
+      else {
+        setDrafts((ds) => ds.filter((d) => d.key !== currentIndex.key));
+        setSelected(null);
+      }
+      return;
+    }
     if (!current) return;
     if (current.original) patch({ dropped: !current.dropped });
     else {
       const rest = columns.filter((c) => c.key !== current.key);
       setColumns(rest);
-      setSelected(rest.at(-1)?.key ?? null);
+      const last = rest.at(-1);
+      setSelected(last ? { group: "column", key: last.key } : null);
     }
   };
   const locked = !!current && !canAlterColumn(driver, current);
+  // An existing table's primary key changes where the engine can drop and add it.
+  const primaryKeyEditable = !table || canChangePrimaryKey(driver, columns, pkIndex);
+  const indexLocked = !!currentIndex?.original && !canAlterIndex(driver, currentIndex);
+  // An existing key or index is kept or dropped, not edited (see `IndexDraft`).
+  const indexFixed = !!currentIndex && (!!currentIndex.original || currentIndex.dropped);
+  const liveColumns = columns.filter((c) => !c.dropped && c.name.trim());
   // The list's filter (names and types) and its collapsed groups.
   const [filter, setFilter] = useState("");
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   const query = filter.trim().toLowerCase();
   const matches = (...texts: string[]) => !query || texts.some((t) => t.toLowerCase().includes(query));
   const shownColumns = columns.filter((c) => matches(c.name, c.dataType));
-  const groups = objectGroups(columns, details)
+  const groups = objectGroups(columns, indexes, details)
     .map((g) => ({ ...g, rows: g.rows.filter((r) => matches(r.name, r.detail)) }))
     .filter((g) => g.rows.length);
   const toggleGroup = (group: string) =>
@@ -790,11 +885,29 @@ function ModifyTableForm({
             <div className={styles.modifyColumns}>
               <div className={styles.modifyToolbar}>
                 <IconButton icon="plus" title="Add Column" size="small" onClick={add} />
+                {support.uniqueKey && (
+                  <IconButton icon="db-key" title="Add Unique Key" size="small" onClick={() => addIndex("unique")} />
+                )}
+                {support.index && (
+                  <IconButton icon="db-index" title="Add Index" size="small" onClick={() => addIndex("index")} />
+                )}
                 <IconButton
                   icon="minus"
-                  title={current?.dropped ? "Keep Column" : "Drop Column"}
+                  title={
+                    currentIndex
+                      ? currentIndex.dropped
+                        ? currentIndex.kind === "unique"
+                          ? "Keep Key"
+                          : "Keep Index"
+                        : currentIndex.kind === "unique"
+                          ? "Drop Key"
+                          : "Drop Index"
+                      : current?.dropped
+                        ? "Keep Column"
+                        : "Drop Column"
+                  }
                   size="small"
-                  disabled={!current}
+                  disabled={!(current || (currentIndex && !indexLocked))}
                   onClick={remove}
                 />
                 <SearchField
@@ -814,11 +927,11 @@ function ModifyTableForm({
                       <div
                         key={c.key}
                         role="option"
-                        aria-selected={c.key === selected}
+                        aria-selected={selected?.group === "column" && c.key === selected.key}
                         tabIndex={-1}
                         className={styles.modifyItem}
                         data-dropped={c.dropped || undefined}
-                        onMouseDown={() => setSelected(c.key)}
+                        onMouseDown={() => setSelected({ group: "column", key: c.key })}
                       >
                         <Icon name={c.primaryKey ? "db-column-key" : "db-column"} size={16} />
                         <span className={styles.nodeLabel}>{c.name || "<unnamed>"}</span>
@@ -834,9 +947,15 @@ function ModifyTableForm({
                         <div
                           key={r.key}
                           role="option"
-                          aria-selected={false}
-                          aria-disabled
+                          aria-selected={!!r.draft && selected?.group === "index" && r.draft.key === selected.key}
+                          aria-disabled={!r.draft || undefined}
+                          tabIndex={r.draft ? -1 : undefined}
                           className={styles.modifyItem}
+                          data-dropped={r.draft?.dropped || undefined}
+                          onMouseDown={() => {
+                            const d = r.draft;
+                            if (d) setSelected({ group: "index", key: d.key });
+                          }}
                         >
                           <Icon name={g.icon} size={16} />
                           <span className={styles.nodeLabel}>{r.name}</span>
@@ -881,12 +1000,14 @@ function ModifyTableForm({
                       />
                     </>
                   )}
-                  {!table && driver !== "clickhouse" && (
+                  {(table ? support.primaryKey : driver !== "clickhouse") && (
                     <>
                       <span />
                       <Checkbox
                         checked={current.primaryKey}
-                        onChange={(primaryKey) => patch({ primaryKey })}
+                        disabled={current.dropped || !primaryKeyEditable}
+                        // A primary key column is NOT NULL.
+                        onChange={(primaryKey) => patch(primaryKey ? { primaryKey, notNull: true } : { primaryKey })}
                         label="Primary key"
                       />
                     </>
@@ -920,6 +1041,62 @@ function ModifyTableForm({
                       <span />
                       <span className={styles.formHint}>
                         <T>SQLite can rename or drop an existing column, not change its type, NOT NULL or default.</T>
+                      </span>
+                    </>
+                  )}
+                </>
+              ) : currentIndex ? (
+                <>
+                  <label className={styles.formLabel} htmlFor="db-key-name">
+                    <T>Name</T>
+                  </label>
+                  <Input
+                    id="db-key-name"
+                    value={currentIndex.name}
+                    disabled={indexFixed}
+                    onChange={(e) => patchIndex({ name: e.target.value })}
+                  />
+                  <span className={styles.formLabel}>
+                    <T>Columns</T>
+                  </span>
+                  <div role="group" aria-label={tx("Key columns")} className={styles.modifyKeyColumns}>
+                    {currentIndex.original
+                      ? currentIndex.original.columns.map((n) => (
+                          <Checkbox key={n} checked disabled onChange={() => {}} label={<span>{n}</span>} />
+                        ))
+                      : liveColumns.map((c) => (
+                          <Checkbox
+                            key={c.key}
+                            checked={currentIndex.columnKeys.includes(c.key)}
+                            disabled={indexFixed}
+                            // Checked in the order the key lists them.
+                            onChange={(on) =>
+                              patchIndex({
+                                columnKeys: on
+                                  ? [...currentIndex.columnKeys, c.key]
+                                  : currentIndex.columnKeys.filter((k) => k !== c.key),
+                              })
+                            }
+                            label={<span>{c.name}</span>}
+                          />
+                        ))}
+                  </div>
+                  {currentIndex.kind === "index" && (
+                    <>
+                      <span />
+                      <Checkbox
+                        checked={currentIndex.unique}
+                        disabled={indexFixed}
+                        onChange={(unique) => patchIndex({ unique })}
+                        label="Unique"
+                      />
+                    </>
+                  )}
+                  {indexLocked && (
+                    <>
+                      <span />
+                      <span className={styles.formHint}>
+                        <T>SQLite cannot drop the index of a primary key or unique constraint.</T>
                       </span>
                     </>
                   )}
