@@ -33,6 +33,19 @@ const BLAME_PALETTE = [
   "var(--project-color-3)",
 ] as const;
 
+/**
+ * How much of each palette colour is blended over the gutter. One strength for every commit: the
+ * palette's hue is what identifies a commit, and its weight carries no meaning, so varying it only
+ * made neighbours harder to compare. At 18% the nine hues dropped to a chroma of about 20 and
+ * adjacent commits read as the same grey; 40% keeps them apart.
+ */
+const TINT_STRENGTH = 40;
+
+/** A palette colour blended over the gutter at `TINT_STRENGTH`. */
+function tinted(hue: string): string {
+  return `color-mix(in srgb, ${hue} ${TINT_STRENGTH}%, var(--bg-editor-gutter))`;
+}
+
 /** Assigns each distinct commit in the file a background tint ordered from oldest (cool) to newest (warm/green). */
 export function commitBackgrounds(lines: readonly Pick<BlameLine, "timeMs" | "commit">[]): Map<string, string> {
   const unique = new Map<string, number>();
@@ -55,8 +68,7 @@ export function commitBackgrounds(lines: readonly Pick<BlameLine, "timeMs" | "co
       frac === 0 || idx >= BLAME_PALETTE.length - 1
         ? BLAME_PALETTE[idx]!
         : `color-mix(in srgb, ${BLAME_PALETTE[idx + 1]!} ${frac}%, ${BLAME_PALETTE[idx]!})`;
-    const strength = count > BLAME_PALETTE.length && i % 2 === 1 ? 24 : 18;
-    out.set(commit, `color-mix(in srgb, ${hue} ${strength}%, var(--bg-editor-gutter))`);
+    out.set(commit, tinted(hue));
   }
   return out;
 }
@@ -216,12 +228,7 @@ function setAnnotateColors(colors: AnnotateColors, save = true) {
 function authorBackgrounds(lines: readonly BlameLine[]): Map<string, string> {
   const committed = lines.filter((l) => !isUncommitted(l));
   const authors = [...new Set(committed.map((l) => l.author))].sort();
-  const tint = new Map(
-    authors.map((a, i) => [
-      a,
-      `color-mix(in srgb, ${BLAME_PALETTE[i % BLAME_PALETTE.length]!} 18%, var(--bg-editor-gutter))`,
-    ]),
-  );
+  const tint = new Map(authors.map((a, i) => [a, tinted(BLAME_PALETTE[i % BLAME_PALETTE.length]!)]));
   return new Map(committed.map((l) => [l.commit, tint.get(l.author)!]));
 }
 
