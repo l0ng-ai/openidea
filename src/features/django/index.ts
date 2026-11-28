@@ -66,6 +66,8 @@ export function activate(): () => void {
       forgetModels();
       if (!useStubs.getState().python) void checkProject();
     }),
+    // Another interpreter for the project.
+    onIdeEvent("settingsChanged", (e) => e.key.startsWith("languages.python") && void checkProject()),
     useProject.subscribe((s, prev) => {
       if (s.project?.root === prev.project?.root) return;
       resetManage();

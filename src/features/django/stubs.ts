@@ -23,18 +23,40 @@ interface StubsState {
 
 const initial = (): StubsState => ({ python: null, missing: false, installing: false, ignored: false });
 export const useStubs = create<StubsState>(initial);
-export const resetStubs = () => useStubs.setState(initial());
+
+/** Bumped by each reset: a check started for the previous project doesn't write into the store. */
+let epoch = 0;
+export function resetStubs() {
+  epoch++;
+  useStubs.setState(initial());
+}
 
 /** Django without django-types or django-stubs. */
 export const needsStubs = (packages: readonly string[]) =>
   packages.includes("django") && !packages.some((p) => p === STUBS || p === "django-stubs");
 
-export async function checkStubs(python: string): Promise<void> {
-  const packages = await call(commands.sdkPythonPackages(python, false, nextRequestId())).catch(() => []);
-  useStubs.setState({ python, missing: needsStubs(packages.map((p) => p.name.toLowerCase().replace(/_/g, "-"))) });
+/** A virtual environment (venv, virtualenv, conda), the only kind the banner installs into: not the system Python. */
+async function isEnvironment(python: string): Promise<boolean> {
+  const root = python.replace(/\\/g, "/").split("/").slice(0, -2).join("/");
+  const kinds = await Promise.all(
+    ["pyvenv.cfg", "conda-meta"].map((name) => call(commands.fsEntryKind(`${root}/${name}`)).catch(() => null)),
+  );
+  return kinds.some(Boolean);
 }
 
-async function install() {
+export async function checkStubs(python: string): Promise<void> {
+  const mine = epoch;
+  const missing =
+    (await isEnvironment(python)) &&
+    needsStubs(
+      (await call(commands.sdkPythonPackages(python, false, nextRequestId())).catch(() => [])).map((p) =>
+        p.name.toLowerCase().replace(/_/g, "-"),
+      ),
+    );
+  if (mine === epoch) useStubs.setState({ python, missing });
+}
+
+export async function install() {
   const { python, installing } = useStubs.getState();
   if (!python || installing) return;
   useStubs.setState({ installing: true });
@@ -63,7 +85,7 @@ export function useStubsBanner(path: string): EditorBanner | null {
   const show = useStubs((s) => s.missing && !s.ignored && !s.installing);
   if (!show || !path.endsWith(".py")) return null;
   return {
-    text: "Install django-types to complete Django model fields and managers",
+    text: "Install django-types into this project's virtual environment to complete Django model fields and managers",
     actions: [
       { label: "Install", run: () => void install() },
       { label: "Ignore", run: () => useStubs.setState({ ignored: true }) },

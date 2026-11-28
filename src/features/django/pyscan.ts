@@ -4,9 +4,10 @@
  * `src` with comments blanked (`code`) and also string contents blanked (`bare`), same length:
  * brackets and names found in `bare` are code, never text in a string or a comment.
  */
-export function masks(src: string): { code: string; bare: string } {
+export function masks(src: string): { code: string; bare: string; inString: boolean } {
   let code = "";
   let bare = "";
+  let inString = false;
   for (let i = 0; i < src.length;) {
     const c = src[i]!;
     if (c === "#") {
@@ -20,6 +21,7 @@ export function masks(src: string): { code: string; bare: string } {
       let j = i + quote.length;
       while (j < src.length && !src.startsWith(quote, j) && (quote.length === 3 || src[j] !== "\n"))
         j += src[j] === "\\" ? 2 : 1;
+      inString = j >= src.length;
       j = Math.min(src.length, j + quote.length);
       code += src.slice(i, j);
       bare += quote + src.slice(i + quote.length, j - quote.length).replace(/[^\n]/g, " ") + quote;
@@ -30,7 +32,7 @@ export function masks(src: string): { code: string; bare: string } {
       i++;
     }
   }
-  return { code, bare: bare.slice(0, src.length) };
+  return { code, bare: bare.slice(0, src.length), inString };
 }
 
 export interface PyArg {
@@ -49,41 +51,45 @@ export interface PyCall {
   args: PyArg[];
 }
 
+/** The top-level arguments of the call whose `(` is at `open` (offsets into the masked source). */
+export function callArgs(code: string, bare: string, open: number): PyArg[] {
+  const args: PyArg[] = [];
+  let depth = 0;
+  let start = open + 1;
+  const push = (end: number) => {
+    const raw = code.slice(start, end);
+    const kw = /^(\s*)(\w+)\s*=(?!=)\s*/.exec(raw);
+    const lead = kw ? kw[0].length : raw.length - raw.trimStart().length;
+    const value = raw.slice(lead).trimEnd();
+    if (value) args.push({ key: kw ? kw[2]! : null, value, from: start + lead });
+  };
+  for (let i = open + 1; i < bare.length; i++) {
+    const c = bare[i];
+    if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") {
+      if (depth === 0) {
+        push(i);
+        break;
+      }
+      depth--;
+    } else if (c === "," && depth === 0) {
+      push(i);
+      start = i + 1;
+    }
+  }
+  return args;
+}
+
 /** Calls of `names` (`path`, `include`…) with their top-level arguments. */
 export function pyCalls(src: string, names: readonly string[]): PyCall[] {
   const { code, bare } = masks(src);
-  const out: PyCall[] = [];
   const head = new RegExp(String.raw`(?:^|[^\w.])(${names.join("|")})\s*\(`, "g");
-  for (const m of bare.matchAll(head)) {
-    const open = m.index + m[0].length - 1;
-    const args: PyArg[] = [];
-    let depth = 0;
-    let start = open + 1;
-    const push = (end: number) => {
-      const raw = code.slice(start, end);
-      const kw = /^(\s*)(\w+)\s*=(?!=)\s*/.exec(raw);
-      const lead = kw ? kw[0].length : raw.length - raw.trimStart().length;
-      const value = raw.slice(lead).trimEnd();
-      if (value) args.push({ key: kw ? kw[2]! : null, value, from: start + lead });
-    };
-    for (let i = open + 1; i < bare.length; i++) {
-      const c = bare[i];
-      if (c === "(" || c === "[" || c === "{") depth++;
-      else if (c === ")" || c === "]" || c === "}") {
-        if (depth === 0) {
-          push(i);
-          break;
-        }
-        depth--;
-      } else if (c === "," && depth === 0) {
-        push(i);
-        start = i + 1;
-      }
-    }
-    // The match starts with the character before the name, when there is one.
-    out.push({ name: m[1]!, from: m.index + m[0].indexOf(m[1]!), args });
-  }
-  return out;
+  // The match starts with the character before the name, when there is one.
+  return [...bare.matchAll(head)].map((m) => ({
+    name: m[1]!,
+    from: m.index + m[0].indexOf(m[1]!),
+    args: callArgs(code, bare, m.index + m[0].length - 1),
+  }));
 }
 
 /** The text of a plain string literal (`"x"`, `r'x'`), else null. */
