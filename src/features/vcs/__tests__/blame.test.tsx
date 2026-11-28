@@ -8,6 +8,7 @@ import { useProject } from "@/platform/project";
 import {
   annotationsShown,
   blameSlot,
+  commitBackgrounds,
   readAnnotateColors,
   readAnnotateColumns,
   readAnnotateNames,
@@ -301,6 +302,38 @@ describe("git blame gutter and commit popup", () => {
     fireEvent.contextMenu(edited);
     const items = mocks.menu.mock.calls[0]![1] as { label?: string }[];
     expect(items.map((i) => i.label)).toEqual(["Close Annotations", "Options"]);
+  });
+});
+
+describe("commit tints", () => {
+  const at = (daysAgo: number) => Date.now() - daysAgo * 86_400_000;
+  // The outer blend is the tint strength; a hue between two palette colours has a `color-mix` of
+  // its own inside, so match the argument before `--bg-editor-gutter`, not the first percentage.
+  const strengthOf = (css: string) => Number(/(\d+)%, var\(--bg-editor-gutter\)/.exec(css)![1]);
+  const lines = (days: number[]) => days.map((d, i) => ({ commit: `${i + 1}`.padEnd(40, "a"), timeMs: at(d) }));
+
+  it("tints every commit at one strength, so the hue alone tells them apart", () => {
+    // Eleven commits put the old parity rule into its alternate branch (24%), which made
+    // neighbouring commits differ in weight as well as hue.
+    const bgs = commitBackgrounds(lines(Array.from({ length: 11 }, (_, i) => 400 - i * 30)));
+    expect(new Set([...bgs.values()].map(strengthOf)).size).toBe(1);
+    // The hues still differ, which is what makes a commit identifiable.
+    expect(new Set(bgs.values()).size).toBe(11);
+  });
+
+  it("gives a file with a single commit the same strength", () => {
+    const bgs = commitBackgrounds(lines([30]));
+    expect(bgs.size).toBe(1);
+    expect(strengthOf([...bgs.values()][0]!)).toBe(40);
+  });
+
+  it("leaves uncommitted lines out", () => {
+    const bgs = commitBackgrounds([
+      { commit: "0".repeat(40), timeMs: 0 },
+      { commit: "a".repeat(40), timeMs: at(10) },
+    ]);
+    expect(bgs.has("0".repeat(40))).toBe(false);
+    expect(bgs.size).toBe(1);
   });
 });
 
