@@ -436,8 +436,13 @@ pub fn set_settings(
             }
         });
     }
-    // Directory Mappings change which repositories the project has.
-    if key == "vcs" || key == "vcs.mappings" || key.starts_with("vcs.mappings.") {
+    // Directory Mappings and Enable Git integration change which repositories the project has.
+    if key == "vcs"
+        || key == "vcs.mappings"
+        || key.starts_with("vcs.mappings.")
+        || key == "vcs.git"
+        || key == "vcs.git.enabled"
+    {
         let affected = affected();
         host.runtime.spawn_blocking(move || {
             for project in affected {

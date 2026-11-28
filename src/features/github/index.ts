@@ -11,6 +11,7 @@
 import "./ui/palette.css";
 import { registerActions, type Action } from "@/platform/actions";
 import { setContext } from "@/platform/context";
+import { whileGitEnabled } from "@/platform/gitEnabled";
 import { lazyComponent } from "@/ui";
 import { githubCloneSource } from "./clone/source";
 import {
@@ -258,20 +259,6 @@ export function activate(): () => void {
   setContext("githubPrTab", "list");
   const disposers = [
     activateSettingsPages(),
-    registerCloneSource(githubCloneSource),
-    registerGitLogChecks(lazyComponent(() => import("./LogCommitChecks").then((m) => m.LogCommitChecks))),
-    registerToolWindow({
-      id: WINDOW,
-      title: "Pull Requests",
-      icon: "toolwindow-pull-requests",
-      anchor: "left",
-      order: 2,
-      stripe: "onUse",
-      component: lazyView("PullRequestsToolWindow"),
-      headerContent: lazyView("PullRequestsTabs"),
-      headerActions: lazyView("PullRequestsHeaderActions"),
-      headerMenu: useHeaderMenu,
-    }),
     registerEditorKind({
       kind: TIMELINE_KIND,
       component: lazyComponent(() => import("./timeline/TimelineEditor").then((m) => m.TimelineEditor)),
@@ -280,7 +267,27 @@ export function activate(): () => void {
       icon: (input) => runtime?.timeline.icon(input) ?? "github-timeline",
     }),
     registerOverlay({ id: "github.dialogs", component: GithubDialogHost }),
-    registerActions(actions().map((a) => ({ ...a, run: a.run ?? (async (c) => (await load()).runs[a.id]!(c)) }))),
+    // Pull requests, GitHub clone and actions need Git (Settings › Git › Enable Git integration).
+    whileGitEnabled(() => {
+      const git = [
+        registerCloneSource(githubCloneSource),
+        registerGitLogChecks(lazyComponent(() => import("./LogCommitChecks").then((m) => m.LogCommitChecks))),
+        registerToolWindow({
+          id: WINDOW,
+          title: "Pull Requests",
+          icon: "toolwindow-pull-requests",
+          anchor: "left",
+          order: 2,
+          stripe: "onUse",
+          component: lazyView("PullRequestsToolWindow"),
+          headerContent: lazyView("PullRequestsTabs"),
+          headerActions: lazyView("PullRequestsHeaderActions"),
+          headerMenu: useHeaderMenu,
+        }),
+        registerActions(actions().map((a) => ({ ...a, run: a.run ?? (async (c) => (await load()).runs[a.id]!(c)) }))),
+      ];
+      return () => git.reverse().forEach((d) => d());
+    }),
   ];
   // Review mode follows the current branch: start once the window is up.
   const idle = typeof requestIdleCallback === "function" ? requestIdleCallback : (f: () => void) => setTimeout(f, 200);

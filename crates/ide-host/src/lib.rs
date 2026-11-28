@@ -766,6 +766,25 @@ impl Host {
         let exe = self.global_settings.read_effective(|s| s.vcs.git.executable.trim().to_owned());
         ide_vcs::set_default_git_executable((!exe.is_empty()).then(|| Path::new(&exe)));
     }
+
+    /// Settings › Version Control › Git › Enable Git integration, as it applies to `window`
+    /// (its project's effective value, the global one without a project).
+    pub fn git_enabled(&self, window: &str) -> bool {
+        match self.project(window) {
+            Ok(project) => project.git_enabled(),
+            Err(_) => self.global_settings.read_effective(|s| s.vcs.git.enabled),
+        }
+    }
+
+    /// Fails while Git integration is switched off for `window`: commands that start git
+    /// outside the project's repositories (clone, init, an external log) check it first.
+    pub fn ensure_git_enabled(&self, window: &str) -> IdeResult<()> {
+        if self.git_enabled(window) {
+            Ok(())
+        } else {
+            Err(ide_core::IdeError::unavailable("Git integration is disabled in Settings › Version Control › Git"))
+        }
+    }
 }
 
 #[cfg(test)]

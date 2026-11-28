@@ -499,6 +499,7 @@ pub fn menu_model(app: AppHandle, state: State<'_, AppState>, menu_state: State<
     }
     let home = dirs::home_dir();
     let config = menu_state.config.lock().clone();
+    let spec = menu::without_hidden(spec, &config);
     let remote = menu_state.remote_recent.lock().clone();
     menu::model(&spec, &menu::recent_items(&state.recent.list(), &remote, home.as_deref()), &config)
 }

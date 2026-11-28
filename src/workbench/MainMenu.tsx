@@ -6,6 +6,7 @@ import { useProject } from "@/platform/project";
 import { lookup, t, useI18n } from "@/platform/i18n";
 import { commands, type MenuNode } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
+import { hiddenMenuEntries, useWorkflowSettings } from "@/platform/workflowSettings";
 import { Icon, MenuList, Popup, type MenuItem } from "@/ui";
 import { useChromeIconSize } from "@/ui/density";
 import menuStyles from "@/ui/Menu.module.css";
@@ -80,9 +81,18 @@ export function onLoneAlt(target: Window, onAlt: () => void): () => void {
   };
 }
 
+/** `nodes` without the entries `hidden` names (the backend may not have the latest list yet). */
+function withoutHidden(nodes: MenuNode[], hidden: readonly string[]): MenuNode[] {
+  if (!hidden.length) return nodes;
+  return nodes.flatMap((n): MenuNode[] => {
+    if ((n.kind === "submenu" || n.kind === "action") && hidden.includes(n.id)) return [];
+    return n.kind === "submenu" ? [{ ...n, children: withoutHidden(n.children, hidden) }] : [n];
+  });
+}
+
 async function loadMenus(): Promise<Submenu[]> {
   const model: MenuNode[] = await commands.menuModel().catch(() => []);
-  return model.filter(isSubmenu);
+  return withoutHidden(model, hiddenMenuEntries()).filter(isSubmenu);
 }
 
 type MainMenuProps = {
@@ -99,6 +109,7 @@ export function MainMenu({ row = false, ...props }: MainMenuProps) {
 function MainMenuBar({ merged, row, onExpandedChange }: MainMenuProps & { merged: boolean; row: boolean }) {
   useI18n((s) => s.locale);
   useContextKeys((s) => javaFileNameOf(s.editorPath));
+  const gitEnabled = useWorkflowSettings((w) => w.vcs.git.enabled);
   const iconSize = useChromeIconSize();
   const [menus, setMenus] = useState<Submenu[]>([]);
   const [expanded, setExpanded] = useState(false);
@@ -134,7 +145,7 @@ function MainMenuBar({ merged, row, onExpandedChange }: MainMenuProps & { merged
     return () => {
       disposed = true;
     };
-  }, [merged, row]);
+  }, [merged, row, gitEnabled]);
   useEffect(() => {
     if (!(merged || row) || open === null) return;
     let disposed = false;

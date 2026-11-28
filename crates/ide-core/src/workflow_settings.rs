@@ -143,6 +143,9 @@ impl Default for GitAnnotateSettings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct GitSettings {
+    /// Git integration on: off, the IDE finds no repositories and runs no git at all
+    /// (no status, log, blame, fetch, clone or agent worktrees), and hides its Git UI.
+    pub enabled: bool,
     pub annotate: GitAnnotateSettings,
     /// Show blame after the current editor line.
     pub inline_blame: bool,
@@ -201,6 +204,7 @@ pub struct GitSettings {
 impl Default for GitSettings {
     fn default() -> Self {
         Self {
+            enabled: true,
             annotate: GitAnnotateSettings::default(),
             inline_blame: false,
             inline_blame_clickable: true,
@@ -750,6 +754,14 @@ mod tests {
         let on: CommitSettings = serde_json::from_str(r#"{"fixOnCommit":true}"#).unwrap();
         assert!(on.fix_on_commit);
         assert_eq!(serde_json::to_value(&on).unwrap()["fixOnCommit"], true);
+    }
+
+    #[test]
+    fn git_defaults_enabled_and_can_be_disabled() {
+        let missing: GitSettings = serde_json::from_str("{}").unwrap();
+        let off: GitSettings = serde_json::from_str(r#"{"enabled":false}"#).unwrap();
+        assert!(missing.enabled);
+        assert!(!off.enabled);
     }
 
     #[test]

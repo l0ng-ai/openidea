@@ -296,7 +296,7 @@ pub fn build<R: Runtime>(
     recent: &[RecentItem],
     disabled: &HashSet<String>,
 ) -> tauri::Result<Menu<R>> {
-    build_rendered(app, &render_bar(&prepared_spec(app, os), config, recent), disabled)
+    build_rendered(app, &render_bar(&without_hidden(prepared_spec(app, os), config), config, recent), disabled)
 }
 
 fn build_rendered<R: Runtime>(
@@ -584,7 +584,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>, menu_state: &MenuState, recent: &
     let items = recent_items(recent, &menu_state.remote_recent.lock(), home.as_deref());
     let config = menu_state.config.lock().clone();
     let disabled = menu_state.disabled.lock().clone();
-    let rendered = render_bar(&prepared_spec(app, Os::current()), &config, &items);
+    let rendered = render_bar(&without_hidden(prepared_spec(app, Os::current()), &config), &config, &items);
     let mut slot = menu_state.rendered.lock();
     if slot.as_ref() == Some(&rendered) {
         return;
@@ -977,6 +977,21 @@ mod tests {
             }
             check(&spec);
         }
+    }
+
+    #[test]
+    fn hidden_submenus_and_actions_leave_the_menu() {
+        let config = MenuConfig { hidden: vec!["git".into(), "vcs.cloneProject".into()], ..MenuConfig::default() };
+        for os in ALL_OS {
+            let all = spec(os);
+            assert!(all.iter().any(|e| matches!(e, Entry::Submenu { id: "git", .. })));
+            let spec = without_hidden(all, &config);
+            assert!(!spec.iter().any(|e| matches!(e, Entry::Submenu { id: "git", .. })));
+            let ids = action_ids(&spec);
+            assert!(!ids.contains(&"vcs.commit") && !ids.contains(&"vcs.cloneProject"));
+            assert!(ids.contains(&"file.openProject"));
+        }
+        assert_eq!(action_ids(&without_hidden(spec(Os::Linux), &MenuConfig::default())), action_ids(&spec(Os::Linux)));
     }
 
     #[test]

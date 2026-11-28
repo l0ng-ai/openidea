@@ -251,6 +251,7 @@ fn git_status() -> Tool {
 Returns porcelain-style index/worktree status codes and summary counters.
 By default all Git repositories are returned.",
         |call| async move {
+            call.host.ensure_git_enabled(&call.window)?;
             let include_untracked = call.flag("includeUntracked", true)?;
             let include_ignored = call.flag("includeIgnored", false)?;
             let page = Page::of(&call, STATUS_DEFAULT_LIMIT)?;
@@ -360,6 +361,7 @@ By default all Git repositories are returned.",
 
 fn git_diff() -> Tool {
     Tool::new("git_diff", "Read a Git diff for a file or the working tree. staged=true compares the index with HEAD; otherwise compares disk with the index. Unsaved editor text is not part of this diff.", |call| async move {
+        call.host.ensure_git_enabled(&call.window)?;
         let wanted = call.opt_str("repositoryPathRelativeToProject")?;
         let path = wanted.as_deref().map(|p| call.resolve_inside(p)).transpose()?.unwrap_or_else(|| call.root().to_path_buf());
         let root = find_git_root(call.root(), &path).ok_or_else(|| IdeError::not_found("No git repository found"))?;

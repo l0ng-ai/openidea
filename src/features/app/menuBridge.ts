@@ -20,6 +20,7 @@ import {
   useKeymap,
 } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
+import { hiddenMenuEntries, onWorkflowSettingsChange } from "@/platform/workflowSettings";
 import { syncRemoteRecentMenu } from "@/platform/remote";
 import { useContributions, useMenuSlotItems, useStandaloneEditor } from "@/workbench/contributions";
 import { useDistractionFree } from "@/workbench/distractionFree";
@@ -126,6 +127,7 @@ export function buildMenuConfig(os: HostOs): MenuConfig {
     accelerators,
     dynamic: dynamicMenuItems(),
     checked: toggledActions(),
+    hidden: hiddenMenuEntries(),
   };
 }
 
@@ -304,6 +306,8 @@ export function installMenuBridge(): () => void {
       // View › Appearance check marks and Status Bar Widgets.
       if (s.settings?.appearance !== prev.settings?.appearance) push();
     }),
+    // Settings › Git › Enable Git integration shows or hides the Git menu.
+    onWorkflowSettingsChange((w) => w.vcs.git.enabled, push),
   ];
   return () => {
     disposed = true;

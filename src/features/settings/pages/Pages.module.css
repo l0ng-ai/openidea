@@ -4,6 +4,21 @@
   max-width: 680px;
 }
 
+/* The sections below a page's master checkbox (Settings › Git › Enable Git integration). */
+.gated,
+.gatedOff {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.gatedOff {
+  opacity: 0.5;
+}
+
 .durationAmount {
   width: 12ch;
   font-variant-numeric: tabular-nums;

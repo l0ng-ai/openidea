@@ -7,6 +7,7 @@ import { getContext } from "@/platform/context";
 import { loadSettings, useProject } from "@/platform/project";
 import { call, commands } from "@/platform/ipc";
 import { workflowSettings } from "@/platform/workflowSettings";
+import { whileGitEnabled } from "@/platform/gitEnabled";
 import { activeEditor, editorsFor } from "@/editor/api";
 import { Menu, type MenuItem } from "@/ui";
 import {
@@ -378,6 +379,9 @@ interface TagTarget {
   tag: string;
   repo: string | null;
 }
+
+/** Actions that do not run git, registered while Git integration is off too. */
+const KEPT_WITHOUT_GIT = new Set(["vcs.localHistory"]);
 
 export function registerVcsActions(): () => void {
   const actions: Action[] = [
@@ -1351,8 +1355,10 @@ export function registerVcsActions(): () => void {
     },
   ];
   const stopTracking = trackFileHistory();
-  const unregister = registerActions(actions);
+  const unregister = registerActions(actions.filter((a) => KEPT_WITHOUT_GIT.has(a.id)));
+  const unregisterGit = whileGitEnabled(() => registerActions(actions.filter((a) => !KEPT_WITHOUT_GIT.has(a.id))));
   return () => {
+    unregisterGit();
     unregister();
     stopTracking();
   };

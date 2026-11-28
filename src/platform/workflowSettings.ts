@@ -28,6 +28,8 @@ export interface IssueLinkValid {
 }
 
 export interface GitSettingsValid {
+  /** Git integration on; off, no repository is found, no git runs and the Git UI is hidden. */
+  enabled: boolean;
   annotate: { ignoreWhitespace: boolean; movement: GitAnnotateMovement };
   inlineBlame: boolean;
   inlineBlameClickable: boolean;
@@ -307,6 +309,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     limitHistory: true,
     historyLimit: 1000,
     git: {
+      enabled: true,
       annotate: { ignoreWhitespace: true, movement: "none" },
       inlineBlame: false,
       inlineBlameClickable: true,
@@ -496,6 +499,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
     limitHistory: bool(v.limitHistory, d.limitHistory),
     historyLimit: num(v.historyLimit, d.historyLimit, L.historyLimit, true),
     git: {
+      enabled: bool(g.enabled, d.git.enabled),
       annotate: {
         ignoreWhitespace: bool(annotate.ignoreWhitespace, d.git.annotate.ignoreWhitespace),
         movement: oneOf(annotate.movement, ["none", "withinFile", "acrossFiles"], d.git.annotate.movement),
@@ -802,6 +806,11 @@ export function useWorkflowSettings<T>(select: (s: WorkflowSettings) => T): T {
     }
     return select(cached);
   });
+}
+
+/** Main menu entries (submenu and action ids) left out while Settings › Git › Enable Git integration is off. */
+export function hiddenMenuEntries(settings: WorkflowSettings = workflowSettings()): string[] {
+  return settings.vcs.git.enabled ? [] : ["git", "vcs.cloneProject"];
 }
 
 /** Calls `listener` whenever a section changes (deep-compared by JSON), not initially. */

@@ -112,6 +112,8 @@ pub type WorkspaceRootsHook = Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync>;
 
 /// Returns the project's git executable (`None`: the default), which the tasks' git runs.
 pub type GitExecutableHook = Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>;
+/// Whether the project's Git integration is on (Settings › Version Control › Git).
+pub type GitEnabledHook = Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// Entry changes are batched for this long before they are sent.
 const FLUSH_DELAY: Duration = Duration::from_millis(40);
@@ -240,6 +242,7 @@ struct Shared {
     new_task_approvals: RwLock<Option<NewTaskApprovalsHook>>,
     workspace_roots: RwLock<Option<WorkspaceRootsHook>>,
     git_executable: RwLock<Option<GitExecutableHook>>,
+    git_enabled: RwLock<Option<GitEnabledHook>>,
     change_reads: Arc<tokio::sync::Semaphore>,
     known: Arc<Mutex<HashMap<String, Known>>>,
     providers: RwLock<Vec<provider::ProviderSpec>>,
@@ -933,6 +936,7 @@ impl AgentManager {
             new_task_approvals: RwLock::new(None),
             workspace_roots: RwLock::new(None),
             git_executable: RwLock::new(None),
+            git_enabled: RwLock::new(None),
             change_reads: Arc::new(tokio::sync::Semaphore::new(MAX_CHANGE_READS)),
             known,
             providers,
@@ -1017,6 +1021,11 @@ impl AgentManager {
     /// Sets the callback that reads the project's git executable.
     pub fn set_git_executable_hook(&self, hook: GitExecutableHook) {
         *self.shared.git_executable.write() = Some(hook);
+    }
+
+    /// Sets the callback that tells whether Git integration is on; off, tasks run no git.
+    pub fn set_git_enabled_hook(&self, hook: GitEnabledHook) {
+        *self.shared.git_enabled.write() = Some(hook);
     }
 
     /// Directory holding linked Git worktrees created for agent tasks of this project.
@@ -1480,6 +1489,11 @@ impl AgentManager {
         let project_root = Some(IpcPath(root.clone()));
         let (cwd, branch, base, base_commit, before) = match req.isolation {
             Isolation::Worktree => {
+                if !git_enabled(&self.shared) {
+                    return Err(IdeError::invalid(
+                        "worktrees need Git, which is disabled: run the task in the local checkout",
+                    ));
+                }
                 // The UI offers worktrees for git projects only; state it when it isn't one.
                 if Repo::discover(&root)?.is_none() {
                     return Err(IdeError::invalid(
@@ -1493,10 +1507,14 @@ impl AgentManager {
             }
             Isolation::Local => {
                 let r = root.clone();
-                let (head, before) = vcs(&self.shared, move || {
-                    Ok((worktree::head_of(&r).ok(), worktree::snapshot(&r).unwrap_or_default()))
-                })
-                .await?;
+                let (head, before) = if git_enabled(&self.shared) {
+                    vcs(&self.shared, move || {
+                        Ok((worktree::head_of(&r).ok(), worktree::snapshot(&r).unwrap_or_default()))
+                    })
+                    .await?
+                } else {
+                    (None, BTreeMap::new())
+                };
                 let (base, commit) = head.unzip();
                 (root, None, base, commit, before)
             }
@@ -5473,8 +5491,16 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + '
     tokio::task::spawn_blocking(f).await.map_err(|e| IdeError::internal(e.to_string()))?
 }
 
+fn git_enabled(shared: &Shared) -> bool {
+    shared.git_enabled.read().as_ref().is_none_or(|hook| hook())
+}
+
 /// [`blocking`] for work that runs git: the repositories it opens run the project's git.
+/// Fails without running it while Git integration is off.
 async fn vcs<T: Send + 'static>(shared: &Shared, f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {
+    if !git_enabled(shared) {
+        return Err(IdeError::unavailable("Git integration is disabled"));
+    }
     let git = shared.git_executable.read().as_ref().and_then(|hook| hook());
     blocking(move || ide_vcs::with_git_executable(git.as_deref(), f)).await
 }

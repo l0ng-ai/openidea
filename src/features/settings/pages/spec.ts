@@ -5,6 +5,7 @@
  */
 import type { ComponentType, ReactNode } from "react";
 import type { SelectOption } from "@/ui";
+import type { Scope } from "../model/staging";
 
 export type OptionSpec =
   | {
@@ -36,6 +37,15 @@ export interface SectionSpec {
   options: OptionSpec[];
 }
 
+/** A checkbox above every section that switches the whole page on (Settings › Git › Enable Git integration). */
+export interface MasterToggleSpec {
+  key: string;
+  label: string;
+  hint?: ReactNode;
+  /** Bound to this scope whatever the page shows (`global`: one value for every project). */
+  scope?: Scope;
+}
+
 export interface PageSpec {
   id: string;
   title: string;
@@ -50,6 +60,8 @@ export interface PageSpec {
   scopeGroup?: string;
   /** The page picks its scope itself (Code Style's Scheme): no Global / This project switch. */
   ownScopeSwitch?: boolean;
+  /** Rendered first; while it is unchecked every section and the footer are disabled. */
+  master?: MasterToggleSpec;
   sections?: SectionSpec[];
   /** Rendered below the sections (previews). */
   footer?: ComponentType;
@@ -62,6 +74,7 @@ export interface PageSpec {
 /** Search texts of a spec: section titles, option labels and keywords. */
 export function specLabels(spec: PageSpec): string[] {
   const out: string[] = [...(spec.keywords ?? [])];
+  if (spec.master) out.push(spec.master.label);
   for (const section of spec.sections ?? []) {
     if (section.title) out.push(section.title);
     for (const o of flattenOptions(section.options)) {

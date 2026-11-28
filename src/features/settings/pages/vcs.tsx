@@ -950,7 +950,13 @@ export const VCS_PAGES: PageSpec[] = [
     title: "Git",
     order: 8,
     projectScope: true,
-    keywords: ["git", "executable", "push", "pull", "update"],
+    keywords: ["git", "executable", "push", "pull", "update", "disable git"],
+    master: {
+      key: "vcs.git.enabled",
+      label: "Enable Git integration",
+      hint: "Off, the IDE runs no git: repositories are not detected, and Git actions, menus and tool windows are hidden. Applies to all projects.",
+      scope: "global",
+    },
     sections: [
       {
         options: [

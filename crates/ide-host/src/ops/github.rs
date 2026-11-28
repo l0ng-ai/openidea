@@ -18,6 +18,9 @@ use std::path::{Path, PathBuf};
 /// primary repository (a folder holding several repositories is not one itself).
 fn root(host: &Host, window: &str, repo: Option<PathBuf>) -> IdeResult<PathBuf> {
     let project = host.project(window)?;
+    if !project.git_enabled() {
+        return Err(IdeError::unavailable("Git integration is disabled in Settings › Version Control › Git"));
+    }
     let repos = project.repos();
     match repo {
         Some(at) => match repos.at_root(&at) {
@@ -220,6 +223,7 @@ mod tests {
     use crate::rpc::Dispatcher;
     use crate::{Host, HostConfig};
     use ide_core::error::ErrorKind;
+    use ide_workspace::SettingsScope;
     use std::path::Path;
     use std::sync::Arc;
 
@@ -271,5 +275,18 @@ mod tests {
         assert_eq!(root(&host, "main", None).unwrap(), dunce::canonicalize(&proj_dir).unwrap());
         let outsider = root(&host, "main", Some(dir.path().join("other"))).unwrap_err();
         assert_eq!(outsider.kind, ErrorKind::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn refuses_gh_while_git_integration_is_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = test_host(dir.path());
+        let proj_dir = dir.path().join("repo");
+        std::fs::create_dir_all(&proj_dir).unwrap();
+        host.global_settings.set(SettingsScope::Global, "vcs.git.enabled", serde_json::json!(false)).unwrap();
+        host.open_project("main", &proj_dir).unwrap();
+        let err = root(&host, "main", None).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Unavailable);
+        assert!(err.message.contains("Git integration is disabled"), "{}", err.message);
     }
 }
