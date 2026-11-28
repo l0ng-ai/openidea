@@ -132,6 +132,10 @@ describe("Python Packages", () => {
     fireEvent.click(screen.getByRole("button", { name: "Install from Version Control or Disk" }));
     act(() => pick("Install from Version Control…"));
     const url = await screen.findByRole("textbox", { name: "Repository URL" });
+    // A name is not a repository, and editable is offered only for a local directory.
+    fireEvent.change(url, { target: { value: "requests" } });
+    expect(screen.getByRole("button", { name: "Install" })).toBeDisabled();
+    expect(screen.queryByRole("checkbox", { name: "Install as editable (-e)" })).toBeNull();
     fireEvent.change(url, { target: { value: "https://github.com/benjaminp/six.git" } });
     fireEvent.click(screen.getByRole("button", { name: "Install" }));
     expect(mocks.pip).toHaveBeenLastCalledWith(
@@ -152,7 +156,10 @@ describe("Python Packages", () => {
     const path = await screen.findByRole("textbox", { name: "Path" });
     fireEvent.change(path, { target: { value: "--index-url=https://evil.example" } });
     expect(screen.getByRole("button", { name: "Install" })).toBeDisabled();
-    fireEvent.change(path, { target: { value: "./mylib" } });
+    fireEvent.change(path, { target: { value: "dist/mylib-0.1.0-py3-none-any.whl" } });
+    expect(screen.getByRole("checkbox", { name: "Install as editable (-e)" })).toBeDisabled();
+    // A bare name is a directory here, never a PyPI package.
+    fireEvent.change(path, { target: { value: "mylib" } });
     fireEvent.click(screen.getByRole("checkbox", { name: "Install as editable (-e)" }));
     fireEvent.click(screen.getByRole("button", { name: "Install" }));
     expect(mocks.pip).toHaveBeenLastCalledWith(
