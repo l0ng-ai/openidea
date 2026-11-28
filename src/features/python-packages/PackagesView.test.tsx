@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectInfo } from "@/platform/ipc";
 
@@ -11,8 +11,18 @@ const mocks = vi.hoisted(() => ({
   container: vi.fn(),
   index: vi.fn(),
   cancel: vi.fn(),
+  menu: vi.fn(),
+  openUrl: vi.fn(),
   active: null as string | null,
 }));
+vi.mock("@/platform/openUrl", () => ({ openExternalUrl: mocks.openUrl }));
+// The context menu host is not mounted here: pick menu items by label instead.
+vi.mock("@/ui", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/ui")>()),
+  showContextMenu: mocks.menu,
+}));
+const pick = (label: string) =>
+  (mocks.menu.mock.lastCall![1] as { label: string; run: () => void }[]).find((i) => i.label === label)!.run();
 vi.mock("@tauri-apps/api/core", () => ({ Channel: class {} }));
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -50,6 +60,9 @@ const SIX = {
   summary: "Python 2 and 3 compatibility utilities",
   latest: "1.17.0",
   versions: ["1.17.0", "1.16.0"],
+  description: "# Six\n\nRead the [documentation](https://six.readthedocs.io/).<script>alert(1)</script>",
+  markdown: true,
+  links: [{ label: "Source", url: "https://github.com/benjaminp/six" }],
 };
 
 function open(interpreter = "") {
@@ -105,11 +118,76 @@ describe("Python Packages", () => {
       "six",
       false,
       false,
+      false,
       expect.anything(),
       expect.anything(),
     );
     // The list is read again once pip is done.
     await waitFor(() => expect(mocks.packages.mock.calls.filter((c) => c[1] === false)).toHaveLength(2));
+  });
+
+  it("installs a repository URL or a local directory, in editable mode when asked", async () => {
+    open();
+    await screen.findByText("urllib3");
+    fireEvent.click(screen.getByRole("button", { name: "Install from Version Control or Disk" }));
+    act(() => pick("Install from Version Control…"));
+    const url = await screen.findByRole("textbox", { name: "Repository URL" });
+    fireEvent.change(url, { target: { value: "https://github.com/benjaminp/six.git" } });
+    fireEvent.click(screen.getByRole("button", { name: "Install" }));
+    expect(mocks.pip).toHaveBeenLastCalledWith(
+      "/p/.venv/bin/python",
+      "git+https://github.com/benjaminp/six.git",
+      false,
+      false,
+      false,
+      expect.anything(),
+      expect.anything(),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Install from Version Control or Disk" })).toBeEnabled(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Install from Version Control or Disk" }));
+    act(() => pick("Install from Disk…"));
+    const path = await screen.findByRole("textbox", { name: "Path" });
+    fireEvent.change(path, { target: { value: "--index-url=https://evil.example" } });
+    expect(screen.getByRole("button", { name: "Install" })).toBeDisabled();
+    fireEvent.change(path, { target: { value: "./mylib" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Install as editable (-e)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Install" }));
+    expect(mocks.pip).toHaveBeenLastCalledWith(
+      "/p/.venv/bin/python",
+      "./mylib",
+      false,
+      false,
+      true,
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it("shows a PyPI project's links and its Markdown description, opening links in the browser", async () => {
+    open();
+    await screen.findByText("urllib3");
+    search("six");
+    select(await screen.findByText("six"));
+    expect(await screen.findByRole("heading", { name: "Six" })).toBeInTheDocument();
+    expect(document.querySelector("script")).toBeNull();
+    const links = screen.getByRole("navigation", { name: "Project links" });
+    expect([...links.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["PyPI", "Source"]);
+    fireEvent.click(screen.getByRole("link", { name: "PyPI" }));
+    fireEvent.click(screen.getByRole("link", { name: "documentation" }));
+    expect(mocks.openUrl.mock.calls).toEqual([["https://pypi.org/project/six/"], ["https://six.readthedocs.io/"]]);
+  });
+
+  it("shows a description that is not Markdown as text", async () => {
+    open();
+    await screen.findByText("urllib3");
+    mocks.pypi.mockResolvedValue(ok({ ...SIX, name: "docutils", description: "Docutils\n========", markdown: false }));
+    search("docutils");
+    select(await screen.findByText("docutils"));
+    expect((await screen.findByLabelText("Package description")).textContent).toBe("Docutils\n========");
+    expect(screen.queryByRole("heading")).toBeNull();
   });
 
   it("sends an installed package's name to PyPI only when asked, once per session", async () => {
@@ -120,6 +198,7 @@ describe("Python Packages", () => {
     mocks.pypi.mockResolvedValue(ok({ ...SIX, name: "urllib3", summary: "HTTP library" }));
     fireEvent.click(screen.getByRole("button", { name: "Show PyPI Details" }));
     expect(await screen.findByText("HTTP library")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "PyPI" })).toHaveAttribute("href", "https://pypi.org/project/urllib3/");
     select(screen.getByText("requests"));
     select(screen.getByText("urllib3"));
     expect(screen.getByText("HTTP library")).toBeInTheDocument();
@@ -216,6 +295,7 @@ describe("Python Packages", () => {
       "requests",
       false,
       true,
+      false,
       expect.anything(),
       expect.anything(),
     );
@@ -225,6 +305,7 @@ describe("Python Packages", () => {
       "/p/.venv/bin/python",
       "requests",
       true,
+      false,
       false,
       expect.anything(),
       expect.anything(),

@@ -90,6 +90,54 @@ fn prop(name: &str, value: impl Into<String>) -> PlanProperty {
     PlanProperty { name: name.to_owned(), value: value.into() }
 }
 
+fn json_property(name: &str, value: &Value) -> PlanProperty {
+    let as_text = |v: &Value| v.as_str().map_or_else(|| v.to_string(), str::to_owned);
+    let text = match value {
+        Value::Array(items) => items.iter().map(as_text).collect::<Vec<_>>().join(", "),
+        other => as_text(other),
+    };
+    prop(name, text)
+}
+
+/// DuckDB's explain_output may request the physical plan, the optimized logical plan, or all three.
+pub(crate) fn duckdb(result: &QueryResult) -> IdeResult<Vec<PlanNode>> {
+    #[derive(Deserialize)]
+    struct Operator {
+        name: String,
+        #[serde(default)]
+        children: Vec<Operator>,
+        #[serde(default)]
+        extra_info: serde_json::Map<String, Value>,
+    }
+
+    fn append(node: Operator, parent: Option<u32>, out: &mut Vec<PlanNode>) {
+        let index = out.len() as u32;
+        let properties = node.extra_info.iter().map(|(k, v)| json_property(k, v)).collect();
+        let params = ["Table", "Conditions", "Filters", "Projections"]
+            .iter()
+            .find_map(|key| node.extra_info.get(*key).map(|v| json_property(key, v).value))
+            .unwrap_or_default();
+        out.push(PlanNode { parent, operation: node.name.trim().to_owned(), params, properties });
+        for child in node.children {
+            append(child, Some(index), out);
+        }
+    }
+
+    let json = ["physical_plan", "logical_opt", "logical_plan"]
+        .iter()
+        .find_map(|kind| {
+            result.rows.iter().find(|r| r.first().and_then(Option::as_deref) == Some(*kind))?.get(1)?.as_deref()
+        })
+        .ok_or_else(|| IdeError::invalid("DuckDB returned no execution plan"))?;
+    let roots: Vec<Operator> =
+        serde_json::from_str(json).map_err(|e| IdeError::invalid(format!("DuckDB plan: {e}")))?;
+    let mut out = Vec::new();
+    for root in roots {
+        append(root, None, &mut out);
+    }
+    Ok(out)
+}
+
 /// SQLite rows: `id, parent, notused, detail` (`SCAN o`, `SEARCH c USING INTEGER PRIMARY KEY (rowid=?)`).
 fn sqlite(rows: &[Vec<Option<String>>]) -> Vec<PlanNode> {
     let mut ids: Vec<String> = Vec::new();
@@ -149,18 +197,7 @@ fn postgres(node: &Value, parent: Option<u32>, out: &mut Vec<PlanNode>) {
         .into_iter()
         .flatten()
         .filter(|(k, _)| k.as_str() != "Plans")
-        .map(|(k, v)| {
-            let value = match v {
-                Value::String(s) => s.clone(),
-                Value::Array(a) => a
-                    .iter()
-                    .map(|x| x.as_str().map_or_else(|| x.to_string(), str::to_owned))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                other => other.to_string(),
-            };
-            prop(k, value)
-        })
+        .map(|(k, v)| json_property(k, v))
         .collect();
     let me = out.len() as u32;
     out.push(PlanNode { parent, operation, params: params.join(" "), properties });
@@ -285,6 +322,25 @@ mod tests {
             execution_ms: 0.0,
             truncated: Vec::new(),
         }
+    }
+
+    #[test]
+    fn duckdb_prefers_the_physical_plan_and_preserves_operator_details() {
+        let physical = r#"[{"name":"PROJECTION","extra_info":{"Projections":["a","b"]},"children":[{"name":"SEQ_SCAN ","extra_info":{"Table":"items"}}]}]"#;
+        let rows = result(
+            &["explain_key", "explain_value"],
+            vec![vec![Some("logical_opt"), Some("[]")], vec![Some("physical_plan"), Some(physical)]],
+        );
+        let nodes = duckdb(&rows).unwrap();
+        assert_eq!(nodes.len(), 2);
+        assert_eq!((nodes[0].parent, nodes[0].params.as_str()), (None, "a, b"));
+        assert_eq!(
+            (nodes[1].parent, nodes[1].operation.as_str(), nodes[1].params.as_str()),
+            (Some(0), "SEQ_SCAN", "items")
+        );
+        assert_eq!(nodes[1].properties, [prop("Table", "items")]);
+        assert!(duckdb(&result(&[], vec![])).is_err());
+        assert!(duckdb(&result(&[], vec![vec![Some("physical_plan"), Some("invalid")]])).is_err());
     }
 
     #[test]

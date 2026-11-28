@@ -80,12 +80,16 @@ fn a_stopped_run_still_writes_its_profile() {
     let out = tempfile::tempdir().unwrap();
     let (mut cmd, spec) = plan(&python, &["cpu_heavy.py", "--loop"], out.path());
     let mut child = cmd.spawn().unwrap();
-    let mut line = String::new();
-    BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
-    assert_eq!(line.trim(), "done");
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    for marker in ["done", "looped"] {
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        assert_eq!(line.trim(), marker);
+    }
     // What the first Stop sends.
     assert!(Command::new("kill").args(["-INT", &child.id().to_string()]).status().unwrap().success());
     child.wait().unwrap();
     let p = collect(&spec).unwrap();
-    assert!(method(&p, "fib").calls.unwrap() > 57313.0, "the loop ran");
+    // One completed fib(22) followed by one completed fib(18).
+    assert!(method(&p, "fib").calls.unwrap() >= 65_674.0, "both completed passes were profiled");
 }

@@ -81,6 +81,7 @@ export interface AppearanceExtras {
   smoothScrolling: boolean;
   fullPathInTitle: boolean;
   projectColorsInToolbar: boolean;
+  projectColorStrength: number;
   dndWithAltOnly: boolean;
   menuIcons: boolean;
   mainMenuStyle: "hamburger" | "merged" | "toolbar";
@@ -149,6 +150,7 @@ export interface NotificationsValid {
 }
 
 export const IDLE_LIMITS = { min: 1, max: 3600 } as const;
+export const PROJECT_COLOR_STRENGTH = { min: 10, max: 70 } as const;
 
 export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   syncWithOs: false,
@@ -169,6 +171,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   smoothScrolling: true,
   fullPathInTitle: false,
   projectColorsInToolbar: true,
+  projectColorStrength: 22,
   dndWithAltOnly: false,
   menuIcons: true,
   mainMenuStyle: "hamburger",
@@ -255,6 +258,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     smoothScrolling: b("smoothScrolling"),
     fullPathInTitle: b("fullPathInTitle"),
     projectColorsInToolbar: b("projectColorsInToolbar"),
+    projectColorStrength: int(a.projectColorStrength, d.projectColorStrength, PROJECT_COLOR_STRENGTH),
     dndWithAltOnly: b("dndWithAltOnly"),
     menuIcons: b("menuIcons"),
     mainMenuStyle: oneOf(a.mainMenuStyle, ["hamburger", "merged", "toolbar"], d.mainMenuStyle),

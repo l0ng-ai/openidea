@@ -16,6 +16,7 @@ http = "1"
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 tracing.workspace = true
 which = "8"
+blake3.workspace = true
 flate2 = "1"
 tar = "0.4"
 zip.workspace = true

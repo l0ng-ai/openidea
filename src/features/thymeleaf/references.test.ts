@@ -7,6 +7,7 @@ import {
   templatesRoot,
   thymeleafReferenceAt,
   thymeleafReferences,
+  unresolvedThymeleafReferences,
 } from "./references";
 
 const at = (text: string, word: string, n = 0) => {
@@ -81,5 +82,64 @@ describe("project layout", () => {
     expect(inBundle("messages_zh_CN.properties", "i18n/messages")).toBe(true);
     expect(inBundle("messages.properties", "messages")).toBe(true);
     expect(inBundle("messagesx.properties", "messages")).toBe(false);
+  });
+});
+
+describe("unresolvedThymeleafReferences", () => {
+  const ROOT = "/p/src/main/resources/templates";
+  const files: Record<string, string> = {
+    [`${ROOT}/fragments/nav.html`]: `<nav th:fragment="menu(active)"></nav><div id="side"></div><title>x</title>`,
+    [`${ROOT}/mail/order.v2.html`]: `<p th:ref="body"></p>`,
+    [`${ROOT}/fragments/old.htm`]: `<nav th:fragment="menu"></nav>`,
+    [`${ROOT}/mail/body.txt`]: `Hi`,
+    [`${ROOT}/Page.HTML`]: `<p></p>`,
+    ["/p/app/src/main/resources/templates/fragments/nav.html"]: `<nav th:fragment="menu"></nav>`,
+  };
+  const read = async (path: string) => files[path] ?? null;
+  const check = async (text: string, application = "", path = `${ROOT}/index.html`, project = "/p") =>
+    (await unresolvedThymeleafReferences(path, text, application, project, read)).map((r) => text.slice(r.from, r.to));
+
+  it("reports a missing template once and a fragment the template lacks", async () => {
+    expect(await check(`<div th:replace="~{fragments/navx :: menu}"></div>`)).toEqual(["fragments/navx"]);
+    expect(await check(`<div th:insert="fragments/nav :: menux"></div>`)).toEqual(["menux"]);
+  });
+
+  it("accepts fragments defined by th:fragment, id or tag name", async () => {
+    expect(await check(`<div th:replace="~{fragments/nav :: menu('home')}"></div>`)).toEqual([]);
+    expect(await check(`<div th:replace="~{fragments/nav :: side}"></div>`)).toEqual([]);
+    expect(await check(`<div th:replace="~{fragments/nav :: title}"></div>`)).toEqual([]);
+    expect(await check(`<div th:replace="~{mail/order.v2 :: body}"></div>`)).toEqual([]);
+    expect(await check(`<div th:replace="~{fragments/old.htm :: menu}"></div>`)).toEqual([]);
+    expect(await check(`<div th:replace="~{mail/body.txt}"></div><div th:replace="~{Page.HTML}"></div>`)).toEqual([]);
+  });
+
+  it("checks same-template selectors against the edited text", async () => {
+    const text = `<p th:fragment="local"></p><div th:insert="~{:: local}"></div><div th:insert="~{this :: gone}"></div>`;
+    expect(await check(text)).toEqual(["gone"]);
+    const self = `<p th:fragment="item"></p><div th:insert="~{fragments/nav :: item}"></div>`;
+    expect(await check(self, "", `${ROOT}/fragments/nav.html`)).toEqual([]);
+  });
+
+  it("skips the no-op token, expressions, relative names and comments", async () => {
+    expect(await check(`<div th:insert="~{_}"></div>`)).toEqual([]);
+    expect(await check(`<div th:replace="\${view}"></div><div th:replace="~{\${v} :: main}"></div>`)).toEqual([]);
+    expect(await check(`<div th:replace="~{fragments/nav :: \${part}}"></div>`)).toEqual([]);
+    expect(await check(`<div th:replace="~{../shared/nav}"></div>`)).toEqual([]);
+    expect(await check(`<!-- <div th:replace="~{old :: x}"></div> -->`)).toEqual([]);
+    expect(await check(`<div th:insert="~{fragments/nav :: salutation} ?: _"></div>`)).toEqual([]);
+    expect(await check(`<div th:insert="~{common :: salutation}?:~{x}"></div>`)).toEqual(["x"]);
+  });
+
+  it("reports nothing outside Spring's default template location", async () => {
+    const text = `<div th:replace="~{missing}"></div>`;
+    expect(await check(text)).toEqual(["missing"]);
+    expect(await check(text, "", "/p/templates/index.html")).toEqual([]);
+    // A nested module may take templates from another module: only fragments of existing templates count.
+    const nested = `/p/app/src/main/resources/templates/index.html`;
+    const refs = `${text}<div th:insert="~{fragments/nav :: menux}"></div>`;
+    expect(await check(refs, "", nested)).toEqual(["menux"]);
+    expect(await check(text, "spring.thymeleaf.prefix=classpath:/views/\n")).toEqual([]);
+    expect(await check(text, "spring:\n  thymeleaf:\n    cache: false\n    suffix: .xhtml\n")).toEqual([]);
+    expect(await check(text, "spring.thymeleaf:\n  prefix: classpath:/views/\n")).toEqual([]);
   });
 });

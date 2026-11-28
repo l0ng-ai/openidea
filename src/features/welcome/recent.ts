@@ -92,12 +92,20 @@ function withRemotes(local: RecentProject[]): RecentProject[] {
   return [...local, ...remote].sort((a, b) => (b.openedAtMs ?? 0) - (a.openedAtMs ?? 0));
 }
 
-function remoteDetails(location: string): { host: string; path: string } | null {
+const REMOTE_KIND_LABEL: Record<RemoteTarget["kind"], string> = {
+  ssh: "SSH",
+  wsl: "WSL",
+  devContainer: "Dev Container",
+};
+
+function remoteDetails(
+  location: string,
+): { kind: RemoteTarget["kind"]; kindLabel: string; host: string; path: string } | null {
   const r = parseRemoteLocation(location);
   if (!r) return null;
   const host =
     recentRemotes().find((x) => sameTarget(x.target, r.target) && x.path === r.path)?.host || targetName(r.target);
-  return { host, path: r.path };
+  return { kind: r.target.kind, kindLabel: REMOTE_KIND_LABEL[r.target.kind], host, path: r.path };
 }
 
 export async function removeRecent(path: string) {

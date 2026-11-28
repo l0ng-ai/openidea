@@ -245,6 +245,21 @@ describe("staging operations of the tree's nodes", () => {
     expect(labels(nodeMenu([group("unstaged").children![0]!], []))).toContain("Commit File…");
   });
 
+  it("offers New Changelist and Move under Group By Staging State only while change lists are on (#6422)", () => {
+    const actions = (node: (typeof roots)[number]) =>
+      nodeMenu([node], []).flatMap((item) => (item.kind === "action" ? [item.action] : []));
+    useSettings(false);
+    for (const node of [group("staged"), group("unstaged"), group("unstaged").children![0]!]) {
+      expect(actions(node)).toContain("vcs.changelist.new");
+      expect(actions(node)).toContain("vcs.changelist.move");
+    }
+    useSettings(true);
+    for (const node of [group("staged"), group("unstaged").children![0]!]) {
+      expect(actions(node)).not.toContain("vcs.changelist.new");
+      expect(actions(node)).not.toContain("vcs.changelist.move");
+    }
+  });
+
   it.each([false, true])("groups the change menu for staging area = %s", (staging) => {
     useSettings(staging);
     const underUnstaged = group("unstaged").children!.find((n) => n.label === "Unstaged.kt")!;
@@ -268,6 +283,7 @@ describe("staging operations of the tree's nodes", () => {
       "Copy File Name",
     ]);
     expect(groups).toContainEqual([
+      ...(staging ? [] : ["vcs.changelist.new"]),
       "vcs.createPatch",
       "vcs.copyPatch",
       "vcs.shelve",

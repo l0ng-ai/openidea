@@ -202,6 +202,28 @@ pub async fn db_finish_transaction(host: &Host, window: &str, id: String, commit
 }
 
 #[command(trust = trusted)]
+pub async fn db_set_console_manual_commit(
+    host: &Host,
+    window: &str,
+    id: String,
+    console: String,
+    manual: bool,
+) -> IdeResult<bool> {
+    host.project(window)?.db.set_postgres_console_manual(&id, ConsoleId::new(window, &console), manual).await
+}
+
+#[command(trust = trusted)]
+pub async fn db_finish_console_transaction(
+    host: &Host,
+    window: &str,
+    id: String,
+    console: String,
+    commit: bool,
+) -> IdeResult<()> {
+    host.project(window)?.db.finish_postgres_console_transaction(&id, ConsoleId::new(window, &console), commit).await
+}
+
+#[command(trust = trusted)]
 pub async fn db_disconnect(host: &Host, window: &str, id: String, whole_source: Option<bool>) -> IdeResult<()> {
     // A source-level Deactivate includes databases still opening in the background.
     let db = host.project(window)?.db.clone();
@@ -308,6 +330,20 @@ pub async fn db_table_details(
 }
 
 #[command(trust = trusted)]
+pub async fn db_catalog_table_details(
+    host: &Host,
+    window: &str,
+    id: String,
+    catalog: String,
+    schema: String,
+    table: String,
+) -> IdeResult<TableDetails> {
+    // Columns and keys in an attached DuckDB catalog on the source session.
+    let db = host.project(window)?.db.clone();
+    db.catalog_table_details(&id, &catalog, &schema, &table).await
+}
+
+#[command(trust = trusted)]
 pub async fn db_table_grants(
     host: &Host,
     window: &str,
@@ -353,13 +389,19 @@ fn console_request<'a>(
     window: &'a str,
     request: RequestId,
     path: Option<&'a str>,
-) -> (CancellationToken, Option<ConsoleId<'a>>) {
+    manual: Option<bool>,
+) -> IdeResult<(CancellationToken, Option<ConsoleId<'a>>)> {
     match path {
-        Some(path) => (host.begin_project_request(window, request), Some(ConsoleId { window, path })),
-        None => (host.begin_request(request), None),
+        Some(path) => Ok((
+            host.begin_project_request(window, request),
+            Some(ConsoleId::new(window, path).expecting_manual(manual)),
+        )),
+        None if manual.is_some() => Err(IdeError::invalid("Console transaction mode requires a console")),
+        None => Ok((host.begin_request(request), None)),
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 #[command(trust = trusted)]
 pub async fn db_explain(
     host: &Host,
@@ -369,10 +411,11 @@ pub async fn db_explain(
     statement: String,
     schema: Option<String>,
     #[default] console: Option<String>,
+    #[default] console_manual: Option<bool>,
 ) -> IdeResult<Vec<PlanNode>> {
     // Explain Plan: the execution plan of `statement` on `id`, without running it.
     let db = host.project(window)?.db.clone();
-    let (cancel, console) = console_request(host, window, request, console.as_deref());
+    let (cancel, console) = console_request(host, window, request, console.as_deref(), console_manual)?;
     let result = db.explain_in_console(&id, &statement, &cancel, schema.as_deref(), console).await;
     host.end_request(request);
     result
@@ -432,6 +475,7 @@ pub async fn db_execute(
     // Cells longer than this many UTF-16 units come back cut (`truncated` lists them); none: whole.
     #[default] cell_limit: Option<u32>,
     #[default] console: Option<String>,
+    #[default] console_manual: Option<bool>,
 ) -> IdeResult<Vec<StatementOutcome>> {
     let mut outcomes = Vec::new();
     let limits = Limits { skip, max_rows, cell_limit };
@@ -444,6 +488,7 @@ pub async fn db_execute(
         limits,
         schema.as_deref(),
         console.as_deref(),
+        console_manual,
         |event| {
             if let ExecutionEvent::Completed { outcome, .. } = event {
                 outcomes.push(outcome);
@@ -468,9 +513,10 @@ pub async fn db_result_row(
     row: u32,
     schema: Option<String>,
     #[default] console: Option<String>,
+    #[default] console_manual: Option<bool>,
 ) -> IdeResult<QueryResult> {
     let db = host.project(window)?.db.clone();
-    let (cancel, console) = console_request(host, window, request, console.as_deref());
+    let (cancel, console) = console_request(host, window, request, console.as_deref(), console_manual)?;
     let result = db.read_console_row(&id, &statement.text, row as usize, &cancel, schema.as_deref(), console).await;
     host.end_request(request);
     result
@@ -484,15 +530,21 @@ pub fn db_release_result(
     id: String,
     statement: String,
     schema: Option<String>,
+    #[default] console: Option<String>,
 ) -> IdeResult<()> {
-    host.project(window)?.db.release_result(&id, &statement, schema.as_deref());
+    let console = console.as_deref().map(|path| ConsoleId::new(window, path));
+    host.project(window)?.db.release_console_result(&id, &statement, schema.as_deref(), console);
     Ok(())
 }
 
 #[command(trust = trusted)]
-pub fn db_release_console(host: &Host, window: &str, console: String) -> IdeResult<()> {
-    host.project(window)?.db.release_console(ConsoleId { window, path: &console });
-    Ok(())
+pub async fn db_release_console(
+    host: &Host,
+    window: &str,
+    console: String,
+    #[default] id: Option<String>,
+) -> IdeResult<()> {
+    host.project(window)?.db.release_target_console(ConsoleId::new(window, &console), id.as_deref()).await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -508,6 +560,7 @@ pub async fn db_execute_stream(
     #[default] cell_limit: Option<u32>,
     on_progress: Channel<ExecutionEvent>,
     #[default] console: Option<String>,
+    #[default] console_manual: Option<bool>,
 ) -> IdeResult<()> {
     let limits = Limits { skip: 0, max_rows, cell_limit };
     let result = execute_statements(
@@ -519,6 +572,7 @@ pub async fn db_execute_stream(
         limits,
         schema.as_deref(),
         console.as_deref(),
+        console_manual,
         |event| on_progress.send(event),
     )
     .await;
@@ -545,12 +599,13 @@ async fn execute_statements(
     Limits { skip, max_rows, cell_limit }: Limits,
     schema: Option<&str>,
     console: Option<&str>,
+    console_manual: Option<bool>,
     mut emit: impl FnMut(ExecutionEvent) -> IdeResult<()>,
 ) -> IdeResult<()> {
     let db = host.project(window)?.db.clone();
-    let (cancel, console) = console_request(host, window, request, console);
+    let (cancel, console) = console_request(host, window, request, console, console_manual)?;
     let result = async {
-        db.validate_script(id, &statements).await?;
+        db.validate_console_script(id, &statements, console).await?;
         for (index, statement) in statements.into_iter().enumerate() {
             if cancel.is_cancelled() {
                 return Err(IdeError::cancelled());
@@ -611,6 +666,41 @@ pub async fn db_table_page(
     let cancel = host.begin_request(request);
     let result = db
         .table_page(&id, &schema, &table, filter.as_deref(), &sort, offset.into(), limit.max(1).into(), &cancel)
+        .await;
+    host.end_request(request);
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+#[command(trust = trusted)]
+pub async fn db_catalog_table_page(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    id: String,
+    catalog: String,
+    schema: String,
+    table: String,
+    filter: Option<String>,
+    sort: Vec<SortKey>,
+    offset: u32,
+    limit: u32,
+) -> IdeResult<TablePage> {
+    // One read-only page from the explicit DuckDB catalog on the source session.
+    let db = host.project(window)?.db.clone();
+    let cancel = host.begin_request(request);
+    let result = db
+        .catalog_table_page(
+            &id,
+            &catalog,
+            &schema,
+            &table,
+            filter.as_deref(),
+            &sort,
+            offset.into(),
+            limit.max(1).into(),
+            &cancel,
+        )
         .await;
     host.end_request(request);
     result
@@ -747,6 +837,8 @@ ide_command::domain!(
     db_consoles,
     db_create_database,
     db_database_catalog,
+    db_catalog_table_details,
+    db_catalog_table_page,
     db_databases,
     db_ddl,
     db_disconnect,
@@ -755,6 +847,7 @@ ide_command::domain!(
     db_execute_stream,
     db_explain,
     db_finish_transaction,
+    db_finish_console_transaction,
     db_history,
     db_jdbc_driver_classes,
     db_jdbc_drivers,
@@ -775,6 +868,7 @@ ide_command::domain!(
     db_schemas,
     db_session_context,
     db_set_manual_commit,
+    db_set_console_manual_commit,
     db_set_password,
     db_set_ssh_secret,
     db_source_folders,
@@ -818,6 +912,78 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires a disposable loopback PostgreSQL fixture with OPENIDEA_PG_CONSOLE_PORT"]
+    async fn postgres_console_commands_keep_commit_result_reads_and_release_scoped() {
+        let temp = tempfile::tempdir().unwrap();
+        let host = host_with_sqlite(&temp).await;
+        let window = "main";
+        let id = "postgres";
+        db_save_sources(
+            &host,
+            window,
+            vec![DataSource {
+                id: id.into(),
+                name: "Local PostgreSQL".into(),
+                driver: DbDriver::Postgres,
+                host: "127.0.0.1".into(),
+                port: Some(std::env::var("OPENIDEA_PG_CONSOLE_PORT").unwrap().parse().unwrap()),
+                user: "console_fixture".into(),
+                database: "console_fixture".into(),
+                ..Default::default()
+            }],
+        )
+        .await
+        .unwrap();
+        let run = async |request, sql: &str, console: Option<&str>| {
+            let outcomes = db_execute(
+                &host,
+                window,
+                RequestId(request),
+                id.into(),
+                ide_db::split::split(sql, DbDriver::Postgres),
+                0,
+                10,
+                Some("public".into()),
+                None,
+                console.map(str::to_owned),
+                console.map(|_| true),
+            )
+            .await
+            .unwrap();
+            assert!(outcomes[0].error.is_none(), "{:?}", outcomes[0].error);
+            outcomes.into_iter().next().unwrap().result.unwrap()
+        };
+        run(1, "CREATE TABLE public.host_console_tx (id integer PRIMARY KEY)", None).await;
+        for console in ["/a.sql", "/b.sql"] {
+            assert!(db_set_console_manual_commit(&host, window, id.into(), console.into(), true).await.unwrap());
+        }
+        run(2, "INSERT INTO public.host_console_tx VALUES (1)", Some("/a.sql")).await;
+        run(3, "INSERT INTO public.host_console_tx VALUES (2)", Some("/b.sql")).await;
+        db_finish_console_transaction(&host, window, id.into(), "/b.sql".into(), true).await.unwrap();
+        let select = "SELECT id FROM public.host_console_tx ORDER BY id";
+        assert_eq!(run(4, select, None).await.rows, [[Some("2".into())]]);
+        let statement = ide_db::split::split(select, DbDriver::Postgres).pop().unwrap();
+        let retained = db_result_row(
+            &host,
+            window,
+            RequestId(5),
+            id.into(),
+            statement,
+            0,
+            Some("public".into()),
+            Some("/a.sql".into()),
+            Some(true),
+        )
+        .await
+        .unwrap();
+        assert_eq!(retained.rows, [[Some("1".into())]]);
+        db_release_console(&host, window, "/a.sql".into(), Some(id.into())).await.unwrap();
+        assert_eq!(run(6, select, None).await.rows, [[Some("2".into())]]);
+        let error = db_finish_console_transaction(&host, window, id.into(), "/a.sql".into(), true).await.unwrap_err();
+        assert_eq!(error.kind, ide_core::error::ErrorKind::OutOfSync);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_reporting_error_stops_the_batch_and_releases_the_request() {
         let temp = tempfile::tempdir().unwrap();
         let host = host_with_sqlite(&temp).await;
@@ -832,6 +998,7 @@ mod tests {
             id,
             statements,
             Limits { skip: 0, max_rows: 10, cell_limit: None },
+            None,
             None,
             None,
             |event| match event {
@@ -856,7 +1023,7 @@ mod tests {
             DbDriver::Sqlite,
         );
         let outcomes =
-            db_execute(&host, window, RequestId(2), id.into(), query, 1, 10, None, None, None).await.unwrap();
+            db_execute(&host, window, RequestId(2), id.into(), query, 1, 10, None, None, None, None).await.unwrap();
         assert_eq!(outcomes[0].result.as_ref().unwrap().rows, vec![vec![Some("0".into())]]);
     }
 
@@ -872,11 +1039,12 @@ mod tests {
             ),
             DbDriver::Sqlite,
         );
-        db_execute(&host, window, RequestId(1), id.into(), setup, 0, 10, None, None, None).await.unwrap();
+        db_execute(&host, window, RequestId(1), id.into(), setup, 0, 10, None, None, None, None).await.unwrap();
 
         let query = || ide_db::split::split("SELECT n, body FROM docs ORDER BY n", DbDriver::Sqlite);
-        let capped =
-            db_execute(&host, window, RequestId(2), id.into(), query(), 0, 10, None, Some(100), None).await.unwrap();
+        let capped = db_execute(&host, window, RequestId(2), id.into(), query(), 0, 10, None, Some(100), None, None)
+            .await
+            .unwrap();
         let page = capped[0].result.as_ref().unwrap();
         // The page no longer carries more than the limit of each cell.
         let size: usize = page.rows.iter().flatten().flatten().map(String::len).sum();
@@ -897,7 +1065,8 @@ mod tests {
         // The row of a cut cell, read alone and without a limit, is the whole value.
         for row in [1, 2] {
             let statement = query().remove(0);
-            let one = db_result_row(&host, window, RequestId(3), id.into(), statement, row, None, None).await.unwrap();
+            let one =
+                db_result_row(&host, window, RequestId(3), id.into(), statement, row, None, None, None).await.unwrap();
             assert!(one.truncated.is_empty());
             let full = one.rows[0][1].clone().unwrap();
             assert_eq!(full.encode_utf16().count(), whole as usize);
@@ -905,7 +1074,8 @@ mod tests {
         }
 
         // Without a limit nothing is cut or listed.
-        let all = db_execute(&host, window, RequestId(4), id.into(), query(), 0, 10, None, None, None).await.unwrap();
+        let all =
+            db_execute(&host, window, RequestId(4), id.into(), query(), 0, 10, None, None, None, None).await.unwrap();
         let all = all[0].result.as_ref().unwrap();
         assert!(all.truncated.is_empty());
         assert_eq!(all.rows[2][1].as_deref(), Some(wide.as_str()));

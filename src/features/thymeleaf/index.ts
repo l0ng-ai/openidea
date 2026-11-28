@@ -1,19 +1,31 @@
 /**
  * Thymeleaf navigation: Go to Declaration (⌘-click, ⌘B) on a fragment expression's template
  * name opens the template, on its selector the `th:fragment` defining it, and on a message
- * expression's key that key in each of the message bundle's `.properties` files.
+ * expression's key that key in each of the message bundle's `.properties` files; and a warning on
+ * template and fragment names that resolve to nothing.
  */
-import { Text } from "@codemirror/state";
-import { offsetsToRange, registerNavigationProvider } from "@/editor/api";
+import { Text, type Extension } from "@codemirror/state";
+import { EditorView, ViewPlugin } from "@codemirror/view";
+import {
+  offsetsToRange,
+  registerEditorContribution,
+  registerNavigationProvider,
+  type EditorDocContext,
+} from "@/editor/api";
+import { setFileDiagnostics } from "@/editor/lsp/diagnostics";
 import { docOf } from "@/editor/lsp/lsp";
-import { call, commands, type Location } from "@/platform/ipc";
+import { tx } from "@/platform/i18n";
+import { call, commands, isTauri, onIdeEvent, type Location } from "@/platform/ipc";
+import { projectFolder, useProject } from "@/platform/project";
 import {
   fragmentDefinition,
   inBundle,
   messageBasenames,
   propertyDefinition,
+  templatePath,
   templatesRoot,
   thymeleafReferenceAt,
+  unresolvedThymeleafReferences,
 } from "./references";
 
 const TEMPLATE_FILE = /\.html?$/i;
@@ -30,18 +42,18 @@ function location(path: string, text: string, from: number, to: number, name?: s
   return { path, range: offsetsToRange(Text.of(text.split("\n")), from, to), name };
 }
 
-function templatePath(root: string, template: string): string {
-  return `${root}/${template}${/\.\w+$/.test(template) ? "" : ".html"}`;
+/** The Spring Boot `application.properties` / `.yml` text in the `resources` folder. */
+async function applicationConfig(resources: string): Promise<string> {
+  const configs = await Promise.all(
+    ["application.properties", "application.yml", "application.yaml"].map((name) => read(`${resources}/${name}`)),
+  );
+  return configs.map((text) => `${text ?? ""}\n`).join("");
 }
 
 /** The definitions of `key` in the message bundles next to the templates `root`. */
 async function messageTargets(root: string, key: string): Promise<Array<Location & { name?: string }>> {
   const resources = root.slice(0, root.lastIndexOf("/"));
-  const configs = await Promise.all(
-    ["application.properties", "application.yml", "application.yaml"].map((name) => read(`${resources}/${name}`)),
-  );
-  const application = configs.map((text) => `${text ?? ""}\n`).join("");
-  const bases = messageBasenames(application);
+  const bases = messageBasenames(await applicationConfig(resources));
   const listings = await Promise.all(
     bases.map((base) =>
       call(
@@ -67,8 +79,74 @@ async function messageTargets(root: string, key: string): Promise<Array<Location
   return groups.flat();
 }
 
+const SOURCE = "thymeleaf-references";
+const INSPECT_DELAY = 600;
+
+/** Warns about template and fragment references that resolve to nothing; re-checked on edits and file changes. */
+function unresolvedReferences(ctx: EditorDocContext): Extension {
+  return ViewPlugin.define((view: EditorView) => {
+    const { path } = ctx;
+    const spring = path.lastIndexOf("/src/main/resources/templates/");
+    if (ctx.virtual || !TEMPLATE_FILE.test(path) || spring < 0 || !isTauri()) return {};
+    const resources = path.slice(0, spring + "/src/main/resources".length);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let seq = 0;
+    const run = async () => {
+      const mine = ++seq;
+      const doc = view.state.doc;
+      const text = doc.toString();
+      const refs =
+        text.includes("th:") || text.includes("data-th-")
+          ? await unresolvedThymeleafReferences(
+              path,
+              text,
+              await applicationConfig(resources),
+              projectFolder(useProject.getState().project, path)?.root ?? null,
+              read,
+            )
+          : [];
+      if (mine !== seq) return;
+      setFileDiagnostics(
+        path,
+        SOURCE,
+        refs.map((r) => ({
+          range: offsetsToRange(doc, r.from, r.to),
+          severity: "warning",
+          message:
+            r.kind === "fragment"
+              ? tx`Cannot resolve fragment '${r.fragment}'`
+              : tx`Cannot resolve template '${r.template}'`,
+          source: "Thymeleaf",
+          code: null,
+        })),
+      );
+    };
+    const schedule = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => void run(), INSPECT_DELAY);
+    };
+    schedule();
+    const offFs = onIdeEvent("fsChanged", (e) => {
+      if (e.created.length || e.removed.length || e.modified.some((p) => p !== path && p.startsWith(resources)))
+        schedule();
+    });
+    return {
+      update: (u) => {
+        if (u.docChanged) schedule();
+      },
+      destroy: () => {
+        clearTimeout(timer);
+        offFs();
+        seq++;
+        setFileDiagnostics(path, SOURCE, []);
+      },
+    };
+  });
+}
+
 export function activate(): () => void {
-  return registerNavigationProvider(async (view, offset) => {
+  const offUnresolved = registerEditorContribution({ id: "thymeleaf.unresolved", extensions: unresolvedReferences });
+  const offNavigation = registerNavigationProvider(async (view, offset) => {
     const doc = docOf(view);
     if (!doc || doc.virtual || !TEMPLATE_FILE.test(doc.path)) return null;
     const text = view.state.doc.toString();
@@ -87,4 +165,8 @@ export function activate(): () => void {
     const at = fragmentDefinition(target, ref.fragment);
     return at < 0 ? null : match([location(path, target, at, at + ref.fragment.length)]);
   });
+  return () => {
+    offUnresolved();
+    offNavigation();
+  };
 }

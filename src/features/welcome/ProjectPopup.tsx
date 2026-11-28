@@ -4,7 +4,15 @@ import { executeAction, useActions } from "@/platform/actions";
 import { call, commands, isTauri, type OpenProject, type RecentProject } from "@/platform/ipc";
 import { HighlightedText, Icon, Popup, showContextMenu, type IconName, T } from "@/ui";
 import type { ProjectPopupProps } from "@/workbench/contributions";
-import { askRemoveRecent, ProjectBadge, projectAppearanceMenu, recentMenu, unavailableTitle } from "./RecentList";
+import {
+  askRemoveRecent,
+  ProjectBadge,
+  projectAppearanceMenu,
+  recentMenu,
+  RemoteHostPill,
+  splitRemoteMatch,
+  unavailableTitle,
+} from "./RecentList";
 import { filterRecent, loadRecent, openRecent, recentRows, useRecent, type RecentMatch } from "./recent";
 import styles from "./ProjectPopup.module.css";
 import { tx } from "@/platform/i18n";
@@ -231,11 +239,7 @@ function GroupBoundary({
 }
 
 function ProjectRow({ m, active }: { m: RecentMatch; active: boolean }) {
-  const { remote, pathMatch } = m;
-  const pathStart = remote ? remote.host.length + 1 : 0;
-  const hostMatch = remote && pathMatch ? pathMatch.filter((i) => i < remote.host.length) : null;
-  const locationMatch =
-    remote && pathMatch ? pathMatch.filter((i) => i >= pathStart).map((i) => i - pathStart) : pathMatch;
+  const { hostMatch, locationMatch, locationText } = splitRemoteMatch(m);
 
   return (
     <>
@@ -252,13 +256,8 @@ function ProjectRow({ m, active }: { m: RecentMatch; active: boolean }) {
           indices={m.nameMatch}
           tone={active ? "accent" : "strong"}
         />
-        {remote && (
-          <span className={styles.metadata}>
-            <Icon name="terminal" size={12} />
-            <HighlightedText className={styles.ellipsis} text={remote.host} indices={hostMatch} />
-          </span>
-        )}
-        <HighlightedText className={styles.path} text={remote?.path ?? m.displayPath} indices={locationMatch} />
+        {m.remote && <RemoteHostPill remote={m.remote} hostMatch={hostMatch} />}
+        <HighlightedText className={styles.path} text={locationText} indices={locationMatch} />
         {m.project.branch && (
           <span className={styles.metadata}>
             <Icon name="branch" size={12} />

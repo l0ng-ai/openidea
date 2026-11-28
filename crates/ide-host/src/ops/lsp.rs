@@ -846,7 +846,7 @@ pub async fn lsp_library_sources(
 
 #[command(trust = trusted)]
 pub async fn lsp_resolve_class_file(host: &Host, window: &str, path: std::path::PathBuf) -> IdeResult<String> {
-    // Opens compiled classes through JDT, with project source taking priority on disk.
+    // Opens compiled classes through JDT as decompiled class documents.
     let archive = ide_vfs::split_archive_path(&path);
     host.project(window)?.lsp.java_class_file(&path, archive).await
 }

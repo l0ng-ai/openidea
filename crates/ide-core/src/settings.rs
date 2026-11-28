@@ -862,6 +862,8 @@ pub struct AppearanceSettings {
     pub smooth_scrolling: bool,
     pub full_path_in_title: bool,
     pub project_colors_in_toolbar: bool,
+    /// Strength of the project colour tint in the window header, in percent (10–70).
+    pub project_color_strength: u8,
     pub dnd_with_alt_only: bool,
     pub menu_icons: bool,
     /// `hamburger` | `merged` | `toolbar` (a separate row): main menu presentation in the frameless title bar.
@@ -1001,6 +1003,7 @@ impl Default for AppearanceSettings {
             smooth_scrolling: true,
             full_path_in_title: false,
             project_colors_in_toolbar: true,
+            project_color_strength: 22,
             dnd_with_alt_only: false,
             menu_icons: true,
             main_menu_style: "hamburger".into(),
@@ -1997,6 +2000,19 @@ mod tests {
         assert!(!off.appearance.smooth_scrolling);
         let json = serde_json::to_value(&off).unwrap();
         assert_eq!(json["appearance"]["smoothScrolling"], false);
+    }
+
+    #[test]
+    fn database_output_destination_defaults_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"database":{"inEditorResults":true}}"#).unwrap();
+        assert_eq!(old.database.output_destination, DatabaseOutputDestination::DatabaseOutput);
+        assert!(old.database.in_editor_results);
+
+        let services: Settings = serde_json::from_str(r#"{"database":{"outputDestination":"services"}}"#).unwrap();
+        assert_eq!(services.database.output_destination, DatabaseOutputDestination::Services);
+        let saved = serde_json::to_value(&services).unwrap();
+        assert_eq!(saved["database"]["outputDestination"], "services");
+        assert_eq!(serde_json::from_value::<Settings>(saved).unwrap().database, services.database);
     }
 
     #[test]

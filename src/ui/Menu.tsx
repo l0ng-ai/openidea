@@ -121,6 +121,14 @@ export function resolveMenuItems(items: MenuItem[]): Resolved[] {
     });
   });
   while (out.length && out[out.length - 1]!.kind === "separator") out.pop();
+  // One action can appear several times with object args (Run with Coverage, Profile… all run
+  // `run.withExecutor`): suffix repeats so React keys stay unique.
+  const seen = new Map<string, number>();
+  for (const r of out) {
+    const n = seen.get(r.key) ?? 0;
+    seen.set(r.key, n + 1);
+    if (n) r.key = `${r.key}#${n}`;
+  }
   return out;
 }
 

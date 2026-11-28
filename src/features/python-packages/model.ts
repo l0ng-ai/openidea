@@ -56,3 +56,14 @@ export function listRows(
 
 /** `name==version`, or the bare name for the newest release. */
 export const requirementOf = (name: string, version: string | null) => (version ? `${name}==${version}` : name);
+
+/**
+ * What pip installs for a repository URL: `git+https://…` and other `vcs+` forms as they are, a
+ * plain `https://`, `ssh://` or `git://` URL and scp-like `git@host:path` as Git.
+ */
+export function vcsRequirement(url: string) {
+  const text = url.trim();
+  if (/^(https?|ssh|git):\/\//i.test(text)) return `git+${text}`;
+  const scp = /^([\w.-]+@[\w.-]+):(?!\/\/)(.+)$/.exec(text);
+  return scp ? `git+ssh://${scp[1]}/${scp[2]}` : text;
+}

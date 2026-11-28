@@ -1,13 +1,10 @@
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
-import type { AgentChange, AgentCommit, AgentLimit, AgentTask } from "@/bindings";
+import type { AgentChange, AgentCommit, AgentTask } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
-import { reducedMotion } from "@/platform/motion";
 import { basename, useProject } from "@/platform/project";
 import clsx from "clsx";
-import { Icon, IconButton, Popup, showContextMenu, T, tooltipAttrs } from "@/ui";
+import { Icon, IconButton, showContextMenu, T } from "@/ui";
 import styles from "../Session.module.css";
-import { costLabel, limitParts, meterTone, turnTokensLabel } from "../composerModel";
 import { ContextMeter } from "./ContextMeter";
 import { formatSentAt } from "../conversation";
 import { branchLabel, hasTaskTerminal, isBusy, providerIcon, statusLabel } from "../model";
@@ -154,156 +151,32 @@ export function SessionStatus({
 }
 
 /**
- * Context use, usage limits and cost (when the agent reports them), grouped with subtle
- * dividers and controlled by Settings › Tools › Agents › Chat.
+ * Compact context-window meter in the status bar; clicking it opens the unified
+ * Session Info popover with cost, context breakdown, last-turn tokens and usage limits.
  */
 function Meters({ task }: { task: AgentTask }) {
-  const tx = useTx();
   const show = useProject((s) => s.settings?.agents);
   const busy = isBusy(task.status);
   const now = useNow(60_000);
   const usage = show?.showContextUsage !== false ? task.usage : null;
   const reported = useAgents((s) => s.limits.get(task.provider));
   const limits = show?.showUsageLimits !== false ? (reported ?? []) : [];
-  const cost = show?.showCost === true ? task.usage?.cost : null;
-  const turnTokens = show?.showContextUsage !== false && !busy ? task.stats?.tokens : null;
+  const cost = show?.showCost === true ? (task.usage?.cost ?? null) : null;
+  const turnTokens = show?.showContextUsage !== false && !busy ? (task.stats?.tokens ?? null) : null;
 
-  const groups: { key: string; node: ReactNode }[] = [];
-  if (usage || turnTokens) {
-    groups.push({
-      key: "context",
-      node: (
-        <span className={styles.meterGroup}>
-          {usage && <ContextMeter key={task.id} task={task} usage={usage} />}
-          {turnTokens && (
-            <span className={styles.meter} {...tooltipAttrs(tx("Tokens of the last turn"), undefined, true)}>
-              {turnTokensLabel(turnTokens)}
-            </span>
-          )}
-        </span>
-      ),
-    });
-  }
-  if (limits.length > 0) {
-    groups.push({
-      key: "limits",
-      node: <LimitsMeter limits={limits} now={now} />,
-    });
-  }
-  if (cost) {
-    groups.push({
-      key: "cost",
-      node: (
-        <span
-          className={styles.meter}
-          {...tooltipAttrs(tx("What the session has cost so far, as the agent reports it"), undefined, true)}
-        >
-          {costLabel(cost)}
-        </span>
-      ),
-    });
-  }
-  if (!groups.length) return null;
+  if (!usage && limits.length === 0 && !cost && !turnTokens) return null;
 
   return (
     <span className={styles.meters}>
-      {groups.map((group, i) => (
-        <span key={group.key} className={styles.meterSegment}>
-          {i > 0 && <span className={styles.meterDivider} aria-hidden />}
-          {group.node}
-        </span>
-      ))}
+      <ContextMeter
+        key={task.id}
+        task={task}
+        usage={usage}
+        limits={limits}
+        cost={cost}
+        turnTokens={turnTokens}
+        now={now}
+      />
     </span>
-  );
-}
-
-/** Compact account usage limits ("5h 77% · 7d 95%") with a click popover for bars and reset times. */
-function LimitsMeter({ limits, now }: { limits: readonly AgentLimit[]; now: number }) {
-  const tx = useTx();
-  const anchor = useRef<HTMLButtonElement>(null);
-  const [phase, setPhase] = useState<"closed" | "open" | "closing">("closed");
-  const open = phase === "open";
-  const close = () => setPhase(reducedMotion() ? "closed" : "closing");
-  useEffect(() => {
-    if (phase !== "closing") return;
-    const timer = window.setTimeout(() => setPhase("closed"), 100);
-    return () => window.clearTimeout(timer);
-  }, [phase]);
-
-  const items = limits.map((limit) => ({ window: limit.window, ...limitParts(limit, now) }));
-
-  return (
-    <>
-      <button
-        type="button"
-        ref={anchor}
-        className={clsx(styles.meterButton, styles.limitsButton)}
-        aria-label={tx("Usage limits")}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        onClick={() => (open ? close() : setPhase("open"))}
-      >
-        {items.map((item, i) => {
-          const severity = meterTone(item.percent);
-          const severityClass =
-            severity === "danger" ? styles.meterDanger : severity === "warning" ? styles.meterWarning : undefined;
-          return (
-            <Fragment key={item.window}>
-              {i > 0 && (
-                <span className={styles.meterDot} aria-hidden>
-                  ·
-                </span>
-              )}
-              <span
-                className={clsx(styles.limitItem, severityClass)}
-                data-tone={severity}
-                aria-label={item.detail}
-                {...tooltipAttrs(open ? undefined : item.detail, undefined, true)}
-              >
-                <span className={styles.limitWindow}>{item.windowShort}</span>{" "}
-                <span className={styles.limitPercent}>{item.percent}%</span>
-              </span>
-            </Fragment>
-          );
-        })}
-      </button>
-      <Popup
-        open={phase !== "closed"}
-        onClose={close}
-        anchor={anchor}
-        placement="top-end"
-        trapFocus={open}
-        role={open ? "dialog" : "presentation"}
-        aria-label={tx("Usage limits")}
-        className={phase === "closing" ? styles.contextClosing : styles.contextPopover}
-      >
-        <div className={styles.limitsDetails} inert={!open}>
-          <div className={styles.contextHeading}>
-            <strong>
-              <T>Usage limits</T>
-            </strong>
-          </div>
-          <div className={styles.limitsList}>
-            {items.map((item) => {
-              const severity = meterTone(item.percent);
-              const severityClass =
-                severity === "danger" ? styles.meterDanger : severity === "warning" ? styles.meterWarning : undefined;
-              return (
-                <div key={item.window} className={clsx(styles.limitsRow, severityClass)} data-tone={severity}>
-                  <div className={styles.limitsRowHeader}>
-                    <span className={styles.limitsRowName}>{item.name}</span>
-                    <span className={styles.limitsRowPercent}>{item.percent}%</span>
-                  </div>
-                  <div className={styles.limitsTrack} aria-hidden>
-                    <span className={styles.limitsFill} style={{ width: `${item.percent}%` }} />
-                  </div>
-                  {item.resetIn && <span className={styles.limitsReset}>{tx`Resets in ${item.resetIn}`}</span>}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </Popup>
-    </>
   );
 }

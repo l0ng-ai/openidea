@@ -186,7 +186,7 @@ export function pip(
   onLine: (line: string) => void,
 ): Streamed<null> {
   return streamed(
-    (req, ch) => call(commands.sdkPythonPip(python, requirement, op === "uninstall", op === "upgrade", req, ch)),
+    (req, ch) => call(commands.sdkPythonPip(python, requirement, op === "uninstall", op === "upgrade", false, req, ch)),
     onLine,
   );
 }

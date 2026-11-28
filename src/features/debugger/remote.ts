@@ -244,7 +244,7 @@ export const pythonDebugServerType: RunConfigTypeContribution = {
     {
       ...hostField,
       label: "IDE host name",
-      hint: "The address the program connects to. For any host but localhost the IDE listens on all network interfaces, where anyone who reaches the port can connect",
+      hint: "The address the program connects to. For a loopback host (localhost, 127.x, ::1) the IDE listens on loopback only; for any other host it listens on all network interfaces, where anyone who reaches the port can connect",
     },
     portField,
     {
