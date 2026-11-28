@@ -38,6 +38,14 @@ fn initializes_missing_submodules_and_syncs_their_urls() {
 
     let repo = Repo::discover(&clone).unwrap().unwrap();
     assert_eq!(repo.uninitialized_submodules().unwrap(), [Path::new("modules/library")]);
+    // `git submodule update --init` skips these, so they are not offered.
+    git(&clone, &["config", "-f", ".gitmodules", "submodule.modules/library.update", "none"]);
+    assert!(repo.uninitialized_submodules().unwrap().is_empty());
+    git(&clone, &["config", "-f", ".gitmodules", "--unset", "submodule.modules/library.update"]);
+    git(&clone, &["config", "submodule.modules/library.active", "false"]);
+    assert!(repo.uninitialized_submodules().unwrap().is_empty());
+    git(&clone, &["config", "--unset", "submodule.modules/library.active"]);
+    assert_eq!(repo.uninitialized_submodules().unwrap(), [Path::new("modules/library")]);
     let (cancel, out) = (CancellationToken::default(), |_: String| {});
     assert!(repo.init_submodules(&cancel, &out).is_err(), "untrusted projects run no submodule commands");
     repo.set_execution_allowed(true);

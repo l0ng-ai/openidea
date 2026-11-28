@@ -48,12 +48,26 @@ impl Repo {
         Ok(self.submodule_links()?.into_iter().filter_map(|(rel, _)| self.initialized_submodule(&rel)).collect())
     }
 
-    /// Submodules recorded in the index whose checkout is missing (never initialized).
+    /// Submodules recorded in the index whose checkout is missing (never initialized), except
+    /// those `git submodule update --init` skips (`update = none`, `active = false`).
     pub fn uninitialized_submodules(&self) -> IdeResult<Vec<PathBuf>> {
+        let repo = self.gix()?;
+        let mut skipped = Vec::new();
+        if let Some(modules) = repo.submodules().map_err(gx)? {
+            let config = repo.config_snapshot();
+            for module in modules {
+                let inactive = config.boolean(format!("submodule.{}.active", module.name()).as_str()) == Some(false);
+                if inactive || matches!(module.update(), Ok(Some(gix::submodule::config::Update::None))) {
+                    skipped.extend(module.path().ok().and_then(|path| path.to_str().ok().map(PathBuf::from)));
+                }
+            }
+        }
         Ok(self
             .submodule_links()?
             .into_iter()
-            .filter_map(|(rel, _)| self.initialized_submodule(&rel).is_none().then_some(rel))
+            .filter_map(|(rel, _)| {
+                (self.initialized_submodule(&rel).is_none() && !skipped.contains(&rel)).then_some(rel)
+            })
             .collect())
     }
 

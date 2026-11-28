@@ -305,11 +305,6 @@ function focusedPaths(arg: unknown, ctx: { projectViewFocus?: unknown }): string
   return ctx.projectViewFocus || projectViewContextLead() ? selectedPaths(arg) : contextPaths(arg);
 }
 
-/**
- * The repository a repository-wide dialog (Pull, Merge, Rebase) starts on: the one holding the
- * action's file, else the Project view's selection while it has focus, else the active editor's
- * file, else the selected repository.
- */
 /** The chosen repository, or every repository (only those with uninitialized submodules when `missing`). */
 function submoduleRepos(arg: unknown, missing: boolean): string[] {
   const chosen = arg && typeof arg === "object" && "repo" in arg ? operationRepo(arg) : null;
@@ -317,6 +312,11 @@ function submoduleRepos(arg: unknown, missing: boolean): string[] {
   return (chosen ? [chosen] : roots).filter((root) => !missing || !!heads[root]?.uninitializedSubmodules?.length);
 }
 
+/**
+ * The repository a repository-wide dialog (Pull, Merge, Rebase) starts on: the one holding the
+ * action's file, else the Project view's selection while it has focus, else the active editor's
+ * file, else the selected repository.
+ */
 export function operationRepo(arg: unknown): string | null {
   const roots = useVcs.getState().roots;
   if (arg && typeof arg === "object" && "repo" in arg) return (arg as { repo: string | null }).repo;
