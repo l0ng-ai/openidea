@@ -67,3 +67,18 @@ export function vcsRequirement(url: string) {
   const scp = /^([\w.-]+@[\w.-]+):(?!\/\/)(.+)$/.exec(text);
   return scp ? `git+ssh://${scp[1]}/${scp[2]}` : text;
 }
+
+/** Whether `url` (after {@link vcsRequirement}) is a version control URL pip can install. */
+export const isVcsUrl = (url: string) => /^(git|hg|svn|bzr)\+[a-z]+:\/\/\S+$/i.test(url);
+
+/**
+ * A path typed for Install from Disk, made explicit so pip never reads it as a PyPI name: a
+ * relative one starts with `./` (the host resolves it against the project, and `~/` against home).
+ */
+export function diskRequirement(path: string) {
+  const text = path.trim();
+  return /^([./\\~]|[A-Za-z]:[\\/])/.test(text) ? text : `./${text}`;
+}
+
+/** A wheel or source archive, which pip can install but not in editable mode. */
+export const isArchive = (path: string) => /\.(whl|zip|tar\.gz|tgz|tar\.bz2|tar\.xz)$/i.test(path.trim());

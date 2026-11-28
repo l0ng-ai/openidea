@@ -2279,7 +2279,6 @@
   "Project directory or archive": "项目目录或归档文件",
   "Project Directory": "项目目录",
   "Install as editable (-e)": "以可编辑模式安装 (-e)",
-  "An editable install from version control needs the package name at the end of the URL: #egg=name.": "从版本控制以可编辑模式安装时，URL 末尾需要写上包名：#egg=name。",
   "Install Docker Desktop, OrbStack, Colima or the Docker Engine and make sure": "请安装 Docker Desktop、OrbStack、Colima 或 Docker Engine，并确保",
   "Install Language Server / Debugger": "安装语言服务器/调试器",
   "Install Package": "安装软件包",
