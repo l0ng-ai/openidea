@@ -113,6 +113,8 @@ describe("install from version control or disk", () => {
     ])
       expect(isVcsUrl(url), url).toBe(true);
     expect(isVcsUrl("requests @ https://example.org/requests.zip")).toBe(false);
+    for (const url of ["git+https:foo", "git+ssh:git@host:o/r", "requests @ git+https:foo"])
+      expect(isVcsUrl(url), url).toBe(false);
   });
 
   it("never lets a typed path read as a PyPI name", () => {
@@ -125,5 +127,6 @@ describe("install from version control or disk", () => {
     expect(isArchive("dist/demo-1.0.tar.gz")).toBe(true);
     expect(isArchive("dist/demo-1.0-py3-none-any.whl")).toBe(true);
     expect(isArchive("pkgs/demo")).toBe(false);
+    expect(isArchive(" dist/demo-1.0-py3-none-any.whl ")).toBe(true);
   });
 });

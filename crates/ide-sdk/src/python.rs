@@ -630,10 +630,13 @@ pub fn install_package(
         return Err(IdeError::invalid("enter a package name or requirement"));
     }
     let requirement = resolve_requirement(requirement, project_root)?;
-    // A path (a requirement never starts with a root), without its `[extras]`.
-    let path = Path::new(&requirement).has_root().then(|| Path::new(requirement.split('[').next().unwrap_or_default()));
-    if let Some(path) = path.filter(|p| !p.exists()) {
-        return Err(IdeError::not_found(format!("{} does not exist", path.display())));
+    // A path (a requirement never starts with a root), maybe with `[extras]` after it.
+    let path = Path::new(&requirement).has_root().then_some(requirement.as_str());
+    if let Some(path) = path {
+        let without_extras = path.strip_suffix(']').and_then(|p| p.rsplit_once('[')).map(|(p, _)| p);
+        if !Path::new(path).exists() && !without_extras.is_some_and(|p| Path::new(p).exists()) {
+            return Err(IdeError::not_found(format!("{} does not exist", without_extras.unwrap_or(path))));
+        }
     }
     // An editable clone of a repository would go where pip runs, a temporary folder.
     if editable && path.is_none() {

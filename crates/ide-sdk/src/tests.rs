@@ -1940,6 +1940,9 @@ fn a_missing_local_path_is_reported_before_pip_runs() {
     // An existing folder gets as far as looking for pip.
     std::fs::create_dir(root.path().join("mylib")).unwrap();
     assert!(!install("./mylib[dev]").contains("does not exist"));
+    // A folder whose name has brackets is a folder, not extras.
+    std::fs::create_dir(root.path().join("lib[1]")).unwrap();
+    assert!(!install("./lib[1]").contains("does not exist"), "{}", install("./lib[1]"));
 }
 
 #[test]

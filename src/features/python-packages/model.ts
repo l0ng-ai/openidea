@@ -73,7 +73,7 @@ export function vcsRequirement(url: string) {
  * (`git+https://…`, `bzr+lp:project`) or as a direct reference (`name @ git+https://…`).
  */
 export const isVcsUrl = (url: string) =>
-  /^([A-Za-z0-9][\w.-]*(\[[^\]]*\])?\s*@\s*)?(git|hg|svn|bzr)\+[a-z]+:\S+$/i.test(url);
+  /^([A-Za-z0-9][\w.-]*(\[[^\]]*\])?\s*@\s*)?((git|hg|svn|bzr)\+[a-z]+:\/\/|bzr\+lp:)\S+$/i.test(url);
 
 /**
  * A path typed for Install from Disk, made explicit so pip never reads it as a PyPI name: a
