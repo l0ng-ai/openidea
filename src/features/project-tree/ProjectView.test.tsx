@@ -124,7 +124,7 @@ afterEach(() => {
 });
 
 function setup() {
-  render(
+  const rendered = render(
     <>
       <ProjectView />
       <MessagesHost />
@@ -141,7 +141,7 @@ function setup() {
     within(tree)
       .getAllByRole("treeitem")
       .find((r) => r.textContent?.startsWith(label))!;
-  return { tree, rows, row };
+  return { tree, rows, row, unmount: rendered.unmount };
 }
 
 describe("ProjectView", () => {
