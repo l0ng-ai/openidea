@@ -67,6 +67,7 @@ import {
   schemaTreeRows,
   schemaTreeValue,
   sourceIcon,
+  supportsExplain,
   sourceLabel,
   splitTarget,
   targetOf,
@@ -880,7 +881,9 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
   // SQL resolution scopes in the settings can move the console to another data source.
   useProject((s) => s.settings);
   const boundId = bound ? splitTarget(bound).id : null;
-  const driver = sources.find((s) => s.id === boundId)?.driver;
+  const source = sources.find((s) => s.id === boundId);
+  const canExplain = supportsExplain(source);
+  const driver = source?.driver;
   const jdbc = driver === "jdbc";
   const supportsTransactions = driver !== "clickhouse" && !jdbc;
   const switchable = schemaSwitchable(driver);
@@ -950,7 +953,7 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
       />
       <span className={styles.toolbarSeparator} />
       <IconButton icon="history" title="Browse Query History" disabled={!bound} onClick={() => openHistory(path)} />
-      {!jdbc && (
+      {canExplain && (
         <IconButton
           icon="db-plan"
           title="Explain Plan"
