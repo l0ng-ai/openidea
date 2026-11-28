@@ -1220,6 +1220,20 @@ fn py_config(
     c.debug("debugpy")
 }
 
+/// The variable a module-level `name = Flask(...)` / `name = FastAPI(...)` assigns, if any.
+fn web_app(text: &str, class: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let (var, value) = line.split_once('=')?;
+        let var = var.trim_end().split(':').next()?.trim_end();
+        let value = value.trim_start();
+        // `Flask(…)` or `flask.Flask(…)`.
+        let value = value.strip_prefix(&format!("{}.", class.to_lowercase())).unwrap_or(value);
+        let call = value.strip_prefix(class)?.trim_start();
+        let ident = !var.is_empty() && var.chars().all(|c| c.is_alphanumeric() || c == '_');
+        (ident && call.starts_with('(')).then(|| var.to_owned())
+    })
+}
+
 fn uses_pytest(root: &Path) -> bool {
     if ["pytest.ini", "tox.ini", "conftest.py"].iter().any(|f| root.join(f).is_file()) {
         return true;
@@ -1284,6 +1298,39 @@ fn detect_python(top: &Path, root: &Path, out: &mut Vec<RunConfig>) {
             env.python(),
             &["manage.py", "runserver"],
         ));
+    }
+    // `src/main.py` runs as `main` with `src` on the path (uvicorn `--app-dir`, a file path for `FLASK_APP`).
+    let apps = [("app.py", "app"), ("wsgi.py", "wsgi"), ("main.py", "main"), ("app/main.py", "app.main")];
+    for (dir, (file, module)) in ["", "src/"].into_iter().flat_map(|dir| apps.map(|app| (dir, app))) {
+        let Some(text) = read(&root.join(format!("{dir}{file}"))) else { continue };
+        if let Some(var) = web_app(&text, "FastAPI") {
+            let app = format!("{module}:{var}");
+            let mut args = vec!["-m", "uvicorn", &app, "--reload"];
+            if !dir.is_empty() {
+                args.extend(["--app-dir", "src"]);
+            }
+            out.push(py_config(
+                format!("fastapi:{dir}{app}"),
+                format!("uvicorn {app}"),
+                "fastapi",
+                env.python(),
+                &args,
+            ));
+        } else if let Some(var) = web_app(&text, "Flask") {
+            // `FLASK_APP` / `FLASK_DEBUG`, which every Flask reads (`--app` / `--debug` need 2.2).
+            let target = if dir.is_empty() { module.to_owned() } else { format!("{dir}{file}") };
+            let app = if var == "app" { target } else { format!("{target}:{var}") };
+            let mut c = py_config(
+                format!("flask:{app}"),
+                format!("flask run ({app})"),
+                "flask",
+                env.python(),
+                &["-m", "flask", "run"],
+            );
+            c.env.insert("FLASK_APP".into(), app);
+            c.env.insert("FLASK_DEBUG".into(), "1".into());
+            out.push(c);
+        }
     }
     let mut modules = Vec::new();
     for base in [root.to_path_buf(), root.join("src")] {

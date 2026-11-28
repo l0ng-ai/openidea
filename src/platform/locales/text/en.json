@@ -4426,5 +4426,19 @@
   "Keep Key": "Keep Key",
   "Drop Index": "Drop Index",
   "Keep Index": "Keep Index",
-  "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite cannot drop the index of a primary key or unique constraint."
+  "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite cannot drop the index of a primary key or unique constraint.",
+  "Flask server": "Flask server",
+  "Run a Flask application with flask run": "Run a Flask application with flask run",
+  "Set as FLASK_APP: a module or file, optionally with the app or factory (hello:create_app()); empty finds app.py or wsgi.py": "Set as FLASK_APP: a module or file, optionally with the app or factory (hello:create_app()); empty finds app.py or wsgi.py",
+  "Debug mode": "Debug mode",
+  "FLASK_DEBUG=1: reload on code changes and show the interactive debugger in the browser": "FLASK_DEBUG=1: reload on code changes and show the interactive debugger in the browser",
+  "Additional options": "Additional options",
+  "e.g. --cert adhoc --extra-files config.toml": "e.g. --cert adhoc --extra-files config.toml",
+  "FastAPI": "FastAPI",
+  "Run a FastAPI application with uvicorn": "Run a FastAPI application with uvicorn",
+  "main:app": "main:app",
+  "The module and the FastAPI instance in it, module:attribute": "The module and the FastAPI instance in it, module:attribute",
+  "Reload on code changes": "Reload on code changes",
+  "uvicorn --reload": "uvicorn --reload",
+  "e.g. --reload-dir app --log-level debug": "e.g. --reload-dir app --log-level debug"
 }

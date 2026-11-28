@@ -159,7 +159,7 @@ export function projectPython(configs: RunConfig[], relPath?: string): { command
 }
 
 /** Kinds of a Python project's configurations. */
-export const PYTHON_KINDS = ["python", "pytest", "unittest", "doctest", "django-test"];
+export const PYTHON_KINDS = ["python", "pytest", "unittest", "doctest", "django-test", "flask", "fastapi"];
 
 /** Settings › Python › Testing › Default test runner. */
 export function pythonTestRunner(): PythonTestRunner {

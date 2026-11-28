@@ -163,6 +163,16 @@ function debugpyLaunch(rc: RunConfig, cwd: string, templates: TemplateBreakpoint
     out.args = args.slice(1);
     if (args[0].endsWith("manage.py")) extra.django = true;
   }
+  // Werkzeug's in-browser debugger would catch exceptions before debugpy does. A reloader serves requests from
+  // a child process, which stops at breakpoints only when subprocesses are attached: without that, no reload.
+  const served = out.args ?? [];
+  const run = served.indexOf("run");
+  if (extra.module === "flask" && run >= 0) {
+    const off = ["--no-debugger", ...(dbg.python.attachSubprocess ? [] : ["--no-reload"])];
+    out.args = [...served.slice(0, run + 1), ...off.filter((a) => !served.includes(a)), ...served.slice(run + 1)];
+  } else if (extra.module === "uvicorn" && !dbg.python.attachSubprocess) {
+    out.args = served.filter((a) => a !== "--reload");
+  }
   // A Django Template's breakpoint needs `django` however Django starts (uvicorn, gunicorn, pytest-django).
   if (extra.module === "django" || templates.django) extra.django = true;
   // Jinja2 templates' breakpoints: Flask, or one already in a template (`python app.py`). Not on for every

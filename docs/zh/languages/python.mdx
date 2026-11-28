@@ -159,7 +159,15 @@ Python 调试使用 debugpy。开始调试时如果缺少 debugpy，OpenIDEA 会
 
 ## 框架支持
 
-目前只有 Django 有专门支持：`manage.py runserver` 和 `manage.py test` 运行配置、**Django 测试** 配置类型（目标、settings 模块、选项）、在左侧栏运行单个 `TestCase` 测试，以及调试器的 Django 模式。Flask、FastAPI 等其他框架按普通脚本或命令行入口运行。
+Django 有 `manage.py runserver` 和 `manage.py test` 运行配置、**Django 测试** 配置类型（目标、settings 模块、选项）、在左侧栏运行单个 `TestCase` 测试，以及调试器的 Django 模式。除下文的 Flask 和 FastAPI 外，其他框架按普通脚本或命令行入口运行。
+
+### Flask 和 FastAPI
+
+**Flask 服务器** 配置运行 `python -m flask run`，并设置所有 Flask 版本都能识别的 `FLASK_APP` 和 `FLASK_DEBUG`：**应用程序** 即 `FLASK_APP` 的值（模块或文件，可附带应用或工厂函数，如 `hello:create_app()`；留空时查找 `app.py` 或 `wsgi.py`），**调试模式** 设置 `FLASK_DEBUG=1`（自动重新加载和浏览器内调试器），**主机**、**端口** 和 **附加选项** 传给 `flask run`。**FastAPI** 配置运行 `python -m uvicorn <module:app>`，可设 **代码变更时重新加载**（`--reload`）、**主机**、**端口** 和其他 uvicorn 选项。两者都使用 Python 配置的解释器选择，并用 debugpy 调试；在 Flask 下 Jinja2 模板断点可用。
+
+在调试器下，Flask 以 `--no-debugger` 运行，异常交给 debugpy 而不是浏览器内调试器。启用自动重新加载时，请求由子进程处理：**调试时自动附加到子进程**（默认开启，位于 **设置 › 构建、执行、部署 › Python 调试器**）开启时断点在子进程中生效；关闭时调试会去掉自动重新加载（`--no-reload`，不加 `--reload`）。
+
+顶层（或 `src/` 下）的 `app.py`、`wsgi.py`、`main.py` 或 `app/main.py` 若把 `Flask(...)` 或 `FastAPI(...)`（或 `flask.Flask(...)`、`fastapi.FastAPI(...)`）赋给模块级变量，会自动检测出对应配置（`FLASK_APP=app` 的 `flask run`、`uvicorn app.main:app --reload`）。在工厂函数里创建的应用不会被检测到，需要手动添加配置。检测不会检查 Flask 或 uvicorn 是否已安装。
 
 ### Django 模板
 

@@ -24,7 +24,7 @@ When a project opens, OpenIDEA scans its build files (also in nested projects of
 | `Cargo.toml`                                                                                      | `cargo run` for each binary, `cargo test`, `cargo build`; workspace members are included                                                                            |
 | `build.gradle(.kts)` / `pom.xml`                                                                  | Gradle and Maven run configurations                                                                                                                                 |
 | `go.mod` / `go.work`                                                                              | Go programs and tests                                                                                                                                               |
-| `pyproject.toml`, `setup.py`, `requirements.txt`, `pytest.ini`, `tox.ini`, `manage.py`, a `.venv` | Python programs, pytest, Django                                                                                                                                     |
+| `pyproject.toml`, `setup.py`, `requirements.txt`, `pytest.ini`, `tox.ini`, `manage.py`, a `.venv` | Python programs, pytest, Django, Flask and FastAPI apps                                                                                                             |
 | `composer.json`, `phpunit.xml`                                                                    | PHPUnit                                                                                                                                                             |
 | Ruby projects (`Gemfile`, `Rakefile`, …)                                                          | Rake tasks, RSpec, Minitest                                                                                                                                         |
 | `CMakeLists.txt`                                                                                  | CMake build and run targets                                                                                                                                         |
@@ -101,6 +101,7 @@ Open **Run › Edit Configurations…** (also in the run widget menu). The **Run
 | **Tomcat Server**                                       | A WAR application in a local Tomcat                                            |
 | **Python**                                              | A Python script or `-m` module                                                 |
 | **pytest** / **Django tests**                           | pytest tests, `manage.py test`                                                 |
+| **Flask server** / **FastAPI**                          | `flask run`, `uvicorn module:app`                                              |
 | **Ruby** / **Rake** / **RSpec**                         | A Ruby script, a Rake task, RSpec examples                                     |
 | **PHPUnit**                                             | PHPUnit tests                                                                  |
 | **Go Build** / **Go Test**                              | A Go application, Go tests                                                     |

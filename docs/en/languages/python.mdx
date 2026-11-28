@@ -159,7 +159,15 @@ See [Debugging](/en/guide/debugging) for breakpoints, stepping and the debugger 
 
 ## Framework support
 
-Django is the only framework with dedicated support: the `manage.py runserver` and `manage.py test` configurations, the **Django tests** configuration type (target, settings module, options), running single `TestCase` tests from the gutter, and Django mode in the debugger. Other frameworks (Flask, FastAPI and so on) run as ordinary scripts or console scripts.
+Django has the `manage.py runserver` and `manage.py test` configurations, the **Django tests** configuration type (target, settings module, options), running single `TestCase` tests from the gutter, and Django mode in the debugger. Other frameworks run as ordinary scripts or console scripts, except Flask and FastAPI below.
+
+### Flask and FastAPI
+
+The **Flask server** configuration runs `python -m flask run` with `FLASK_APP` and `FLASK_DEBUG` set, which every Flask version reads: **Application** is the `FLASK_APP` value (a module or file, optionally with the app or factory, `hello:create_app()`; empty finds `app.py` or `wsgi.py`), **Debug mode** sets `FLASK_DEBUG=1` (reloader and the in-browser debugger), and **Host**, **Port** and **Additional options** go to `flask run`. The **FastAPI** configuration runs `python -m uvicorn <module:app>` with **Reload on code changes** (`--reload`), **Host**, **Port** and further uvicorn options. Both use the Interpreter choice of Python configurations and debug with debugpy; Jinja2 template breakpoints work under Flask.
+
+Under the debugger, Flask runs with `--no-debugger`, so exceptions reach debugpy instead of the in-browser debugger. With a reloader, requests are served by a child process: breakpoints stop there while **Attach to subprocess automatically while debugging** is on (the default, under **Settings › Build, Execution, Deployment › Python Debugger**); with it off, debugging runs without the reloader (`--no-reload`, no `--reload`).
+
+A top-level `app.py`, `wsgi.py` or `main.py`, or `app/main.py`, also under `src/`, that assigns `Flask(...)` or `FastAPI(...)` (or `flask.Flask(...)`, `fastapi.FastAPI(...)`) to a module-level name gets one of these configurations detected (`flask run` with `FLASK_APP=app`, `uvicorn app.main:app --reload`). An app created inside a factory function is not detected; add the configuration by hand. Detection doesn't check that Flask or uvicorn is installed.
 
 ### Django templates
 

@@ -29,6 +29,7 @@ import { goBuildType, goTestType } from "./goTypes";
 import { dotnetProjectType, dotnetTestType } from "./dotnetTypes";
 import { rakeType, rspecType, rubyScriptType } from "./rubyTypes";
 import { djangoTestType } from "./djangoTypes";
+import { fastapiType, flaskType } from "./pythonWebTypes";
 import { doctestType, pythonType, unittestType } from "./pythonTypes";
 import { phpunitType } from "./phpunitTypes";
 import { cypressType } from "./cypressType";
@@ -626,6 +627,8 @@ export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   rakeType,
   rspecType,
   djangoTestType,
+  flaskType,
+  fastapiType,
   phpunitType,
   dotnetProjectType,
   dotnetTestType,
@@ -706,7 +709,17 @@ export function withParams(config: RunConfig, params: Record<string, string>, ty
         : {}),
     ...(type?.ownsWorkingDirectory ? { cwd: line.cwd ?? null } : {}),
     ...(line.stop ? { stopCommand: line.stop } : {}),
+    ...(line.setEnv ? { env: withEnv(config.env, line.setEnv) } : {}),
   };
+}
+
+function withEnv(env: Readonly<Record<string, string>>, set: Readonly<Record<string, string | null>>) {
+  const out = { ...env };
+  for (const [key, value] of Object.entries(set)) {
+    if (value === null) delete out[key];
+    else out[key] = value;
+  }
+  return out;
 }
 
 /** Whether "Emulate terminal in output console" applies to `config`. */

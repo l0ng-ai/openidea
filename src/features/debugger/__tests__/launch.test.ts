@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
+import { useProject } from "@/platform/project";
 import { useFlutterDevices } from "@/workbench/flutterDevices";
 import { isJinjaTemplate } from "../breakpoints/languages";
 import { debugUnsupportedReason, launchConfigFor, withEnvFiles } from "../launch";
@@ -247,6 +248,32 @@ describe("run config → launch config", () => {
     const asgi = debug("uv", ["run", "uvicorn", "mysite.asgi:application"], { django: true, jinja: false });
     expect(asgi).toMatchObject({ module: "uvicorn", django: true });
     expect(asgi.jinja).toBeUndefined();
+  });
+
+  it("debugpy: Flask without the in-browser debugger, and no reloader unless subprocesses are attached", () => {
+    const debug = (kind: string, args: string[]) =>
+      launchConfigFor(rc({ kind, command: "python3", args, debugAdapter: "debugpy" }), "/p")!.args;
+    expect(debug("flask", ["-m", "flask", "run", "--port", "5001"])).toEqual([
+      "run",
+      "--no-debugger",
+      "--port",
+      "5001",
+    ]);
+    expect(debug("python", ["-m", "flask", "--app", "app", "run", "--no-debugger"])).toEqual([
+      "--app",
+      "app",
+      "run",
+      "--no-debugger",
+    ]);
+    expect(debug("fastapi", ["-m", "uvicorn", "main:app", "--reload"])).toEqual(["main:app", "--reload"]);
+    const settings = useProject.getState().settings;
+    try {
+      useProject.setState({ settings: { ...settings, debugger: { python: { attachSubprocess: false } } } as never });
+      expect(debug("flask", ["-m", "flask", "run"])).toEqual(["run", "--no-debugger", "--no-reload"]);
+      expect(debug("fastapi", ["-m", "uvicorn", "main:app", "--reload"])).toEqual(["main:app"]);
+    } finally {
+      useProject.setState({ settings });
+    }
   });
 
   it("Jinja2 templates: their extensions anywhere, markup or text in a templates folder", () => {
