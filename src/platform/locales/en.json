@@ -443,6 +443,7 @@
   "menu.file.exportSettings": "Export Settings…",
   "menu.file.importSettings": "Import Settings…",
   "menu.file.importJetBrainsSettings": "Import Settings from JetBrains IDE…",
+  "menu.file.syncSettings": "Sync Settings Now",
   "menu.file.togglePowerSave": "Power Save Mode",
   "menu.macros": "Macros",
   "menu.macro.startRecording": "Start Macro Recording",

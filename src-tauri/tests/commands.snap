@@ -680,6 +680,7 @@ settings_list_jetbrains_ides                 always             desktop      bin
 settings_read_jetbrains                      always             desktop      bindings async
 settings_removed_theme                       always             project_host bindings sync
 settings_set                                 always             project_host bindings sync
+settings_sync_now                            always             desktop      bindings async
 show_system_notification                     trusted            desktop      bindings sync
 spell_check                                  always             project_host bindings async
 spell_save_to_dictionary                     always             project_host bindings async
