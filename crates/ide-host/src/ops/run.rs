@@ -450,7 +450,7 @@ async fn start_inner(
             // A local run of the docker CLI: the command is resolved in the container, and
             // this machine's toolchains and `PYTHONPATH` don't apply.
             let mut config = config;
-            if matches!(config.kind.as_str(), "python" | "pytest" | "unittest" | "doctest" | "django-test") {
+            if matches!(config.kind.as_str(), "python" | "pytest" | "unittest" | "doctest" | "django-test" | "celery") {
                 container_python_path(&mut config.env, &super::python::paths(&project), &project.root);
             }
             let config = container::prepare(host, &project.root, target, config).await?;
