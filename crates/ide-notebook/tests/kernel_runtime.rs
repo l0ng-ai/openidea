@@ -349,7 +349,7 @@ async fn a_run_waits_for_a_slow_inspection_and_keeps_the_kernel() {
     let python = python();
     let manager = manager(root.path());
     let (result, _) = run(&manager, &notebook, &python,
-        "import time\nclass Slow:\n    def __repr__(self):\n        time.sleep(12)\n        return 'slow'\nslow = Slow()\nkept = 1").await;
+        "import time\nclass Slow:\n    def __repr__(self):\n        time.sleep(2)\n        return 'slow'\nslow = Slow()\nkept = 1").await;
     assert_eq!(result.unwrap().status, "ok");
     let expressions = std::collections::HashMap::from([("v".to_owned(), "repr(slow)".to_owned())]);
     let inspecting = {
@@ -362,6 +362,37 @@ async fn a_run_waits_for_a_slow_inspection_and_keeps_the_kernel() {
     assert_eq!(result.unwrap().status, "ok");
     assert!(outputs.iter().any(|o| o.kind == "execute_result" && o.content["data"]["text/plain"] == "2"));
     assert_eq!(inspecting.await.unwrap().unwrap().unwrap()["v"]["data"]["text/plain"], "'slow'");
+    manager.shutdown().await;
+}
+
+#[tokio::test]
+#[ignore = "requires OPENIDEA_TEST_PYTHON with real ipykernel"]
+async fn a_stuck_inspection_is_interrupted_at_its_limit_and_the_waiting_run_goes_on() {
+    let root = tempfile::tempdir().unwrap();
+    let notebook = root.path().join("hung.ipynb");
+    let python = python();
+    let manager = manager(root.path());
+    let (result, _) = run(
+        &manager,
+        &notebook,
+        &python,
+        "import time\nclass Hung:\n    def __repr__(self):\n        time.sleep(600)\nhung = Hung()\nkept = 1",
+    )
+    .await;
+    assert_eq!(result.unwrap().status, "ok");
+    let expressions = std::collections::HashMap::from([("v".to_owned(), "repr(hung)".to_owned())]);
+    let inspecting = {
+        let (manager, notebook) = (manager.clone(), notebook.clone());
+        tokio::spawn(async move { manager.inspect(&notebook, "", expressions).await })
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let started = std::time::Instant::now();
+    let (result, outputs) =
+        tokio::time::timeout(Duration::from_secs(15), run(&manager, &notebook, &python, "kept + 1")).await.unwrap();
+    assert_eq!(result.unwrap().status, "ok", "the run waits for the read, not fails");
+    assert!(outputs.iter().any(|o| o.kind == "execute_result" && o.content["data"]["text/plain"] == "2"));
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(inspecting.await.unwrap().unwrap_err().kind, ErrorKind::Cancelled);
     manager.shutdown().await;
 }
 

@@ -12,27 +12,17 @@ const activePath = () => maybeEditorService()?.activeInput?.()?.path ?? null;
 const subscribeActive = (fn: () => void) => maybeEditorService()?.onActiveInputChange?.(fn) ?? (() => {});
 const noSession = { subscribe: () => () => {}, getState: () => null };
 
-let lastNotebook: string | null = null;
-/** The notebook tab last made active; other tabs keep it. */
-function notebookPath(): string | null {
+/** The active notebook tab's session, else the session of the notebook active last. */
+function notebookSession(): NotebookSession | null {
   const path = activePath();
-  if (path && /\.ipynb$/i.test(path)) lastNotebook = path;
-  return lastNotebook;
-}
-
-function notebookSession(path: string | null): NotebookSession | null {
-  const session = path && existingNotebookSession(path);
-  if (session) return session;
   // A restored notebook tab is active before its session exists: wait for it.
-  if (path && path === activePath()) return null;
-  // Tab changes are seen only while this window is shown; before that, or once that
-  // notebook is closed, the notebook opened last stands in for the one active last.
+  if (path && /\.ipynb$/i.test(path)) return existingNotebookSession(path) ?? null;
   return [...notebookSessions()].at(-1) ?? null;
 }
 
 function useNotebook(): NotebookSession | null {
-  const path = useSyncExternalStore(subscribeActive, notebookPath);
-  return useSyncExternalStore(onNotebookSessionsChange, () => notebookSession(path));
+  useSyncExternalStore(subscribeActive, activePath);
+  return useSyncExternalStore(onNotebookSessionsChange, notebookSession);
 }
 
 export function VariablesView() {

@@ -4,7 +4,15 @@ import { EditorState } from "@codemirror/state";
 import type { IdeEvent, NotebookSnapshot } from "@/bindings";
 import { IpcError } from "@/platform/ipc";
 import type * as Ipc from "@/platform/ipc";
-import { caretAfterHistory, NotebookSession, notebookBackend } from "./session";
+import {
+  caretAfterHistory,
+  closeNotebook,
+  markNotebookActive,
+  NotebookSession,
+  notebookBackend,
+  notebookSession,
+  notebookSessions,
+} from "./session";
 
 type KernelEvent = Extract<IdeEvent, { type: "notebookKernel" }>;
 const kernelListeners = vi.hoisted(() => new Set<(event: KernelEvent) => void>());
@@ -679,5 +687,17 @@ describe("undo and redo keep the focused cell's caret", () => {
     await session.undo();
     expect(session.getState().reveal).toBeNull();
     await session.close();
+  });
+});
+
+describe("notebookSessions", () => {
+  it("ends with the notebook made active last", async () => {
+    const [a, b] = ["/p/a.ipynb", "/p/b.ipynb"];
+    notebookSession(a);
+    notebookSession(b);
+    markNotebookActive(a);
+    markNotebookActive("/p/unopened.ipynb");
+    expect([...notebookSessions()].map((s) => s.path)).toEqual([b, a]);
+    await Promise.all([closeNotebook(a), closeNotebook(b)]);
   });
 });

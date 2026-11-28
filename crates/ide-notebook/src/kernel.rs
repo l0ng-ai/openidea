@@ -15,7 +15,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Duration;
 use tokio::sync::Mutex as AsyncMutex;
+
+/// A read of the variables running longer is interrupted. Its kernel is kept even if it does
+/// not drain; an Interrupt then stops it like a run.
+const READ_LIMIT: Duration = Duration::from_secs(5);
 
 pub(super) type StatusCallback = Arc<dyn Fn(&Path, KernelState, Option<String>) + Send + Sync>;
 pub(super) type OutputCallback = Arc<dyn Fn(KernelOutput) + Send + Sync>;
@@ -69,6 +74,8 @@ struct Slot {
     inspecting: AtomicUsize,
     /// Interrupts the inspection holding `operation`.
     inspection: Mutex<Option<CancellationToken>>,
+    /// Counts `cancel()` calls, so an inspection sees one that came before its token was set.
+    interrupts: AtomicUsize,
 }
 
 impl Slot {
@@ -80,10 +87,12 @@ impl Slot {
             closed: AtomicBool::new(false),
             inspecting: AtomicUsize::new(0),
             inspection: Mutex::new(None),
+            interrupts: AtomicUsize::new(0),
         }
     }
 
     fn cancel(&self) {
+        self.interrupts.fetch_add(1, Ordering::SeqCst);
         if let Some(token) = self.interrupt.lock().as_ref() {
             token.cancel();
         }
@@ -225,6 +234,7 @@ impl KernelManager {
         if slot.interrupt.lock().is_some() {
             return Err(IdeError::unavailable("notebook kernel is busy"));
         }
+        let interrupts = slot.interrupts.load(Ordering::SeqCst);
         // Counted before locking, so a run arriving meanwhile waits rather than failing.
         slot.inspecting.fetch_add(1, Ordering::AcqRel);
         let _inspecting = Inspecting(&slot);
@@ -232,12 +242,23 @@ impl KernelManager {
         let Some(kernel) = running.as_ref().filter(|r| !r.is_finished() && !slot.closed.load(Ordering::Acquire)) else {
             return Ok(None);
         };
-        // No time limit: dropping the request would leave the kernel undrained for the waiting
-        // run. Interrupt, restart and close reach it through `inspection` and the stop token.
+        // Interrupt, restart and close reach it through `inspection` and the stop token.
         let interrupt = CancellationToken::new();
         *slot.inspection.lock() = Some(interrupt.clone());
-        let result =
-            kernel.execute(code, Some(expressions), CancellationToken::new(), interrupt, Arc::new(|_| {})).await;
+        if slot.interrupts.load(Ordering::SeqCst) != interrupts {
+            interrupt.cancel();
+        }
+        // Interrupted at the limit, never dropped: the waiting run needs the kernel drained.
+        let limit = CancellationToken::new();
+        let timer = tokio::spawn({
+            let limit = limit.clone();
+            async move {
+                tokio::time::sleep(READ_LIMIT).await;
+                limit.cancel();
+            }
+        });
+        let result = kernel.execute(code, Some(expressions), limit, interrupt, Arc::new(|_| {})).await;
+        timer.abort();
         slot.inspection.lock().take();
         Ok(result?.user_expressions)
     }

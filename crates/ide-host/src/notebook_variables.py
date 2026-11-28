@@ -3,6 +3,7 @@
 # the function back out of the notebook's namespace. Same rows as the Python Console's.
 def _openidea_variables():
     import base64
+    import collections
     import json
     import reprlib
     import types
@@ -11,23 +12,18 @@ def _openidea_variables():
     short = reprlib.Repr()
     short.maxstring = short.maxother = 200
     limit = short.maxother
+    items = 100
+    containers = (dict, list, tuple, set, frozenset, collections.deque)
 
     def value_text(value):
-        # reprlib shortens only the exact builtin types; for the rest it builds the full
-        # repr() and then cuts it, which costs seconds and gigabytes for a big value.
+        # reprlib shortens the exact builtin types itself; for anything else it builds the
+        # full repr() and then cuts it. That is right for a subclass's own repr (a namedtuple,
+        # an OrderedDict, a defaultdict), but costs seconds and gigabytes for a big one.
         kind = type(value)
-        if kind in (bytes, bytearray):
-            text = repr(value[:limit])
-            return text + "..." if len(value) > limit else text
-        for base, shorten in (
-            (dict, short.repr_dict),
-            (list, short.repr_list),
-            (tuple, short.repr_tuple),
-            (set, short.repr_set),
-            (frozenset, short.repr_frozenset),
-        ):
-            if isinstance(value, base) and kind is not base:
-                return "%s(%s)" % (kind.__name__, shorten(value, short.maxlevel))
+        if isinstance(value, (str, bytes, bytearray)) and kind is not str and len(value) > limit:
+            return repr(value[:limit]) + "..."
+        if isinstance(value, containers) and kind not in containers and len(value) > items:
+            return "<%s len=%d>" % (kind.__name__, len(value))
         return short.repr(value)
 
     rows = []
