@@ -1865,6 +1865,7 @@
   "Drop syntax trees and EditorConfig caches, compact the index": "丢弃语法树和 EditorConfig 缓存，压缩索引",
   "Drop…": "删除…",
   "Duplicate": "复制",
+  "Duplicate Template": "复制模板",
   "Duplicate Keymap": "复制按键映射",
   "Duplicate groups": "重复组",
   "Duplicates": "重复项",

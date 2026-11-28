@@ -15,7 +15,7 @@ import {
   unsupportedExpressionFunctions,
 } from "../live/model";
 import { BUILTIN_TEMPLATES } from "../live/builtins";
-import { mergeImportedTemplates, mergeTemplates } from "../live/store";
+import { duplicateTemplate, mergeImportedTemplates, mergeTemplates } from "../live/store";
 import { enclosingName, suggestVariableName, templateFunctions } from "../editorContext";
 
 /** Applies a snippet template to a state and returns the resulting text and selection. */
@@ -266,6 +266,70 @@ describe("expansion", () => {
     const again = mergeImportedTemplates(merged, [{ ...imported, body: "updated" }]);
     expect(Object.keys(again.templates).filter((id) => id === imported.id)).toHaveLength(1);
     expect(again.templates[imported.id]!.body).toBe("updated");
+  });
+});
+
+describe("duplicateTemplate", () => {
+  it("copies a built-in into an independent user template", () => {
+    const source = BUILTIN_TEMPLATES.find((t) => t.id === "rust.test")!;
+    const copy = duplicateTemplate(source);
+    expect(copy).toEqual({ ...source, id: expect.stringMatching(/^user\./), abbrev: "ABBREVIATION" });
+    expect(copy.id).not.toBe(source.id);
+    expect(copy.contexts).not.toBe(source.contexts);
+    expect(copy.variables).not.toBe(source.variables);
+    expect(copy.variables?.[0]).not.toBe(source.variables?.[0]);
+
+    copy.contexts.push("any");
+    copy.variables![0]!.defaultValue = '"changed"';
+    expect(source.contexts).toEqual(["rust"]);
+    expect(source.variables?.[0]?.defaultValue).toBe('"it_works"');
+  });
+
+  it("preserves custom template settings in the copy", () => {
+    const source: LiveTemplate = {
+      id: "user.source",
+      group: "Custom",
+      abbrev: "custom",
+      description: "Custom template",
+      body: "$NAME$ = $VALUE$;$END$",
+      contexts: ["typescript", "sql-statement"],
+      variables: [
+        { name: "NAME", expression: "suggestVariableName()", defaultValue: '"name"', skipIfDefined: true },
+        { name: "VALUE", defaultValue: '"value"' },
+      ],
+      enabled: false,
+      scope: "any",
+    };
+    expect(duplicateTemplate(source)).toEqual({
+      ...source,
+      id: expect.stringMatching(/^user\./),
+      abbrev: "ABBREVIATION",
+    });
+  });
+
+  it("drops plugin origin so the copy is editable", () => {
+    const source: LiveTemplate = {
+      id: "plugin-snippet:test:file:0",
+      pluginOrigin: "Test plugin",
+      group: "Test plugin",
+      abbrev: "plugin",
+      description: "Plugin template",
+      body: "$VALUE$$END$",
+      contexts: ["typescript"],
+      variables: [{ name: "VALUE", defaultValue: '"value"' }],
+      scope: "any",
+    };
+    const copy = duplicateTemplate(source);
+    expect(copy).not.toHaveProperty("pluginOrigin");
+    expect(copy).toMatchObject({
+      id: expect.stringMatching(/^user\./),
+      group: source.group,
+      abbrev: "ABBREVIATION",
+      body: source.body,
+      contexts: source.contexts,
+      variables: source.variables,
+      scope: source.scope,
+    });
   });
 });
 

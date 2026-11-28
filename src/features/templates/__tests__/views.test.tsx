@@ -31,6 +31,52 @@ describe("settings pages", () => {
     expect(useLiveTemplates.getState().templates.find((t) => t.id === "java.psvm")?.description).toBe("main() method");
   });
 
+  it("duplicates a custom live template and selects the editable copy", () => {
+    const source = {
+      id: "user.duplicate-source",
+      group: "Custom group",
+      abbrev: "duplicate-me",
+      description: "Source template",
+      body: "const $NAME$ = $VALUE$;$END$",
+      contexts: ["typescript", "sql-statement"],
+      variables: [
+        { name: "NAME", defaultValue: '"name"' },
+        { name: "VALUE", defaultValue: '"value"' },
+      ],
+      enabled: false,
+      scope: "any" as const,
+    };
+    saveTemplate(source);
+    const previousIds = new Set(useLiveTemplates.getState().templates.map((t) => t.id));
+    let copyId: string | undefined;
+    const view = render(<LiveTemplatesPage />);
+    try {
+      fireEvent.click(screen.getByText(source.abbrev));
+      const duplicate = screen.getByRole("button", { name: "Duplicate Template" });
+      expect(duplicate).toBeEnabled();
+      fireEvent.click(duplicate);
+
+      const copy = useLiveTemplates.getState().templates.find((t) => !previousIds.has(t.id));
+      if (!copy) throw new Error("Duplicate was not created");
+      copyId = copy.id;
+      expect(copy).toEqual({ ...source, id: copy.id, abbrev: "ABBREVIATION" });
+      expect(useLiveTemplates.getState().custom.templates[copy.id]).toEqual(copy);
+      expect(screen.getByRole("option", { selected: true })).toHaveTextContent("ABBREVIATION");
+      expect(screen.getByLabelText("Abbreviation")).toHaveValue("ABBREVIATION");
+      expect(screen.getByLabelText("Description")).toHaveValue(source.description);
+      expect(screen.getByLabelText("Description")).toBeEnabled();
+      expect(screen.getByLabelText("Group")).toHaveValue(source.group);
+      expect(screen.getByLabelText("Template text")).toHaveValue(source.body);
+      expect(screen.getByLabelText("Contexts")).toHaveValue(source.contexts.join(", "));
+      expect(screen.getByLabelText("NAME default value")).toHaveValue('"name"');
+      expect(screen.getByLabelText("VALUE default value")).toHaveValue('"value"');
+    } finally {
+      view.unmount();
+      removeTemplate(source.id);
+      if (copyId) removeTemplate(copyId);
+    }
+  });
+
   it("selects the template it was opened on (Save as Live Template)", async () => {
     saveTemplate({
       id: "user.saved",
@@ -217,7 +263,7 @@ describe("dialogs", () => {
   });
 });
 
-it("shows plugin snippets as read-only live templates and withdraws them with the plugin", () => {
+it("shows plugin snippets as read-only live templates and duplicates them as editable user templates", () => {
   const off = addContributedSnippets([
     {
       id: "plugin-snippet:test:file:0",
@@ -228,12 +274,44 @@ it("shows plugin snippets as read-only live templates and withdraws them with th
       description: "Select rows",
     },
   ]);
+  const previousIds = new Set(useLiveTemplates.getState().templates.map((t) => t.id));
+  let copyId: string | undefined;
   const view = render(<LiveTemplatesPage />);
-  fireEvent.click(screen.getByText("selectrows"));
-  expect(screen.getByLabelText("Description")).toBeDisabled();
-  expect(screen.getByRole("button", { name: "Remove Template" })).toBeDisabled();
-  expect(screen.getByLabelText("Enable selectrows")).toBeDisabled();
-  act(() => off());
-  expect(screen.queryByText("selectrows")).toBeNull();
-  view.unmount();
+  try {
+    fireEvent.click(screen.getByText("selectrows"));
+    expect(screen.getByLabelText("Description")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Remove Template" })).toBeDisabled();
+    expect(screen.getByLabelText("Enable selectrows")).toBeDisabled();
+
+    const duplicate = screen.getByRole("button", { name: "Duplicate Template" });
+    expect(duplicate).toBeEnabled();
+    fireEvent.click(duplicate);
+    const copy = useLiveTemplates.getState().templates.find((t) => !previousIds.has(t.id));
+    if (!copy) throw new Error("Duplicate was not created");
+    copyId = copy.id;
+    expect(copy).toMatchObject({
+      id: expect.stringMatching(/^user\./),
+      group: "SQL plugin",
+      abbrev: "ABBREVIATION",
+      description: "Select rows",
+      body: "SELECT $P1$$END$",
+      contexts: ["sql"],
+      scope: "any",
+      variables: [{ name: "P1", defaultValue: '"column"' }],
+    });
+    expect(copy).not.toHaveProperty("pluginOrigin");
+    expect(useLiveTemplates.getState().custom.templates[copy.id]).toEqual(copy);
+    expect(screen.getByRole("option", { selected: true })).toHaveTextContent("ABBREVIATION");
+    expect(screen.getByLabelText("Description")).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Remove Template" })).toBeEnabled();
+
+    act(() => off());
+    expect(screen.queryByText("selectrows")).toBeNull();
+    expect(screen.getByRole("option", { selected: true })).toHaveTextContent("ABBREVIATION");
+    expect(screen.getByLabelText("Template text")).toHaveValue("SELECT $P1$$END$");
+  } finally {
+    act(() => off());
+    view.unmount();
+    if (copyId) removeTemplate(copyId);
+  }
 });
