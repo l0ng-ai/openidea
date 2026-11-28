@@ -144,12 +144,18 @@ fn prepare_login_launch_env(
     env: &mut std::collections::BTreeMap<String, String>,
     host_has: impl Fn(&str) -> bool,
 ) {
-    if !is_remote {
-        return;
-    }
     let has_non_empty = |env: &std::collections::BTreeMap<String, String>, key: &str| {
         env.get(key).is_some_and(|v| !v.is_empty()) || host_has(key)
     };
+    // Skip `gh`'s `termenv` OSC 11 background-color probe during interactive login (`gh auth login`
+    // renders no markdown); if an OSC 11 reply arrives late over a PTY or SSH link, `survey` aborts
+    // with `unexpected escape sequence from terminal: ['\x1b' ']']`.
+    if target_is_gh && !has_non_empty(env, "GLAMOUR_STYLE") {
+        env.insert("GLAMOUR_STYLE".into(), "notty".into());
+    }
+    if !is_remote {
+        return;
+    }
     // `openidea-server` spawns sign-in commands in a real PTY even inside WSL, dev containers,
     // and `--web`, where `SSH_*` variables are absent; mark the session remote so CLIs such as
     // `copilot login` choose OAuth device-code sign-in over a remote-only loopback server.
@@ -1602,25 +1608,36 @@ mod tests {
 
     #[test]
     fn prepare_login_launch_env_marks_remote_sessions_for_device_code_auth() {
-        let mut desktop_env = std::collections::BTreeMap::new();
-        prepare_login_launch_env(false, true, &mut desktop_env, |_| false);
-        assert!(desktop_env.is_empty());
+        let mut desktop_agent_env = std::collections::BTreeMap::new();
+        prepare_login_launch_env(false, false, &mut desktop_agent_env, |_| false);
+        assert!(desktop_agent_env.is_empty());
+
+        let mut desktop_gh_env = std::collections::BTreeMap::new();
+        prepare_login_launch_env(false, true, &mut desktop_gh_env, |_| false);
+        assert_eq!(desktop_gh_env.get("GLAMOUR_STYLE").map(String::as_str), Some("notty"));
+        assert!(!desktop_gh_env.contains_key("REMOTE_CONTAINERS"));
+        assert!(!desktop_gh_env.contains_key("GH_BROWSER"));
 
         let mut remote_agent_env = std::collections::BTreeMap::new();
         prepare_login_launch_env(true, false, &mut remote_agent_env, |_| false);
         assert_eq!(remote_agent_env.get("REMOTE_CONTAINERS").map(String::as_str), Some("1"));
         assert!(!remote_agent_env.contains_key("GH_BROWSER"));
+        assert!(!remote_agent_env.contains_key("GLAMOUR_STYLE"));
 
         let mut remote_gh_env = std::collections::BTreeMap::new();
         prepare_login_launch_env(true, true, &mut remote_gh_env, |_| false);
         assert_eq!(remote_gh_env.get("REMOTE_CONTAINERS").map(String::as_str), Some("1"));
         assert_eq!(remote_gh_env.get("GH_BROWSER").map(String::as_str), Some("true"));
+        assert_eq!(remote_gh_env.get("GLAMOUR_STYLE").map(String::as_str), Some("notty"));
 
-        // Preserves existing SSH/remote indicators and explicit browser settings.
+        // Preserves existing SSH/remote indicators, browser settings, and GLAMOUR_STYLE.
         let mut ssh_env = std::collections::BTreeMap::new();
-        prepare_login_launch_env(true, true, &mut ssh_env, |k| matches!(k, "SSH_CONNECTION" | "BROWSER"));
+        prepare_login_launch_env(true, true, &mut ssh_env, |k| {
+            matches!(k, "SSH_CONNECTION" | "BROWSER" | "GLAMOUR_STYLE")
+        });
         assert!(!ssh_env.contains_key("REMOTE_CONTAINERS"));
         assert!(!ssh_env.contains_key("GH_BROWSER"));
+        assert!(!ssh_env.contains_key("GLAMOUR_STYLE"));
     }
 }
 

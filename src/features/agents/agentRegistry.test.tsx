@@ -969,6 +969,121 @@ describe("Built-in executable overrides", () => {
     }
   });
 
+  it("drops OSC 10/11/12 color-query replies, buffers pre-spawn replies in FIFO order, and keeps auto-Enter intact", async () => {
+    const emitTermData: { current: ((data: string) => void) | null } = { current: null };
+    provideEmbeddedTerminal(async (_host, options) => {
+      emitTermData.current = options.onData;
+      return {
+        write: vi.fn(),
+        clear: vi.fn(),
+        focus: vi.fn(),
+        fit: vi.fn(),
+        dispose: vi.fn(),
+      };
+    });
+    const openSpy = vi.spyOn(openUrlMod, "openExternalUrl").mockResolvedValue();
+    let resolveFirstWrite!: () => void;
+    const termWriteSpy = vi
+      .spyOn(ipcCommands, "termWrite")
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirstWrite = () => resolve({ status: "ok", data: null });
+          }),
+      )
+      .mockResolvedValue({ status: "ok", data: null });
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    });
+    enableRemote({
+      target: { kind: "ssh", configId: "devbox" } as never,
+      root: "/home/alice/repo",
+      host: "devbox",
+      os: "linux",
+      commands: ["agent_gh_login_spawn", "term_write", "term_resize", "term_kill"],
+    });
+    let resolveSpawn!: (id: number) => void;
+    let onLoginEvent: ((e: AgentLoginEvent) => void) | null = null;
+    try {
+      const commands = new FakeCommands();
+      commands.ghLoginSpawn = vi.fn((_cols, _rows, cb) => {
+        onLoginEvent = cb;
+        return new Promise<number>((resolve) => {
+          resolveSpawn = resolve;
+        });
+      });
+      commands.copilotAuthStatus = vi.fn<() => Promise<CopilotAuthStatus>>().mockResolvedValue({
+        authenticated: true,
+        login: "alice",
+        authType: "user",
+        statusMessage: null,
+        ghInstalled: true,
+        ghAccounts: [{ login: "alice", active: true }],
+      });
+      commands.list = [
+        {
+          ...claudeProvider("copilot"),
+          id: "copilot",
+          name: "GitHub Copilot",
+          command: "copilot --headless --no-auto-update --stdio",
+          defaultProgram: "copilot",
+          loginHint: "Run `copilot login` in a terminal.",
+          installed: true,
+          canSignIn: true,
+          commandReadOnlyReason: "registry",
+        },
+      ];
+      await openCommands(commands, vi.fn(), "GitHub Copilot");
+      fireEvent.click(await screen.findByRole("button", { name: "Add account…" }));
+      await waitFor(() => expect(commands.ghLoginSpawn).toHaveBeenCalled());
+
+      // While spawn is still pending, xterm emits an OSC 11 color reply and a CSI 6n cursor reply.
+      emitTermData.current?.("\u001b]11;rgb:ffff/ffff/ffff\u001b\\");
+      emitTermData.current?.("\u001b]10;rgb:0000/0000/0000\u0007");
+      emitTermData.current?.("\u001b[1;1R");
+      expect(termWriteSpy).not.toHaveBeenCalled();
+
+      // Resolving spawn flushes only the buffered CSI 6n reply (OSC 10/11 replies were dropped).
+      await act(async () => {
+        resolveSpawn(303);
+      });
+      await waitFor(() => expect(termWriteSpy).toHaveBeenCalledTimes(1));
+      expect(termWriteSpy).toHaveBeenNthCalledWith(1, 303, "\u001b[1;1R");
+
+      // Concurrent writes while the first termWrite is still in flight queue in strict FIFO order.
+      emitTermData.current?.("a");
+      emitTermData.current?.("b");
+      expect(termWriteSpy).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        resolveFirstWrite();
+      });
+      await waitFor(() => expect(termWriteSpy).toHaveBeenCalledTimes(2));
+      expect(termWriteSpy).toHaveBeenNthCalledWith(2, 303, "ab");
+
+      // An automated CPR reply arriving while the device-code banner is visible must not suppress auto-Enter.
+      act(() => {
+        onLoginEvent?.({
+          type: "output",
+          data: "! First copy your one-time code: AB12-CD34\r\nPress Enter to open https://github.com/login/device in your browser... ",
+        });
+      });
+      const banner = await screen.findByRole("region", { name: "Device verification code" });
+      emitTermData.current?.("\u001b[5;1R");
+      await waitFor(() => expect(termWriteSpy).toHaveBeenCalledWith(303, "\u001b[5;1R"));
+
+      await act(async () => {
+        fireEvent.click(within(banner).getByRole("button", { name: "Copy Code & Open Browser" }));
+      });
+      await waitFor(() => expect(termWriteSpy).toHaveBeenCalledWith(303, "\r"));
+    } finally {
+      disableRemote();
+      openSpy.mockRestore();
+      termWriteSpy.mockRestore();
+      provideEmbeddedTerminal(undefined);
+    }
+  });
+
   it("Cancel discards command edits without writing", async () => {
     const commands = new FakeCommands();
     commands.list = [
