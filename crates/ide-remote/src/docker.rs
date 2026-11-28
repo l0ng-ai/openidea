@@ -77,6 +77,47 @@ pub fn mounted_file(container_path: &str, mounts: &[(std::path::PathBuf, String)
     (!parts.is_empty() && !parts.contains(&"..")).then(|| parts.iter().fold(local.clone(), |p, c| p.join(c)))
 }
 
+/// Development servers listen on `127.0.0.1` by default, which a published port can't reach
+/// in a container: Django's `runserver`, `flask run`, `uvicorn` and `fastapi dev` listen on all
+/// interfaces unless the configuration names an address. Returns whether `program args` runs
+/// one of them.
+fn listen_on_all_interfaces(program: &str, args: &mut Vec<String>, env: &mut BTreeMap<String, String>) -> bool {
+    let name = |s: &str| s.rsplit('/').next().unwrap_or(s).trim_end_matches(".py").to_owned();
+    let words: Vec<String> = std::iter::once(program).chain(args.iter().map(String::as_str)).map(name).collect();
+    let has = |w: &str| words.iter().any(|x| x == w);
+    let host_given = args.iter().any(|a| a == "--host" || a.starts_with("--host=") || a == "-h");
+    // `manage.py runserver` / `django-admin runserver`: the first positional argument is the address.
+    if let Some(i) = words.iter().position(|w| w == "runserver")
+        && i > 0
+        && matches!(words[i - 1].as_str(), "manage" | "django-admin")
+    {
+        // `words[0]` is the program: `args[i - 1]` is `runserver`.
+        if !args[i..].iter().any(|a| !a.starts_with('-')) {
+            args.insert(i, "0.0.0.0:8000".into());
+        }
+        return true;
+    }
+    if has("flask") && has("run") {
+        if !host_given {
+            env.entry("FLASK_RUN_HOST".into()).or_insert_with(|| "0.0.0.0".into());
+        }
+        return true;
+    }
+    if has("uvicorn") {
+        if !host_given {
+            env.entry("UVICORN_HOST".into()).or_insert_with(|| "0.0.0.0".into());
+        }
+        return true;
+    }
+    if has("fastapi") && has("dev") {
+        if !host_given {
+            args.extend(["--host".into(), "0.0.0.0".into()]);
+        }
+        return true;
+    }
+    false
+}
+
 /// A container name for a run of `config_id`: Docker allows `[a-zA-Z0-9][a-zA-Z0-9_.-]*`.
 pub fn container_name(config_id: &str, unique: &str) -> String {
     let id: String = config_id
@@ -90,7 +131,9 @@ pub fn container_name(config_id: &str, unique: &str) -> String {
 /// `config` as a local run of the docker CLI that runs it in a new container.
 pub fn container_config(config: &RunConfig, run: &ContainerRun) -> IdeResult<RunConfig> {
     let target = run.target;
-    let command = remote_command(config, target, run.root, run.container_root);
+    let mut command = remote_command(config, target, run.root, run.container_root);
+    let server =
+        command.shell_line.is_none() && listen_on_all_interfaces(&command.program, &mut command.args, &mut command.env);
     // Variables go by name (`-e NAME`) so their values stay out of the command line
     // echoed in the console; the docker CLI reads them from its own environment.
     let mut env: BTreeMap<String, String> = run.file_env.clone();
@@ -123,6 +166,10 @@ pub fn container_config(config: &RunConfig, run: &ContainerRun) -> IdeResult<Run
                 args.extend(["--file".into(), run.root.join(file).to_string_lossy().into_owned()]);
             }
             args.extend(["run", "--rm"].map(String::from));
+            // `compose run` publishes none of the service's ports unless asked.
+            if server && target.ports.iter().all(|p| p.trim().is_empty()) {
+                args.push("--service-ports".into());
+            }
             if !pty {
                 args.push("--no-TTY".into());
             }
@@ -483,6 +530,18 @@ mod tests {
         );
         assert_eq!(out.env["DATA"], "/app/data");
 
+        // A development server: on all interfaces, with the service's ports published.
+        c.args = vec!["manage.py".into(), "runserver".into()];
+        let out = container_config(&c, &r).unwrap().args.join(" ");
+        assert!(out.contains("run --rm --service-ports --no-TTY"), "{out}");
+        assert!(out.ends_with("web python3 manage.py runserver 0.0.0.0:8000"), "{out}");
+        let ports = RunTarget { ports: vec!["8000:8000".into()], ..target.clone() };
+        let out = container_config(&c, &run(&ports, &none, &none)).unwrap().args.join(" ");
+        assert!(
+            !out.contains("--service-ports") && out.contains("--publish 8000:8000"),
+            "the target's own ports: {out}"
+        );
+
         let target = RunTarget { kind: RunTargetKind::Compose, name: "c".into(), ..Default::default() };
         assert!(container_config(&c, &run(&target, &none, &none)).unwrap_err().message.contains("no service"));
     }
@@ -602,6 +661,33 @@ mod tests {
         for outside in ["/application/main.py", "/app", "/app/", "/app/../etc/passwd", "/usr/lib/x.py"] {
             assert_eq!(mounted_file(outside, &mounts), None, "{outside}");
         }
+    }
+
+    #[test]
+    fn development_servers_listen_on_all_interfaces() {
+        let run = |program: &str, args: &[&str]| {
+            let mut args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            let mut env = BTreeMap::new();
+            let server = listen_on_all_interfaces(program, &mut args, &mut env);
+            (server, args.join(" "), env.into_iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(" "))
+        };
+        let django = |args: &str| (true, args.to_owned(), String::new());
+        assert_eq!(run("python3", &["manage.py", "runserver"]), django("manage.py runserver 0.0.0.0:8000"));
+        assert_eq!(
+            run("/usr/bin/python", &["/w/manage.py", "runserver", "--noreload"]),
+            django("/w/manage.py runserver 0.0.0.0:8000 --noreload")
+        );
+        assert_eq!(run("python", &["manage.py", "runserver", "8001"]), django("manage.py runserver 8001"));
+        assert_eq!(run("django-admin", &["runserver"]), django("runserver 0.0.0.0:8000"));
+        assert_eq!(
+            run("python", &["-m", "flask", "run"]),
+            (true, "-m flask run".into(), "FLASK_RUN_HOST=0.0.0.0".into())
+        );
+        assert_eq!(run("flask", &["run", "--host", "::"]), (true, "run --host ::".into(), String::new()));
+        assert_eq!(run("uvicorn", &["app:app"]), (true, "app:app".into(), "UVICORN_HOST=0.0.0.0".into()));
+        assert_eq!(run("fastapi", &["dev", "main.py"]), (true, "dev main.py --host 0.0.0.0".into(), String::new()));
+        assert_eq!(run("python", &["manage.py", "migrate"]), (false, "manage.py migrate".into(), String::new()));
+        assert_eq!(run("pytest", &["tests"]), (false, "tests".into(), String::new()));
     }
 
     #[cfg(unix)]
