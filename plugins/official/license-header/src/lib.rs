@@ -192,10 +192,15 @@ pub fn render(comment: &Comment, lines: &[String]) -> String {
     out
 }
 
-/// The line the header goes on: after a `#!` line and a Python encoding line.
+/// The line the header goes on: after a `#!` line and a Python encoding
+/// line, an XML declaration or a PHP opening tag, which must stay first.
 pub fn insert_line(text: &str) -> u32 {
     let mut line = 0;
     let mut lines = text.lines();
+    let first = text.lines().next().unwrap_or("").trim_start_matches('\u{feff}');
+    if first.starts_with("<?xml") || first.starts_with("<?php") {
+        return 1;
+    }
     if lines.next().is_some_and(|l| l.starts_with("#!")) {
         line = 1;
         if lines.next().is_some_and(is_encoding_line) {
@@ -211,18 +216,51 @@ fn is_encoding_line(l: &str) -> bool {
     l.starts_with('#') && (l.contains("coding:") || l.contains("coding=")) && !is_header_line(l)
 }
 
+/// Whether a header comment line mentions a copyright or a license: the
+/// header ends with the last such line.
+fn mentions_license(l: &str) -> bool {
+    let l = l.to_ascii_lowercase();
+    l.contains("copyright") || l.contains("spdx-license-identifier") || l.contains("license")
+}
+
+/// The comment forms a header in `comment`'s files may have been written in:
+/// C-like languages write it with `//` lines or one `/* */` block.
+fn header_forms(comment: &Comment) -> Vec<Comment> {
+    let mut forms = vec![comment.clone()];
+    match comment {
+        Comment::Line(p) if p == "//" => forms.push(Comment::Block("/*".into(), " */".into())),
+        Comment::Block(o, _) if o == "/*" => forms.push(Comment::Line("//".into())),
+        _ => {}
+    }
+    forms
+}
+
 /// The lines `[start, end)` of the comment at the header position that holds
-/// a copyright or license notice, with the blank lines after it.
-pub fn existing_header(text: &str, comment: &Comment) -> Option<(u32, u32)> {
+/// a copyright or license notice, with the blank lines after it. Line comments
+/// stop at a doc comment (`///`, `//!`) and end at the last line that mentions
+/// a copyright or a license, or after `lines` lines (the profile's header), so
+/// the comments after the notice stay.
+pub fn existing_header(text: &str, comment: &Comment, lines: usize) -> Option<(u32, u32)> {
+    header_forms(comment).iter().find_map(|form| header_in_form(text, form, lines))
+}
+
+fn header_in_form(text: &str, comment: &Comment, header_lines: usize) -> Option<(u32, u32)> {
     let lines: Vec<&str> = text.lines().collect();
     let start = insert_line(text) as usize;
     let first = lines.get(start)?.trim_start();
     let mut end = start;
     match comment {
         Comment::Line(prefix) => {
-            while lines.get(end).is_some_and(|l| l.trim_start().starts_with(prefix.as_str())) {
+            let doc = |rest: &str| rest.starts_with('!') || prefix.ends_with('/') && rest.starts_with('/');
+            while lines.get(end).is_some_and(|l| l.trim_start().strip_prefix(prefix.as_str()).is_some_and(|r| !doc(r)))
+            {
                 end += 1;
             }
+            if !lines[start..end].iter().any(|l| is_header_line(l)) {
+                return None;
+            }
+            let notice = start + lines[start..end].iter().rposition(|l| mentions_license(l))? + 1;
+            end = notice.max((start + header_lines).min(end));
         }
         Comment::Block(open, close) => {
             if !first.starts_with(open.as_str()) {
@@ -238,10 +276,10 @@ pub fn existing_header(text: &str, comment: &Comment) -> Option<(u32, u32)> {
                     break;
                 }
             }
+            if !lines[start..end].iter().any(|l| is_header_line(l)) {
+                return None;
+            }
         }
-    }
-    if end == start || !lines[start..end].iter().any(|l| is_header_line(l)) {
-        return None;
     }
     while lines.get(end).is_some_and(|l| l.trim().is_empty()) {
         end += 1;
@@ -292,7 +330,8 @@ pub fn header_edit(
     update: bool,
 ) -> Option<TextEdit> {
     let comment = comment_for(path, &profile.styles)?;
-    let existing = existing_header(text, &comment);
+    let template_lines = expand(&profile.template, &Vars::default()).len();
+    let existing = existing_header(text, &comment, template_lines);
     if has_header(text) && (!update || existing.is_none()) {
         return None;
     }
@@ -332,6 +371,10 @@ pub fn header_edit(
             Range::new(at, at)
         }
     };
+    // The file's own line breaks.
+    if text.contains("\r\n") {
+        insert = insert.replace('\n', "\r\n");
+    }
     Some(TextEdit { range, text: insert })
 }
 
@@ -474,6 +517,27 @@ pub struct Updated {
     pub changed: u32,
     pub unchanged: u32,
     pub failed: u32,
+    /// More files than [`MAX_SCAN`]: the rest were not looked at.
+    pub truncated: bool,
+}
+
+/// The *Excluded folders* setting: folder names a folder run skips (vendored code).
+fn excluded_folders() -> Vec<String> {
+    host::setting_string("excludedFolders")
+        .unwrap_or_else(|| "vendor, third_party, third-party, external".into())
+        .split([',', ' '])
+        .map(|f| f.trim().trim_matches(['/', '\\']).to_owned())
+        .filter(|f| !f.is_empty())
+        .collect()
+}
+
+/// Whether `file`, under the selected folder `dir`, sits in an excluded folder
+/// below it (selecting `vendor` itself still takes its files).
+pub fn in_excluded(file: &str, dir: &str, excluded: &[String]) -> bool {
+    let rest = file.strip_prefix(dir).unwrap_or(file);
+    let mut parts: Vec<&str> = rest.split(['/', '\\']).filter(|p| !p.is_empty()).collect();
+    parts.pop();
+    parts.iter().any(|p| excluded.iter().any(|e| e == p))
 }
 
 #[derive(Default)]
@@ -508,17 +572,19 @@ impl LicenseHeader {
         let profile = profile();
         let name = project_name(project);
         let mut files: Vec<String> = Vec::new();
+        let excluded = excluded_folders();
         let all = if paths.iter().any(|p| project.stat(p).is_ok_and(|s| s.kind == FileKind::Directory)) {
             project.find_files("**/*", MAX_SCAN * 4)?
         } else {
             Vec::new()
         };
+        let mut out = Updated { truncated: all.len() >= (MAX_SCAN * 4) as usize, ..Updated::default() };
         for p in paths {
             if !is_under(p, &root) {
                 continue;
             }
             if project.stat(p).is_ok_and(|s| s.kind == FileKind::Directory) {
-                files.extend(all.iter().filter(|f| is_under(f, p)).cloned());
+                files.extend(all.iter().filter(|f| is_under(f, p) && !in_excluded(f, p, &excluded)).cloned());
             } else {
                 files.push(p.clone());
             }
@@ -526,11 +592,11 @@ impl LicenseHeader {
         files.retain(|f| comment_for(f, &profile.styles).is_some());
         files.sort();
         files.dedup();
+        out.truncated |= files.len() > MAX_SCAN as usize;
         files.truncate(MAX_SCAN as usize);
         let total = files.len() as u32;
         let task = host::begin_task("License Header: updating copyright", true);
         let now = this_year();
-        let mut out = Updated::default();
         for (i, path) in files.iter().enumerate() {
             if task.is_cancelled() {
                 break;
@@ -570,10 +636,11 @@ impl LicenseHeader {
     /// Reports every source file of the project without a header; returns (checked, lacking).
     fn scan(&self, project: &Project) -> Result<(u32, u32), Error> {
         let styles = styles();
+        let (root, excluded) = (project.root()?, excluded_folders());
         let files: Vec<String> = project
             .find_files("**/*", MAX_SCAN * 4)?
             .into_iter()
-            .filter(|f| comment_for(f, &styles).is_some())
+            .filter(|f| comment_for(f, &styles).is_some() && !in_excluded(f, &root, &excluded))
             .take(MAX_SCAN as usize)
             .collect();
         let total = files.len() as u32;
@@ -599,17 +666,16 @@ impl LicenseHeader {
         Ok((checked, lacking))
     }
 
-    /// Adds the header to `path`, a file created moments ago, when it is open
-    /// (returns whether it was). `fresh_empty` only takes an empty file
-    /// written within [`NEW_FILE_SECS`] (what New File makes).
-    fn add_to_new_file(&self, path: &str, fresh_empty: bool) -> bool {
+    /// Adds the header to `path`, an empty file created moments ago (what New
+    /// File makes), when it is open; returns whether it was open. A file with
+    /// text (renamed, checked out) is left alone. Without a created event,
+    /// `fresh` asks for a file written within [`NEW_FILE_SECS`].
+    fn add_to_new_file(&self, path: &str, fresh: bool) -> bool {
         let Some(project) = project_of(path) else { return false };
         let Ok(doc) = project.document(path) else { return false };
-        if fresh_empty {
-            let modified = project.stat(path).ok().and_then(|s| s.modified).unwrap_or(0);
-            if !doc.text.trim().is_empty() || now_secs().saturating_sub(modified) > NEW_FILE_SECS {
-                return true;
-            }
+        let modified = project.stat(path).ok().and_then(|s| s.modified).unwrap_or(0);
+        if !doc.text.trim().is_empty() || fresh && now_secs().saturating_sub(modified) > NEW_FILE_SECS {
+            return true;
         }
         let profile = profile();
         if let Some(edit) = header_edit(path, &doc.text, &profile, &project_name(&project), this_year(), false) {
@@ -622,8 +688,11 @@ impl LicenseHeader {
 
 impl Plugin for LicenseHeader {
     fn activate(&mut self, _ctx: &Context) -> Result<(), Error> {
-        // Created files are only kept when Add the header to new files is on.
-        let _ = host::subscribe(EventKind::FilesChanged);
+        // File creations matter only while Add the header to new files is on.
+        let _ = host::subscribe(EventKind::SettingsChanged);
+        if host::setting_bool("addToNewFiles").unwrap_or(false) {
+            let _ = host::subscribe(EventKind::FilesChanged);
+        }
         Ok(())
     }
 
@@ -648,8 +717,12 @@ impl Plugin for LicenseHeader {
                 if u.failed > 0 {
                     body.push_str(&format!("; {} could not be written", u.failed));
                 }
+                if u.truncated {
+                    body.push_str(&format!("; stopped after {MAX_SCAN} files, select a smaller folder for the rest"));
+                }
                 body.push('.');
-                let level = if u.failed > 0 { NotificationLevel::Warning } else { NotificationLevel::Info };
+                let level =
+                    if u.failed > 0 || u.truncated { NotificationLevel::Warning } else { NotificationLevel::Info };
                 host::notify(level, "Copyright", &body);
                 Ok(None)
             }
@@ -678,6 +751,12 @@ impl Plugin for LicenseHeader {
                 Event::FileSaved(p) => (p, false),
                 // The created file may already be open (the event comes after a
                 // short quiet period), or open later.
+                Event::Other { kind, data } if kind == "settings-changed" && data.contains("addToNewFiles") => {
+                    if new_files {
+                        let _ = host::subscribe(EventKind::FilesChanged);
+                    }
+                    continue;
+                }
                 Event::FilesChanged(batch) if new_files => {
                     for p in &batch.created {
                         if comment_for(p, &styles()).is_some() && !self.add_to_new_file(p, false) {
@@ -906,15 +985,15 @@ mod tests {
     fn finds_the_existing_header() {
         let line = Comment::Line("//".into());
         assert_eq!(
-            existing_header("// Copyright 2020 X\n// SPDX-License-Identifier: MIT\n\nfn a() {}\n", &line),
+            existing_header("// Copyright 2020 X\n// SPDX-License-Identifier: MIT\n\nfn a() {}\n", &line, 1),
             Some((0, 3))
         );
-        assert_eq!(existing_header("// just a note\nfn a() {}\n", &line), None);
+        assert_eq!(existing_header("// just a note\nfn a() {}\n", &line, 1), None);
         let py = Comment::Line("#".into());
-        assert_eq!(existing_header("#!/usr/bin/env python\n# Copyright 2021 X\nx = 1\n", &py), Some((1, 2)));
+        assert_eq!(existing_header("#!/usr/bin/env python\n# Copyright 2021 X\nx = 1\n", &py, 1), Some((1, 2)));
         let block = Comment::Block("/*".into(), " */".into());
-        assert_eq!(existing_header("/*\n * Copyright 2019 X\n */\n\n.a {}\n", &block), Some((0, 4)));
-        assert_eq!(existing_header("/* Copyright 2019 X */\n.a {}\n", &block), Some((0, 1)));
+        assert_eq!(existing_header("/*\n * Copyright 2019 X\n */\n\n.a {}\n", &block, 1), Some((0, 4)));
+        assert_eq!(existing_header("/* Copyright 2019 X */\n.a {}\n", &block, 1), Some((0, 1)));
         assert_eq!(first_year("Copyright (c) 2019-2024 ACME, 1999 and 3000", 2026), Some(1999));
         assert_eq!(first_year("Apache-2.0, 12345", 2026), None);
         assert_eq!(year_text(Some("// Copyright 2020"), 2026), "2020-2026");
@@ -1041,5 +1120,82 @@ mod tests {
         host.open_editor("/project/src/old.rs", "rust", "fn old() {}\n", &[(0, 0, 0, 0)]);
         p.handle_events(&[Event::FileOpened("/project/src/old.rs".into())], &host.invocation());
         assert_eq!(host.editor_text(), "fn old() {}\n");
+    }
+
+    #[test]
+    fn block_headers_doc_comments_and_trailing_comments() {
+        let profile = Profile { template: "Copyright $year ACME".into(), ..Profile::default() };
+        // A C-like file may carry a /* */ header: it is recognised and updated.
+        let java = "/*\n * Copyright 2020 ACME\n */\nclass A {}\n";
+        let e = header_edit("A.java", java, &profile, "p", 2026, true).unwrap();
+        assert_eq!(apply(java, &e), "// Copyright 2020-2026 ACME\n\nclass A {}\n");
+        // A doc comment right after the notice stays.
+        let rs = "// Copyright 2020 ACME\n//! Crate docs.\nfn a() {}\n";
+        let e = header_edit("a.rs", rs, &profile, "p", 2026, true).unwrap();
+        assert_eq!(apply(rs, &e), "// Copyright 2020-2026 ACME\n\n//! Crate docs.\nfn a() {}\n");
+        // So does a comment after the notice that is not part of it.
+        let py = "# Copyright 2021 ACME\n# Helpers for shapes.\nx = 1\n";
+        let e = header_edit("a.py", py, &profile, "p", 2026, true).unwrap();
+        assert_eq!(apply(py, &e), "# Copyright 2021-2026 ACME\n\n# Helpers for shapes.\nx = 1\n");
+        // A multi-paragraph license notice is replaced whole.
+        let apache = "// Copyright 2019 X\n//\n// Licensed under the Apache License, Version 2.0;\n// you may not use this file except in compliance with the License.\nfn a() {}\n";
+        let e = header_edit("a.rs", apache, &profile, "p", 2026, true).unwrap();
+        assert_eq!(apply(apache, &e), "// Copyright 2019-2026 ACME\n\nfn a() {}\n");
+    }
+
+    #[test]
+    fn xml_php_first_lines_and_crlf() {
+        let styles = vec![Style {
+            extensions: "xml, php".into(),
+            style: "block".into(),
+            prefix: "<!--".into(),
+            suffix: "-->".into(),
+        }];
+        let profile = Profile { template: "Copyright $year ACME".into(), styles, ..Profile::default() };
+        let xml = "<?xml version=\"1.0\"?>\n<a/>\n";
+        let e = header_edit("a.xml", xml, &profile, "p", 2026, true).unwrap();
+        assert_eq!(apply(xml, &e), "<?xml version=\"1.0\"?>\n<!--\n  Copyright 2026 ACME\n -->\n\n<a/>\n");
+        assert_eq!(insert_line("<?php\necho 1;\n"), 1);
+        // A CRLF file gets a CRLF header.
+        let crlf = "fn a() {}\r\n";
+        let e = header_edit("a.rs", crlf, &profile, "p", 2026, true).unwrap();
+        assert_eq!(apply(crlf, &e), "// Copyright 2026 ACME\r\n\r\nfn a() {}\r\n");
+        let updated = apply(crlf, &e);
+        assert!(header_edit("a.rs", &updated, &profile, "p", 2026, true).is_none(), "up to date");
+    }
+
+    #[test]
+    fn vendored_folders_are_skipped() {
+        let ex = ["vendor".to_string(), "third_party".to_string()];
+        assert!(in_excluded("/p/src/vendor/x/a.rs", "/p/src", &ex));
+        assert!(in_excluded("/p/third_party/a.rs", "/p", &ex));
+        assert!(!in_excluded("/p/vendor/a.rs", "/p/vendor", &ex), "the selected folder itself");
+        assert!(!in_excluded("/p/src/vendor.rs", "/p/src", &ex), "a file named like one");
+        let host = MockHost::install().with_capabilities(&["events", "project.read", "project.write", "editor.read"]);
+        host.add_file("src/a.rs", "fn a() {}\n");
+        host.add_file("src/vendor/lib.rs", "// Copyright 2015 Someone Else\nfn v() {}\n");
+        host.add_dir("src");
+        host.select_paths(&["/project/src"]);
+        host.open_editor("/project/other.rs", "rust", "", &[(0, 0, 0, 0)]);
+        LicenseHeader::default().run_command("update-selected", &host.invocation(), None).unwrap();
+        let project = host.invocation().project().unwrap();
+        assert!(project.read_file("src/a.rs").unwrap().starts_with("// Copyright"));
+        assert_eq!(project.read_file("src/vendor/lib.rs").unwrap(), "// Copyright 2015 Someone Else\nfn v() {}\n");
+    }
+
+    #[test]
+    fn a_created_file_with_text_is_left_alone() {
+        let host = MockHost::install().with_capabilities(&["events", "project.read", "editor.read", "editor.write"]);
+        host.set_setting("addToNewFiles", "true");
+        // A renamed (or checked out) file arrives created, with its text.
+        host.add_file("src/moved.rs", "fn moved() {}\n");
+        host.open_editor("/project/src/moved.rs", "rust", "fn moved() {}\n", &[(0, 0, 0, 0)]);
+        let created = Event::FilesChanged(openidea_plugin::FilesChanged {
+            created: vec!["/project/src/moved.rs".into()],
+            ..Default::default()
+        });
+        LicenseHeader::default()
+            .handle_events(&[created, Event::FileOpened("/project/src/moved.rs".into())], &host.invocation());
+        assert_eq!(host.editor_text(), "fn moved() {}\n");
     }
 }

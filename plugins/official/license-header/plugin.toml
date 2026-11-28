@@ -8,7 +8,7 @@ change-notes = "0.2.0 — copyright profiles (named notice templates with variab
 categories = ["tools"]
 engines.openidea = "^1.6"
 wasm = "dist/plugin.wasm"
-activation = ["on-event:file-opened", "on-event:file-saved", "on-event:files-changed", "on-command:*"]
+activation = ["on-event:file-opened", "on-event:file-saved", "on-command:*"]
 
 [capabilities]
 required = ["events", "project.read", "project.write", "editor.read", "editor.write"]

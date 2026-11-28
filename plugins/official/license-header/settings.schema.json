@@ -44,10 +44,16 @@
         }
       }
     },
+    "excludedFolders": {
+      "type": "string",
+      "title": "Excluded folders",
+      "description": "Folder names Update Copyright and Find Files Without a Header skip inside the folder they run on (vendored code keeps its own notices), comma-separated.",
+      "default": "vendor, third_party, third-party, external"
+    },
     "addToNewFiles": {
       "type": "boolean",
       "title": "Add the header to new files",
-      "description": "A file created in the IDE gets the active profile's header when it opens.",
+      "description": "An empty file created in the IDE (New File) gets the active profile's header when it opens.",
       "default": false
     },
     "reportOnOpen": {
