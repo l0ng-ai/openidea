@@ -35,7 +35,7 @@ ide_command::domain!(bytes: fs_probe, fs_read_image, fs_read_range);
 只有桌面端能运行的命令（需要 `AppHandle`、窗口或对话框之类的 Tauri 类型），仍是 `src-tauri/src/commands/<domain>.rs` 中手写的 Tauri 函数，带上 `#[desktop_command(trust = …)]`，并列在该模块的 `ide_command::desktop_domain!` 里（新模块还要加到 `src-tauri/src/commands/mod.rs` 的 `catalogue()` 里）：
 
 ```rust src-tauri/src/commands/clipboard.rs
-#[desktop_command(trust = trusted)]
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn clipboard_text(app: AppHandle) -> IdeResult<Option<String>> {

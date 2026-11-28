@@ -98,7 +98,7 @@ clipboard_has_files                          always             desktop      bin
 clipboard_has_image                          always             desktop      bindings sync
 clipboard_image                              always             desktop      bindings async
 clipboard_set_file_list                      always             desktop      bindings async
-clipboard_text                               trusted            desktop      bindings async
+clipboard_text                               always             desktop      bindings async
 clipboard_write_image                        always             desktop      bindings async
 clipboard_write_text                         always             desktop      bindings async
 close_project                                always             project_host bindings spawn
