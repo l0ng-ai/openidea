@@ -166,17 +166,25 @@ fn python_launcher(
     argv.extend([path(&launcher), s(mode), path(out)]);
     let mut launch = config.clone();
     // Stop on Windows ends the process tree at once; the configuration's stop command
-    // runs first, and the launcher saves the profile when it sees the file appear.
+    // runs first, and the launcher saves the profile when the command opens its pipe.
     if cfg!(windows) && launch.extras.stop_command.is_none() {
-        let stop = out.join("stop");
-        launch.extras.stop_command = Some(format!("type nul > \"{}\"", path(&stop)));
-        argv.extend([s("--stop"), path(&stop)]);
+        let pipe = stop_pipe(out);
+        launch.extras.stop_command = Some(format!("type nul > \"{pipe}\""));
+        argv.extend([s("--stop"), pipe]);
     }
     argv.extend(py.target);
     (launch.command, launch.args) = argv.split_first().map(|(c, a)| (c.clone(), a.to_vec())).unwrap_or_default();
     let spec =
         ProfileSpec::PythonRun { profiler: s(profiler), dir: out.to_path_buf().into(), root: dir.to_path_buf().into() };
     ready(profiler, launch, spec)
+}
+
+/// The named pipe a Windows Profile run waits on for Stop, one per profile directory.
+fn stop_pipe(out: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    out.hash(&mut hasher);
+    format!(r"\\.\pipe\openidea-profile-{:016x}", hasher.finish())
 }
 
 /// `libasyncProfiler.{so,dylib}` from `ASYNC_PROFILER_HOME` or next to `asprof` on the search path.
@@ -451,11 +459,11 @@ mod tests {
         args.iter().map(|a| s(a)).collect()
     }
 
-    /// `python_profile.py <mode> <out> [--stop <out>/stop]`, as the launch passes them.
+    /// `python_profile.py <mode> <out> [--stop <pipe>]`, as the launch passes them.
     fn launcher_args(out: &Path, mode: &str) -> Vec<String> {
         let mut args = vec![path(&out.join("python_profile.py")), s(mode), path(out)];
         if cfg!(windows) {
-            args.extend([s("--stop"), path(&out.join("stop"))]);
+            args.extend([s("--stop"), stop_pipe(out)]);
         }
         args
     }

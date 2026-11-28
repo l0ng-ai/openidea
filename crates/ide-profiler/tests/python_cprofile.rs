@@ -5,7 +5,6 @@
 use ide_profiler::{Profile, ProfileMode, ProfilePrepared, collect, prepare};
 use ide_run::RunConfig;
 use std::collections::BTreeMap;
-#[cfg(unix)]
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -118,12 +117,12 @@ fn the_runs_exit_code_and_c_code_are_kept() {
 }
 
 #[test]
-fn a_module_runs_as_main_so_multiprocessing_finds_its_functions() {
+fn a_module_stays_main_so_multiprocessing_and_atexit_find_its_functions() {
     let Some(python) = python() else { return };
     let project = tempfile::tempdir().unwrap();
     std::fs::write(
         project.path().join("pooled.py"),
-        "import multiprocessing as mp\n\ndef square(x):\n    return x * x\n\nif __name__ == '__main__':\n    with mp.get_context('spawn').Pool(2) as pool:\n        print(pool.map(square, [1, 2, 3]))\n",
+        "import atexit, multiprocessing as mp, pickle\n\ndef square(x):\n    return x * x\n\nif __name__ == '__main__':\n    with mp.get_context('spawn').Pool(2) as pool:\n        print(pool.map(square, [1, 2, 3]))\n    atexit.register(lambda: print(len(pickle.dumps(square)) > 0))\n",
     )
     .unwrap();
     let out = tempfile::tempdir().unwrap();
@@ -132,35 +131,51 @@ fn a_module_runs_as_main_so_multiprocessing_finds_its_functions() {
     cmd.current_dir(project.path()).env("PYTHON_GIL", "1");
     let mut child = cmd.spawn().unwrap();
     let mut printed = String::new();
-    BufReader::new(child.stdout.take().unwrap()).read_line(&mut printed).unwrap();
-    assert_eq!(printed.trim(), "[1, 4, 9]");
+    std::io::Read::read_to_string(&mut child.stdout.take().unwrap(), &mut printed).unwrap();
+    // The module is still `__main__` when atexit callbacks pickle its functions.
+    assert_eq!(printed.lines().collect::<Vec<_>>(), ["[1, 4, 9]", "True"]);
     assert!(finish(child).success());
     collect(&spec).unwrap();
 }
 
-/// What Stop does on Windows: the stop command creates the file the launcher watches. A run
-/// blocked in a call that the interrupt does not wake is saved by the watcher.
+/// What Stop does on Windows: its stop command opens the pipe the launcher waits on (a FIFO
+/// elsewhere). The profile is saved and the run interrupted; the watcher thread that waited
+/// for Stop stays out of the profile.
 #[test]
-fn a_stop_file_ends_the_run_and_keeps_its_profile() {
+fn the_stop_pipe_ends_the_run_and_keeps_its_profile() {
     let Some(python) = python() else { return };
     let out = tempfile::tempdir().unwrap();
-    let code = "import time\ndef wait():\n    while True:\n        time.sleep(30)\nprint('done', flush=True)\nwait()";
-    let (mut cmd, spec) = plan(&python, &["-c", code], out.path());
-    let stop = out.path().join("stop");
-    let launch: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
-    if !launch.iter().any(|a| a == "--stop") {
-        let at = launch.iter().position(|a| a == "-c").unwrap();
-        let mut args = launch[..at].to_vec();
-        args.extend(["--stop".to_owned(), stop.to_string_lossy().into_owned()]);
-        args.extend(launch[at..].iter().cloned());
-        let program = cmd.get_program().to_owned();
-        cmd = Command::new(program);
-        cmd.args(args).current_dir(fixture()).stdout(Stdio::piped());
+    let code = "print('started', flush=True)\nwhile True:\n    sum(range(1000))";
+    let c = config(&python, &["-c", code]);
+    let ProfilePrepared::Ready { mut launch, spec, .. } =
+        prepare(&fixture(), &c, out.path(), ProfileMode::Cpu, "cprofile")
+    else {
+        panic!("not ready");
+    };
+    let fifo = out.path().join("stop");
+    if launch.extras.stop_command.is_none() {
+        let at = launch.args.iter().position(|a| a == "-c").unwrap();
+        launch.args.splice(at..at, ["--stop".to_owned(), fifo.to_string_lossy().into_owned()]);
     }
+    let mut cmd = Command::new(&launch.command);
+    cmd.args(&launch.args).current_dir(fixture()).stdout(Stdio::piped());
     let mut child = cmd.spawn().unwrap();
     let mut line = String::new();
     BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
-    std::fs::write(&stop, "").unwrap();
+    assert_eq!(line.trim(), "started");
+    // A watcher that polled would be profiled meanwhile, charged to the program's frames.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    match &launch.extras.stop_command {
+        #[cfg(windows)]
+        Some(stop) => {
+            use std::os::windows::process::CommandExt;
+            assert!(Command::new("cmd").arg("/C").raw_arg(stop).status().unwrap().success());
+        }
+        _ => drop(std::fs::OpenOptions::new().write(true).open(&fifo).unwrap()),
+    }
     assert!(!finish(child).success());
-    assert!(collect(&spec).unwrap().methods.iter().any(|m| m.calls.is_some()));
+    let p = collect(&spec).unwrap();
+    let names: Vec<_> = p.methods.iter().map(|m| p.frames[m.frame as usize].name.as_str()).collect();
+    assert!(names.iter().any(|n| n.contains("sum")), "{names:?}");
+    assert!(!names.iter().any(|n| ["sleep", "exists", "watch"].iter().any(|w| n.contains(w))), "{names:?}");
 }
