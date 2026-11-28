@@ -30,7 +30,18 @@ import {
   T,
 } from "@/ui";
 import { editorService } from "@/workbench/contributions";
-import { isPackageName, listRows, normalize, requirementOf, rowKey, vcsRequirement, type Row } from "./model";
+import {
+  diskRequirement,
+  isArchive,
+  isPackageName,
+  isVcsUrl,
+  listRows,
+  normalize,
+  requirementOf,
+  rowKey,
+  vcsRequirement,
+  type Row,
+} from "./model";
 import styles from "./PythonPackages.module.css";
 
 type Op = "install" | "upgrade" | "uninstall";
@@ -492,7 +503,11 @@ export function PackagesView() {
 
 type Source = "vcs" | "disk";
 
-/** A repository URL or a local directory or archive to install, as PyCharm's Advanced Package Install. */
+/**
+ * A repository URL or a local directory or archive to install, as PyCharm's Advanced Package
+ * Install. Only a local directory can be editable: an editable clone of a repository would go
+ * where pip runs, a temporary folder, unless the interpreter is a virtualenv, and uv can't do it.
+ */
 function InstallFromDialog({
   source,
   onClose,
@@ -506,9 +521,11 @@ function InstallFromDialog({
   const [value, setValue] = useState("");
   const [editable, setEditable] = useState(false);
   const text = value.trim();
+  const requirement = source === "vcs" ? vcsRequirement(text) : diskRequirement(text);
   // pip would read a leading `-` as one of its options.
-  const valid = !!text && !text.startsWith("-");
-  const install = () => valid && onInstall(source === "vcs" ? vcsRequirement(text) : text, editable);
+  const valid = !!text && !text.startsWith("-") && (source === "disk" || isVcsUrl(requirement));
+  const canEdit = source === "disk" && !isArchive(text);
+  const install = () => valid && onInstall(requirement, canEdit && editable);
   return (
     <Dialog
       open
@@ -544,11 +561,13 @@ function InstallFromDialog({
             </Button>
           )}
         </div>
-        <Checkbox checked={editable} onChange={setEditable} label="Install as editable (-e)" />
-        {source === "vcs" && editable && (
-          <div className={styles.note}>
-            <T>An editable install from version control needs the package name at the end of the URL: #egg=name.</T>
-          </div>
+        {source === "disk" && (
+          <Checkbox
+            checked={canEdit && editable}
+            onChange={setEditable}
+            disabled={!canEdit}
+            label="Install as editable (-e)"
+          />
         )}
       </div>
     </Dialog>
