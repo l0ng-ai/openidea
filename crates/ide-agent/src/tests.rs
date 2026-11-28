@@ -704,13 +704,27 @@ async fn an_archived_task_keeps_no_command_list_and_completes_the_known_one() {
 async fn archiving_a_task_keeps_the_permission_answer_that_is_settling() {
     let tmp = tempfile::tempdir().unwrap();
     let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let shut_down = ShutDown(&mgr);
+    let (published, mut requests) = tokio::sync::mpsc::unbounded_channel();
+    mgr.subscribe_as(
+        "",
+        Arc::new(move |event| {
+            if let AgentEvent::Entry { task, entry: AgentEntry::Permission { id, chosen: None, .. }, .. } = event {
+                let _ = published.send((task, id));
+            }
+        }),
+    );
     let task = mgr
         .create(NewAgentTask { prompt: text("hello"), provider: "claude".into(), ..Default::default() })
         .await
         .unwrap();
-    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    // The status becomes visible before the request has enqueued its initial delivery.
+    let (owner, permission) = tokio::time::timeout(Duration::from_secs(5), requests.recv())
+        .await
+        .expect("permission request was never published")
+        .unwrap();
+    assert_eq!(owner, task.id);
     let handle = mgr.task(&task.id).unwrap();
-    let permission = *handle.permissions.lock().keys().next().unwrap();
     let answered = |e: &AgentEntry| matches!(e, AgentEntry::Permission { chosen: Some(name), .. } if name == "Allow");
 
     let status_at_answer = tokio::task::block_in_place(|| {
@@ -737,7 +751,7 @@ async fn archiving_a_task_keeps_the_permission_answer_that_is_settling() {
     })
     .await
     .expect("the archived turn did not finish");
-    mgr.shutdown();
+    drop(shut_down);
 
     let restored = manager(tmp.path(), Arc::new(FakeAgent::default()));
     assert_eq!(restored.task(&task.id).unwrap().state.lock().task.status, AgentStatus::Archived);
