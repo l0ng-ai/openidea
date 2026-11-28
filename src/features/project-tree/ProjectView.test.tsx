@@ -533,14 +533,17 @@ describe("ProjectView", () => {
     expect(screen.getByRole("dialog", { name: "Quick Preview" })).toBeInTheDocument();
     fireEvent.keyDown(tree, { key: "Escape", code: "Escape" });
     expect(screen.queryByRole("dialog", { name: "Quick Preview" })).toBeNull();
+    await waitFor(() => expect(getContext().popupOpen).toBe(false));
 
     await open();
     fireEvent.mouseDown(row("src"));
     expect(screen.queryByRole("dialog", { name: "Quick Preview" })).toBeNull();
+    await waitFor(() => expect(getContext().popupOpen).toBe(false));
 
     await open();
     fireEvent.blur(tree, { relatedTarget: document.body });
     expect(screen.queryByRole("dialog", { name: "Quick Preview" })).toBeNull();
+    await waitFor(() => expect(getContext().popupOpen).toBe(false));
 
     await open();
     view.unmount();
