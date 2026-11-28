@@ -22,6 +22,9 @@ import { beginNew, beginRename, canPaste } from "./operations";
 import { initProjectTree, selectModel, setSelection, setViewOption, useProjectTree } from "./store";
 import type { OutlineItem } from "@/bindings";
 import { _emitEditorEvent, useEditorRegistry } from "@/editor/api";
+import { LspPopups } from "@/editor/lsp/Popups";
+import { closePopup, useLspPopup } from "@/editor/lsp/popupStore";
+import { clearLineTokens } from "@/editor/lineTokens";
 import { ProjectHeaderActions, useProjectHeaderMenu } from "./HeaderActions";
 import { executeAction, getAction } from "@/platform/actions";
 import { useProject } from "@/platform/project";
@@ -33,6 +36,7 @@ const ipc = vi.hoisted(() => ({
   docClose: vi.fn(),
   docOutline: vi.fn(),
   settingsSet: vi.fn(),
+  fsReadText: vi.fn(),
 }));
 vi.mock("@/bindings", async (orig) => {
   const real = await orig<typeof import("@/bindings")>();
@@ -99,6 +103,8 @@ beforeEach(() => {
   fs.onChange = (e) => queueMicrotask(() => emitLocalIdeEvent({ type: "fsChanged", ...e }));
   setProjectFsForTests(fs, ROOT);
   setRefactorBackendForTests(null);
+  clearLineTokens();
+  ipc.fsReadText.mockResolvedValue(ok("x"));
   openFile = vi.fn(async () => {});
   provideEditorService({ openFile, activePath: () => null } as unknown as EditorService);
   dispose = activate();
@@ -106,6 +112,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  act(() => closePopup());
+  clearLineTokens();
   dispose();
   useProject.setState({ settings: initialSettings });
   setProjectFsForTests(null);
@@ -121,6 +129,7 @@ function setup() {
       <ProjectView />
       <MessagesHost />
       <FileRefactorDialogHost />
+      <LspPopups />
     </>,
   );
   const tree = screen.getByRole("tree", { name: "Project" });
@@ -482,6 +491,83 @@ describe("ProjectView", () => {
     expect(openFile).not.toHaveBeenCalled();
     fireEvent.doubleClick(row("README.md"));
     expect(openFile).toHaveBeenLastCalledWith("/w/acme/README.md", { preview: undefined, focus: true });
+  });
+
+  it("opens a selected file in a read-only Quick Preview with Space without creating an editor tab", async () => {
+    dispatchViaKeymap();
+    ipc.fsReadText.mockResolvedValue(ok("# Preview\n\nRead without opening a tab."));
+    const { tree, row, rows } = setup();
+    await waitFor(() => expect(rows()).toContain("README.md"));
+    fireEvent.mouseDown(row("README.md"));
+    tree.focus();
+    const editors = useEditorRegistry.getState().editors;
+
+    fireEvent.keyDown(tree, { key: " ", code: "Space" });
+
+    const preview = await screen.findByRole("dialog", { name: "Quick Preview" });
+    expect(useLspPopup.getState().popup).toMatchObject({ kind: "filePreview", path: "/w/acme/README.md" });
+    await waitFor(() => expect(preview.querySelector(".cm-content")).toHaveTextContent("# Preview"));
+    expect(preview.querySelector(".cm-content")).toHaveAttribute("contenteditable", "false");
+    expect(ipc.fsReadText).toHaveBeenCalledWith("/w/acme/README.md");
+    expect(openFile).not.toHaveBeenCalled();
+    expect(useEditorRegistry.getState().editors).toBe(editors);
+    expect(getAction("project.quickPreview")?.title).toBe("Quick Preview");
+  });
+
+  it("closes Quick Preview on Escape, selection, focus changes and unmount", async () => {
+    dispatchViaKeymap();
+    ipc.fsReadText.mockResolvedValue(ok("preview text"));
+    const view = setup();
+    const { tree, row, rows } = view;
+    await waitFor(() => expect(rows()).toContain("README.md"));
+    const open = async () => {
+      fireEvent.mouseDown(row("README.md"));
+      tree.focus();
+      fireEvent.keyDown(tree, { key: " ", code: "Space" });
+      await screen.findByRole("dialog", { name: "Quick Preview" });
+    };
+
+    await open();
+    const preview = screen.getByRole("dialog", { name: "Quick Preview" });
+    fireEvent.blur(tree, { relatedTarget: preview.querySelector(".cm-content") });
+    expect(screen.getByRole("dialog", { name: "Quick Preview" })).toBeInTheDocument();
+    fireEvent.keyDown(tree, { key: "Escape", code: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Quick Preview" })).toBeNull();
+
+    await open();
+    fireEvent.mouseDown(row("src"));
+    expect(screen.queryByRole("dialog", { name: "Quick Preview" })).toBeNull();
+
+    await open();
+    fireEvent.blur(tree, { relatedTarget: document.body });
+    expect(screen.queryByRole("dialog", { name: "Quick Preview" })).toBeNull();
+
+    await open();
+    view.unmount();
+    expect(useLspPopup.getState().popup).toBeNull();
+    expect(openFile).not.toHaveBeenCalled();
+  });
+
+  it("does not Quick Preview folders or multiple files and follows an unbound Space setting", async () => {
+    dispatchViaKeymap();
+    const { tree, row, rows } = setup();
+    await waitFor(() => expect(rows()).toContain("README.md"));
+    fireEvent.mouseDown(row("src"));
+    tree.focus();
+    fireEvent.keyDown(tree, { key: " ", code: "Space" });
+    expect(useLspPopup.getState().popup).toBeNull();
+
+    fireEvent.mouseDown(row("README.md"));
+    fireEvent.mouseDown(row("src"), { metaKey: true });
+    fireEvent.keyDown(tree, { key: " ", code: "Space" });
+    expect(useLspPopup.getState().popup).toBeNull();
+
+    fireEvent.mouseDown(row("README.md"));
+    applyKeymapSettings("intellij-macos", { "project.quickPreview": [] });
+    fireEvent.keyDown(tree, { key: " ", code: "Space" });
+    expect(useLspPopup.getState().popup).toBeNull();
+    expect(ipc.fsReadText).not.toHaveBeenCalled();
+    expect(openFile).not.toHaveBeenCalled();
   });
 
   it("toggles the editor's preview tab setting from the Behavior menu and its action", async () => {

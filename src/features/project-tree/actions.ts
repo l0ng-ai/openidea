@@ -40,7 +40,7 @@ import {
 import { nameOf, parentOf } from "./paths";
 import { showFilePathPopup } from "./filePath";
 import { canDownload, downloadTo } from "./download";
-import { showNewPopup, treeHandle } from "./ProjectView";
+import { showNewPopup, showQuickPreview, treeHandle } from "./ProjectView";
 import { lastFileRefactoring, undoFileRefactoring } from "./fileRefactor";
 import {
   VIEW_MODES,
@@ -322,6 +322,18 @@ export function registerProjectActions(): () => void {
       category: "Project View",
       when: FOCUS,
       run: openSelection,
+    },
+    {
+      id: "project.quickPreview",
+      title: "Quick Preview",
+      category: "Project View",
+      icon: "eye",
+      when: FOCUS,
+      keyWhen: "!popupOpen",
+      keywords: ["preview", "read", "peek", "space"],
+      enabled: ({ arg }) =>
+        typeof arg === "string" ? !!nodesFrom(arg).find((n) => !n.dir && !n.member) : selectedFiles().length === 1,
+      run: ({ arg }) => showQuickPreview(typeof arg === "string" ? arg : undefined),
     },
     {
       id: "project.openInRightSplit",
