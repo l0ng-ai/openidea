@@ -4,6 +4,7 @@ import clsx from "clsx";
 import { Button, Checkbox, IconButton, Input, SplitGroup, SplitHandle, SplitPanel, T } from "@/ui";
 import { bodyVariables, type LiveTemplate, type TemplateVariable } from "../live/model";
 import {
+  duplicateTemplate,
   isModifiedBuiltin,
   newTemplateId,
   removeTemplate,
@@ -69,6 +70,14 @@ export function LiveTemplatesPage() {
     setSelectedId(t.id);
   };
 
+  const duplicate = () => {
+    if (!selected) return;
+    const copy = duplicateTemplate(selected);
+    saveTemplate(copy);
+    setFilter("");
+    setSelectedId(copy.id);
+  };
+
   return (
     <div className={styles.page}>
       <div className={styles.options}>
@@ -92,6 +101,13 @@ export function LiveTemplatesPage() {
           <div className={styles.liveList}>
             <div className={styles.toolbar}>
               <IconButton icon="plus" size="small" title="Add Template" onClick={add} />
+              <IconButton
+                icon="copy"
+                size="small"
+                title="Duplicate Template"
+                disabled={!selected}
+                onClick={duplicate}
+              />
               <IconButton
                 icon="minus"
                 size="small"

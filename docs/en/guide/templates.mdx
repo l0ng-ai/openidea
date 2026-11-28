@@ -79,7 +79,9 @@ Abbreviation:  logv
 Body:          console.log("$EXPR$ =", $EXPR$);$END$
 ```
 
-The page also has **Expand abbreviations with Tab** and **Show live templates in code completion**. A built-in template you changed can be reset with **Restore Default**. Templates contributed by plugins are shown read-only.
+The page also has **Expand abbreviations with Tab** and **Show live templates in code completion**. A built-in template you changed can be reset with **Restore Default**.
+
+Select a template and click **Duplicate Template** to create an editable user copy in the same group. The copy keeps the body, variables and defaults, applicability contexts and other settings; only its abbreviation resets to `ABBREVIATION`. Templates contributed by plugins are shown read-only, but can be duplicated.
 
 Live templates, postfix settings and macros are stored per user on this machine, not in the project.
 

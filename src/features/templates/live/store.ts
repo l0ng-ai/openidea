@@ -56,6 +56,19 @@ export function saveTemplate(t: LiveTemplate) {
   commit({ ...c, templates: { ...c.templates, [t.id]: t }, deleted: c.deleted.filter((d) => d !== t.id) });
 }
 
+/** Creates an independent, editable user copy without the source's plugin origin. */
+export function duplicateTemplate(template: LiveTemplate): LiveTemplate {
+  const copy: LiveTemplate = {
+    ...template,
+    id: newTemplateId(),
+    abbrev: "ABBREVIATION",
+    contexts: [...template.contexts],
+    variables: template.variables?.map((variable) => ({ ...variable })),
+  };
+  delete copy.pluginOrigin;
+  return copy;
+}
+
 /** Adds or updates imported ids in one copy, keeping unrelated templates and built-in edits. */
 export function mergeImportedTemplates(
   custom: LiveTemplateCustomizations,
