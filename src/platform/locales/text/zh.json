@@ -10486,6 +10486,7 @@
   "Uses the language server or a tool such as Ruff to organize imports.": "使用语言服务器或 Ruff 等工具优化导入。",
   "Pipenv Environment": "Pipenv 环境",
   "Install packages from Pipfile": "安装 Pipfile 中的软件包",
+  "Inherit packages from base interpreter": "继承基础解释器的软件包",
   "Runs “pipenv --python <base>” in the project, which writes a Pipfile (from requirements.txt if there is one) when the project has none. Pipenv chooses where to store the environment and reuses an existing one.": "在项目中运行“pipenv --python <base>”。项目没有 Pipfile 时会写入一个（有 requirements.txt 时从中导入）。环境的存放位置由 Pipenv 决定，已有环境会被复用。",
   "Black formatter": "Black 格式化工具",
   "Reformat with Black": "使用 Black 重新格式化",

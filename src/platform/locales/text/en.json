@@ -4063,6 +4063,7 @@
   "Uses the language server or a tool such as Ruff to organize imports.": "Uses the language server or a tool such as Ruff to organize imports.",
   "Pipenv Environment": "Pipenv Environment",
   "Install packages from Pipfile": "Install packages from Pipfile",
+  "Inherit packages from base interpreter": "Inherit packages from base interpreter",
   "Runs “pipenv --python <base>” in the project, which writes a Pipfile (from requirements.txt if there is one) when the project has none. Pipenv chooses where to store the environment and reuses an existing one.": "Runs “pipenv --python <base>” in the project, which writes a Pipfile (from requirements.txt if there is one) when the project has none. Pipenv chooses where to store the environment and reuses an existing one.",
   "Black formatter": "Black formatter",
   "Reformat with Black": "Reformat with Black",

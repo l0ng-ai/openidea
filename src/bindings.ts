@@ -1922,8 +1922,9 @@ export const commands = {
 	/**
 	 *  Creates a Python environment and streams its output through `on_output`.
 	 *  With Pipenv, `install_packages` also installs the packages declared in the project's `Pipfile`.
+	 *  With venv / uv, `system_site_packages` lets the environment see the base interpreter's packages.
 	 */
-	sdkPythonCreateVenv: (tool: VenvTool, base: string, location: string, installPackages: boolean, request: RequestId, onOutput: Channel<string>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("sdk_python_create_venv", { tool, base, location, installPackages, request, onOutput })),
+	sdkPythonCreateVenv: (tool: VenvTool, base: string, location: string, installPackages: boolean, systemSitePackages: boolean, request: RequestId, onOutput: Channel<string>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("sdk_python_create_venv", { tool, base, location, installPackages, systemSitePackages, request, onOutput })),
 	/**  The interpreter the project uses: the configured one, else its virtualenv. */
 	sdkPythonEffective: (near: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_effective", { near })),
 	/**  The environments the window's project defines for Hatch, `default` first (hatch must be on PATH). */

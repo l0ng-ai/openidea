@@ -117,11 +117,53 @@ describe("Add Python Interpreter", () => {
       "/usr/bin/python3",
       "/project/.venv",
       false,
+      false,
       expect.anything(),
       expect.anything(),
     );
     await act(async () => finish(VENV));
     await waitFor(() => expect(onAdded).toHaveBeenCalledWith("/project/.venv/bin/python"));
+  });
+
+  it("inherits the base interpreter's packages for venv and uv when asked", async () => {
+    let finish: (v: unknown) => void = () => {};
+    mocks.createVenv.mockImplementation(() => new Promise((r) => (finish = r)));
+    open();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Base interpreter" })).toBeInTheDocument());
+    const inherit = () => screen.queryByRole("checkbox", { name: "Inherit packages from base interpreter" });
+    expect(inherit()).not.toBeChecked();
+    fireEvent.click(inherit()!);
+    for (const [label, tool] of [
+      ["Virtualenv Environment", "venv"],
+      ["uv Environment", "uv"],
+    ] as const) {
+      fireEvent.click(screen.getByRole("button", { name: label }));
+      fireEvent.click(screen.getByRole("button", { name: "OK" }));
+      expect(mocks.createVenv).toHaveBeenLastCalledWith(
+        tool,
+        "/usr/bin/python3",
+        "/project/.venv",
+        false,
+        true,
+        expect.anything(),
+        expect.anything(),
+      );
+      // oxlint-disable-next-line no-await-in-loop -- the dialog must settle from the previous tool before the next tool is clicked
+      await act(async () => finish(ok(VENV)));
+    }
+    // Conda builds a fresh environment: the option is neither shown nor passed.
+    fireEvent.click(screen.getByRole("button", { name: "Conda Environment" }));
+    expect(inherit()).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    expect(mocks.createVenv).toHaveBeenLastCalledWith(
+      "conda",
+      "/usr/bin/python3",
+      "project",
+      false,
+      false,
+      expect.anything(),
+      expect.anything(),
+    );
   });
 
   it("passes each tool and Poetry hides the location field", async () => {
@@ -141,6 +183,7 @@ describe("Add Python Interpreter", () => {
         "/usr/bin/python3",
         target,
         false,
+        false,
         expect.anything(),
         expect.anything(),
       );
@@ -154,6 +197,7 @@ describe("Add Python Interpreter", () => {
       "/usr/bin/python3",
       "ds",
       false,
+      false,
       expect.anything(),
       expect.anything(),
     );
@@ -165,6 +209,7 @@ describe("Add Python Interpreter", () => {
       "poetry",
       "/usr/bin/python3",
       "/project/.venv",
+      false,
       false,
       expect.anything(),
       expect.anything(),
@@ -184,6 +229,7 @@ describe("Add Python Interpreter", () => {
         "/usr/bin/python3",
         "/project/.venv",
         install,
+        false,
         expect.anything(),
         expect.anything(),
       );
@@ -208,6 +254,7 @@ describe("Add Python Interpreter", () => {
       "/usr/bin/python3",
       "/project/default",
       false,
+      false,
       expect.anything(),
       expect.anything(),
     );
@@ -219,6 +266,7 @@ describe("Add Python Interpreter", () => {
       "hatch",
       "/usr/bin/python3",
       "/project/docs",
+      false,
       false,
       expect.anything(),
       expect.anything(),
