@@ -362,6 +362,52 @@ test("long Git Log filter values shorten inside their buttons", async ({ workben
   await expect(clear).toBeHidden();
 });
 
+test("a click in the User filter adds the user or takes them out", async ({ workbench: page }) => {
+  const alice = "Alice <alice@example.com>";
+  const bob = "Bob <bob@example.com>";
+  await page.evaluate(
+    async ([alice, bob]) => {
+      const optionsModule = "/src/features/vcs/logOptions.ts";
+      const { setLogOptions } = await import(/* @vite-ignore */ optionsModule);
+      // Room for the User filter on the bar.
+      setLogOptions({ showBranches: false, showDetails: false });
+      const h = window.__ipc.handlers;
+      h.vcs_log_users = () => [alice, "Author <author@example.com>", bob];
+      const log = h.vcs_log!;
+      h.vcs_log = (args) => {
+        (window as { logAuthors?: unknown }).logAuthors = (args.query as { authors: string[] }).authors;
+        return log(args);
+      };
+    },
+    [alice, bob],
+  );
+  const toolbar = page.getByRole("toolbar", { name: "Log filters" });
+  const user = toolbar.getByRole("button", { name: /^User/ });
+  const item = (name: string) => page.getByRole("menuitemcheckbox", { name, exact: true });
+  const click = async (name: string) => {
+    await user.click();
+    await item(name).click();
+  };
+  const logAuthors = () => page.evaluate(() => (window as { logAuthors?: unknown }).logAuthors);
+
+  await click(alice);
+  await click(bob);
+  await expect(user).toHaveText(`User: ${alice}, ${bob}`);
+  await expect.poll(logAuthors).toEqual([alice, bob]);
+  await user.click();
+  await expect(item(alice)).toHaveAttribute("aria-checked", "true");
+  await expect(item(bob)).toHaveAttribute("aria-checked", "true");
+  await expect(item("Author <author@example.com>")).toHaveAttribute("aria-checked", "false");
+  await item(alice).click();
+  await expect(user).toHaveText(`User: ${bob}`);
+  await expect.poll(logAuthors).toEqual([bob]);
+
+  await click(bob);
+  await expect(user).toHaveText("User");
+  await expect(toolbar.getByRole("button", { name: "Clear User filter" })).toBeHidden();
+  await expect.poll(logAuthors).toEqual([]);
+});
+
 test("Git Log puts affected changes on the changed-files toolbar and groups preview options", async ({
   workbench: page,
 }) => {
