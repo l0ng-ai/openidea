@@ -95,6 +95,101 @@
   min-width: 140px;
 }
 
+.links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+}
+.links a,
+.doc :global(a) {
+  color: var(--link);
+  text-decoration: none;
+  cursor: pointer;
+}
+.links a:hover,
+.doc :global(a:hover) {
+  color: var(--link-hover);
+  text-decoration: underline;
+}
+/* The project description, styled like the Markdown preview. */
+.doc,
+.plainDoc {
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.plainDoc {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  white-space: pre-wrap;
+  color: var(--fg-secondary);
+}
+.doc :global(:is(h1, h2, h3, h4, h5, h6)) {
+  margin: 1em 0 0.5em;
+  color: var(--fg-strong);
+  line-height: 1.25;
+}
+.doc :global(h1) {
+  font-size: 1.5em;
+}
+.doc :global(h2) {
+  font-size: 1.3em;
+}
+.doc :global(h3) {
+  font-size: 1.15em;
+}
+.doc :global(:is(h1, h2)) {
+  padding-bottom: 0.25em;
+  border-bottom: 1px solid var(--border);
+}
+.doc > :first-child {
+  margin-top: 0;
+}
+.doc :global(:is(p, ul, ol, blockquote, pre, table)) {
+  margin: 0 0 0.9em;
+}
+.doc :global(code) {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  padding: 0.1em 0.35em;
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+}
+.doc :global(pre) {
+  padding: var(--space-2);
+  border-radius: var(--radius-control);
+  background: var(--bg-elev);
+  overflow: auto;
+}
+.doc :global(pre code) {
+  padding: 0;
+  background: none;
+}
+.doc :global(blockquote) {
+  padding: 0 1em;
+  border-left: 3px solid var(--border-strong);
+  color: var(--fg-secondary);
+}
+.doc :global(table) {
+  border-collapse: collapse;
+}
+.doc :global(:is(th, td)) {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border-strong);
+}
+.doc :global(img) {
+  max-width: 100%;
+}
+.doc :global(hr) {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1.2em 0;
+}
+
 .note {
   color: var(--fg-subtle);
   font-size: var(--fs-small);

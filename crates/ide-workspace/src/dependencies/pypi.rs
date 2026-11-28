@@ -20,6 +20,18 @@ pub struct PypiPackage {
     pub latest: String,
     /// Releases with files to install, most recently uploaded first; yanked ones left out.
     pub versions: Vec<String>,
+    /// The project's long description (usually its README).
+    pub description: String,
+    /// Whether `description` is Markdown; otherwise reStructuredText or plain text.
+    pub markdown: bool,
+    /// The project's web links (Homepage, Documentation, Source, …); `http(s)` only.
+    pub links: Vec<PypiLink>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+pub struct PypiLink {
+    pub label: String,
+    pub url: String,
 }
 
 /// The JSON API URL of a project; `None` unless `name` is a valid distribution name (PEP 508).
@@ -47,6 +59,10 @@ pub fn parse_project(json: &str) -> Option<PypiPackage> {
         version: String,
         #[serde(default)]
         yanked: bool,
+        description: Option<String>,
+        description_content_type: Option<String>,
+        home_page: Option<String>,
+        project_urls: Option<std::collections::BTreeMap<String, String>>,
     }
     #[derive(Deserialize)]
     struct File {
@@ -66,11 +82,27 @@ pub fn parse_project(json: &str) -> Option<PypiPackage> {
         .collect();
     releases.sort_unstable_by(|a, b| b.cmp(a));
     let info = project.info;
+    let web = |url: &str| url.starts_with("https://") || url.starts_with("http://");
+    let mut links: Vec<(String, String)> = info.home_page.into_iter().map(|url| ("Homepage".to_owned(), url)).collect();
+    // Sorted by label: serde_json's map doesn't keep the declared order.
+    links.extend(info.project_urls.unwrap_or_default());
+    let mut links: Vec<PypiLink> = links
+        .into_iter()
+        .map(|(label, url)| PypiLink { label: label.trim().to_owned(), url: url.trim().to_owned() })
+        .filter(|l| !l.label.is_empty() && web(&l.url))
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    links.retain(|l| seen.insert(l.url.trim_end_matches('/').to_owned()));
     Some(PypiPackage {
         name: info.name,
         summary: info.summary.unwrap_or_default(),
         latest: if info.yanked { String::new() } else { info.version },
         versions: releases.into_iter().map(|(_, version)| version).collect(),
+        description: info.description.unwrap_or_default(),
+        markdown: info
+            .description_content_type
+            .is_some_and(|t| t.trim_start().to_ascii_lowercase().starts_with("text/markdown")),
+        links,
     })
 }
 
@@ -398,7 +430,31 @@ mod tests {
         assert_eq!(project.summary, "");
         assert_eq!(project.latest, "2.0");
         assert_eq!(project.versions, ["2.1rc1", "2.0", "1.0"]);
+        assert_eq!((project.description.as_str(), project.markdown, project.links.len()), ("", false, 0));
         assert_eq!(parse_project(r#"{"message": "Not Found"}"#), None);
+    }
+
+    #[test]
+    fn the_description_and_web_links_are_kept() {
+        let json = r##"{
+            "info": {"name": "demo", "summary": "s", "version": "1.0",
+                     "description": "# Demo", "description_content_type": "text/markdown; charset=UTF-8; variant=GFM",
+                     "home_page": "https://example.org/",
+                     "project_urls": {"Source": "https://github.com/x/demo", "Home": "https://example.org",
+                                      "Chat": "irc://libera.chat/demo", " ": "https://example.org/blank"}},
+            "releases": {}
+        }"##;
+        let project = parse_project(json).unwrap();
+        assert_eq!(project.description, "# Demo");
+        assert!(project.markdown);
+        let links: Vec<_> = project.links.iter().map(|l| (l.label.as_str(), l.url.as_str())).collect();
+        assert_eq!(links, [("Homepage", "https://example.org/"), ("Source", "https://github.com/x/demo")]);
+        let rst = parse_project(
+            r#"{"info": {"name": "d", "version": "1", "description": "Demo\n====",
+            "description_content_type": null, "project_urls": null}}"#,
+        )
+        .unwrap();
+        assert!(!rst.markdown);
     }
 
     fn search(index: &NameIndex, query: &str, limit: usize) -> Vec<String> {

@@ -3122,7 +3122,11 @@ impl Task {
 
     /// After NeedsInput + optional auto-approve: notify only when the user must still answer.
     fn emit_attention_if_input_pending(&self) {
-        let waiting = !self.permissions.lock().is_empty() && self.state.lock().task.status == AgentStatus::NeedsInput;
+        // One lock at a time: `approve_pending` takes state then permissions, so holding the
+        // permissions guard (a temporary that lives to the end of the statement) while taking
+        // state could deadlock against it.
+        let pending = !self.permissions.lock().is_empty();
+        let waiting = pending && self.state.lock().task.status == AgentStatus::NeedsInput;
         if waiting {
             self.emit_attention(AgentAttentionReason::Input);
         }

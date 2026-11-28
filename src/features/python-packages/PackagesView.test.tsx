@@ -12,8 +12,10 @@ const mocks = vi.hoisted(() => ({
   index: vi.fn(),
   cancel: vi.fn(),
   menu: vi.fn(),
+  openUrl: vi.fn(),
   active: null as string | null,
 }));
+vi.mock("@/platform/openUrl", () => ({ openExternalUrl: mocks.openUrl }));
 // The context menu host is not mounted here: pick menu items by label instead.
 vi.mock("@/ui", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/ui")>()),
@@ -58,6 +60,9 @@ const SIX = {
   summary: "Python 2 and 3 compatibility utilities",
   latest: "1.17.0",
   versions: ["1.17.0", "1.16.0"],
+  description: "# Six\n\nRead the [documentation](https://six.readthedocs.io/).<script>alert(1)</script>",
+  markdown: true,
+  links: [{ label: "Source", url: "https://github.com/benjaminp/six" }],
 };
 
 function open(interpreter = "") {
@@ -161,6 +166,30 @@ describe("Python Packages", () => {
     );
   });
 
+  it("shows a PyPI project's links and its Markdown description, opening links in the browser", async () => {
+    open();
+    await screen.findByText("urllib3");
+    search("six");
+    select(await screen.findByText("six"));
+    expect(await screen.findByRole("heading", { name: "Six" })).toBeInTheDocument();
+    expect(document.querySelector("script")).toBeNull();
+    const links = screen.getByRole("navigation", { name: "Project links" });
+    expect([...links.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["PyPI", "Source"]);
+    fireEvent.click(screen.getByRole("link", { name: "PyPI" }));
+    fireEvent.click(screen.getByRole("link", { name: "documentation" }));
+    expect(mocks.openUrl.mock.calls).toEqual([["https://pypi.org/project/six/"], ["https://six.readthedocs.io/"]]);
+  });
+
+  it("shows a description that is not Markdown as text", async () => {
+    open();
+    await screen.findByText("urllib3");
+    mocks.pypi.mockResolvedValue(ok({ ...SIX, name: "docutils", description: "Docutils\n========", markdown: false }));
+    search("docutils");
+    select(await screen.findByText("docutils"));
+    expect((await screen.findByLabelText("Package description")).textContent).toBe("Docutils\n========");
+    expect(screen.queryByRole("heading")).toBeNull();
+  });
+
   it("sends an installed package's name to PyPI only when asked, once per session", async () => {
     open();
     select(await screen.findByText("urllib3"));
@@ -169,6 +198,7 @@ describe("Python Packages", () => {
     mocks.pypi.mockResolvedValue(ok({ ...SIX, name: "urllib3", summary: "HTTP library" }));
     fireEvent.click(screen.getByRole("button", { name: "Show PyPI Details" }));
     expect(await screen.findByText("HTTP library")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "PyPI" })).toHaveAttribute("href", "https://pypi.org/project/urllib3/");
     select(screen.getByText("requests"));
     select(screen.getByText("urllib3"));
     expect(screen.getByText("HTTP library")).toBeInTheDocument();
