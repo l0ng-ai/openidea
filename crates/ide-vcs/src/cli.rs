@@ -719,6 +719,75 @@ pub(crate) fn capture_command(
     Ok(out)
 }
 
+/// Hands git's stdout to `on_line` one line at a time (each with its `\n`, if any) instead
+/// of holding it, for output too large to keep; cancellation kills git. Fails like
+/// [`run_cancellable`] on a non-zero exit status.
+pub(crate) fn run_cancellable_lines(
+    root: &Path,
+    args: &[&str],
+    cancel: &CancellationToken,
+    on_line: &mut (dyn FnMut(&[u8]) + Send),
+) -> IdeResult<()> {
+    use std::io::BufRead;
+    const STDERR_MAX: u64 = 1 << 20;
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    let mut cmd = command(root)?;
+    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    own_group(&mut cmd);
+    let mut session = CommandSession::start(&mut cmd);
+    let mut child = cmd.spawn().map_err(spawn_error)?;
+    let stdout = child.stdout.take().expect("piped stdout");
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    std::thread::scope(|scope| {
+        let (wake, closed) = mpsc::channel::<()>();
+        let out_wake = wake.clone();
+        let reader = scope.spawn(move || {
+            let _wake = out_wake;
+            let mut reader = std::io::BufReader::with_capacity(1 << 16, stdout);
+            let mut line = Vec::new();
+            loop {
+                line.clear();
+                if reader.read_until(b'\n', &mut line)? == 0 {
+                    return Ok::<_, std::io::Error>(());
+                }
+                on_line(&line);
+            }
+        });
+        let errors = scope.spawn(move || {
+            let _wake = wake;
+            let mut bytes = Vec::new();
+            (&mut stderr).take(STDERR_MAX).read_to_end(&mut bytes)?;
+            std::io::copy(&mut stderr, &mut std::io::sink())?;
+            Ok::<_, std::io::Error>(bytes)
+        });
+        let mut pipes_open = true;
+        let mut backoff = Duration::from_micros(100);
+        let status = loop {
+            if cancel.is_cancelled() {
+                terminate_tree(&mut child, KILL_GRACE);
+                let _ = reader.join();
+                let _ = errors.join();
+                return Err(IdeError::cancelled());
+            }
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if pipes_open {
+                pipes_open = !matches!(closed.recv_timeout(POLL), Err(mpsc::RecvTimeoutError::Disconnected));
+            } else {
+                std::thread::sleep(backoff);
+                backoff = (backoff * 2).min(POLL);
+            }
+        };
+        reader.join().map_err(|_| IdeError::internal("git output reader panicked"))??;
+        let stderr = errors.join().map_err(|_| IdeError::internal("git output reader panicked"))??;
+        session.finish(status.success(), &String::from_utf8_lossy(&stderr));
+        if status.success() { Ok(()) } else { Err(failure(args, &stderr, b"", status.code())) }
+    })
+}
+
 /// Runs git and maps a non-zero exit status to an error carrying git's message.
 pub(crate) fn run(root: &Path, args: &[&str], stdin: Option<&[u8]>) -> IdeResult<Output> {
     let out = run_raw(root, args, stdin)?;

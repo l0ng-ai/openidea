@@ -27,23 +27,38 @@ test("selection history keeps a full-width diff above a keyboard-resizable revis
   await stubDesktop(page);
   await page.evaluate(
     async ({ path, lastMessage }) => {
+      const revisions = Array.from({ length: 22 }, (_, i) => ({
+        id: (i + 16).toString(16).padStart(40, "0"),
+        shortId: (i + 16).toString(16).padStart(7, "0"),
+        author: "Alexandra Reconciliation Coordinator",
+        email: "coordinator@example.test",
+        timeMs: 1738329600000 - i * 86400000,
+        summary: i === 21 ? lastMessage : `Update reconciliation estimate ${22 - i}`,
+        path,
+        before: `const projection = estimate${21 - i};\n`,
+        after: `const projection = estimate${22 - i};\n`,
+        beforeLine: 1,
+        afterLine: 1,
+      }));
       window.__ipc.handlers.cancel_request = () => null;
-      window.__ipc.handlers.vcs_block_history = () => ({
-        headLines: [1, 1],
-        revisions: Array.from({ length: 22 }, (_, i) => ({
-          id: (i + 16).toString(16).padStart(40, "0"),
-          shortId: (i + 16).toString(16).padStart(7, "0"),
-          author: "Alexandra Reconciliation Coordinator",
-          email: "coordinator@example.test",
-          timeMs: 1738329600000 - i * 86400000,
-          summary: i === 21 ? lastMessage : `Update reconciliation estimate ${22 - i}`,
-          path,
-          before: `const projection = estimate${21 - i};\n`,
-          after: `const projection = estimate${22 - i};\n`,
-          beforeLine: 1,
-          afterLine: 1,
+      window.__ipc.handlers.vcs_block_history_summary = () => ({
+        anchor: { commit: revisions[0]!.id, lines: [1, 1] },
+        head: "const projection = estimate22;\n",
+        diffs: revisions.slice(0, 4),
+        rest: revisions.slice(4).map(({ id, shortId, author, email, timeMs, summary }) => ({
+          id,
+          shortId,
+          author,
+          email,
+          timeMs,
+          summary,
         })),
       });
+      window.__ipc.handlers.vcs_block_history_revisions = (args: unknown) => {
+        const { commits } = args as { commits: string[] };
+        return revisions.filter((r) => commits.includes(r.id));
+      };
+      window.__ipc.handlers.vcs_block_history_spots = () => null;
       const actions = "/src/platform/actions.ts";
       await (await import(/* @vite-ignore */ actions)).executeAction("vcs.showHistoryForSelection");
     },

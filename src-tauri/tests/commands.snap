@@ -732,6 +732,10 @@ vcs_apply_patch                              trusted            project_host bin
 vcs_apply_project_patch                      trusted            project_host bindings async
 vcs_blame                                    always             project_host bindings async
 vcs_block_history                            always             project_host bindings async
+vcs_block_history_revisions                  always             project_host bindings async
+vcs_block_history_revisions_at               always             project_host bindings async
+vcs_block_history_spots                      always             project_host bindings async
+vcs_block_history_summary                    always             project_host bindings async
 vcs_branch_info                              always             project_host bindings async
 vcs_branches                                 always             project_host bindings async
 vcs_changelists_load                         always             project_host bindings async

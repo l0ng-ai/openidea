@@ -768,6 +768,98 @@ pub async fn vcs_block_history(
     result
 }
 
+/// History for Selection summary: revision headers plus the initial diff batch
+/// (or all diffs for small selections/histories). Cancellable with `cancel_request(request)`.
+#[command(trust = always)]
+pub async fn vcs_block_history_summary(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    path: PathBuf,
+    text: Option<String>,
+    lines: (u32, u32),
+) -> IdeResult<BlockHistorySummary> {
+    let project = host.project(window)?;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = blocking(move || {
+        let text = text.or_else(|| project.documents.text_of(&path));
+        project.with_repo_of(&path, |r| {
+            r.block_history_summary(&path, text.as_deref(), lines, project.vcs_encoding(&path, None)?, &cancel)
+        })
+    })
+    .await;
+    host.end_request(request);
+    result
+}
+
+/// Diffs for up to four revisions of a selection history, walking from `anchor` with `--skip`.
+#[command(trust = always)]
+pub async fn vcs_block_history_revisions(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    path: PathBuf,
+    anchor: BlockHistoryAnchor,
+    index: u32,
+    commits: Vec<String>,
+) -> IdeResult<Vec<BlockRevision>> {
+    let project = host.project(window)?;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = blocking(move || {
+        project.with_repo_of(&path, |r| {
+            r.block_history_revisions(&path, &anchor, index, &commits, project.vcs_encoding(&path, None)?, &cancel)
+        })
+    })
+    .await;
+    host.end_request(request);
+    result
+}
+
+/// Every revision's spot, in chunks while Git walks the history (see
+/// [`Repo::block_history_spots`]). Cancelling `request` stops Git.
+#[command(trust = always)]
+pub async fn vcs_block_history_spots(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    path: PathBuf,
+    anchor: BlockHistoryAnchor,
+    on_spots: Channel<Vec<BlockRevisionSpot>>,
+) -> IdeResult<()> {
+    let project = host.project(window)?;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = blocking(move || {
+        project.with_repo_of(&path, |r| {
+            r.block_history_spots(&path, &anchor, &cancel, |spots| {
+                let _ = on_spots.send(spots);
+            })
+        })
+    })
+    .await;
+    host.end_request(request);
+    result
+}
+
+/// The diffs of up to four revisions read from their spots ([`Repo::block_history_revisions_at`]).
+#[command(trust = always)]
+pub async fn vcs_block_history_revisions_at(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    path: PathBuf,
+    spots: Vec<BlockRevisionSpot>,
+) -> IdeResult<Vec<BlockRevision>> {
+    let project = host.project(window)?;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = blocking(move || {
+        project
+            .with_repo_of(&path, |r| r.block_history_revisions_at(&spots, project.vcs_encoding(&path, None)?, &cancel))
+    })
+    .await;
+    host.end_request(request);
+    result
+}
+
 #[command(trust = always)]
 pub async fn vcs_log(host: &Host, window: &str, repo: Option<PathBuf>, query: LogQuery) -> IdeResult<Vec<Commit>> {
     let project = LogAccess::new(host, window, repo.as_deref());
@@ -3179,6 +3271,10 @@ ide_command::domain!(
     vcs_apply_mapped_patch,
     vcs_blame,
     vcs_block_history,
+    vcs_block_history_summary,
+    vcs_block_history_revisions,
+    vcs_block_history_spots,
+    vcs_block_history_revisions_at,
     vcs_branch_info,
     vcs_check_incoming,
     vcs_branches,
