@@ -6,6 +6,7 @@ use crate::{Sdk, bin_dir, exe, venv_of};
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -517,6 +518,11 @@ pub fn list_packages(python: &Path, outdated: bool, cancel: &CancellationToken) 
         return Err(IdeError::unavailable("pip could not reach the package index for every package"));
     }
     let mut packages = parse_pip_list(&out)?;
+    // PyPI's newer releases may not be on conda's channels yet: conda's own packages are not compared.
+    if outdated && let Some(prefix) = conda_prefix(python) {
+        let owned = conda_owned(&prefix);
+        packages.retain(|p| !owned.contains_key(&dist_key(&p.name)));
+    }
     packages.sort_by_key(|p| p.name.to_lowercase());
     Ok(packages)
 }
@@ -661,26 +667,50 @@ pub fn install_package(
 
 /// The conda to run for the conda environment `python` belongs to, and that environment's prefix.
 fn conda_of_env(python: &Path) -> Option<(PathBuf, PathBuf)> {
-    let prefix = crate::discover::conda_env_home(python).filter(|p| p.join("conda-meta").is_dir())?;
+    let prefix = conda_prefix(python)?;
     Some((crate::discover::conda_exe_for(python)?, prefix))
 }
 
-/// Whether conda installed `name` into the environment at `prefix`: it keeps a
-/// `conda-meta/<name>-<version>-<build>.json` record of each package, and none of pip's.
-pub(crate) fn conda_installed(prefix: &Path, name: &str) -> bool {
-    let norm = |n: &str| n.to_lowercase().replace(['_', '.'], "-");
-    let want = norm(name);
-    let records = std::fs::read_dir(prefix.join("conda-meta")).into_iter().flatten().flatten();
-    records.into_iter().any(|entry| {
-        let file = entry.file_name();
-        let record = file.to_string_lossy();
-        record.strip_suffix(".json").and_then(|r| r.rsplitn(3, '-').nth(2)).is_some_and(|n| norm(n) == want)
-    })
+/// The prefix of the conda environment `python` belongs to (it holds `conda-meta/`).
+fn conda_prefix(python: &Path) -> Option<PathBuf> {
+    crate::discover::conda_env_home(python).filter(|p| p.join("conda-meta").is_dir())
 }
 
-/// A requirement conda reads the same way pip does: a name, optionally with one version
-/// constraint (`django==5.0`, `numpy>=2`). Extras, markers, URLs and `~=` are pip's only.
-pub(crate) fn conda_spec(requirement: &str) -> Option<String> {
+/// A distribution name as pip and `.dist-info` folders compare it (PEP 503, `_` for the separator).
+fn dist_key(name: &str) -> String {
+    name.to_lowercase().replace(['-', '.'], "_")
+}
+
+/// The Python distributions conda installed into the environment at `prefix`, each with the conda
+/// package that brought it: conda keeps a `conda-meta/*.json` record per package listing its
+/// files, including the distribution's `.dist-info` folder. pip-installed ones have no record.
+/// The names can differ (`torch` comes from `pytorch`, `msgpack` from `msgpack-python`).
+pub(crate) fn conda_owned(prefix: &Path) -> HashMap<String, String> {
+    #[derive(Deserialize)]
+    struct Record {
+        name: String,
+        #[serde(default)]
+        files: Vec<String>,
+    }
+    let mut owned = HashMap::new();
+    let records = std::fs::read_dir(prefix.join("conda-meta")).into_iter().flatten().flatten();
+    for entry in records.filter(|e| e.path().extension().is_some_and(|x| x == "json")) {
+        let Ok(text) = std::fs::read_to_string(entry.path()) else { continue };
+        let Ok(record) = serde_json::from_str::<Record>(&text) else { continue };
+        for file in &record.files {
+            let folder = file.split(['/', '\\']).find(|c| c.ends_with(".dist-info") || c.ends_with(".egg-info"));
+            if let Some(dist) = folder.and_then(|f| f.split('-').next()) {
+                owned.insert(dist_key(dist), record.name.clone());
+            }
+        }
+    }
+    owned
+}
+
+/// The version constraint of a requirement conda reads the same way pip does: none, or one
+/// of `==`, `>=`, `<=`, `!=`, `>`, `<` with a plain version. `None` for what only pip reads
+/// (extras, markers, URLs, `~=`).
+pub(crate) fn conda_constraint(requirement: &str) -> Option<(&str, String)> {
     let name_end = requirement
         .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')))
         .unwrap_or(requirement.len());
@@ -690,18 +720,34 @@ pub(crate) fn conda_spec(requirement: &str) -> Option<String> {
     let version = op.map(|op| constraint[op.len()..].trim());
     let version_ok = |v: &str| !v.is_empty() && v.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '*'));
     let valid = !name.is_empty() && (constraint.is_empty() || version.is_some_and(version_ok));
-    valid.then(|| format!("{}{}", name.to_lowercase(), constraint.replace(' ', "")))
+    valid.then(|| (name, constraint.replace(' ', "")))
 }
 
-/// `conda <command> -p <prefix> -y <spec>`.
-pub(crate) fn conda_package_args(command: &str, prefix: &Path, spec: &str) -> Vec<String> {
+/// `conda <command> -p <prefix> -y <extra…> <spec>`.
+pub(crate) fn conda_package_args(command: &str, prefix: &Path, extra: &[&str], spec: &str) -> Vec<String> {
     let prefix = prefix.to_string_lossy().into_owned();
-    [command, "-p", &prefix, "-y", spec].map(str::to_owned).into()
+    let mut args: Vec<String> = [command, "-p", &prefix, "-y"].map(str::to_owned).into();
+    args.extend(extra.iter().map(|a| (*a).to_owned()));
+    args.push(spec.to_owned());
+    args
 }
 
-/// Installs (or, with `upgrade`, updates) `requirement` with conda when `python` is a conda
-/// environment's and conda reads the requirement. `false` when pip should install it instead:
-/// no conda environment, a pip-only requirement, or a package conda's channels don't have.
+/// The conda command that changes `requirement` in a conda environment, when conda installed
+/// that package: `update` for an upgrade, `install <package><constraint>` for another version.
+/// `None` leaves it to pip: no conda environment, a package pip installed (conda would write
+/// over pip's files), a new package (a PyPI name may be another conda package: conda-forge's
+/// `graphviz` is the C library), or a requirement only pip reads.
+pub(crate) fn conda_change(prefix: &Path, requirement: &str, upgrade: bool) -> Option<Vec<String>> {
+    let (name, constraint) = conda_constraint(requirement)?;
+    let package = conda_owned(prefix).remove(&dist_key(name))?;
+    Some(if upgrade {
+        conda_package_args("update", prefix, &[], &package)
+    } else {
+        conda_package_args("install", prefix, &[], &format!("{package}{constraint}"))
+    })
+}
+
+/// Runs [`conda_change`] for `requirement` when it applies; `false` when pip should run instead.
 fn conda_install(
     python: &Path,
     requirement: &str,
@@ -709,36 +755,11 @@ fn conda_install(
     cancel: &CancellationToken,
     on_line: &dyn Fn(String),
 ) -> IdeResult<bool> {
-    let (Some((conda, prefix)), Some(spec)) = (conda_of_env(python), conda_spec(requirement)) else {
-        return Ok(false);
-    };
-    let name = spec.split(['=', '>', '<', '!']).next().unwrap_or(&spec).to_owned();
-    // An update keeps what conda installed with conda; a pip-installed package stays with pip.
-    if upgrade && !conda_installed(&prefix, &name) {
-        return Ok(false);
-    }
+    let Some((conda, prefix)) = conda_of_env(python) else { return Ok(false) };
+    let Some(args) = conda_change(&prefix, requirement, upgrade) else { return Ok(false) };
     let _busy = Busy::take(python)?;
-    let args = if upgrade {
-        conda_package_args("update", &prefix, &name)
-    } else {
-        conda_package_args("install", &prefix, &spec)
-    };
     let env = crate::discover::conda_run_env(&conda);
-    let not_found = std::cell::Cell::new(false);
-    let on_conda_line = |line: String| {
-        if line.contains("PackagesNotFound") {
-            not_found.set(true);
-        }
-        on_line(line);
-    };
-    match stream(&conda, &args, None, &env, cancel, &on_conda_line) {
-        Ok(_) => Ok(true),
-        Err(_) if not_found.get() && !cancel.is_cancelled() => {
-            on_line(format!("{name} is not in conda's channels; installing it with pip"));
-            Ok(false)
-        }
-        Err(e) => Err(e),
-    }
+    stream(&conda, &args, None, &env, cancel, on_line).map(|_| true)
 }
 
 /// The `install` sub-command for [`pip_command`].
@@ -840,9 +861,14 @@ pub fn uninstall_package(
     if name.is_empty() || name.starts_with('-') {
         return Err(IdeError::invalid("no package selected"));
     }
-    if let Some((conda, prefix)) = conda_of_env(python).filter(|(_, prefix)| conda_installed(prefix, name)) {
+    let owner = conda_of_env(python).and_then(|(conda, prefix)| {
+        let package = conda_owned(&prefix).remove(&dist_key(name))?;
+        Some((conda, prefix, package))
+    });
+    if let Some((conda, prefix, package)) = owner {
         let _busy = Busy::take(python)?;
-        let args = conda_package_args("remove", &prefix, name);
+        // `--force` removes just that package, as pip does: conda would also remove what depends on it.
+        let args = conda_package_args("remove", &prefix, &["--force"], &package);
         let env = crate::discover::conda_run_env(&conda);
         return stream(&conda, &args, None, &env, cancel, on_line).map(|_| ());
     }
