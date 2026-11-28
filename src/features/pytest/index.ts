@@ -3,8 +3,9 @@
  * `usefixtures` / `getfixturevalue` string) opens the fixture pytest uses, completion offers
  * the visible fixtures there, and Find Usages / Rename on a fixture cover every place that
  * gets it. Resolution (conftest.py files, plugins, pytest's own fixtures) is the backend's
- * (`navPytestFixtures`, `navPytestFixtureUsages`, `navPytestFixtureRename`); the language
- * server knows none of it.
+ * (`navPytestFixtures`, `navPytestFixtureTarget`, `navPytestFixtureUsages`,
+ * `navPytestFixtureRename`); the language server knows none of it, except that a fixture
+ * named by its function is a function it renames the Python references of.
  */
 import type { CompletionContext, CompletionResult } from "@codemirror/autocomplete";
 import { EditorState } from "@codemirror/state";
@@ -18,11 +19,21 @@ import {
   type ContributedRename,
   type EditorDocContext,
 } from "@/editor/api";
+import { withDocument } from "@/editor/lsp/files";
 import { docOf } from "@/editor/lsp/lsp";
 import { offsetToPos, posToOffset } from "@/editor/lsp/positions";
 import { tx } from "@/platform/i18n";
-import { call, commands, isTauri, nextRequestId, type Location, type Pos, type PytestFixtureAt } from "@/platform/ipc";
-import { useProject } from "@/platform/project";
+import {
+  call,
+  commands,
+  isTauri,
+  type FileEdit,
+  type PytestFixtureAt,
+  type RequestId,
+  type TextEdit,
+  type WorkspaceEdit,
+} from "@/platform/ipc";
+import { basename, useProject } from "@/platform/project";
 
 /** The fixtures at `offset`, once the backend has the editor's text; null when the text changed meanwhile. */
 async function fixturesAt(view: EditorView, doc: number, offset: number): Promise<PytestFixtureAt | null> {
@@ -78,12 +89,38 @@ function completion(doc: EditorDocContext) {
 
 const NAME = /^[A-Za-z_]\w*$/;
 
-const contains = (l: Location, path: string, pos: Pos) =>
-  l.path === path &&
-  (l.range.start.line < pos.line || (l.range.start.line === pos.line && l.range.start.col <= pos.col)) &&
-  (pos.line < l.range.end.line || (pos.line === l.range.end.line && pos.col <= l.range.end.col));
+const KEYWORDS = new Set(
+  (
+    "False None True and as assert async await break class continue def del elif else except finally for " +
+    "from global if import in is lambda nonlocal not or pass raise return try while with yield"
+  ).split(" "),
+);
 
-/** Rename of the fixture at `offset`: from its definition or any place that gets it. */
+/** A name a fixture may be renamed to: an identifier, not a keyword. */
+export const validFixtureName = (name: string) => NAME.test(name) && !KEYWORDS.has(name);
+
+const sameRange = (a: TextEdit, b: TextEdit) =>
+  a.range.start.line === b.range.start.line &&
+  a.range.start.col === b.range.start.col &&
+  a.range.end.line === b.range.end.line &&
+  a.range.end.col === b.range.end.col;
+
+/**
+ * `own` with the text edits of `other` added, one file edit per path: the fixture rename and
+ * the language server's rename of the same function both rename the definition, once.
+ */
+export function mergeEdits(own: WorkspaceEdit, other: WorkspaceEdit): WorkspaceEdit {
+  const files: FileEdit[] = own.files.map((f) => (f.kind === "edit" ? { ...f, edits: [...f.edits] } : f));
+  for (const f of other.files) {
+    if (f.kind !== "edit") continue;
+    const mine = files.find((m): m is Extract<FileEdit, { kind: "edit" }> => m.kind === "edit" && m.path === f.path);
+    if (!mine) files.push(f);
+    else for (const e of f.edits) if (!mine.edits.some((m) => sameRange(m, e))) mine.edits.push(e);
+  }
+  return { files, preconditions: [...(own.preconditions ?? []), ...(other.preconditions ?? [])] };
+}
+
+/** Rename of the fixture at `offset`: from its definition, a place that gets it, or a read of such a parameter. */
 async function fixtureRename(view: EditorView, offset: number): Promise<ContributedRename | null> {
   const doc = docOf(view);
   if (!doc || doc.virtual || doc.language !== "python" || !isTauri()) return null;
@@ -91,15 +128,34 @@ async function fixtureRename(view: EditorView, offset: number): Promise<Contribu
   await whenSynced(view);
   if (view.state.doc !== text) return null;
   const pos = offsetToPos(text, offset);
-  const found = await call(commands.navPytestFixtureUsages(doc.doc, pos, nextRequestId()));
-  const here = found && [found.definition, ...found.usages].find((l) => contains(l, doc.path, pos));
-  if (!found || !here || view.state.doc !== text) return null;
-  const span = { from: posToOffset(text, here.range.start), to: posToOffset(text, here.range.end) };
-  const edit = async (newName: string, request: number) => {
-    if (!NAME.test(newName)) throw new Error(tx`'${newName}' is not a valid fixture name`);
-    return call(commands.navPytestFixtureRename(doc.doc, pos, newName, request));
+  const target = await call(commands.navPytestFixtureTarget(doc.doc, pos));
+  if (!target || view.state.doc !== text) return null;
+  const span = { from: posToOffset(text, target.range.start), to: posToOffset(text, target.range.end) };
+  const edit = async (newName: string, request: RequestId) => {
+    if (!validFixtureName(newName)) throw new Error(tx`'${newName}' is not a valid fixture name`);
+    const renamed = await call(commands.navPytestFixtureRename(doc.doc, pos, newName, request));
+    if (renamed.clash) {
+      const file = basename(renamed.clash.path);
+      const line = renamed.clash.range.start.line + 1;
+      throw new Error(tx`'${newName}' is already used in ${file}:${line}`);
+    }
+    if (!target.functionName) return { edit: renamed.edit };
+    // Python code may import or call the fixture's function: the server renames those.
+    const at = target.definition;
+    try {
+      const server = await withDocument(at.path, (d) => call(commands.lspRename(request, d, at.range.start, newName)));
+      return { edit: mergeEdits(renamed.edit, server.edit) };
+    } catch {
+      const name = target.name;
+      return {
+        edit: renamed.edit,
+        note: tx`Python references to the function '${name}' were not renamed: no language server answered`,
+      };
+    }
   };
-  return found.inProject ? { ...span, edit } : { ...span, edit, refused: "The fixture is defined outside the project" };
+  return target.inProject
+    ? { ...span, edit }
+    : { ...span, edit, refused: tx("The fixture is defined outside the project") };
 }
 
 export function activate(): () => void {

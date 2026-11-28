@@ -1682,6 +1682,8 @@
   "Create New Test…": "创建新测试…",
   "'{newName}' is not a valid fixture name": "“{newName}”不是有效的 fixture 名称",
   "The fixture is defined outside the project": "该 fixture 定义在项目之外",
+  "'{newName}' is already used in {file}:{line}": "“{newName}”已在 {file}:{line} 中使用",
+  "Python references to the function '{name}' were not renamed: no language server answered": "函数“{name}”在 Python 代码中的引用未重命名：语言服务器没有响应",
   "Create Test…": "创建测试…",
   "This is a test file": "这是测试文件",
   "Choose Test for {stem} ({count} found)": "选择 {stem} 的测试（找到 {count} 项）",

@@ -453,6 +453,7 @@ menu_set_remote_recent                       always             desktop      bin
 nav_index_definitions                        always             project_host bindings async
 nav_inheritance                              always             project_host bindings async
 nav_pytest_fixture_rename                    always             project_host bindings async
+nav_pytest_fixture_target                    always             project_host bindings async
 nav_pytest_fixture_usages                    always             project_host bindings async
 nav_pytest_fixtures                          always             project_host bindings async
 nav_python_stubs                             always             project_host bindings async

@@ -312,10 +312,10 @@ async function finishContributedRename(view: EditorView, own: ContributedRename,
   if (renameRequest !== null) void commands.cancelRequest(renameRequest).catch(() => {});
   const request = nextRequestId();
   renameRequest = request;
-  let edit;
+  let renamed;
   try {
     await whenAllSynced();
-    edit = await own.edit(newName, request);
+    renamed = await own.edit(newName, request);
     if (renameRequest !== request) return;
   } catch (e) {
     if (renameRequest !== request || isCancelled(e)) return;
@@ -324,7 +324,7 @@ async function finishContributedRename(view: EditorView, own: ContributedRename,
   } finally {
     if (renameRequest === request) renameRequest = null;
   }
-  await presentRename(view, edit, oldName, newName, null, false, async () => false);
+  await presentRename(view, renamed.edit, oldName, newName, renamed.note ?? null, false, async () => false);
 }
 
 /**
