@@ -14,7 +14,7 @@ import styles from "./Workflow.module.css";
 import own from "./Scopes.module.css";
 
 /** Toolbar of an ordered list: add, remove, move up / down. */
-function ListToolbar({
+export function ListToolbar({
   label,
   index,
   count,
@@ -45,7 +45,7 @@ function ListToolbar({
   );
 }
 
-function moved<T>(list: readonly T[], index: number, d: -1 | 1): T[] | null {
+export function moved<T>(list: readonly T[], index: number, d: -1 | 1): T[] | null {
   const j = index + d;
   if (index < 0 || j < 0 || j >= list.length) return null;
   const next = [...list];

@@ -52,6 +52,8 @@ pub struct Settings {
     /// Per language server, by name (`rust-analyzer`): launch and protocol
     /// options on top of the language definition, or a server defined here.
     pub language_servers: BTreeMap<String, LanguageServerSettings>,
+    /// Languages & Frameworks › JSON Schema Mappings: schemas for JSON and YAML files.
+    pub json_schemas: Vec<JsonSchemaMapping>,
     /// Tools › Download sources: a mirror prefix for the release archives the installer fetches.
     pub tool_downloads: ToolDownloadSettings,
     /// Editor › Inspections profiles.
@@ -613,6 +615,7 @@ impl Default for Settings {
             mcp_server: McpServerSettings::default(),
             agent_security: AgentSecuritySettings::default(),
             scopes: Vec::new(),
+            json_schemas: Vec::new(),
             file_colors: FileColorSettings::default(),
             database: DatabaseSettings::default(),
             plugins: BTreeMap::new(),
@@ -632,6 +635,17 @@ fn default_keymap() -> &'static str {
 pub struct NamedScope {
     pub name: String,
     pub pattern: String,
+}
+
+/// A schema for the JSON and YAML files matching `files`; wins over a built-in SchemaStore mapping.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct JsonSchemaMapping {
+    pub name: String,
+    /// A URL, or a file path relative to the project.
+    pub schema: String,
+    /// Project-relative paths or glob patterns (`config/*.json`, `**/*.app.yaml`).
+    pub files: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]

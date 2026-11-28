@@ -10,7 +10,7 @@ import { validateCMake } from "@/platform/cmakeSettings";
 import { SUPPORTED_LOCALES, type Locale } from "@/platform/i18n";
 import { DEFAULT_IGNORED_NAMES } from "@/platform/ignoredNames";
 import { validateFileTypeOverrides, validateFileTypes, type FileTypeAssociations } from "@/platform/fileTypes";
-import type { AgentSettings, LanguageServerSettings, Settings } from "@/platform/ipc";
+import type { AgentSettings, JsonSchemaMapping, LanguageServerSettings, Settings } from "@/platform/ipc";
 import {
   DEFAULT_LANGUAGES,
   DEFAULT_PROJECT_STRUCTURE,
@@ -63,9 +63,23 @@ export interface CustomKeymapSettings {
   overrides: Record<string, string[]>;
 }
 
+export type JsonSchemaMappingValid = Required<JsonSchemaMapping>;
+
+export function validateJsonSchemas(raw: unknown): JsonSchemaMappingValid[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((m) => {
+    const o = obj(m);
+    return typeof o.name === "string"
+      ? [{ name: o.name, schema: typeof o.schema === "string" ? o.schema : "", files: stringList(o.files) }]
+      : [];
+  });
+}
+
 export interface ValidSettings extends WorkflowSettings {
   plugins: Record<string, Record<string, unknown>>;
   scopes: NamedScope[];
+  /** Languages & Frameworks › JSON Schema Mappings. */
+  jsonSchemas: JsonSchemaMappingValid[];
   fileColors: FileColorSettings;
   /** Database › Query Execution. */
   database: {
@@ -188,6 +202,7 @@ export { ACCENT_PRESETS } from "@/workbench/theme";
 export const DEFAULT_SETTINGS: ValidSettings = {
   plugins: {},
   scopes: [],
+  jsonSchemas: [],
   fileColors: DEFAULT_FILE_COLORS,
   database: { inEditorResults: false, outputDestination: "databaseOutput", resolutionScopes: [] },
   general: {
@@ -375,6 +390,7 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
   return {
     plugins: Object.fromEntries(Object.entries(obj(root.plugins)).map(([id, values]) => [id, obj(values)])),
     scopes: validateScopes(root.scopes),
+    jsonSchemas: validateJsonSchemas(root.jsonSchemas),
     fileColors: validateFileColors(root.fileColors),
     database: {
       inEditorResults: bool(obj(root.database).inEditorResults, d.database.inEditorResults),

@@ -493,7 +493,7 @@ pub fn set_settings(
         || key == "files"
         || key == "files.composeFileOverrides"
         || key.starts_with("files.composeFileOverrides.");
-    let toolchain = ["languages", "tools", "languageServers", "projectStructure"]
+    let toolchain = ["languages", "tools", "languageServers", "projectStructure", "jsonSchemas"]
         .iter()
         .any(|k| key == *k || key.starts_with(&format!("{k}.")));
     // A run target chosen as the Python interpreter (or changed) needs a snapshot of its libraries.

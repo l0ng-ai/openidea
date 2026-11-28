@@ -4430,5 +4430,16 @@
   "Keep Key": "Keep Key",
   "Drop Index": "Drop Index",
   "Keep Index": "Keep Index",
-  "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite cannot drop the index of a primary key or unique constraint."
+  "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite cannot drop the index of a primary key or unique constraint.",
+  "JSON Schema Mappings": "JSON Schema Mappings",
+  "JSON schema mappings actions": "JSON schema mappings actions",
+  "JSON schema mappings": "JSON schema mappings",
+  "No schema mappings. Click + to add one.": "No schema mappings. Click + to add one.",
+  "Schema file or URL": "Schema file or URL",
+  "A URL, or a path relative to the project. The schema's own $schema picks the JSON Schema version.": "A URL, or a path relative to the project. The schema's own $schema picks the JSON Schema version.",
+  "schemas/app.schema.json": "schemas/app.schema.json",
+  "Select Schema File": "Select Schema File",
+  "Paths or glob patterns, relative to the project: config/*.json, **/*.app.yaml. Wins over the built-in mapping for the same files.": "Paths or glob patterns, relative to the project: config/*.json, **/*.app.yaml. Wins over the built-in mapping for the same files.",
+  "config/*.json": "config/*.json",
+  "Mapping": "Mapping"
 }
