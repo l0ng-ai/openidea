@@ -83,7 +83,10 @@ function insertPythonDocstring(view: EditorView): void {
   if (!target) return;
   const state = view.state;
   const indent = docstringIndent(view, target);
-  const lines = pythonDocstringLines(state.doc.toString(), target.owner, editorPrefs().docstringFormat, indent, '"""');
+  const lines = [
+    indent + '"""',
+    ...pythonDocstringLines(state.doc.toString(), target.owner, editorPrefs().docstringFormat, indent, '"""'),
+  ];
   const stub = lines.join(state.lineBreak);
   const headerLine = state.doc.lineAt(target.body.from);
   const first = target.firstStatement;
