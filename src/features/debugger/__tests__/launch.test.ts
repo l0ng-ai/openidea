@@ -262,6 +262,7 @@ describe("run config → launch config", () => {
       expect(isJinjaTemplate(p), p).toBe(false);
     // A file whose Override File Type is Jinja2 Template.
     expect(isJinjaTemplate("/p/static/index.html", "jinja")).toBe(true);
+    expect(isJinjaTemplate("/p/static/index.html", "jinja-html")).toBe(true);
   });
 
   it("debugpy: uv / poetry run the debuggee in the project's environment", () => {

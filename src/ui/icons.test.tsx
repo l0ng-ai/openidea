@@ -165,6 +165,11 @@ describe("fileIconName", () => {
     ["api.ts", "file-ts"],
     ["types.d.ts", "file-ts"],
     ["App.TSX", "file-tsx"],
+    // Jinja2 templates: the icon of what they render, HTML when the name doesn't tell.
+    ["base.jinja", "file-html"],
+    ["page.html.j2", "file-html"],
+    ["nginx.conf.j2", "file-config"],
+    ["values.yaml.jinja2", "file-yaml"],
     ["package.json", "file-npm"],
     ["package-lock.json", "file-lock"],
     ["yarn.lock", "file-lock"],

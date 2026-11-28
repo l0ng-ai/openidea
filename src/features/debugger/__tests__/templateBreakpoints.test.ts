@@ -5,10 +5,13 @@ import { useBreakpoints } from "../breakpoints/store";
 
 const ipc = vi.hoisted(() => ({
   languages: vi.fn(async () => [{ id: "python", debuggable: true }]),
-  // Django Templates by the backend's detection (a `templates` folder of a `manage.py` project).
+  // Django Templates by the backend's detection (a `templates` folder of a `manage.py` project), and
+  // files whose Override File Type is a template language.
   docLanguage: vi.fn(async (path: string) => ({
     status: "ok" as const,
-    data: { language: path.startsWith("/shop/") && path.endsWith(".html") ? "django-html" : "html" },
+    data: {
+      language: OVERRIDES[path] ?? (path.startsWith("/shop/") && path.endsWith(".html") ? "django-html" : "html"),
+    },
   })),
 }));
 
@@ -16,6 +19,12 @@ vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
   return { ...real, isTauri: () => true, commands: { ...real.commands, ...ipc } };
 });
+
+const OVERRIDES: Record<string, string> = {
+  "/flask/static/page.html": "jinja-html",
+  "/flask/static/robots.txt": "jinja",
+  "/shop/mail/welcome.j2": "django-html",
+};
 
 afterEach(() => useBreakpoints.setState({ byFile: {} }));
 
@@ -35,6 +44,16 @@ it("tells Django templates from Jinja2 ones by the file's language", async () =>
   withBreakpoints({ "/flask/templates/index.html": false });
   expect(await templateBreakpoints()).toEqual({ django: false, jinja: false });
   expect(ipc.docLanguage).not.toHaveBeenCalledWith("/shop/views.py", null);
+});
+
+it("goes by the language a file is typed as", async () => {
+  withBreakpoints({ "/flask/static/page.html": true });
+  expect(await templateBreakpoints()).toEqual({ django: false, jinja: true });
+  withBreakpoints({ "/flask/static/robots.txt": true });
+  expect(await templateBreakpoints()).toEqual({ django: false, jinja: true });
+  // A `.j2` file typed as a Django Template is Django's, not Jinja2's.
+  withBreakpoints({ "/shop/mail/welcome.j2": true });
+  expect(await templateBreakpoints()).toEqual({ django: true, jinja: false });
 });
 
 it("accepts breakpoints in templates without a debugger of their own", async () => {

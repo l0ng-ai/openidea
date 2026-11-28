@@ -259,8 +259,9 @@ const OWN_MODES = [
     extensions: ["djhtml"],
     load: () => import("./django").then((m) => m.django()),
   }),
-  // No extensions: a `.jinja` file typed as another language (Override File Type) drops the mode.
+  // No extensions: a `.j2` file typed as another language (Override File Type) drops the mode.
   LanguageDescription.of({ name: "Jinja", load: () => import("./jinja").then((m) => m.jinja()) }),
+  LanguageDescription.of({ name: "Jinja HTML", load: () => import("./jinja").then((m) => m.jinjaHtml()) }),
   LanguageDescription.of({
     name: "Go Template",
     alias: ["gotmpl", "tmpl"],

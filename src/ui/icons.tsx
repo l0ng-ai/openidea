@@ -1270,6 +1270,8 @@ const EXT_ICONS = table({
 
 /** Source files for languages without a file-type icon. */
 const CODE_EXT = new Set(["nim", "wit", "wat", "sol", "v", "sv"]);
+const JINJA_EXT = new Set(["jinja", "jinja2", "j2"]);
+const GENERIC_ICONS: ReadonlySet<IconName> = new Set(["file-text", "file-unknown", "file-code"]);
 
 let iconOverride: ((fileName: string) => IconName | null) | null = null;
 
@@ -1334,6 +1336,11 @@ export function fileIconName(fileName: string, path: string | null = null): Icon
   const dot = lower.lastIndexOf(".");
   if (dot <= 0) return "file-text";
   const ext = lower.slice(dot + 1);
+  // A Jinja2 template has the icon of what it renders (`nginx.conf.j2`); HTML when the name doesn't tell.
+  if (JINJA_EXT.has(ext)) {
+    const inner = fileIconName(fileName.slice(0, dot));
+    if (!GENERIC_ICONS.has(inner)) return inner;
+  }
   const prev = lower.lastIndexOf(".", dot - 1);
   const ext2 = prev > 0 ? lower.slice(prev + 1) : undefined;
   const icon = (ext2 && EXT_ICONS[ext2]) || EXT_ICONS[ext];

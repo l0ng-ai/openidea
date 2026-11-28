@@ -30,7 +30,10 @@ const JINJA_EXTENSION = /\.(jinja2?|j2)$/i;
  * it to another language), or markup or text in a `templates` folder.
  */
 export const isJinjaTemplate = (path: string, language?: string | null) =>
-  language === "jinja" || JINJA_EXTENSION.test(path) || /[\\/]templates[\\/].*\.(html?|xml|txt)$/i.test(path);
+  language === "jinja" ||
+  language === "jinja-html" ||
+  JINJA_EXTENSION.test(path) ||
+  /[\\/]templates[\\/].*\.(html?|xml|txt)$/i.test(path);
 
 /** Whether a new breakpoint may be placed in a file of `language`. */
 export function canPlaceBreakpoint(language: string, path = ""): boolean {
