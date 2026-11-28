@@ -175,6 +175,10 @@ pub struct VcsRoot {
     /// The history ends at a shallow boundary rather than at the initial commit.
     #[serde(default)]
     pub shallow: bool,
+    /// The root `.gitattributes` tracks files with Git LFS.
+    #[serde(default)]
+    #[specta(optional)]
+    pub lfs: bool,
     /// Remote availability is unknown in Restricted Mode or when config cannot be read.
     #[serde(default)]
     #[specta(optional)]
@@ -220,6 +224,8 @@ pub enum RemoteOp {
     UpdateSubmodule {
         parent: PathBuf,
     },
+    /// Git › Pull LFS Objects.
+    PullLfs,
     /// Update Project › Reset to the Remote Branch.
     ResetToUpstream,
     Push {
@@ -559,6 +565,7 @@ pub async fn vcs_roots(host: &Host, window: &str) -> IdeResult<Vec<VcsRoot>> {
                     head,
                     head_commit,
                     shallow: r.is_shallow().unwrap_or(false),
+                    lfs: r.uses_lfs(),
                     has_remotes: trusted.then(|| r.has_remotes().ok()).flatten(),
                     resolved_conflicts,
                 }
@@ -1709,6 +1716,7 @@ pub async fn vcs_remote(
             | RemoteOp::UpdateProjectBranch { .. }
             | RemoteOp::ResetToUpstream => Some("Git pull"),
             RemoteOp::UpdateSubmodule { .. } => Some("Git submodule update"),
+            RemoteOp::PullLfs => Some("Git LFS pull"),
             _ => None,
         };
         with_shelf_batch(&project, shelf_batch, || {
@@ -1744,6 +1752,7 @@ pub async fn vcs_remote(
                 RemoteOp::UpdateSubmodule { parent } => project.with_repo_at(Some(&parent), |parent| {
                     r.update_from_superproject(parent, &cancel, &out).map(|()| None)
                 }),
+                RemoteOp::PullLfs => r.pull_lfs(&cancel, &out).map(|()| None),
                 RemoteOp::ResetToUpstream => r.reset_to_upstream_with_tags(tags_mode, &cancel, &out).map(|()| None),
                 RemoteOp::Push { force_with_lease, set_upstream, tags, force, no_verify } => r
                     .push_with(PushOptions { force_with_lease, force, set_upstream, tags, no_verify }, &cancel, &out)
@@ -1998,6 +2007,17 @@ pub async fn vcs_gpg_signing_keys(
     let project = host.project(window)?;
     let cancel = host.begin_project_request(window, request);
     let result = blocking(move || project.with_repo_at(Some(&repo), |repo| repo.gpg_signing_keys(&cancel))).await;
+    host.end_request(request);
+    result
+}
+
+/// Git LFS files of the repository still checked out as pointer files, and whether git-lfs runs.
+#[command(trust = trusted)]
+pub async fn vcs_lfs_status(host: &Host, window: &str, repo: PathBuf, request: RequestId) -> IdeResult<LfsStatus> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let cancel = host.begin_project_request(window, request);
+    let result = blocking(move || project.with_repo_at(Some(&repo), |repo| repo.lfs_status(&cancel))).await;
     host.end_request(request);
     result
 }
@@ -3200,6 +3220,7 @@ ide_command::domain!(
     vcs_config_get,
     vcs_config_get_bool,
     vcs_signing_config,
+    vcs_lfs_status,
     vcs_gpg_signing_keys,
     vcs_edit_signing,
     vcs_watch_commit_messages,

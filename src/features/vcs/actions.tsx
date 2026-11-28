@@ -624,6 +624,21 @@ export function registerVcsActions(): () => void {
       },
     },
     {
+      id: "vcs.lfsPull",
+      title: "Pull LFS Objects",
+      category: "Git",
+      icon: "git-pull",
+      when: "vcsAvailable && vcsLfsRepositories",
+      keywords: ["git lfs pull", "large file storage"],
+      run: async ({ arg }) => {
+        const chosen = arg && typeof arg === "object" && "repo" in arg ? operationRepo(arg) : null;
+        const { heads, roots } = useVcs.getState();
+        const repos = chosen ? [chosen] : roots.filter((root) => heads[root]?.lfs);
+        if (await runRemote({ op: "pullLfs" }, undefined, repos))
+          for (const repo of repos) notifications().expire?.(`vcs.lfs:${repo}`);
+      },
+    },
+    {
       id: "vcs.refresh",
       title: "Refresh VCS Status",
       category: "Git",

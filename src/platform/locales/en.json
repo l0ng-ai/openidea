@@ -354,6 +354,7 @@
   "menu.vcs.commit": "Commit…",
   "menu.vcs.fetch": "Fetch",
   "menu.vcs.unshallow": "Fetch Full History",
+  "menu.vcs.lfsPull": "Pull LFS Objects",
   "menu.vcs.localHistory": "Local History",
   "menu.vcs.newBranch": "New Branch…",
   "menu.vcs.push": "Push…",

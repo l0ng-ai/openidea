@@ -74,12 +74,16 @@ import {
   installVcsStore,
   onConflictsChanged,
   onConflictsCleared,
+  repoName,
   repoOf,
   selectRepo,
   useVcs,
 } from "./store";
 import { installRootSync } from "./rootSync";
 import { tx } from "@/platform/i18n";
+import { call, commands, nextRequestId } from "@/platform/ipc";
+import { openExternalUrl } from "@/platform/openUrl";
+import { useProject } from "@/platform/project";
 import { openOnRemoteActions, registerOpenOnRemote } from "./openOnRemote";
 import { copyBranchNameActions } from "./copyBranchName";
 import { copyRepositoryPathActions, registerCopyRepositoryPath } from "./copyRepositoryPath";
@@ -189,6 +193,36 @@ function conflictsBody(names: string[]): string {
     : tx`${names.length} files have conflicts: ${list}`;
 }
 
+/** Once per repository and session, names the LFS files still checked out as pointer files. */
+function installLfsNotice(): () => void {
+  const checked = new Set<string>();
+  return useVcs.subscribe(({ heads }) => {
+    if (!useProject.getState().project?.trusted) return;
+    for (const [root, head] of Object.entries(heads)) {
+      if (!head.lfs || checked.has(root)) continue;
+      checked.add(root);
+      void call(commands.vcsLfsStatus(root, nextRequestId())).then(
+        ({ installed, pointers }) => {
+          if (!pointers.length) return;
+          const name = repoName(root);
+          const shown = pointers.slice(0, 10).join("\n") + (pointers.length > 10 ? "\n…" : "");
+          notifications().notify({
+            group: "vcs",
+            level: "warning",
+            key: `vcs.lfs:${root}`,
+            title: tx`LFS files of ${name} are not downloaded`,
+            body: installed ? shown : `${tx("Git LFS is not installed.")}\n${shown}`,
+            actions: installed
+              ? [{ label: "Pull LFS Objects", run: () => void executeAction("vcs.lfsPull", { repo: root }) }]
+              : [{ label: "Install Git LFS…", run: () => void openExternalUrl("https://git-lfs.com") }],
+          });
+        },
+        () => undefined,
+      );
+    }
+  });
+}
+
 export function activate(): () => void {
   let resolvedNoticeRepo: string | null = null;
   onConflictsChanged((files) => {
@@ -232,6 +266,7 @@ export function activate(): () => void {
   useCommit.setState({ signOff: workflowSettings().vcs.git.signOff });
   const disposers = [
     installVcsStore(),
+    installLfsNotice(),
     clearUnstashConflictNotices,
     installOperationNoticeExpiry(() => resolvedNoticeRepo),
     installRootSync(),

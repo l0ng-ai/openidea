@@ -2272,6 +2272,8 @@ export const commands = {
 	vcsInvalidateLogSignatures: (repo: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_invalidate_log_signatures", { repo })),
 	/**  Keeps the prepared amend commit after a conflicting history replay. */
 	vcsKeepAmendCommit: (repo: string, commit: string) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_keep_amend_commit", { repo, commit })),
+	/**  Git LFS files of the repository still checked out as pointer files, and whether git-lfs runs. */
+	vcsLfsStatus: (repo: string, request: RequestId) => typedError<LfsStatus, IdeError>(__TAURI_INVOKE("vcs_lfs_status", { repo, request })),
 	/**  Gutter change markers for a file, computed against its current (unsaved) text. */
 	vcsLineHunks: (path: string) => typedError<LineHunk[], IdeError>(__TAURI_INVOKE("vcs_line_hunks", { path })),
 	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit_Serialize[], IdeError>(__TAURI_INVOKE("vcs_log", { repo, query })),
@@ -9857,6 +9859,13 @@ export type Launch_Serialize = {
 
 export type LegacyPasswordAction = "check" | "retry" | "removePlaintext";
 
+export type LfsStatus = {
+	/**  `git lfs` runs. */
+	installed: boolean,
+	/**  LFS-tracked files (repository-relative) whose checkout is still a pointer file. */
+	pointers: string[],
+};
+
 /**  One SDK or library with its source folders (`< Python 3.12 (.venv) >`). */
 export type LibraryGroup = {
 	/**  Display name, e.g. `Python 3.12 (.venv)`. */
@@ -12764,6 +12773,8 @@ export type RemoteLaunch = {
 export type RemoteOp = { op: "fetch"; 
 /**  The incoming-commit poll keeps Git's tag handling and uses saved credentials only. */
 background?: boolean; report?: boolean; skipRemotes?: string[] } | { op: "fetchRemote"; remote: string; report?: boolean } | { op: "fetchPushTarget"; selection: PushSelection } | { op: "unshallow" } | { op: "pull"; rebase: boolean; expectedBranch?: string | null } | { op: "updateProjectBranch"; rebase: boolean } | { op: "updateSubmodule"; parent: string } | 
+/**  Git › Pull LFS Objects. */
+{ op: "pullLfs" } | 
 /**  Update Project › Reset to the Remote Branch. */
 { op: "resetToUpstream" } | { op: "push"; force_with_lease: boolean; set_upstream: boolean; 
 /**  Push dialog › Push tags. */
@@ -15026,6 +15037,8 @@ export type VcsRoot = {
 	headCommit: string | null,
 	/**  The history ends at a shallow boundary rather than at the initial commit. */
 	shallow?: boolean,
+	/**  The root `.gitattributes` tracks files with Git LFS. */
+	lfs?: boolean,
 	/**  Remote availability is unknown in Restricted Mode or when config cannot be read. */
 	hasRemotes?: boolean | null,
 	/**  Conflicts staged during the current operation that can be reopened. */
