@@ -187,6 +187,53 @@ fn large_history_summary_fetches_only_initial_batch() {
     assert_eq!(serde_json::to_value(&deep).unwrap(), serde_json::to_value(&full.revisions[6..10]).unwrap());
 }
 
+#[test]
+fn spots_work_when_diff_prefixes_are_customized_in_git_config() {
+    let fx = Fixture::new();
+    let mut lines: Vec<String> =
+        (0..1500).map(|i| format!("let value_{i:04} = compute_block_line_value({i}, \"padding\");")).collect();
+    fx.write("large.txt", &(lines.join("\n") + "\n"));
+    fx.commit("Add large");
+    for n in 1..10 {
+        let idx = n * 100;
+        lines[idx] = format!("let value_{idx:04} = compute_block_line_value({n} + 100, \"updated\");");
+        fx.write("large.txt", &(lines.join("\n") + "\n"));
+        fx.commit(&format!("Edit {n}"));
+    }
+    let repo = fx.repo();
+    let path = fx.path("large.txt");
+    let cancel = CancellationToken::new();
+    let full = history(&repo, &path, None, (0, 1499));
+
+    for (key, value) in [("diff.noprefix", "true"), ("diff.mnemonicPrefix", "true")] {
+        fx.git(&["config", "diff.noprefix", "false"]);
+        fx.git(&["config", "diff.mnemonicPrefix", "false"]);
+        fx.git(&["config", key, value]);
+        let summary = repo.block_history_summary(&path, None, (0, 1499), encoding_rs::UTF_8, &cancel).unwrap();
+        assert_eq!(summary.diffs.len(), 4, "{key}={value}");
+        assert_eq!(summary.rest.len(), 6, "{key}={value}");
+        assert!(
+            summary.rest.iter().all(|row| row.ranges.as_ref().is_some_and(|r| !r.is_empty())),
+            "expected spots for every rest row under {key}={value}, got: {:?}",
+            summary.rest.iter().map(|r| &r.ranges).collect::<Vec<_>>()
+        );
+        let spots: Vec<_> = summary
+            .rest
+            .iter()
+            .map(|row| BlockRevisionSpot { id: row.id.clone(), ranges: row.ranges.clone() })
+            .collect();
+        let mut actual = summary.diffs;
+        for batch in spots.chunks(4) {
+            actual.extend(repo.block_history_revisions_at(batch, encoding_rs::UTF_8, &cancel).unwrap());
+        }
+        assert_eq!(
+            serde_json::to_value(&actual).unwrap(),
+            serde_json::to_value(&full.revisions).unwrap(),
+            "{key}={value}"
+        );
+    }
+}
+
 /// renamed_history padded so summary exceeds the inline budget, then renamed to a non-ASCII
 /// name with a space, edited on two branches (one also moves the block down) and merged, then
 /// edited once more.

@@ -4,7 +4,7 @@
  * newest first, each shown as the block before and after it. Unsaved or
  * uncommitted edits of the block come first as Local Changes.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   BlockHistorySummary,
   BlockRevision,
@@ -172,6 +172,12 @@ export function SelectionHistoryEditor({ input }: { input: EditorInput }) {
     urgentRow: HistoryRow | null;
     cancel: () => void;
   } | null>(null);
+  const nav = useRef<{ history: BlockHistorySummary; index: number; direction: 1 | -1 } | null>(null);
+  const currentId = useRef<string | null>(null);
+
+  useLayoutEffect(() => {
+    currentId.current = current?.kind === "revision" ? current.revision.id : null;
+  }, [current]);
 
   useEffect(
     () => () => {
@@ -192,23 +198,49 @@ export function SelectionHistoryEditor({ input }: { input: EditorInput }) {
     }
     const { anchor } = history;
     const total = history.diffs.length + history.rest.length;
+    const prevNav = nav.current;
+    const direction: 1 | -1 =
+      prevNav && prevNav.history === history
+        ? current.index < prevNav.index
+          ? -1
+          : current.index > prevNav.index
+            ? 1
+            : prevNav.direction
+        : 1;
+    nav.current = { history, index: current.index, direction };
+
     const hasDiff = (index: number) => {
       if (index < history.diffs.length) return true;
       const row = history.rest[index - history.diffs.length];
       return row != null && cached?.has(row.id) === true;
     };
 
+    const scan = (step: 1 | -1): number | null => {
+      for (let d = 1; d <= PREFETCH_AHEAD; d++) {
+        const i = current.index + step * d;
+        if (i < 0 || i >= total) break;
+        if (!hasDiff(i)) return i;
+      }
+      return null;
+    };
+
     let target: number | null = null;
     let urgentRow: HistoryRow | null = null;
+    let backward = false;
     if (!hasDiff(current.index)) {
       target = current.index;
       urgentRow = current;
+      backward = target > history.diffs.length && !hasDiff(target - 1);
     } else {
-      const limit = Math.min(total - 1, current.index + PREFETCH_AHEAD);
-      for (let i = current.index + 1; i <= limit; i++) {
-        if (!hasDiff(i)) {
-          target = i;
-          break;
+      const primary = scan(direction);
+      if (primary !== null) {
+        target = primary;
+        backward = direction < 0;
+      } else {
+        const secondary = scan(direction === 1 ? -1 : 1);
+        if (secondary !== null) {
+          target = secondary;
+          backward = direction > 0;
         }
       }
     }
@@ -228,8 +260,20 @@ export function SelectionHistoryEditor({ input }: { input: EditorInput }) {
     cancelInFlight();
     if (target === null) return;
 
-    const offset = target - history.diffs.length;
-    const slice = history.rest.slice(offset, offset + DIFF_BATCH);
+    let start: number;
+    let end: number;
+    if (backward) {
+      end = target + 1;
+      start = target;
+      const minStart = Math.max(history.diffs.length, target - DIFF_BATCH + 1);
+      while (start > minStart && !hasDiff(start - 1)) start--;
+    } else {
+      start = target;
+      end = target + 1;
+      const maxEnd = Math.min(total, target + DIFF_BATCH);
+      while (end < maxEnd && !hasDiff(end)) end++;
+    }
+    const slice = history.rest.slice(start - history.diffs.length, end - history.diffs.length);
     if (slice.length === 0) return;
 
     const session = useRemote.getState().session;
@@ -239,8 +283,6 @@ export function SelectionHistoryEditor({ input }: { input: EditorInput }) {
         ? slice.map((row) => ({ id: row.id, ranges: row.ranges }))
         : null;
     const commits = slice.map((row) => row.id);
-    const start = target;
-    const end = target + slice.length;
 
     const entry = {
       history,
@@ -261,11 +303,23 @@ export function SelectionHistoryEditor({ input }: { input: EditorInput }) {
         setDiffError(null);
         setDiffs((previous) => {
           const revisions = new Map(previous?.history === history ? previous.revisions : []);
+          const pinned = currentId.current;
+          if (pinned) {
+            const existing = revisions.get(pinned);
+            if (existing) {
+              revisions.delete(pinned);
+              revisions.set(pinned, existing);
+            }
+          }
           for (const diff of batch) {
             revisions.delete(diff.id);
             revisions.set(diff.id, diff);
           }
-          while (revisions.size > DIFF_CACHE_SIZE) revisions.delete(revisions.keys().next().value!);
+          for (const key of revisions.keys()) {
+            if (revisions.size <= DIFF_CACHE_SIZE) break;
+            if (key === pinned) continue;
+            revisions.delete(key);
+          }
           return { history, revisions };
         });
       },

@@ -115,7 +115,17 @@ fn anchor_range(rel: &str, anchor: &BlockHistoryAnchor) -> String {
 }
 
 fn log_args<'a>(options: &[&'a str], ranges: &'a [String], commit: &'a str) -> Vec<&'a str> {
-    let mut args = vec!["log", "--no-color", "--no-ext-diff", "--no-textconv", FORMAT];
+    let mut args = vec![
+        "-c",
+        "diff.noprefix=false",
+        "-c",
+        "diff.mnemonicPrefix=false",
+        "log",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        FORMAT,
+    ];
     args.extend_from_slice(options);
     args.extend(ranges.iter().map(String::as_str));
     args.push(commit);
@@ -631,5 +641,15 @@ mod tests {
         assert_eq!(unquote_path(br#""b/\303\274.txt""#).as_deref(), Some("\u{fc}.txt"));
         assert_eq!(unquote_path(br#""b/\377.txt""#), None);
         assert_eq!(unquote_path(b"/dev/null"), None);
+    }
+
+    #[test]
+    fn log_args_pins_default_diff_prefixes() {
+        let range = vec!["-L1,3:a.txt".to_owned()];
+        let args = log_args(&[], &range, "HEAD");
+        let log_pos = args.iter().position(|arg| *arg == "log").expect("log subcommand");
+        let before_log = &args[..log_pos];
+        assert!(before_log.windows(2).any(|w| w == ["-c", "diff.noprefix=false"]), "{args:?}");
+        assert!(before_log.windows(2).any(|w| w == ["-c", "diff.mnemonicPrefix=false"]), "{args:?}");
     }
 }

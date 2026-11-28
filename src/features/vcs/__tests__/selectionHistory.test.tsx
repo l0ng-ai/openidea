@@ -250,12 +250,15 @@ describe("History for Selection tab", () => {
 
     it("reads a deep row's diff immediately from its spot in the summary", async () => {
       vcsBlockHistorySummary.mockReturnValue(ok(long));
-      vcsBlockHistoryRevisionsAt.mockReturnValue(ok(deep.slice(3)));
+      vcsBlockHistoryRevisionsAt.mockReturnValue(ok(deep.slice(2)));
       open({ path: "/p/src/a.txt", lines: [1, 2], text: TEXT });
       await screen.findByText("Edit 3");
       fireEvent.click(screen.getByText("Edit 3"));
       await waitFor(() => expect(screen.getByTestId("diff").textContent).toBe("fffffff^: f\n| fffffff: f!\n"));
-      expect(vcsBlockHistoryRevisionsAt).toHaveBeenCalledWith(expect.any(Number), "/p/src/a.txt", [spotOf(deep[3]!)]);
+      expect(vcsBlockHistoryRevisionsAt).toHaveBeenCalledWith(expect.any(Number), "/p/src/a.txt", [
+        spotOf(deep[2]!),
+        spotOf(deep[3]!),
+      ]);
       expect(vcsBlockHistoryRevisions).not.toHaveBeenCalled();
     });
 
@@ -265,12 +268,13 @@ describe("History for Selection tab", () => {
         rest: [summaryOf(deep[2]!), summaryOf(deep[3]!, null)],
       };
       vcsBlockHistorySummary.mockReturnValue(ok(unusable));
-      vcsBlockHistoryRevisions.mockReturnValue(ok(deep.slice(3)));
+      vcsBlockHistoryRevisions.mockReturnValue(ok(deep.slice(2)));
       open({ path: "/p/src/a.txt", lines: [1, 2], text: TEXT });
       await screen.findByText("Edit 3");
       fireEvent.click(screen.getByText("Edit 3"));
       await waitFor(() => expect(screen.getByTestId("diff").textContent).toBe("fffffff^: f\n| fffffff: f!\n"));
-      expect(vcsBlockHistoryRevisions).toHaveBeenCalledWith(expect.any(Number), "/p/src/a.txt", anchor, 5, [
+      expect(vcsBlockHistoryRevisions).toHaveBeenCalledWith(expect.any(Number), "/p/src/a.txt", anchor, 4, [
+        deep[2]!.id,
         deep[3]!.id,
       ]);
       expect(vcsBlockHistoryRevisionsAt).not.toHaveBeenCalled();
@@ -352,6 +356,246 @@ describe("History for Selection tab", () => {
         expect(screen.getByTestId("diff").textContent).toContain(`after ${i}`);
       }
       expect(vcsBlockHistoryRevisionsAt).toHaveBeenCalledTimes(callsAfterForward);
+    });
+
+    it("prefetches backward while stepping up from the last row with at most one spinner and no refetches", async () => {
+      const makeRev = (i: number): BlockRevision => ({
+        id: i.toString(16).padStart(40, "0"),
+        shortId: i.toString(16).padStart(7, "0"),
+        author: "Ada",
+        email: "ada@example.com",
+        timeMs: 1_700_000_000_000 - i * 1000,
+        summary: `Commit ${i}`,
+        path: "src/a.txt",
+        before: `before ${i}\n`,
+        after: `after ${i}\n`,
+        beforeLine: 1,
+        afterLine: 1,
+      });
+      const revs = Array.from({ length: 20 }, (_, i) => makeRev(i));
+      const byId = new Map(revs.map((r) => [r.id, r]));
+      const paged: BlockHistorySummary = {
+        anchor,
+        head: "after 0\n",
+        diffs: revs.slice(0, 4),
+        rest: revs.slice(4).map((r) => summaryOf(r)),
+      };
+      vcsBlockHistorySummary.mockReturnValue(ok(paged));
+      const fetchedIds: string[] = [];
+      vcsBlockHistoryRevisionsAt.mockImplementation((_req, _path, spots: BlockRevisionSpot[]) => {
+        fetchedIds.push(...spots.map((s) => s.id));
+        return ok(spots.map((s) => byId.get(s.id)!));
+      });
+
+      open({ path: "/p/src/a.txt", lines: [0, 0], text: "after 0\n" });
+      await screen.findByText("Commit 0");
+      const list = screen.getByRole("rowgroup");
+
+      // Jump to the last row with End (at most one spinner on this initial uncached jump).
+      let spinners = 0;
+      fireEvent.keyDown(list, { key: "End" });
+      if (!screen.queryByTestId("diff")) spinners++;
+      await waitFor(() => expect(screen.getByTestId("diff").textContent).toContain("after 19"));
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // Step up through >= 10 rows (18 down to 4) with ArrowUp: never shows a spinner again.
+      const stepUp = async (i: number): Promise<void> => {
+        if (i < 4) return;
+        fireEvent.keyDown(list, { key: "ArrowUp" });
+        if (!screen.queryByTestId("diff")) spinners++;
+        expect(screen.getByTestId("diff").textContent).toContain(`after ${i}`);
+        await act(async () => {
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        return stepUp(i - 1);
+      };
+      await stepUp(18);
+      expect(spinners).toBeLessThanOrEqual(1);
+      // Every lazy row was fetched at most once (no refetch of cached rows).
+      expect(new Set(fetchedIds).size).toBe(fetchedIds.length);
+      const callsAfterUp = vcsBlockHistoryRevisionsAt.mock.calls.length;
+
+      // Stepping back down across cached rows makes zero additional calls.
+      for (let i = 5; i < revs.length; i++) {
+        fireEvent.keyDown(list, { key: "ArrowDown" });
+        expect(screen.getByTestId("diff").textContent).toContain(`after ${i}`);
+      }
+      expect(vcsBlockHistoryRevisionsAt).toHaveBeenCalledTimes(callsAfterUp);
+    });
+
+    it("reuses an in-flight batch, hands over urgentRow, and handles jumping away and back", async () => {
+      const makeRev = (i: number): BlockRevision => ({
+        id: i.toString(16).padStart(40, "0"),
+        shortId: i.toString(16).padStart(7, "0"),
+        author: "Ada",
+        email: "ada@example.com",
+        timeMs: 1_700_000_000_000 - i * 1000,
+        summary: `Commit ${i}`,
+        path: "src/a.txt",
+        before: `before ${i}\n`,
+        after: `after ${i}\n`,
+        beforeLine: 1,
+        afterLine: 1,
+      });
+      const revs = Array.from({ length: 16 }, (_, i) => makeRev(i));
+      const paged: BlockHistorySummary = {
+        anchor,
+        head: "after 0\n",
+        diffs: revs.slice(0, 4),
+        rest: revs.slice(4).map((r) => summaryOf(r)),
+      };
+      vcsBlockHistorySummary.mockReturnValue(ok(paged));
+
+      type Reply =
+        | { status: "ok"; data: BlockRevision[] }
+        | { status: "error"; error: { kind: string; message: string } };
+      const pending: Array<(reply: Reply) => void> = [];
+      vcsBlockHistoryRevisionsAt.mockImplementation(
+        () =>
+          new Promise<Reply>((resolve) => {
+            pending.push(resolve);
+          }),
+      );
+
+      open({ path: "/p/src/a.txt", lines: [0, 0], text: "after 0\n" });
+      await screen.findByText("Commit 0");
+
+      // Step to Commit 2: triggers background prefetch for [4..8) without resolving it yet.
+      fireEvent.click(screen.getByText("Commit 2"));
+      await waitFor(() => expect(vcsBlockHistoryRevisionsAt).toHaveBeenCalledTimes(1));
+
+      // Step onto Commit 4 (inside the in-flight batch): reuses the request (no second call) and shows spinner.
+      fireEvent.click(screen.getByText("Commit 4"));
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(vcsBlockHistoryRevisionsAt).toHaveBeenCalledTimes(1);
+      expect(cancelRequest).not.toHaveBeenCalled();
+      expect(screen.queryByTestId("diff")).toBeNull();
+
+      // Jump to Commit 3 (adjacent; still lookahead for [4..8)) and back to Commit 5 (inside [4..8)):
+      // still reuses the same in-flight request with no cancel and no second call.
+      fireEvent.click(screen.getByText("Commit 3"));
+      expect(screen.getByTestId("diff").textContent).toContain("after 3");
+      fireEvent.click(screen.getByText("Commit 5"));
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(vcsBlockHistoryRevisionsAt).toHaveBeenCalledTimes(1);
+      expect(cancelRequest).not.toHaveBeenCalled();
+
+      // Resolve the in-flight request: Commit 5's diff shows immediately.
+      await act(async () => pending[0]!({ status: "ok", data: revs.slice(4, 8) }));
+      expect(screen.getByTestId("diff").textContent).toContain("after 5");
+
+      // Trigger background prefetch for [8..12) by stepping to Commit 6, then land on Commit 8 so
+      // urgentRow is handed over to Commit 8 without a second call; failing that prefetch shows the error.
+      fireEvent.click(screen.getByText("Commit 6"));
+      await waitFor(() => expect(vcsBlockHistoryRevisionsAt).toHaveBeenCalledTimes(2));
+      fireEvent.click(screen.getByText("Commit 8"));
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(vcsBlockHistoryRevisionsAt).toHaveBeenCalledTimes(2);
+      await act(async () => pending[1]!({ status: "error", error: { kind: "internal", message: "git log failed" } }));
+      expect(screen.getByText("git log failed")).toBeTruthy();
+
+      // Jump away to unrelated Commit 0 and back to Commit 9 while [8..12) is in flight:
+      // jumping away cancels the in-flight request; jumping back starts a fresh one and ignores the cancelled reply.
+      fireEvent.click(screen.getByText("Commit 6"));
+      await waitFor(() => expect(vcsBlockHistoryRevisionsAt).toHaveBeenCalledTimes(3));
+      fireEvent.click(screen.getByText("Commit 0"));
+      expect(cancelRequest).toHaveBeenCalledWith(vcsBlockHistoryRevisionsAt.mock.calls[2]![0]);
+      fireEvent.click(screen.getByText("Commit 9"));
+      await waitFor(() => expect(vcsBlockHistoryRevisionsAt).toHaveBeenCalledTimes(4));
+      await act(async () => pending[2]!({ status: "ok", data: revs.slice(8, 12) }));
+      expect(screen.queryByTestId("diff")).toBeNull();
+      await act(async () => pending[3]!({ status: "ok", data: revs.slice(8, 12) }));
+      expect(screen.getByTestId("diff").textContent).toContain("after 9");
+    });
+
+    it("never evicts the currently displayed row when the cache is full", async () => {
+      const makeRev = (i: number): BlockRevision => ({
+        id: i.toString(16).padStart(40, "0"),
+        shortId: i.toString(16).padStart(7, "0"),
+        author: "Ada",
+        email: "ada@example.com",
+        timeMs: 1_700_000_000_000 - i * 1000,
+        summary: `Commit ${i}`,
+        path: "src/a.txt",
+        before: `before ${i}\n`,
+        after: `after ${i}\n`,
+        beforeLine: 1,
+        afterLine: 1,
+      });
+      // 72 rows: 4 inline diffs (0..3) + 68 lazy rest rows (4..71). Cache holds 64 lazy rows.
+      const revs = Array.from({ length: 72 }, (_, i) => makeRev(i));
+      const byId = new Map(revs.map((r) => [r.id, r]));
+      const paged: BlockHistorySummary = {
+        anchor,
+        head: "after 0\n",
+        diffs: revs.slice(0, 4),
+        rest: revs.slice(4).map((r) => summaryOf(r)),
+      };
+      vcsBlockHistorySummary.mockReturnValue(ok(paged));
+      const fetchedIds: string[] = [];
+      vcsBlockHistoryRevisionsAt.mockImplementation((_req, _path, spots: BlockRevisionSpot[]) => {
+        fetchedIds.push(...spots.map((s) => s.id));
+        return ok(spots.map((s) => byId.get(s.id)!));
+      });
+
+      open({ path: "/p/src/a.txt", lines: [0, 0], text: "after 0\n" });
+      await screen.findByText("Commit 0");
+      const list = screen.getByRole("rowgroup");
+
+      // Load [68..71] first so 68..71 are the 4 oldest entries in the cache.
+      fireEvent.keyDown(list, { key: "End" });
+      await waitFor(() => expect(screen.getByTestId("diff").textContent).toContain("after 71"));
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // Step down from 0 to 61 to fill the remaining 60 cache slots with [4..63] (total 64 entries;
+      // 68..71 are the 4 oldest, and 64..67 are still uncached).
+      fireEvent.keyDown(list, { key: "Home" });
+      expect(screen.getByTestId("diff").textContent).toContain("after 0");
+      const stepDownTo = async (i: number): Promise<void> => {
+        if (i > 61) return;
+        fireEvent.keyDown(list, { key: "ArrowDown" });
+        await act(async () => {
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        return stepDownTo(i + 1);
+      };
+      await stepDownTo(1);
+      expect(screen.getByTestId("diff").textContent).toContain("after 61");
+
+      // Jump back to Commit 71 and step up to Commit 69 (one of the 4 oldest cached entries).
+      // Lookahead from 69 prefetches [64..67]; eviction must NOT evict Commit 69 while it is displayed.
+      fireEvent.keyDown(list, { key: "End" });
+      expect(screen.getByTestId("diff").textContent).toContain("after 71");
+      fireEvent.keyDown(list, { key: "ArrowUp" });
+      expect(screen.getByTestId("diff").textContent).toContain("after 70");
+      const callsBefore = vcsBlockHistoryRevisionsAt.mock.calls.length;
+      fireEvent.keyDown(list, { key: "ArrowUp" });
+      expect(screen.getByTestId("diff").textContent).toContain("after 69");
+      await waitFor(() => expect(vcsBlockHistoryRevisionsAt.mock.calls.length).toBeGreaterThan(callsBefore));
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(screen.getByTestId("diff").textContent).toContain("after 69");
+      expect(fetchedIds.filter((id) => id === revs[69]!.id)).toHaveLength(1);
     });
   });
 });
