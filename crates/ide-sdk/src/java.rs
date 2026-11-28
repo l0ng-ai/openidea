@@ -1639,7 +1639,7 @@ pub fn jdbc_bridge_jar(data_dir: &Path) -> Option<PathBuf> {
     install_bundle(
         data_dir,
         "jdbc-bridge",
-        "1.0.0",
+        "2.0.0",
         include_bytes!("../../../java/jdbc-bridge/openidea-jdbc-bridge.jar"),
     )
 }

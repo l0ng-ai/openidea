@@ -55,6 +55,7 @@ pub(super) type Routes = Mutex<HashMap<String, CachedRoute>>;
 #[derive(Clone)]
 pub(super) struct Connection {
     pub(super) pool: Arc<Pool>,
+    pub(super) console_transactions: Arc<crate::manual_session::ConsoleTransactions>,
     route: Option<RouteSlot>,
 }
 
@@ -211,7 +212,7 @@ impl DbManager {
         if let Some(secs) = source.options.keep_alive_secs.filter(|s| *s > 0) {
             keep_alive(&pool, Duration::from_secs(secs.into()));
         }
-        Ok(Connection { pool, route })
+        Ok(Connection { pool, route, console_transactions: Default::default() })
     }
 
     async fn close_target(&self, id: &str, slot: Arc<ConnectionSlot>) {
@@ -223,17 +224,44 @@ impl DbManager {
         }
         self.cursors.release_target(id);
         if let Some(c) = slot.value.get() {
+            c.console_transactions.close().await;
             c.pool.close().await;
         }
     }
 
-    /// Retires a closed editor's named sessions without opening any data sources.
-    pub fn release_console(&self, console: crate::ConsoleId<'_>) {
-        for connection in self.pools.lock().values().filter_map(|slot| slot.value.get()) {
-            if let Pool::Clickhouse(pool) = &*connection.pool {
-                pool.release_console(console);
+    pub(super) fn opened_connection(&self, id: &str) -> Option<Connection> {
+        self.pools.lock().get(id).and_then(|slot| slot.value.get()).cloned()
+    }
+
+    /// Retires a closed editor's sessions without opening any data sources.
+    pub async fn release_console(&self, console: crate::ConsoleId<'_>) -> IdeResult<()> {
+        self.release_target_console(console, None).await
+    }
+
+    pub async fn release_target_console(&self, console: crate::ConsoleId<'_>, target: Option<&str>) -> IdeResult<()> {
+        self.cursors.release_console(console, target);
+        let connections: Vec<_> = self
+            .pools
+            .lock()
+            .iter()
+            .filter(|(id, _)| target.is_none_or(|target| id.as_str() == target))
+            .filter_map(|(_, slot)| slot.value.get().cloned())
+            .collect();
+        let mut result = Ok(());
+        for connection in connections {
+            let released = match &*connection.pool {
+                Pool::Clickhouse(pool) => {
+                    pool.release_console(console);
+                    Ok(())
+                }
+                Pool::Jdbc(pool) => pool.release_console(console).await,
+                _ => connection.console_transactions.release(console).await,
+            };
+            if let Err(error) = released {
+                result = Err(error);
             }
         }
+        result
     }
 
     pub async fn disconnect(&self, id: &str) {
