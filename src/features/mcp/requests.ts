@@ -54,6 +54,26 @@ export async function handleMcpRequest(
     }
     return;
   }
+  if (request.type === "debugConfiguration") {
+    // The IDE's Debug action builds the launch from the run configuration and opens the session's tab.
+    try {
+      await executeActionOrThrow("debug.mcpStart", request.config);
+      await send(id, true);
+    } catch (error) {
+      await send(id, false, error instanceof Error ? error.message : String(error)).catch(() => {});
+    }
+    return;
+  }
+  if (request.type === "breakpoints") {
+    // The editor owns breakpoints; let it replace its list, persist it and mirror it to the backend.
+    try {
+      await executeActionOrThrow("debug.mcpBreakpoints", request.files);
+      await send(id, true);
+    } catch (error) {
+      await send(id, false, error instanceof Error ? error.message : String(error)).catch(() => {});
+    }
+    return;
+  }
   if (request.type === "agentRun") {
     // The Run tool window starts it in the agent tab; the answer says whether it started.
     try {

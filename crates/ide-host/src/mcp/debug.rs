@@ -5,26 +5,24 @@
 //! MCP clients. A `sessionId` is the session name, or `name#id` when several sessions
 //! share a name; a bare numeric OpenIDEA session id is accepted as well.
 //!
-//! Breakpoints set here update the IDE backend's list for the window and are sent to sessions
-//! this window starts. The editor keeps its own list in local storage and can replace the
-//! backend's list when it syncs, so MCP breakpoints are not shown in the editor. Program output
-//! goes to the Debug tool window; unlike JetBrains these tools do not return an output file.
+//! Breakpoint edits and debug starts go through the project window, so the editor owns the
+//! same breakpoints the agent sees and the IDE's own Debug action builds the DAP launch.
+//! Program output goes to the Debug tool window; unlike JetBrains these tools do not return an
+//! output file.
 
 use super::page::{OFFSET, Page};
 use super::run::configs::{
-    BuildErrors, ExecutionTarget, apply_overrides, before_launch, config_from_code_location, confirmation_detail,
-    execution_failed, execution_target, load_configs, resolve_jvm_application,
+    ExecutionTarget, apply_overrides, config_from_code_location, confirmation_detail, execution_target, load_configs,
 };
 use super::tool::{Call, Output, Param, ParamType, Tool};
 use crate::ops;
 use futures::future::BoxFuture;
-use ide_core::settings::DebuggerSettings;
+use ide_core::event::McpUiRequest;
 use ide_core::{DebugSessionId, IdeError, IdeResult};
-use ide_dap::{Breakpoint, LaunchConfig, SessionInfo, StackFrame, StepKind, Variable};
-use ide_run::RunConfig;
+use ide_dap::{Breakpoint, SessionInfo, StackFrame, StepKind, Variable};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
@@ -200,465 +198,6 @@ must not be reused. Pass the returned `id` as `sessionId` to the other debugger 
 
 // ---------------------------------------------------------------- starting
 
-/// A command with a directory part is relative to `cwd`; a bare name stays on `PATH`.
-fn resolve_command(command: &str, cwd: &Path) -> String {
-    let relative = command.strip_prefix("./").unwrap_or(command);
-    if Path::new(relative).components().count() > 1 {
-        cwd.join(relative).to_string_lossy().into_owned()
-    } else {
-        relative.to_owned()
-    }
-}
-
-fn command_name(command: &str) -> String {
-    let name = command.rsplit(['/', '\\']).next().unwrap_or(command);
-    name.strip_suffix(".exe").or_else(|| name.strip_suffix(".cmd")).unwrap_or(name).to_owned()
-}
-
-fn extra_json(value: Value) -> Option<String> {
-    serde_json::to_string(&value).ok()
-}
-
-/// A Python command name like `python`, `python3` or `python3.12`.
-fn is_python(name: &str) -> bool {
-    name == "python"
-        || name
-            .strip_prefix("python")
-            .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit() || c == '.'))
-}
-
-fn system_python() -> &'static str {
-    if cfg!(windows) { "python" } else { "python3" }
-}
-
-/// A console script's debugger must run with the interpreter beside it in its venv, not a system one.
-fn python_for(command: &str, cwd: &Path, name: &str) -> String {
-    if is_python(name) {
-        return resolve_command(command, cwd);
-    }
-    if let Some(i) = command.rfind(|c| c == '/' || c == '\\') {
-        let dir = &command[..=i];
-        for exe in if cfg!(windows) { ["python.exe", "python"] } else { ["python", "python.exe"] } {
-            let candidate = resolve_command(&format!("{dir}{exe}"), cwd);
-            if Path::new(&candidate).is_file() {
-                return candidate;
-            }
-        }
-    }
-    system_python().to_owned()
-}
-
-/// Mirrors the IDE's debugpy launch: console scripts become modules, venv interpreters are used,
-/// and project managers (`uv run`, `poetry run`, …) keep their own options on the launcher.
-fn debugpy_launch(cwd: &Path, config: &RunConfig, launch: &mut LaunchConfig, dbg: &DebuggerSettings) {
-    let name = command_name(&config.command);
-    let managers = ["uv", "poetry", "pdm", "pipenv", "hatch", "rye"];
-    let value_options = [
-        "--with",
-        "--with-editable",
-        "--requirements",
-        "--project",
-        "--directory",
-        "--python",
-        "--package",
-        "--extra",
-        "--group",
-        "--env-file",
-        "--index",
-        "--index-url",
-        "--extra-index-url",
-    ];
-    let python = python_for(&config.command, cwd, &name);
-    let mut args = config.args.clone();
-    let mut extra = json!({
-        "python": python,
-        "console": "integratedTerminal",
-        "justMyCode": dbg.skip_library_code,
-        "subProcess": dbg.python.attach_subprocess,
-    });
-    if dbg.python.gevent {
-        extra["gevent"] = json!(true);
-    }
-    let mut tool = (!is_python(&name)).then(|| name.clone());
-    if managers.contains(&name.as_str()) && args.first().map(String::as_str) == Some("run") {
-        let mut i = 1;
-        while i < args.len() && args[i].starts_with('-') && args[i] != "-m" && args[i] != "--module" {
-            i += usize::from(value_options.contains(&args[i].as_str())) + 1;
-        }
-        i = i.min(args.len());
-        if i < args.len() {
-            let named = is_python(&command_name(&args[i]));
-            let mut interpreter = vec![resolve_command(&config.command, cwd)];
-            interpreter.extend(args[0..i].iter().cloned());
-            interpreter.push(if named { args[i].clone() } else { system_python().to_owned() });
-            extra["python"] = json!(interpreter);
-            extra["debugLauncherPython"] = json!(system_python());
-            args = args[i + usize::from(named)..].to_vec();
-            if args.first().map(String::as_str) == Some("--module") {
-                args[0] = "-m".into();
-            }
-            tool =
-                if named || args.first().is_some_and(|a| a == "-m") || args.first().is_some_and(|a| a.ends_with(".py"))
-                {
-                    None
-                } else {
-                    args.first().cloned()
-                };
-            if tool.is_some() && !args.is_empty() {
-                args.remove(0);
-            }
-        }
-    }
-    match tool {
-        Some(script) => {
-            extra["module"] = json!(if script == "django-admin" { "django" } else { script.as_str() });
-            launch.args = args;
-        }
-        None if args.first().map(String::as_str) == Some("-m") && args.len() > 1 => {
-            extra["module"] = json!(args[1]);
-            launch.args = args[2..].to_vec();
-        }
-        None => {
-            let mut pos = 0;
-            while pos < args.len() && args[pos].starts_with('-') {
-                pos += 1;
-            }
-            if pos > 0 {
-                // debugpy takes interpreter flags in the `python` array, not in a `pythonArgs` field.
-                let flags = &args[..pos];
-                match extra["python"].take() {
-                    Value::String(interpreter) => {
-                        let mut list = vec![interpreter];
-                        list.extend(flags.iter().cloned());
-                        extra["python"] = json!(list);
-                    }
-                    Value::Array(mut list) => {
-                        list.extend(flags.iter().map(|flag| json!(flag)));
-                        extra["python"] = json!(list);
-                    }
-                    other => extra["python"] = other,
-                }
-            }
-            if let Some(script) = args.get(pos) {
-                launch.program = Some(cwd.join(script).to_string_lossy().into_owned());
-                launch.args = args[pos + 1..].to_vec();
-                if script.ends_with("manage.py") {
-                    extra["django"] = json!(true);
-                }
-            } else {
-                launch.program = Some(resolve_command(&config.command, cwd));
-                launch.args = args;
-            }
-        }
-    }
-    launch.extra_json = extra_json(extra);
-}
-
-/// Mirrors the IDE's Delve launch: test selection flags stay on the debuggee, build flags go to
-/// `buildFlags`, and a saved Go configuration's own form fields take precedence over the command line.
-fn go_launch(cwd: &Path, root: &Path, config: &RunConfig, launch: &mut LaunchConfig) -> IdeResult<()> {
-    let params = &config.extras.params;
-    let words = |value: &str| -> Vec<String> {
-        super::run::split_words(value).unwrap_or_else(|_| value.split_whitespace().map(str::to_owned).collect())
-    };
-    if let Some(kind) = params.get("goKind") {
-        let test = kind == "test";
-        let module_dir = params.get("module").map(String::as_str).unwrap_or(".");
-        let module = if module_dir.is_empty() || module_dir == "." {
-            root.to_path_buf()
-        } else {
-            root.join(module_dir.strip_prefix("./").unwrap_or(module_dir))
-        };
-        let target = params.get("target").map(String::as_str).unwrap_or(".");
-        let file_scope = params.get("scope").map(String::as_str) == Some("file");
-        let program = if params.get("scope").map(String::as_str) == Some("package")
-            && !target.starts_with('.')
-            && !Path::new(target).is_absolute()
-        {
-            target.to_owned()
-        } else {
-            module.join(target.split('|').next().unwrap_or(target).trim()).to_string_lossy().into_owned()
-        };
-        let flags = words(params.get("toolArgs").map(String::as_str).unwrap_or(""));
-        let mut args = if test {
-            params.get("pattern").map(|p| vec!["-test.run".to_owned(), p.clone()]).unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        args.extend(words(params.get("programArgs").map(String::as_str).unwrap_or("")));
-        launch.program = Some(program);
-        launch.args = args;
-        let mut extra = json!({
-            "mode": if test { "test" } else { "debug" },
-            "dlvCwd": module.to_string_lossy(),
-            "__goToolArgs": flags,
-            "__goTargets": [target],
-            "__goBuildDir": module.to_string_lossy(),
-            "__goExecutable": resolve_command(&config.command, &module),
-            "__goUseTags": params.get("useTags").map(String::as_str) != Some("false"),
-        });
-        if file_scope {
-            let files: Vec<String> =
-                target.split('|').map(|file| module.join(file.trim()).to_string_lossy().into_owned()).collect();
-            extra["__goFiles"] = json!(files);
-        }
-        if let Some(dir) = params.get("outputDir") {
-            extra["output"] = json!(root.join(dir).join("go-debug").to_string_lossy());
-        }
-        launch.extra_json = extra_json(extra);
-        return Ok(());
-    }
-    let args = &config.args;
-    let sub = args.first().map(String::as_str).unwrap_or_default();
-    let test = sub == "test";
-    let pivot = args.iter().position(|a| a == "--" || (test && a == "-args")).unwrap_or(args.len());
-    let mut program_args = args.iter().skip(pivot).skip(1).cloned().collect::<Vec<_>>();
-    let rest = &args[1..pivot.min(args.len())];
-    let bool_flags = [
-        "-a",
-        "-n",
-        "-race",
-        "-msan",
-        "-asan",
-        "-cover",
-        "-linkshared",
-        "-modcacherw",
-        "-buildvcs",
-        "-trimpath",
-        "-v",
-        "-work",
-        "-x",
-        "-json",
-        "-c",
-    ];
-    let selectors = [
-        "-run",
-        "-skip",
-        "-bench",
-        "-benchtime",
-        "-count",
-        "-timeout",
-        "-parallel",
-        "-cpu",
-        "-list",
-        "-fuzz",
-        "-fuzztime",
-        "-fuzzminimizetime",
-    ];
-    let mut flags = Vec::new();
-    let mut test_flags = Vec::new();
-    let mut targets: Vec<String> = Vec::new();
-    let mut i = 0;
-    while i < rest.len() {
-        let arg = &rest[i];
-        if test
-            && selectors.iter().any(|f| arg == f || arg.starts_with(&format!("-test.{}", f.trim_start_matches('-'))))
-        {
-            test_flags.push(if arg.starts_with("-test.") {
-                arg.clone()
-            } else {
-                format!("-test.{}", arg.trim_start_matches('-'))
-            });
-            if !arg.contains('=')
-                && let Some(value) = rest.get(i + 1)
-            {
-                test_flags.push(value.clone());
-                i += 1;
-            }
-        } else if arg.starts_with('-') {
-            if !(test && (arg == "-json" || arg == "-c")) {
-                flags.push(arg.clone());
-                if !arg.contains('=')
-                    && !bool_flags.contains(&arg.as_str())
-                    && let Some(value) = rest.get(i + 1)
-                {
-                    flags.push(value.clone());
-                    i += 1;
-                }
-            }
-        } else if sub == "run"
-            && !targets.is_empty()
-            && !(arg.ends_with(".go") && targets.iter().all(|t| t.ends_with(".go")))
-        {
-            program_args.clone_from(&rest[i..].to_vec());
-            break;
-        } else {
-            targets.push(arg.clone());
-        }
-        i += 1;
-    }
-    let target = targets.first().map(String::as_str).unwrap_or(".");
-    let program = if target.ends_with(".go") || target.starts_with('.') || Path::new(target).is_absolute() {
-        cwd.join(target)
-    } else {
-        PathBuf::from(target)
-    };
-    launch.program = Some(program.to_string_lossy().into_owned());
-    launch.args = test_flags.into_iter().chain(program_args).collect();
-    launch.extra_json = extra_json(json!({
-        "mode": if test { "test" } else { "debug" },
-        "buildFlags": flags.join(" "),
-        "dlvCwd": cwd.to_string_lossy(),
-        "__goToolArgs": flags,
-        "__goTargets": if targets.is_empty() { vec![".".to_owned()] } else { targets },
-        "__goExecutable": resolve_command(&config.command, cwd),
-    }));
-    Ok(())
-}
-
-/// Builds a DAP launch configuration from the run configuration the IDE would debug.
-/// The adapter-specific cases mirror the IDE's Run/Debug dialog; anything else gets the
-/// plain program, arguments, working directory and environment of the configuration.
-fn launch_config(root: &Path, config: &RunConfig, dbg: &DebuggerSettings) -> IdeResult<LaunchConfig> {
-    let adapter = config.debug_adapter.clone().ok_or_else(|| {
-        IdeError::invalid(format!(
-            "run configuration `{}` has no debugger adapter; use get_run_configurations to pick a debuggable one",
-            config.name
-        ))
-    })?;
-    let cwd = config.cwd.as_deref().map(|p| root.join(p)).unwrap_or_else(|| root.to_path_buf());
-    let mut launch = LaunchConfig {
-        name: config.name.clone(),
-        adapter: adapter.clone(),
-        request: "launch".into(),
-        program: None,
-        args: Vec::new(),
-        cwd: Some(cwd.clone().into()),
-        env: config.env.clone(),
-        extra_json: None,
-    };
-    match adapter.as_str() {
-        "codelldb" | "lldb-dap" | "gdb" if config.kind == "cargo" => {
-            let pivot = config.args.iter().position(|a| a == "--").unwrap_or(config.args.len());
-            let (cargo_args, program_args) = config.args.split_at(pivot);
-            let sub = cargo_args.first().map(String::as_str).unwrap_or_default();
-            let mut build = if sub == "test" || sub == "nextest" {
-                vec!["test".to_owned(), "--no-run".to_owned()]
-            } else {
-                vec!["build".to_owned()]
-            };
-            build.extend(cargo_args.iter().skip(1).filter(|a| a.as_str() != "--no-run").cloned());
-            let mut extra = json!({ "cargo": { "args": build } });
-            if sub != "test" && sub != "nextest" {
-                extra["cargo"]["filter"] = json!({ "kind": "bin" });
-            }
-            if let Some(i) = cargo_args.iter().position(|a| a == "--bin" || a == "--example") {
-                let kind = if cargo_args[i] == "--example" { "example" } else { "bin" };
-                if let Some(name) = cargo_args.get(i + 1) {
-                    extra["cargo"]["filter"] = json!({ "name": name, "kind": kind });
-                }
-            }
-            launch.args = program_args.iter().skip(1).cloned().collect();
-            launch.extra_json = extra_json(extra);
-        }
-        "debugpy" => debugpy_launch(&cwd, config, &mut launch, dbg),
-        "js-debug" => {
-            let mut extra = json!({
-                "type": "pwa-node",
-                "console": "integratedTerminal",
-                "autoAttachChildProcesses": true,
-                "skipFiles": if dbg.skip_library_code { json!(["<node_internals>/**", "**/node_modules/**"]) } else { json!([]) },
-            });
-            let name = command_name(&config.command);
-            if name == "node" && config.args.first().is_some_and(|a| !a.starts_with('-')) {
-                launch.program = Some(cwd.join(&config.args[0]).to_string_lossy().into_owned());
-                launch.args = config.args.iter().skip(1).cloned().collect();
-                if config.command != name {
-                    extra["runtimeExecutable"] = json!(resolve_command(&config.command, &cwd));
-                }
-            } else {
-                extra["runtimeExecutable"] = json!(config.command);
-                extra["runtimeArgs"] = json!(config.args);
-            }
-            launch.extra_json = extra_json(extra);
-        }
-        "delve" => go_launch(&cwd, root, config, &mut launch)?,
-        "bun-dap" => {
-            let mut args = config.args.clone();
-            if args.first().map(String::as_str) == Some("run") {
-                args.remove(0);
-            }
-            let file = args.first().cloned().unwrap_or_default();
-            launch.extra_json = extra_json(json!({
-                "program": cwd.join(file).to_string_lossy(),
-                "runtime": config.command,
-                "runtimeArgs": args.iter().skip(1).collect::<Vec<_>>(),
-            }));
-        }
-        "netcoredbg" => {
-            let program = config
-                .extras
-                .params
-                .get("targetPath")
-                .ok_or_else(|| IdeError::invalid("a .NET configuration without targetPath cannot be debugged"))?;
-            launch.program = Some(program.clone());
-            let raw = config
-                .extras
-                .params
-                .get("programArgs")
-                .or_else(|| config.extras.params.get("profileArgs"))
-                .map(String::as_str)
-                .unwrap_or_default();
-            launch.args = raw.split_whitespace().map(str::to_owned).collect();
-            launch.extra_json = extra_json(json!({ "justMyCode": dbg.skip_library_code }));
-        }
-        "godot" => {
-            let project = config
-                .args
-                .iter()
-                .position(|a| a == "--path")
-                .and_then(|i| config.args.get(i + 1))
-                .map(|p| cwd.join(p))
-                .unwrap_or_else(|| cwd.clone());
-            let scene =
-                config
-                    .args
-                    .iter()
-                    .find(|a| {
-                        let lower = a.to_ascii_lowercase();
-                        lower.ends_with(".scn") || lower.ends_with(".tscn")
-                    })
-                    .map(|s| {
-                        if s.starts_with("res://") {
-                            s.clone()
-                        } else {
-                            format!("res://{}", s.trim_start_matches("./"))
-                        }
-                    })
-                    .unwrap_or_else(|| "main".to_owned());
-            launch.cwd = Some(project.clone().into());
-            launch.extra_json = extra_json(json!({
-                "project": project.to_string_lossy(),
-                "scene": scene,
-            }));
-        }
-        "codelldb" | "lldb-dap" | "gdb" => {
-            launch.program = Some(resolve_command(&config.command, &cwd));
-            launch.args = config.args.clone();
-            if adapter == "lldb-dap" {
-                let env = config.env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>();
-                let mut extra = json!({ "env": env });
-                if let (Some(from), Some(to)) =
-                    (config.extras.params.get("cmakeSourceRoot"), config.extras.params.get("cmakeCanonicalSourceRoot"))
-                {
-                    extra["sourceMap"] = json!([[from, to]]);
-                }
-                launch.extra_json = extra_json(extra);
-            }
-        }
-        "java-debug" | "java-analyzer" | "dart" | "php-debug" | "unity" => {
-            return Err(IdeError::invalid(format!(
-                "the `{adapter}` debugger cannot start a run configuration through MCP; use the IDE's Run/Debug dialog"
-            )));
-        }
-        _ => {
-            launch.program = Some(resolve_command(&config.command, &cwd));
-            launch.args = config.args.clone();
-        }
-    }
-    Ok(launch)
-}
-
 fn start_debugger_session() -> Tool {
     Tool::new(
         "xdebug_start_debugger_session",
@@ -670,9 +209,9 @@ fn start_debugger_session() -> Tool {
 Launch overrides (`programArguments`, `workingDirectory`, `envs`) apply to this launch only; pass them only when \
 the configuration reports `supportsDynamicLaunchOverrides=true`, as other configurations refuse them. Missing or \
 empty string keeps the configured value; a whitespace-only string clears it for this launch.\n\
-In OpenIDEA the user is asked first; the run's before-launch tasks run; the session shows in the Debug tool window. \
-Program output goes there rather than into this tool's result. Java configurations that need the IDE's classpath \
-resolution are best started from the Run/Debug dialog; attach to a JVM with a JDWP configuration instead.",
+In OpenIDEA the user is asked first, then the IDE's own Debug action starts the configuration: the same launch, \
+before-launch tasks and Debug tool window as when you press Debug. This needs a project window (it does not work \
+for a background project without one). Program output goes to the Debug console, not into this tool's result.",
         |call| async move {
             let target =
                 execution_target(call.opt_str("configurationName")?, call.opt_str("filePath")?, call.opt_i64("line")?)?;
@@ -706,18 +245,10 @@ resolution are best started from the Run/Debug dialog; attach to a JVM with a JD
             let cwd = config.cwd.as_deref().map(|p| call.root().join(p)).unwrap_or_else(|| call.root().to_path_buf());
             let detail = confirmation_detail(&config, &call.display(&cwd), &stored_env, &overrides, &configs);
             call.confirm(&config.name, Some(detail)).await?;
-            let mut errors = BuildErrors::default();
-            if let Some(reason) = before_launch(&call, &config, &configs, &mut Vec::new(), &mut errors).await? {
-                return Err(execution_failed(&[errors.text(), Some(reason)]));
-            }
-            let config = match resolve_jvm_application(&call, config, &mut errors).await? {
-                Ok(config) => config,
-                Err(reason) => return Err(execution_failed(&[errors.text(), Some(reason)])),
-            };
-            let debugger = call.project().settings.effective().debugger.clone();
-            let launch = launch_config(call.root(), &config, &debugger)?;
+            let known: Vec<DebugSessionId> = sessions(&call)?.iter().map(|s| s.id).collect();
+            let config_value = serde_json::to_value(&config).map_err(|e| IdeError::invalid(e.to_string()))?;
             let limit = super::run::timeout(&call, 60_000)?;
-            let id = tokio::time::timeout(limit, ops::debug::debug_start(&call.host(), call.window(), launch))
+            tokio::time::timeout(limit, call.ask(McpUiRequest::DebugConfiguration { config: config_value }))
                 .await
                 .map_err(|_| IdeError::invalid("timed out starting the debug session"))??;
             let grace = Duration::from_millis(call.opt_i64("graceWaitMs")?.unwrap_or(2_000).max(0) as u64);
@@ -728,12 +259,17 @@ resolution are best started from the Run/Debug dialog; attach to a JVM with a JD
                 }
             }
             let all = sessions(&call)?;
-            let name = session_of(&all, id).map(|s| s.name.clone()).unwrap_or_default();
+            let fresh: Vec<_> = all.iter().filter(|s| !known.contains(&s.id)).collect();
+            let started = fresh
+                .iter()
+                .find(|s| s.name == config.name)
+                .or_else(|| fresh.first())
+                .ok_or_else(|| IdeError::invalid("the debug session did not start"))?;
             Output::json(json!({
-                "sessionId": session_of(&all, id).map(|s| public_id(&all, s)),
-                "id": id.0,
-                "name": name,
-                "status": session_status(&call, id),
+                "sessionId": public_id(&all, started),
+                "id": started.id.0,
+                "name": started.name,
+                "status": session_status(&call, started.id),
                 "runConfigurationName": config.name,
             }))
         },
@@ -886,51 +422,84 @@ fn parse_line_bp_id(id: &str) -> IdeResult<(String, u32)> {
     Ok((file.to_owned(), line - 1))
 }
 
-/// Verification state of breakpoint `index` of a file (the states are index-aligned).
-fn verified(call: &Call, path: &Path, index: usize) -> (bool, Option<String>) {
-    match ops::debug::debug_breakpoint_states(&call.host(), path.to_path_buf()).ok() {
-        Some(states) => states.get(index).map(|s| (s.verified, s.message.clone())).unwrap_or((false, None)),
-        None => (false, None),
-    }
+/// The window's breakpoints under the project-relative paths the editor uses.
+fn editor_breakpoints(call: &Call) -> BTreeMap<String, Vec<Breakpoint>> {
+    let (lines, _, _) = ops::debug::debug_breakpoints(&call.host(), call.window());
+    lines.into_iter().map(|(path, bps)| (call.display(&path), bps)).collect()
 }
 
-fn line_bp_json(call: &Call, path: &Path, line0: u32, bp: &Breakpoint, index: usize) -> Value {
-    let (is_verified, message) = verified(call, path, index);
+async fn ask_breakpoints(call: &Call, files: BTreeMap<String, Vec<Breakpoint>>) -> IdeResult<()> {
+    let files = files
+        .into_iter()
+        .map(|(path, bps)| {
+            (
+                path,
+                bps.into_iter()
+                    .map(|bp| ide_core::event::McpBreakpoint {
+                        line: bp.line + 1,
+                        enabled: bp.enabled,
+                        condition: bp.condition,
+                        hit_condition: bp.hit_condition,
+                        log_message: bp.log_message,
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    call.ask(McpUiRequest::Breakpoints { files }).await
+}
+
+/// Last verification states of a project-relative file (aligned with its breakpoint list).
+fn verification(call: &Call, display: &str) -> Vec<ide_dap::BreakpointState> {
+    let host = call.host();
+    let (lines, _, _) = ops::debug::debug_breakpoints(&host, call.window());
+    let path =
+        lines.keys().find(|path| call.display(path) == display).cloned().unwrap_or_else(|| call.root().join(display));
+    ops::debug::debug_breakpoint_states(&host, path).unwrap_or_default()
+}
+
+fn line_bp_json(file: &str, bp: &Breakpoint, states: &[ide_dap::BreakpointState]) -> Value {
+    let index = bp.line;
+    let state = states.iter().find(|s| s.line == index);
     json!({
-        "id": line_bp_id(&call.display(path), line0),
+        "id": line_bp_id(file, bp.line),
         "type": "line",
-        "file": call.display(path),
-        "line": line0 + 1,
+        "file": file,
+        "line": bp.line + 1,
         "enabled": bp.enabled,
         "condition": bp.condition,
         "hitCondition": bp.hit_condition,
         "isLogMessage": bp.log_message.is_some(),
         "temporary": false,
-        "verified": is_verified,
-        "message": message,
+        "verified": state.is_some_and(|s| s.verified),
+        "message": state.and_then(|s| s.message.clone()),
     })
 }
 
 fn list_breakpoints() -> Tool {
     Tool::new(
         "xdebug_list_breakpoints",
-        "Lists all breakpoints of this project, or only those in `filePath`. Each line breakpoint has a canonical \
-`id`, `file`, 1-based `line`, `enabled`, `condition`, `hitCondition`, `isLogMessage`, `verified` and an optional \
-`message` from the last verification. Function and data breakpoints are listed too, with ids prefixed `function:` \
-and `data:`. Call this before RESUME to check that an enabled breakpoint will be hit. These are the IDE backend's \
-breakpoints for this window; the editor keeps a separate list and can replace this one when it syncs, so verify \
-with this tool after any editor action.",
+        "Lists the editor's breakpoints for this project, or only those in `filePath`. Each line breakpoint has a \
+canonical `id`, `file`, 1-based `line`, `enabled`, `condition`, `hitCondition`, `isLogMessage`, `verified` and an \
+optional `message` from the last verification. Function and data breakpoints are listed too, with ids prefixed \
+`function:` and `data:`. Call this before RESUME to check that an enabled breakpoint will be hit. Breakpoints set \
+with `xdebug_set_breakpoint` are the same ones the editor shows and persists.",
         |call| async move {
             let file_filter = call.opt_str("filePath")?;
-            let filter = file_filter.as_deref().map(|f| call.resolve_inside(f)).transpose()?;
+            let filter = match file_filter.as_deref() {
+                Some(file) => Some(call.display(&call.resolve_inside(file)?)),
+                None => None,
+            };
             let (lines, functions, data) = ops::debug::debug_breakpoints(&call.host(), call.window());
             let mut out = Vec::new();
             for (path, bps) in lines {
-                if filter.as_ref().is_some_and(|f| f != &path) {
+                let file = call.display(&path);
+                if filter.as_ref().is_some_and(|f| f != &file) {
                     continue;
                 }
-                for (index, bp) in bps.iter().enumerate() {
-                    out.push(line_bp_json(&call, &path, bp.line, bp, index));
+                let states = verification(&call, &file);
+                for bp in bps {
+                    out.push(line_bp_json(&file, &bp, &states));
                 }
             }
             if filter.is_none() {
@@ -1003,52 +572,36 @@ fn line_text(call: &Call, path: &Path, line0: usize) -> Option<String> {
 fn set_breakpoint() -> Tool {
     Tool::new(
         "xdebug_set_breakpoint",
-        "Creates or updates a line breakpoint. By location pass `filePath` (project-relative) and 1-based `line`; \
-by id pass a canonical `breakpointId` from `xdebug_set_breakpoint` or `xdebug_list_breakpoints` (optionally with a \
-new `filePath`/`line` to relocate it). Fields you pass are applied to the breakpoint; fields you omit keep their \
-current value, and an explicit null clears a string field. `isLogMessage`/`logMessage` make a tracepoint. \
-`isLogStack`, `temporary` and `suspendPolicy` are accepted for compatibility but OpenIDEA always suspends the \
-thread and does not implement one-shot or stack-logging breakpoints. Condition errors are reported as the \
-breakpoint's `message` after the IDE verifies it. A successful result includes `lineText` so the placement can be \
-checked before RESUME.",
+        "Creates or updates a line breakpoint of the editor. By location pass `filePath` (project-relative) and \
+1-based `line`; by id pass a canonical `breakpointId` from `xdebug_set_breakpoint` or `xdebug_list_breakpoints` \
+(optionally with a new `filePath`/`line` to relocate it). Fields you pass are applied to the breakpoint; fields you \
+omit keep their current value, and an explicit null clears a string field. `isLogMessage`/`logMessage` make a \
+tracepoint. `isLogStack`, `temporary` and `suspendPolicy` are accepted for compatibility but OpenIDEA always \
+suspends the thread and does not implement one-shot or stack-logging breakpoints. A successful result includes \
+`lineText` so the placement can be checked before RESUME. The breakpoint is shown in the editor's gutter and \
+persists with the project; this needs a project window.",
         |call| async move {
             let _guard = BREAKPOINT_EDITS.lock().await;
-            let host = call.host();
-            let (mut lines, _, _) = ops::debug::debug_breakpoints(&host, call.window());
+            let mut files = editor_breakpoints(&call);
             let id = call.opt_str("breakpointId")?;
             let (path, line0) = if let Some(id) = id {
-                if let Some(name) = id.strip_prefix("function:") {
-                    return Err(IdeError::invalid(format!(
-                        "function breakpoint `{name}` cannot be edited; remove it first"
-                    )));
-                }
-                if id.starts_with("data:") {
-                    return Err(IdeError::invalid("data breakpoints cannot be edited; remove it first"));
+                if id.starts_with("function:") || id.starts_with("data:") {
+                    return Err(IdeError::invalid("function and data breakpoints are managed in the IDE"));
                 }
                 let (old_file, old_line) = parse_line_bp_id(&id)?;
-                let old_path = call.resolve_inside(&old_file)?;
-                // Relocation by id: a supplied filePath/line moves the breakpoint.
                 let (new_file, new_line) = (call.opt_str("filePath")?, call.opt_i64("line")?);
-                let (path, line0) = match (new_file, new_line) {
-                    (None, None) => (old_path.clone(), old_line),
-                    (file, Some(n)) if n >= 1 => {
-                        let target = match file {
-                            Some(file) => call.resolve_inside(&file)?,
-                            None => old_path.clone(),
-                        };
-                        (target, (n - 1) as u32)
-                    }
-                    (Some(file), None) => (call.resolve_inside(&file)?, old_line),
+                let (new_file, line0) = match (new_file, new_line) {
+                    (None, None) => (old_file.clone(), old_line),
+                    (file, Some(n)) if n >= 1 => (file.unwrap_or_else(|| old_file.clone()), (n - 1) as u32),
+                    (Some(file), None) => (file, old_line),
                     _ => return Err(IdeError::invalid("line must be >= 1")),
                 };
-                if path != old_path || line0 != old_line {
-                    if let Some(bps) = lines.get_mut(&old_path) {
+                if new_file != old_file || line0 != old_line {
+                    if let Some(bps) = files.get_mut(&old_file) {
                         bps.retain(|b| b.line != old_line);
-                        let cleared = bps.clone();
-                        ops::debug::debug_set_breakpoints(&host, call.window(), old_path, cleared).await?;
                     }
                 }
-                (path, line0)
+                (call.resolve_inside(&new_file)?, line0)
             } else {
                 let file = call.str("filePath")?;
                 let line = call
@@ -1061,9 +614,10 @@ checked before RESUME.",
                 }
                 (call.resolve_inside(&file)?, line as u32 - 1)
             };
-            let mut bps = lines.get(&path).cloned().unwrap_or_default();
-            let existing_index = bps.iter().position(|b| b.line == line0);
-            let mut bp = existing_index.and_then(|i| bps.get(i).cloned()).unwrap_or(Breakpoint {
+            let file = call.display(&path);
+            let bps = files.entry(file.clone()).or_default();
+            let index = bps.iter().position(|b| b.line == line0);
+            let mut bp = index.and_then(|i| bps.get(i).cloned()).unwrap_or(Breakpoint {
                 line: line0,
                 condition: None,
                 hit_condition: None,
@@ -1079,28 +633,23 @@ checked before RESUME.",
             if log {
                 let mut message = bp.log_message.clone();
                 apply_optional_string(&call, "logMessage", &mut message)?;
-                bp.log_message = Some(message.unwrap_or_else(|| format!("{}:{} hit", call.display(&path), line0 + 1)));
+                bp.log_message = Some(message.unwrap_or_else(|| format!("{file}:{} hit", line0 + 1)));
             } else {
                 bp.log_message = None;
             }
-            match existing_index {
-                Some(i) => bps[i] = bp.clone(),
-                None => bps.push(bp.clone()),
+            match index {
+                Some(i) => bps[i] = bp,
+                None => bps.push(bp),
             }
-            let states = ops::debug::debug_set_breakpoints(&call.host(), call.window(), path.clone(), bps).await?;
-            let (is_verified, message) = states
-                .iter()
-                .enumerate()
-                .find(|(_, s)| s.line == line0)
-                .map(|(_, s)| (s.verified, s.message.clone()))
-                .unwrap_or((false, None));
+            ask_breakpoints(&call, files).await?;
+            let state = verification(&call, &file).into_iter().find(|s| s.line == line0);
             Output::json(json!({
-                "id": line_bp_id(&call.display(&path), line0),
-                "file": call.display(&path),
+                "id": line_bp_id(&file, line0),
+                "file": file,
                 "line": line0 + 1,
                 "lineText": line_text(&call, &path, line0 as usize),
-                "verified": is_verified,
-                "message": message,
+                "verified": state.as_ref().is_some_and(|s| s.verified),
+                "message": state.and_then(|s| s.message),
             }))
         },
     )
@@ -1125,11 +674,11 @@ checked before RESUME.",
 fn remove_breakpoint() -> Tool {
     Tool::new(
         "xdebug_remove_breakpoint",
-        "Removes breakpoints. Pass a canonical `breakpointId` from `xdebug_set_breakpoint` / \
+        "Removes breakpoints from the editor. Pass a canonical `breakpointId` from `xdebug_set_breakpoint` / \
 `xdebug_list_breakpoints`, or `filePath` with an optional 1-based `line`; with only a `filePath`, all breakpoints in \
-that file are removed; with neither (the default `owner=agent`), all breakpoints of this project are removed, \
-including function and data breakpoints. Removal of a missing breakpoint is not an error: `removed` says whether \
-anything was removed. `owner` is accepted for compatibility; OpenIDEA keeps one set of breakpoints per window.",
+that file are removed; with neither (the default `owner=agent`), all line breakpoints of this project are removed. \
+Removal of a missing breakpoint is not an error: `removed` says whether anything was removed. `owner` is accepted \
+for compatibility. Function and data breakpoints are managed in the IDE; this needs a project window.",
         |call| async move {
             let _guard = BREAKPOINT_EDITS.lock().await;
             let owner = call.opt_str("owner")?;
@@ -1137,35 +686,23 @@ anything was removed. `owner` is accepted for compatibility; OpenIDEA keeps one 
                 return Err(IdeError::invalid("owner must be `agent` or `user`"));
             }
             let id = call.opt_str("breakpointId")?;
-            let file = call.opt_str("filePath")?;
+            if id.as_deref().is_some_and(|id| id.starts_with("function:") || id.starts_with("data:")) {
+                return Err(IdeError::invalid("function and data breakpoints are managed in the IDE"));
+            }
+            let file_filter = call.opt_str("filePath")?;
             let line = call.opt_i64("line")?.filter(|n| *n > 0).map(|n| n as u32 - 1);
-            let host = call.host();
-            let (mut lines, mut functions, mut data) = ops::debug::debug_breakpoints(&host, call.window());
+            let mut files = editor_breakpoints(&call);
             let mut count = 0;
             if let Some(id) = id {
-                if let Some(name) = id.strip_prefix("function:") {
-                    let before = functions.len();
-                    functions.retain(|b| b.name != name);
-                    count += before - functions.len();
-                    ops::debug::debug_set_function_breakpoints(&host, call.window(), functions).await?;
-                } else if let Some(key) = id.strip_prefix("data:") {
-                    let before = data.len();
-                    data.retain(|b| b.data_id != key);
-                    count += before - data.len();
-                    ops::debug::debug_set_data_breakpoints(&host, call.window(), data).await?;
-                } else {
-                    let (path, line0) = parse_line_bp_id(&id)?;
-                    let path = call.resolve_inside(&path)?;
-                    if let Some(bps) = lines.get_mut(&path) {
-                        let before = bps.len();
-                        bps.retain(|b| b.line != line0);
-                        count += before - bps.len();
-                        ops::debug::debug_set_breakpoints(&host, call.window(), path.clone(), bps.clone()).await?;
-                    }
+                let (file, line0) = parse_line_bp_id(&id)?;
+                if let Some(bps) = files.get_mut(&file) {
+                    let before = bps.len();
+                    bps.retain(|b| b.line != line0);
+                    count += before - bps.len();
                 }
-            } else if let Some(file) = file {
-                let path = call.resolve_inside(&file)?;
-                if let Some(bps) = lines.get_mut(&path) {
+            } else if let Some(file) = file_filter {
+                let file = call.display(&call.resolve_inside(&file)?);
+                if let Some(bps) = files.get_mut(&file) {
                     match line {
                         Some(line0) => {
                             let before = bps.len();
@@ -1177,13 +714,13 @@ anything was removed. `owner` is accepted for compatibility; OpenIDEA keeps one 
                             bps.clear();
                         }
                     }
-                    ops::debug::debug_set_breakpoints(&host, call.window(), path, bps.clone()).await?;
                 }
             } else {
-                count = lines.values().map(Vec::len).sum::<usize>() + functions.len() + data.len();
-                ops::debug::debug_replace_breakpoints(&host, call.window(), BTreeMap::new()).await?;
-                ops::debug::debug_set_function_breakpoints(&host, call.window(), Vec::new()).await?;
-                ops::debug::debug_set_data_breakpoints(&host, call.window(), Vec::new()).await?;
+                count = files.values().map(Vec::len).sum();
+                files.clear();
+            }
+            if count > 0 {
+                ask_breakpoints(&call, files).await?;
             }
             Output::json(json!({ "removed": count > 0, "count": count }))
         },
@@ -1577,133 +1114,6 @@ mod tests {
 
     fn info(id: u32, name: &str) -> SessionInfo {
         SessionInfo { id: DebugSessionId(id), name: name.into(), adapter: "debugpy".into(), parent: None }
-    }
-
-    fn config(adapter: Option<&str>, kind: &str, command: &str, args: &[&str]) -> RunConfig {
-        RunConfig {
-            id: "x".into(),
-            name: "run x".into(),
-            kind: kind.into(),
-            command: command.into(),
-            args: args.iter().map(|a| (*a).to_owned()).collect(),
-            cwd: None,
-            env: Default::default(),
-            detected: false,
-            is_test: false,
-            debug_adapter: adapter.map(str::to_owned),
-            allow_parallel: false,
-            extras: Default::default(),
-        }
-    }
-
-    fn debugger() -> DebuggerSettings {
-        DebuggerSettings::default()
-    }
-
-    #[test]
-    fn a_native_launch_uses_the_program_and_arguments() {
-        let launch = launch_config(
-            Path::new("/p"),
-            &config(Some("codelldb"), "application", "./target/debug/app", &["--flag"]),
-            &debugger(),
-        )
-        .unwrap();
-        assert_eq!(launch.program.as_deref(), Some("/p/target/debug/app"));
-        assert_eq!(launch.args, vec!["--flag"]);
-    }
-
-    #[test]
-    fn a_cargo_launch_builds_first_and_keeps_program_arguments() {
-        let launch = launch_config(
-            Path::new("/p"),
-            &config(Some("codelldb"), "cargo", "cargo", &["run", "--bin", "app", "--", "arg"]),
-            &debugger(),
-        )
-        .unwrap();
-        assert_eq!(launch.args, vec!["arg"]);
-        let extra: Value = serde_json::from_str(launch.extra_json.as_deref().unwrap()).unwrap();
-        assert_eq!(extra["cargo"]["args"], json!(["build", "--bin", "app"]));
-        assert_eq!(extra["cargo"]["filter"], json!({ "name": "app", "kind": "bin" }));
-    }
-
-    #[test]
-    fn a_cargo_test_launch_has_no_binary_filter() {
-        let launch = launch_config(
-            Path::new("/p"),
-            &config(Some("codelldb"), "cargo", "cargo", &["test", "--", "math::tests::adds", "--exact"]),
-            &debugger(),
-        )
-        .unwrap();
-        assert_eq!(launch.args, vec!["math::tests::adds", "--exact"]);
-        let extra: Value = serde_json::from_str(launch.extra_json.as_deref().unwrap()).unwrap();
-        assert_eq!(extra["cargo"]["args"], json!(["test", "--no-run"]));
-        assert!(extra["cargo"]["filter"].is_null(), "test artifacts are not bins");
-    }
-
-    #[test]
-    fn a_python_launch_finds_the_script() {
-        let launch = launch_config(
-            Path::new("/p"),
-            &config(Some("debugpy"), "python", "python3", &["app.py", "--flag"]),
-            &debugger(),
-        )
-        .unwrap();
-        assert_eq!(launch.program.as_deref(), Some("/p/app.py"));
-        assert_eq!(launch.args, vec!["--flag"]);
-    }
-
-    #[test]
-    fn a_python_console_script_becomes_a_module() {
-        let launch =
-            launch_config(Path::new("/p"), &config(Some("debugpy"), "pytest", "pytest", &["-q"]), &debugger()).unwrap();
-        let extra: Value = serde_json::from_str(launch.extra_json.as_deref().unwrap()).unwrap();
-        assert_eq!(extra["module"], "pytest");
-        assert_eq!(extra["python"], system_python());
-        assert_eq!(launch.args, vec!["-q"]);
-    }
-
-    #[test]
-    fn a_manager_python_launch_keeps_the_run_subcommand() {
-        let launch = launch_config(
-            Path::new("/p"),
-            &config(Some("debugpy"), "pytest", "uv", &["run", "-m", "pytest"]),
-            &debugger(),
-        )
-        .unwrap();
-        let extra: Value = serde_json::from_str(launch.extra_json.as_deref().unwrap()).unwrap();
-        assert_eq!(extra["python"], json!(["uv", "run", system_python()]));
-        assert_eq!(extra["module"], "pytest");
-    }
-
-    #[test]
-    fn a_go_file_scope_launch_names_the_selected_files() {
-        let mut configuration = config(Some("delve"), "go", "go", &[]);
-        configuration.extras.params.insert("goKind".into(), "test".into());
-        configuration.extras.params.insert("scope".into(), "file".into());
-        configuration.extras.params.insert("target".into(), "a_test.go|b_test.go".into());
-        let launch = launch_config(Path::new("/p"), &configuration, &debugger()).unwrap();
-        let extra: Value = serde_json::from_str(launch.extra_json.as_deref().unwrap()).unwrap();
-        assert_eq!(extra["__goFiles"][0], "/p/a_test.go");
-        assert_eq!(extra["__goFiles"][1], "/p/b_test.go");
-    }
-
-    #[test]
-    fn a_go_test_launch_keeps_the_test_selection() {
-        let launch = launch_config(
-            Path::new("/p"),
-            &config(Some("delve"), "go", "go", &["test", "-run", "^TestFoo$", "-race", "./pkg"]),
-            &debugger(),
-        )
-        .unwrap();
-        assert_eq!(launch.args, vec!["-test.run", "^TestFoo$"]);
-        let extra: Value = serde_json::from_str(launch.extra_json.as_deref().unwrap()).unwrap();
-        assert_eq!(extra["buildFlags"], "-race");
-        assert_eq!(extra["__goTargets"][0], "./pkg");
-    }
-
-    #[test]
-    fn a_configuration_without_an_adapter_cannot_be_debugged() {
-        assert!(launch_config(Path::new("/p"), &config(None, "python", "python3", &[]), &debugger()).is_err());
     }
 
     #[test]

@@ -106,4 +106,24 @@ describe("MCP confirmations", () => {
     await handleMcpRequest(12, { type: "runConfiguration", config });
     expect(mocks.respond).toHaveBeenCalledWith(12, false, "The run did not start");
   });
+  it("starts an agent's configuration in Debug mode and says whether a session started", async () => {
+    const config = { id: "server", name: "Server", kind: "shell", command: "npm run dev" };
+    await handleMcpRequest(13, { type: "debugConfiguration", config });
+    expect(mocks.execute).toHaveBeenCalledWith("debug.mcpStart", config);
+    expect(mocks.respond).toHaveBeenCalledWith(13, true, null);
+    mocks.execute.mockRejectedValueOnce(new Error("The debug session did not start"));
+    await handleMcpRequest(14, { type: "debugConfiguration", config });
+    expect(mocks.respond).toHaveBeenCalledWith(14, false, "The debug session did not start");
+  });
+  it("replaces the editor's breakpoints and reports errors", async () => {
+    const files = {
+      "src/main.py": [{ line: 3, enabled: true, condition: null, hitCondition: null, logMessage: null }],
+    };
+    await handleMcpRequest(15, { type: "breakpoints", files });
+    expect(mocks.execute).toHaveBeenCalledWith("debug.mcpBreakpoints", files);
+    expect(mocks.respond).toHaveBeenCalledWith(15, true, null);
+    mocks.execute.mockRejectedValueOnce(new Error("No project window"));
+    await handleMcpRequest(16, { type: "breakpoints", files });
+    expect(mocks.respond).toHaveBeenCalledWith(16, false, "No project window");
+  });
 });

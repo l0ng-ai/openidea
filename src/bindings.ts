@@ -10346,6 +10346,15 @@ export type McpBackgroundProjects =
 /**  Only the folders in [`McpServerSettings::background_project_paths`] (and below them). */
 "listed";
 
+/**  A line breakpoint in an MCP request, with a 1-based line like every other MCP tool. */
+export type McpBreakpoint = {
+	line: number,
+	enabled: boolean,
+	condition: string | null,
+	hitCondition: string | null,
+	logMessage: string | null,
+};
+
 /**  Summary of one server discovered inside an external MCP configuration file. */
 export type McpDiscoveredServer = {
 	name: string,
@@ -10574,9 +10583,20 @@ export type McpTransport = "stdio" | "http" | "sse";
  *  line) in the Run tool window's agent tab `name`, on pipes, answered once the process
  *  started or failed to. `RunConfiguration` starts a run configuration (a serialized
  *  `RunConfig`, its before launch tasks already done) in the Run tool window as the user's
- *  Run would, answered the same way.
+ *  Run would, answered the same way. `DebugConfiguration` does the same in Debug mode, so
+ *  the window's own Debug action builds the launch. `Breakpoints` replaces the window's
+ *  breakpoints, which the editor owns, persists and mirrors to the backend.
  */
-export type McpUiRequest = { type: "confirm"; client: string; tool: string; subject: string; project: string; detail: string | null } | { type: "openFile"; path: IpcPath; line: number | null; column: number | null } | { type: "agentRun"; name: string; command: string; cwd: IpcPath; env: { [key in string]: string } } | { type: "runConfiguration"; config: unknown };
+export type McpUiRequest = { type: "confirm"; client: string; tool: string; subject: string; project: string; detail: string | null } | { type: "openFile"; path: IpcPath; line: number | null; column: number | null } | { type: "agentRun"; name: string; command: string; cwd: IpcPath; env: { [key in string]: string } } | { type: "runConfiguration"; config: unknown } | 
+/**  Start a run configuration in Debug mode as the IDE's Debug action would. */
+{ type: "debugConfiguration"; config: unknown } | 
+/**
+ *  Replaces the window's breakpoints with the agent's list, so the editor shows and
+ *  persists exactly what the agent set and mirrors it back to the backend.
+ */
+{ type: "breakpoints"; 
+/**  Project-relative file paths to their breakpoints (1-based lines). */
+files: { [key in string]: McpBreakpoint[] } };
 
 export type MemoryCategory = 
 /**  The backend and its WebView processes. */

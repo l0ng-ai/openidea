@@ -15,7 +15,9 @@ use std::sync::Arc;
 /// line) in the Run tool window's agent tab `name`, on pipes, answered once the process
 /// started or failed to. `RunConfiguration` starts a run configuration (a serialized
 /// `RunConfig`, its before launch tasks already done) in the Run tool window as the user's
-/// Run would, answered the same way.
+/// Run would, answered the same way. `DebugConfiguration` does the same in Debug mode, so
+/// the window's own Debug action builds the launch. `Breakpoints` replaces the window's
+/// breakpoints, which the editor owns, persists and mirrors to the backend.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum McpUiRequest {
@@ -41,6 +43,28 @@ pub enum McpUiRequest {
         #[specta(type = specta_typescript::Unknown)]
         config: serde_json::Value,
     },
+    /// Start a run configuration in Debug mode as the IDE's Debug action would.
+    DebugConfiguration {
+        #[specta(type = specta_typescript::Unknown)]
+        config: serde_json::Value,
+    },
+    /// Replaces the window's breakpoints with the agent's list, so the editor shows and
+    /// persists exactly what the agent set and mirrors it back to the backend.
+    Breakpoints {
+        /// Project-relative file paths to their breakpoints (1-based lines).
+        files: BTreeMap<String, Vec<McpBreakpoint>>,
+    },
+}
+
+/// A line breakpoint in an MCP request, with a 1-based line like every other MCP tool.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpBreakpoint {
+    pub line: u32,
+    pub enabled: bool,
+    pub condition: Option<String>,
+    pub hit_condition: Option<String>,
+    pub log_message: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]

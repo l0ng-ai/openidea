@@ -1778,6 +1778,50 @@ async fn debugger_tools_are_registered_with_their_expected_metadata() {
     assert_eq!(set.input_schema["required"], json!([]));
 }
 
+/// Answers the debugger's breakpoint requests the way the editor does: it replaces its own
+/// list, persists it, and mirrors it to the backend.
+fn debugger_window(h: &Harness) {
+    h.host.mcp_requests.set_ready("main", true);
+    let (host, events, root) = (h.host.clone(), h.events.clone(), h.root.clone());
+    tokio::spawn(async move {
+        let mut handled = std::collections::HashSet::new();
+        loop {
+            let request = events.lock().unwrap().iter().find_map(|e| match e {
+                IdeEvent::McpRequest { id, request: ide_core::event::McpUiRequest::Breakpoints { files } }
+                    if !handled.contains(id) =>
+                {
+                    Some((*id, files.clone()))
+                }
+                _ => None,
+            });
+            let Some((id, files)) = request else {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                continue;
+            };
+            handled.insert(id);
+            let backend = files
+                .into_iter()
+                .map(|(path, bps)| {
+                    (
+                        root.join(path),
+                        bps.into_iter()
+                            .map(|b| ide_dap::Breakpoint {
+                                line: b.line - 1,
+                                condition: b.condition,
+                                hit_condition: b.hit_condition,
+                                log_message: b.log_message,
+                                enabled: b.enabled,
+                            })
+                            .collect(),
+                    )
+                })
+                .collect();
+            host.debugger.replace_breakpoints(host.owner_window("main"), backend).await.unwrap();
+            let _ = host.mcp_requests.answer("main", id, true, None);
+        }
+    });
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn debugger_status_and_session_calls_without_a_session() {
     let h = Harness::new();
@@ -1793,6 +1837,7 @@ async fn debugger_status_and_session_calls_without_a_session() {
 async fn debugger_breakpoints_can_be_set_listed_and_removed() {
     let h = Harness::new();
     h.trust().await;
+    debugger_window(&h);
     std::fs::write(h.root.join("src/main.py"), "first\nsecond\nthird\n").unwrap();
     let set =
         h.json("xdebug_set_breakpoint", json!({"filePath": "src/main.py", "line": 2, "condition": "x > 1"})).await;
@@ -1825,6 +1870,7 @@ async fn debugger_breakpoints_can_be_set_listed_and_removed() {
 async fn debugger_breakpoints_update_by_id_and_clear_by_file() {
     let h = Harness::new();
     h.trust().await;
+    debugger_window(&h);
     std::fs::write(h.root.join("src/main.py"), "first\nsecond\nthird\n").unwrap();
     h.json("xdebug_set_breakpoint", json!({"filePath": "src/main.py", "line": 1})).await;
     h.json("xdebug_set_breakpoint", json!({"filePath": "src/main.py", "line": 3})).await;

@@ -27,12 +27,14 @@ import {
   breakpointsOf,
   removeAllBreakpoints,
   removeFileBreakpoints,
+  replaceAllBreakpoints,
   setMuted,
   toggleBreakpoint,
   toggleTemporaryBreakpoint,
   updateBreakpoint,
   useBreakpoints,
 } from "./breakpoints/store";
+import { makeBreakpoint } from "./breakpoints/model";
 import {
   removeAllSpecial,
   removeSpecialIn,
@@ -557,6 +559,59 @@ export function registerDebugActions(): () => void {
       icon: "debug",
       description: "Start debugging a run configuration",
       run: ({ arg }) => report(tx("Cannot start debugging"), startConfig(arg)),
+    },
+    {
+      id: "debug.mcpStart",
+      title: "Debug Configuration for an Agent",
+      description:
+        "Starts the configuration chosen by the MCP server's xdebug_start_debugger_session with this IDE's Debug action; throws when no session starts.",
+      category: "Debug",
+      hidden: true,
+      when: "projectOpen",
+      run: async ({ arg }) => {
+        const before = new Set(Object.keys(useDebug.getState().sessions));
+        await startConfig(arg);
+        const name = arg && typeof arg === "object" && "name" in arg ? String(arg.name) : undefined;
+        const started = Object.values(useDebug.getState().sessions).find(
+          (s) => !before.has(String(s.id)) && (name == null || s.name === name),
+        );
+        if (!started) throw new Error("The debug session did not start");
+      },
+    },
+    {
+      id: "debug.mcpBreakpoints",
+      title: "Set Breakpoints for an Agent",
+      description:
+        "Replaces the editor's breakpoints with the MCP server's list, so they show in the gutter, are persisted and are mirrored back to the backend.",
+      category: "Debug",
+      hidden: true,
+      when: "projectOpen",
+      run: async ({ arg }) => {
+        const files = (arg ?? {}) as Record<
+          string,
+          Array<{
+            line: number;
+            enabled: boolean;
+            condition: string | null;
+            hitCondition: string | null;
+            logMessage: string | null;
+          }>
+        >;
+        const byFile = Object.fromEntries(
+          Object.entries(files).map(([path, list]) => [
+            path,
+            list.map((b) =>
+              makeBreakpoint(Math.max(0, b.line - 1), {
+                enabled: b.enabled !== false,
+                condition: b.condition ?? null,
+                hitCondition: b.hitCondition ?? null,
+                logMessage: b.logMessage ?? null,
+              }),
+            ),
+          ]),
+        );
+        await replaceAllBreakpoints(byFile);
+      },
     },
     {
       id: "debug.attach",
