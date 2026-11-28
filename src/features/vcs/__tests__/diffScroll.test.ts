@@ -281,20 +281,22 @@ describe("wheel over a pane that cannot scroll further", () => {
     }
   });
 
-  it("scrolls the other pane back first when a passed-on wheel took it past where this one maps it", () => {
+  it("scrolls the other pane back when a wheel turns after taking it past where this one maps it", () => {
     const frame = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
     const p = panes();
     try {
       p.wheel(p.b.scrollDOM, 3000);
       p.a.scrollDOM.dispatchEvent(new Event("scroll"));
       expect(p.a.scrollDOM.scrollTop).toBe(3000);
-      // Instead of the right pane, whose own scroll would pull the left one back in one jump.
-      expect(p.wheel(p.b.scrollDOM, -3, WheelEvent.DOM_DELTA_LINE)).toBe(true);
+      // The right pane can't scroll at all: the left one comes back by the wheel's own distance.
+      expect(p.wheel(p.b.scrollDOM, -3, WheelEvent.DOM_DELTA_LINE)).toBe(false);
       expect(p.a.scrollDOM.scrollBy).toHaveBeenLastCalledWith(0, -3 * LINE);
       p.a.scrollDOM.dispatchEvent(new Event("scroll"));
-      expect(p.wheel(p.divider, -80)).toBe(true);
+      expect(p.a.scrollDOM.scrollTop).toBe(3000 - 3 * LINE);
+      p.wheel(p.divider, -80);
       expect(p.a.scrollDOM.scrollBy).toHaveBeenLastCalledWith(0, -80);
-      expect(p.b.scrollDOM.scrollBy).not.toHaveBeenCalled();
+      p.a.scrollDOM.dispatchEvent(new Event("scroll"));
+      expect(p.a.scrollDOM.scrollTop).toBe(3000 - 3 * LINE - 80);
     } finally {
       p.controller.destroy();
       frame.mockRestore();
@@ -325,12 +327,13 @@ describe("wheel over a pane that cannot scroll further", () => {
     try {
       p.b.scrollDOM.scrollTop = 50 * LINE - 500;
       p.b.scrollDOM.dispatchEvent(new Event("scroll"));
-      const mapped = p.a.scrollDOM.scrollTop;
       p.wheel(p.b.scrollDOM, 120);
       p.a.scrollDOM.dispatchEvent(new Event("scroll"));
-      expect(p.wheel(p.b.scrollDOM, -120)).toBe(true);
+      p.wheel(p.b.scrollDOM, -120);
+      p.b.scrollDOM.scrollTop -= 120; // the native scroll
+      p.b.scrollDOM.dispatchEvent(new Event("scroll"));
       p.a.scrollDOM.dispatchEvent(new Event("scroll"));
-      expect(p.a.scrollDOM.scrollTop).toBe(mapped);
+      expect(p.a.scrollDOM.scrollTop).toBeCloseTo(p.b.scrollDOM.scrollTop);
       vi.mocked(p.a.scrollDOM.scrollBy).mockClear();
       expect(p.wheel(p.b.scrollDOM, -120)).toBe(false);
       // Elsewhere again, by something other than a wheel passed on.
@@ -375,11 +378,14 @@ describe("wheel over a pane that cannot scroll further", () => {
       p.wheel(p.b.scrollDOM, 100);
       p.a.scrollDOM.dispatchEvent(new Event("scroll"));
       expect(p.a.scrollDOM.scrollTop).toBe(mapped + 100);
-      // A wheel longer than what is left: the left pane stops where the right one maps it.
-      expect(p.wheel(p.b.scrollDOM, -120)).toBe(true);
-      expect(p.a.scrollDOM.scrollBy).toHaveBeenLastCalledWith(0, -100);
+      // A wheel longer than what is left: the left pane stops where the right one will map it.
+      p.wheel(p.b.scrollDOM, -120);
+      expect(p.a.scrollDOM.scrollBy).toHaveBeenLastCalledWith(0, -220);
+      p.b.scrollDOM.scrollTop -= 120; // the native scroll
+      p.b.scrollDOM.dispatchEvent(new Event("scroll"));
       p.a.scrollDOM.dispatchEvent(new Event("scroll"));
-      expect(p.a.scrollDOM.scrollTop).toBe(mapped);
+      expect(p.a.scrollDOM.scrollTop).toBeCloseTo(mapped - 120);
+      expect(p.a.scrollDOM.scrollTop).toBeCloseTo(p.b.scrollDOM.scrollTop);
     } finally {
       p.controller.destroy();
       frame.mockRestore();
@@ -436,23 +442,29 @@ describe("wheel over a pane that cannot scroll further", () => {
     }
   });
 
-  it("lets the pane under the pointer lead when it cannot hold still for a scroll back", () => {
+  it("closes an overshoot over several uncancellable wheels back, never in one jump", () => {
     const frame = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
     const p = panes(true, { left: 200, right: 50 });
     try {
       const end = 50 * LINE - 500;
       p.b.scrollDOM.scrollTop = end;
       p.b.scrollDOM.dispatchEvent(new Event("scroll"));
-      p.wheel(p.b.scrollDOM, 120);
-      p.a.scrollDOM.dispatchEvent(new Event("scroll"));
-      vi.mocked(p.a.scrollDOM.scrollBy).mockClear();
-      // A later event of a gesture that may not be cancelled: the right pane scrolls natively.
-      expect(p.wheel(p.b.scrollDOM, -120, 0, { cancelable: false })).toBe(false);
-      expect(p.a.scrollDOM.scrollBy).not.toHaveBeenCalled();
-      p.b.scrollDOM.scrollTop = end - 120;
-      p.b.scrollDOM.dispatchEvent(new Event("scroll"));
-      p.a.scrollDOM.dispatchEvent(new Event("scroll"));
-      expect(p.b.scrollDOM.scrollTop).toBe(end - 120);
+      for (let i = 0; i < 3; i++) {
+        p.wheel(p.b.scrollDOM, 120, 0, { cancelable: false });
+        p.a.scrollDOM.dispatchEvent(new Event("scroll"));
+      }
+      expect(p.a.scrollDOM.scrollTop - p.b.scrollDOM.scrollTop).toBe(360);
+      // A trackpad gesture back: WebKit lets none of these be cancelled, so the right pane scrolls natively.
+      for (let i = 0; i < 12; i++) {
+        const before = p.a.scrollDOM.scrollTop;
+        expect(p.wheel(p.b.scrollDOM, -40, 0, { cancelable: false })).toBe(false);
+        p.b.scrollDOM.scrollTop -= 40;
+        p.b.scrollDOM.dispatchEvent(new Event("scroll"));
+        p.a.scrollDOM.dispatchEvent(new Event("scroll"));
+        expect(Math.abs(p.a.scrollDOM.scrollTop - before)).toBeLessThanOrEqual(80);
+        expect(p.a.scrollDOM.scrollTop).toBeGreaterThan(p.b.scrollDOM.scrollTop - 1);
+      }
+      expect(p.a.scrollDOM.scrollTop).toBeCloseTo(p.b.scrollDOM.scrollTop);
     } finally {
       p.controller.destroy();
       frame.mockRestore();
