@@ -97,6 +97,7 @@
   "Highlight Usages in File": "Surligner les utilisations dans le fichier",
   "Implement Methods…": "Implémenter des méthodes…",
   "Override Methods…": "Redéfinir des méthodes…",
+  "Insert a documentation string stub": "Insérer un modèle de chaîne de documentation",
   "Expression Type Info": "Type de l'expression",
   "Next Method": "Méthode suivante",
   "Previous Method": "Méthode précédente",

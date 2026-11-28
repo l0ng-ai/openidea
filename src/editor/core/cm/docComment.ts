@@ -413,6 +413,21 @@ export function pythonDocStub(text: string, owner: SyntaxNode, format: PythonDoc
   }
 }
 
+/**
+ * A docstring's lines after its opening quotes: the summary (where the caret belongs), the
+ * format-specific sections, and the closing quotes. Shared by Enter in a docstring and the
+ * intention that inserts a whole docstring below a function header.
+ */
+export function pythonDocstringLines(
+  text: string,
+  owner: SyntaxNode,
+  format: PythonDocFormat,
+  indent: string,
+  quote: string,
+): string[] {
+  return [indent, ...pythonDocStub(text, owner, format).map((tag) => (tag ? indent + tag : "")), indent + quote];
+}
+
 /** Sections after a blank line below the summary, one blank line apart (a trailing blank line of a section kept once). */
 function sectioned(sections: string[][]): string[] {
   const out: string[] = [];
@@ -456,16 +471,23 @@ export function enterInDocstring(format: () => PythonDocFormat): Command {
     }
     const br = state.lineBreak;
     const style = format();
-    let tags: string[] = [];
+    let text = "";
+    let stubOwner = owner;
     if (style !== "plain" && owner.name === "FunctionDefinition") {
       // Close the opener in a temporary parse so an unfinished literal doesn't swallow the body.
       const end = state.doc.line(Math.min(state.doc.lines, line.number + 2000)).to;
-      const text = state.sliceDoc(owner.from, head) + quote + state.sliceDoc(line.to, end);
+      text = state.sliceDoc(owner.from, head) + quote + state.sliceDoc(line.to, end);
       const parsed = state.facet(language)?.parser.parse(text).topNode.firstChild;
-      if (parsed) tags = pythonDocStub(text, parsed, style);
+      if (parsed) stubOwner = parsed;
     }
-    const summary = `${br}${indent}`;
-    const insert = summary + tags.map((t) => br + (t ? indent + t : "")).join("") + `${br}${indent}${quote}`;
+    const lines = pythonDocstringLines(text, stubOwner, style, indent, quote);
+    const summary = `${br}${lines[0]}`;
+    const insert =
+      summary +
+      lines
+        .slice(1)
+        .map((line) => br + line)
+        .join("");
     view.dispatch({
       changes: { from: head, to: line.to, insert },
       selection: EditorSelection.cursor(head + summary.length),

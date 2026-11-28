@@ -17,6 +17,7 @@ import { pythonGenerateEntries } from "./generate";
 import { pythonCreateFixes } from "./createFromUsage";
 import { pythonTypeHintIntentions } from "./typeHints";
 import { pythonStringIntentions } from "./stringFormat";
+import { pythonDocstringIntentions } from "./docstring";
 
 /** Server tokens these kinds override: the kind's own classes replace the generic ones. */
 const VARIABLE_KINDS = new Set<PythonSymbolKind>([
@@ -58,7 +59,12 @@ const pythonSemantics: LanguageSemantics = {
   isLocal: ({ type, kind }) => (kind ? kind === "localVariable" || kind === "parameter" : type === "parameter"),
   intentions: (view) => {
     const { from, to } = view.state.selection.main;
-    return [...pythonCreateFixes(view, from, to), ...pythonMemberIntentions(view), ...pythonStringIntentions(view)];
+    return [
+      ...pythonCreateFixes(view, from, to),
+      ...pythonMemberIntentions(view),
+      ...pythonStringIntentions(view),
+      ...pythonDocstringIntentions(view),
+    ];
   },
   quickFixes: pythonCreateFixes,
   asyncIntentions: pythonTypeHintIntentions,

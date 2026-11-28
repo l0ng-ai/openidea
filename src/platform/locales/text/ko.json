@@ -171,6 +171,7 @@
   "Highlight Usages in File": "파일에서 사용 위치 강조 표시",
   "Implement Methods…": "메서드 구현…",
   "Override Methods…": "메서드 재정의…",
+  "Insert a documentation string stub": "문서 문자열 스텁 삽입",
   "Expression Type Info": "표현식 타입 정보",
   "Next Method": "다음 메서드",
   "Previous Method": "이전 메서드",
