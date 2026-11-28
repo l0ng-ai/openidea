@@ -1,6 +1,6 @@
 /**
  * Import Settings… with a JetBrains `settings.zip`: maps the archive's colour
- * schemes, keymaps, fonts, tabs and indents, live templates, and the editor /
+ * schemes, keymaps, fonts, tabs and indents, live templates, inspection profiles, and the editor /
  * general options OpenIDEA has to settings writes, after a confirmation listing
  * them. Only keys present in the archive are written (JetBrains leaves defaults
  * out). The rest is listed as not imported.
@@ -20,6 +20,7 @@ import { ask } from "@/workbench/messages";
 import { parseJetBrainsTemplates, type JetBrainsTemplateImport } from "@/features/templates/live/jetbrains";
 import { saveImportedTemplates } from "@/features/templates/live/store";
 import styles from "./app.module.css";
+import { parseJetBrainsInspections } from "./jetbrainsInspections";
 import {
   CODE_INSIGHT_FLAGS,
   CODE_INSIGHT_NUMBERS,
@@ -41,6 +42,8 @@ export interface JetBrainsImportPlan {
   invalid: string[];
   /** IDEA action ids the imported keymaps bind that have no counterpart here. */
   unknownActions: string[];
+  /** Inspections of the imported profiles that have no counterpart here. */
+  unmappedInspections: string[];
   /** Custom live templates are committed once after confirmation, not through settings writes. */
   liveTemplates?: JetBrainsTemplateImport;
 }
@@ -55,6 +58,7 @@ interface CurrentSettings {
     codeStyle?: { languages?: Record<string, LanguageCodeStyle> };
   };
   customKeymaps?: Record<string, CustomKeymap>;
+  inspections?: unknown;
 }
 
 const USER_PREFIX = "_@user_";
@@ -148,7 +152,14 @@ export async function planJetBrainsImport(
   languages?: readonly LanguageInfo[],
 ): Promise<JetBrainsImportPlan> {
   const { editor } = current;
-  const plan: JetBrainsImportPlan = { writes: [], rows: [], skipped: [], invalid: [], unknownActions: [] };
+  const plan: JetBrainsImportPlan = {
+    writes: [],
+    rows: [],
+    skipped: [],
+    invalid: [],
+    unknownActions: [],
+    unmappedInspections: [],
+  };
   const add = (key: string, value: string | number | boolean | undefined, label: string, shown?: string) => {
     if (value === undefined) return;
     plan.writes.push([key, value]);
@@ -369,9 +380,20 @@ export async function planJetBrainsImport(
     }
   }
 
+  const inspectionFiles = Object.fromEntries(
+    Object.entries(bundle.files).filter(([file]) => /^inspection\/[^/]+\.xml$/.test(file)),
+  );
+  if (Object.keys(inspectionFiles).length) {
+    const parsed = parseJetBrainsInspections(inspectionFiles, current.inspections);
+    plan.writes.push(...parsed.writes);
+    for (const p of parsed.profiles)
+      plan.rows.push({ label: tx("Inspection profile"), value: tx`${p.name} (inspections: ${p.count})` });
+    plan.unmappedInspections = parsed.unmapped;
+    plan.invalid.push(...parsed.invalid);
+  }
+
   const has = (prefix: string) => bundle.entries.some((e) => e.startsWith(prefix));
   if (has("codestyles/")) plan.skipped.push(tx("Code Style options other than Tabs and Indents"));
-  if (has("inspection/")) plan.skipped.push(tx("Inspections"));
   if (has("installed.txt")) plan.skipped.push(tx("Plugins"));
   return plan;
 }
@@ -380,6 +402,7 @@ function Summary({ plan }: { plan: JetBrainsImportPlan }) {
   const left = [...plan.skipped, ...(plan.liveTemplates?.skipped ?? []), ...plan.invalid];
   const unknown = plan.unknownActions;
   const unsupported = plan.liveTemplates?.unsupported.join(", ") ?? "";
+  const unmapped = plan.unmappedInspections;
   return (
     <div className={styles.importSummary}>
       <div>{tx("These settings will be imported:")}</div>
@@ -397,6 +420,9 @@ function Summary({ plan }: { plan: JetBrainsImportPlan }) {
         </div>
       )}
       {unknown.length > 0 && <div>{tx`Not available in OpenIDEA (${unknown.length}): ${unknown.join(", ")}.`}</div>}
+      {unmapped.length > 0 && (
+        <div>{tx`Inspections without an equivalent in OpenIDEA (${unmapped.length}): ${unmapped.join(", ")}.`}</div>
+      )}
       {unsupported && <div>{tx`Unsupported template expressions (kept as text, not evaluated): ${unsupported}.`}</div>}
     </div>
   );

@@ -54,6 +54,11 @@ const webstorm = {
       showTipsOnStartup: "false",
       confirmExit: "false",
     }),
+    "inspection/Default.xml":
+      '<profile version="1.0"><option name="myName" value="Default" />' +
+      '<inspection_tool class="SpellCheckingInspection" enabled="false" level="TYPO" enabled_by_default="false" />' +
+      '<inspection_tool class="JSUnusedLocalSymbols" enabled="false" level="WARNING" enabled_by_default="false" />' +
+      "</profile>",
   },
 };
 
@@ -79,6 +84,7 @@ describe("planJetBrainsImport", () => {
       "editor.softWrap": false,
       "console.softWrap": true,
       "general.confirmExit": false,
+      "inspections.default": { "builtin:spelling": { enabled: false, severity: "typo" } },
     });
     expect(plan.rows).toContainEqual({
       label: "Color Scheme",
@@ -89,7 +95,9 @@ describe("planJetBrainsImport", () => {
       label: "Remove trailing spaces on:",
       value: "All lines",
     });
-    expect(plan.skipped).toEqual(["Code Style options other than Tabs and Indents", "Inspections", "Plugins"]);
+    expect(plan.rows).toContainEqual({ label: "Inspection profile", value: "Default (inspections: 1)" });
+    expect(plan.unmappedInspections).toEqual(["JSUnusedLocalSymbols"]);
+    expect(plan.skipped).toEqual(["Code Style options other than Tabs and Indents", "Plugins"]);
     expect(plan.invalid).toEqual([]);
   });
 

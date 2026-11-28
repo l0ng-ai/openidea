@@ -2353,6 +2353,8 @@
   "Line, %": "行，%",
   "Line:Column Number": "行:列号",
   "Live Templates": "实时模板",
+  "{name} (inspections: {count})": "{name}（{count} 项检查）",
+  "Inspections without an equivalent in OpenIDEA ({length}): {join}.": "OpenIDEA 中没有对应项的检查（{length}）：{join}。",
   "Live templates": "实时模板",
   "Loaded classes are up to date. Nothing to reload.": "已加载的类是最新的，无需重新加载。",
   "Loading packages": "正在加载软件包",
