@@ -29,6 +29,7 @@ import {
   connect,
   disconnect,
   nameWithOwner,
+  repositoryKey,
   refreshConnection,
   sameRepository,
   useGhRepository,
@@ -179,8 +180,10 @@ function RepositorySelector() {
   const [chosen, setChosen] = useState<string | null>(null);
   const value =
     chosen ??
-    nameWithOwner(remotes.find((r) => sameRepository(r, defaultRemote)) ?? remotes[0] ?? { owner: "", name: "" });
-  const target = remotes.find((r) => nameWithOwner(r) === value);
+    repositoryKey(remotes.find((r) => sameRepository(r, defaultRemote)) ?? remotes[0] ?? { owner: "", name: "" });
+  const target = remotes.find((r) => repositoryKey(r) === value);
+  // Remotes on more than one host (an Enterprise server and github.com) say which.
+  const hosts = new Set(remotes.map((r) => r.host ?? "github.com")).size > 1;
   return (
     <div className={styles.selector}>
       {status && status.accounts.length > 0 && (
@@ -217,9 +220,9 @@ function RepositorySelector() {
         <Select
           value={value}
           options={remotes.map((r) => ({
-            value: nameWithOwner(r),
+            value: repositoryKey(r),
             verbatim: true,
-            label: repositoryDisplayName(remotes, r, true),
+            label: `${repositoryDisplayName(remotes, r, true)}${hosts ? ` · ${r.host ?? "github.com"}` : ""}`,
           }))}
           onChange={setChosen}
           aria-label="Repository"

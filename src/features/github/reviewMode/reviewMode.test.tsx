@@ -183,6 +183,14 @@ describe("model", () => {
       owner: "o",
       name: "r",
     });
+    // A GitHub Enterprise Server remote is the connected repository's by its path, like an alias.
+    const ghe = { owner: "o", name: "r", host: "ghe.example.com" };
+    const enterprise = [{ name: "origin", url: "git@ghe.example.com:o/r.git" }];
+    expect(trackedBranch("origin", "refs/heads/x", enterprise, ghe)).toEqual({
+      repository: ghe,
+      branch: "x",
+      pullRequest: null,
+    });
     expect(trackedBranch("gitlab", "refs/heads/x", [{ name: "gitlab", url: "git@gitlab.com:o/r.git" }])).toBeNull();
   });
 

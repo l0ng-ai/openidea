@@ -25,14 +25,16 @@ vi.mock("@/platform/ipc", () => ({
   },
 }));
 
+import { useProject } from "@/platform/project";
 import { rest } from "../api/client";
-import { connectedRoot, connectedRemotes, connect, refreshConnection, useGhRepository } from "./repository";
+import { connectedRoot, connectedRemotes, connect, disconnect, refreshConnection, useGhRepository } from "./repository";
 
 afterEach(() => {
   ghApi.mockReset();
   ghAvailability.mockReset();
   localStorage.clear();
   layout = FOLDER;
+  useProject.setState({ project: null });
 });
 
 describe("a folder holding several git repositories", () => {
@@ -98,5 +100,74 @@ describe("a GitHub Enterprise Server repository", () => {
     // The github.com mirror goes back to gh's default host.
     expect(await connect(s.remotes[1]!)).toBe(true);
     expect(ghApi).toHaveBeenLastCalledWith("/w/app", expect.objectContaining({ host: null }));
+  });
+});
+
+describe("GitHub Enterprise Server hosts beside github.com", () => {
+  const ready = (url: string) => ok({ kind: "ready", repo: { nameWithOwner: "acme/app", url }, login: "al" });
+  const answer = (_repo: string | null, req: { endpoint: string }) =>
+    ok(
+      req.endpoint === "user"
+        ? JSON.stringify({ id: 1, node_id: "U1", login: "al", avatar_url: "", html_url: "" })
+        : JSON.stringify({ data: { repository: { id: "R1", owner: { login: "acme" }, name: "app" } } }),
+    );
+  const remotesOf = () => useGhRepository.getState().remotes.map((r) => `${r.remote}=${r.host}/${r.owner}/${r.name}`);
+
+  it("keeps a repository of the same name on each host apart, and remembers which", async () => {
+    layout = {
+      "/w/app": [
+        { name: "origin", url: "git@ghe.example.com:acme/app.git" },
+        { name: "public", url: "https://github.com/acme/app.git" },
+      ],
+    };
+    ghAvailability.mockReturnValue(ready("https://ghe.example.com/acme/app"));
+    ghApi.mockImplementation(answer);
+    await refreshConnection();
+    expect(remotesOf()).toEqual(["origin=ghe.example.com/acme/app", "public=github.com/acme/app"]);
+    const [ghe, dotcom] = useGhRepository.getState().remotes;
+    expect(await connect(dotcom!)).toBe(true);
+    expect(ghApi).toHaveBeenLastCalledWith("/w/app", expect.objectContaining({ host: null }));
+    useProject.setState({ project: { root: "/w" } as never });
+    expect(await connect(ghe!)).toBe(true);
+    expect(localStorage.getItem("openidea.github.repository.v1:/w")).toBe("ghe.example.com/acme/app");
+    // Reopening the project reconnects to the one chosen last, on its host.
+    disconnect({ forget: false });
+    ghApi.mockClear();
+    await refreshConnection();
+    expect(useGhRepository.getState().connection?.coordinates).toMatchObject({ host: "ghe.example.com" });
+    expect(ghApi.mock.calls.every(([, req]) => req.host === "ghe.example.com")).toBe(true);
+  });
+
+  it("stays on the connected host when connecting elsewhere fails", async () => {
+    layout = {
+      "/w/app": [
+        { name: "origin", url: "git@ghe.example.com:acme/app.git" },
+        { name: "mirror", url: "https://github.com/acme/app-mirror.git" },
+      ],
+    };
+    ghAvailability.mockReturnValue(ready("https://ghe.example.com/acme/app"));
+    ghApi.mockImplementation((repo: string | null, req: { endpoint: string; host: string | null }) =>
+      req.host === null ? Promise.resolve({ status: "error", error: new Error("HTTP 401") }) : answer(repo, req),
+    );
+    await refreshConnection();
+    const [ghe, mirror] = useGhRepository.getState().remotes;
+    expect(await connect(ghe!)).toBe(true);
+    expect(await connect(mirror!)).toBe(false);
+    expect(useGhRepository.getState().connection?.coordinates).toMatchObject({ owner: "acme", name: "app" });
+    await rest("POST", "repos/acme/app/issues/1/comments", { body: "x" });
+    expect(ghApi).toHaveBeenLastCalledWith("/w/app", expect.objectContaining({ host: "ghe.example.com" }));
+  });
+
+  it("recognises SSH remotes of a server whose web address has a port", async () => {
+    layout = {
+      "/w/app": [
+        { name: "origin", url: "git@ghe.example.com:acme/app.git" },
+        { name: "fork", url: "ssh://git@ghe.example.com/al/app.git" },
+      ],
+    };
+    ghAvailability.mockReturnValue(ready("https://ghe.example.com:8443/acme/app"));
+    ghApi.mockImplementation(answer);
+    await refreshConnection();
+    expect(remotesOf()).toEqual(["origin=ghe.example.com:8443/acme/app", "fork=ghe.example.com:8443/al/app"]);
   });
 });
