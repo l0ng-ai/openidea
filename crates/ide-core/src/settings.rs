@@ -78,6 +78,8 @@ pub struct Settings {
     pub file_colors: FileColorSettings,
     /// Database › Query Execution, Languages & Frameworks › SQL Resolution Scopes.
     pub database: DatabaseSettings,
+    /// Settings › Settings Sync (global only, never synced itself).
+    pub settings_sync: SettingsSyncSettings,
     /// Plugin settings (`[contributes.settings]`): plugin id → its values by key.
     #[specta(type = BTreeMap<String, BTreeMap<String, specta_typescript::Unknown>>)]
     pub plugins: BTreeMap<String, serde_json::Map<String, serde_json::Value>>,
@@ -462,6 +464,41 @@ pub struct ToolDownloadSettings {
     pub configured_registries_only: bool,
 }
 
+/// Settings › Settings Sync: the Git repository the IDE settings sync through, and what syncs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SettingsSyncSettings {
+    /// Clone URL (a secret GitHub Gist's works too, though anyone with its link can read it);
+    /// empty = sync off.
+    pub repository: String,
+    pub appearance: bool,
+    /// Editor settings, color schemes, code style, inspections and spelling.
+    pub editor: bool,
+    pub keymaps: bool,
+    /// Every other setting that is not machine-specific.
+    pub other: bool,
+    /// Live, file and postfix templates.
+    pub templates: bool,
+    pub macros: bool,
+    /// Tool window layouts and view options.
+    pub ui: bool,
+}
+
+impl Default for SettingsSyncSettings {
+    fn default() -> Self {
+        Self {
+            repository: String::new(),
+            appearance: true,
+            editor: true,
+            keymaps: true,
+            other: true,
+            templates: true,
+            macros: true,
+            ui: true,
+        }
+    }
+}
+
 /// Absent profiles retain automatic discovery for existing projects.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
@@ -615,6 +652,7 @@ impl Default for Settings {
             scopes: Vec::new(),
             file_colors: FileColorSettings::default(),
             database: DatabaseSettings::default(),
+            settings_sync: SettingsSyncSettings::default(),
             plugins: BTreeMap::new(),
         }
     }

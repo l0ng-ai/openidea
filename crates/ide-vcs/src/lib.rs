@@ -953,6 +953,7 @@ mod remotes;
 mod repo;
 pub use repo::DiffEntry;
 mod roots;
+pub mod settings_repo;
 pub use compare::{CompareResult, CompareScope, RepositoryComparison, WorkingTreeChange};
 pub mod shelf;
 mod signing;

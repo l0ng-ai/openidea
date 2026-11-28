@@ -1,0 +1,13 @@
+.syncRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  padding-block: var(--space-2);
+  border-radius: var(--radius-row);
+}
+
+.syncHint {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}

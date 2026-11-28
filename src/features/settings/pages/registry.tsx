@@ -13,6 +13,7 @@ import { OptionsPage } from "./OptionsPage";
 import { REMOTE_DEVELOPMENT_PAGE } from "./remoteDevelopment";
 import { RUN_TARGET_PAGES } from "./runTargets";
 import { SCOPE_PAGES } from "./scopes";
+import { SETTINGS_SYNC_PAGE } from "./settingsSync";
 import { flattenOptions, specLabels, type PageSpec } from "./spec";
 import { SSH_PAGES } from "./ssh";
 import { TOOLS_PAGES } from "./tools";
@@ -25,6 +26,7 @@ const BUILTIN_PAGES = [
   ...BEHAVIOR_PAGES,
   ...SCOPE_PAGES,
   UPDATES_PAGE,
+  SETTINGS_SYNC_PAGE,
   ...CORE_PAGES,
   ...EDITOR_PAGES,
   ...VCS_PAGES,

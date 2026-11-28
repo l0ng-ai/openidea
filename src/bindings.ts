@@ -2010,6 +2010,12 @@ export const commands = {
 	 *  re-reads its effective settings.
 	 */
 	settingsSet: (scope: SettingsScope, key: string, value: string) => typedError<Settings_Serialize, IdeError>(__TAURI_INVOKE("settings_set", { scope, key, value })),
+	/**  Settings › Settings Sync › Sync Now. `storage`: the frontend's syncable entries by category. */
+	settingsSyncNow: (storage: { [key in string]: { [key in string]: string } }, mode: "merge" | 
+/**  The repository's settings replace this machine's. */
+"replaceLocal" | 
+/**  This machine's settings replace the repository's. */
+"replaceRemote" | null) => typedError<SettingsSyncOutcome_Serialize, IdeError>(__TAURI_INVOKE("settings_sync_now", { storage, mode })),
 	/**  When a balloon is shown and OpenIDEA is unfocused, mirror it to the OS. */
 	showSystemNotification: (title: string, body: string) => typedError<null, IdeError>(__TAURI_INVOKE("show_system_notification", { title, body })),
 	/**
@@ -13600,6 +13606,58 @@ export type SettingsImport_Serialize = {
 
 export type SettingsScope = "global" | "project";
 
+/**  How the first sync with a repository that already holds settings treats them. */
+export type SettingsSyncMode = "merge" | 
+/**  The repository's settings replace this machine's. */
+"replaceLocal" | 
+/**  This machine's settings replace the repository's. */
+"replaceRemote";
+
+export type SettingsSyncOutcome = SettingsSyncOutcome_Serialize | SettingsSyncOutcome_Deserialize;
+
+export type SettingsSyncOutcome_Deserialize = {
+	result: SettingsSyncResult,
+	/**  Effective settings of the calling window when the sync changed them. */
+	settings: Settings_Deserialize | null,
+};
+
+export type SettingsSyncOutcome_Serialize = {
+	result: SettingsSyncResult,
+	/**  Effective settings of the calling window when the sync changed them. */
+	settings: Settings_Serialize | null,
+};
+
+export type SettingsSyncResult = {
+	/**  The repository holds settings this machine never synced with: sync again with a mode. */
+	needsChoice: boolean,
+	/**  Settings both sides changed, where this machine's value replaced the repository's. */
+	overwritten: string[],
+	/**  This machine's global settings changed. */
+	settingsChanged: boolean,
+	/**  Frontend storage categories that changed here: category → all its entries now. */
+	storage: { [key in string]: { [key in string]: string } },
+};
+
+/**  Settings › Settings Sync: the Git repository the IDE settings sync through, and what syncs. */
+export type SettingsSyncSettings = {
+	/**
+	 *  Clone URL (a secret GitHub Gist's works too, though anyone with its link can read it);
+	 *  empty = sync off.
+	 */
+	repository?: string,
+	appearance?: boolean,
+	/**  Editor settings, color schemes, code style, inspections and spelling. */
+	editor?: boolean,
+	keymaps?: boolean,
+	/**  Every other setting that is not machine-specific. */
+	other?: boolean,
+	/**  Live, file and postfix templates. */
+	templates?: boolean,
+	macros?: boolean,
+	/**  Tool window layouts and view options. */
+	ui?: boolean,
+};
+
 export type SettingsWindowInit = SettingsWindowInit_Serialize | SettingsWindowInit_Deserialize;
 
 export type SettingsWindowInit_Deserialize = {
@@ -13691,6 +13749,8 @@ export type Settings_Deserialize = {
 	fileColors?: FileColorSettings,
 	/**  Database › Query Execution, Languages & Frameworks › SQL Resolution Scopes. */
 	database?: DatabaseSettings,
+	/**  Settings › Settings Sync (global only, never synced itself). */
+	settingsSync?: SettingsSyncSettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
 	plugins?: { [key in string]: { [key in string]: unknown } },
 };
@@ -13768,6 +13828,8 @@ export type Settings_Serialize = {
 	fileColors: FileColorSettings,
 	/**  Database › Query Execution, Languages & Frameworks › SQL Resolution Scopes. */
 	database: DatabaseSettings,
+	/**  Settings › Settings Sync (global only, never synced itself). */
+	settingsSync: SettingsSyncSettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
 	plugins: { [key in string]: { [key in string]: unknown } },
 };

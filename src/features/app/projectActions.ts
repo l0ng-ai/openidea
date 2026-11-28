@@ -36,7 +36,7 @@ const EXPORTED_KEYS = new Set([
   "openidea.welcome.reopenLastProject",
 ]);
 
-const isExported = (key: string) => EXPORTED_KEYS.has(key) || EXPORTED_STORAGE.some((p) => key.startsWith(p));
+export const isExported = (key: string) => EXPORTED_KEYS.has(key) || EXPORTED_STORAGE.some((p) => key.startsWith(p));
 
 export function exportedStorage(
   storage: Pick<Storage, "length" | "key" | "getItem"> = localStorage,

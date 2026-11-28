@@ -69,6 +69,7 @@ pub enum SettingsScope {
 const USER_ONLY: &[&[&str]] = &[
     &["mcpServer"],
     &["remoteDevelopment"],
+    &["settingsSync"],
     &["editor", "customSchemes"],
     &["agentSecurity", "allowedCommands"],
     &["agents", "defaults"],
@@ -474,6 +475,51 @@ impl SettingsStore {
         Ok(self.reload())
     }
 
+    /// The global settings file as JSON, as written (no defaults); empty when there is none.
+    pub fn global_layer(&self) -> IdeResult<Json> {
+        match std::fs::read_to_string(&self.global_file) {
+            Ok(text) => parse_layer(&text).map_err(|e| {
+                IdeError::invalid(format!("{} is not valid TOML; fix it first: {e}", self.global_file.display()))
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Json::Object(Default::default())),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Sets (`Some`) or removes (`None`) several global settings, by key segments, in one write
+    /// that keeps the file's comments; rejected as a whole if the result does not deserialize.
+    /// `write: false` only checks that.
+    pub fn apply_global_changes(&self, changes: &[(Vec<String>, Option<Json>)], write: bool) -> IdeResult<()> {
+        let text = match std::fs::read_to_string(&self.global_file) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(e.into()),
+        };
+        let mut doc: DocumentMut = text.parse().map_err(|e| {
+            IdeError::invalid(format!("{} is not valid TOML; fix it first: {e}", self.global_file.display()))
+        })?;
+        for (segments, value) in changes {
+            let segments: Vec<&str> = segments.iter().map(String::as_str).collect();
+            if segments.is_empty() {
+                continue;
+            }
+            let value = value.as_ref().filter(|v| !v.is_null()).map(json_to_toml).transpose()?;
+            set_in_document(&mut doc, &segments, value, true);
+        }
+        let text = doc.to_string();
+        let mut merged = defaults_json();
+        let layer = parse_layer(&text).map_err(|e| IdeError::invalid(format!("invalid settings: {e}")))?;
+        try_merge(&mut merged, layer).map_err(|e| IdeError::invalid(format!("invalid settings: {e}")))?;
+        if write {
+            if let Some(dir) = self.global_file.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            ide_vfs::write_atomic(&self.global_file, text.as_bytes())?;
+            self.reload();
+        }
+        Ok(())
+    }
+
     /// Re-reads all layers from disk.
     pub fn reload(&self) -> Settings {
         let settings = self.compute();
@@ -664,6 +710,31 @@ mod tests {
         store.set(SettingsScope::Global, "appearance.locale", Json::from("en")).unwrap();
         initialize_global_locale(config.path(), || panic!("existing profiles must skip detection")).unwrap();
         assert_eq!(store.reload().appearance.locale, "en");
+    }
+
+    #[test]
+    fn applies_several_global_changes_keeping_comments() {
+        let config = tempfile::tempdir().unwrap();
+        let file = config.path().join("settings.toml");
+        std::fs::write(&file, "# mine\n[editor]\nfontSize = 13 # big\ntabSize = 2\n").unwrap();
+        let store = SettingsStore::load(config.path(), None);
+        let seg = |key: &str| key.split('.').map(String::from).collect::<Vec<_>>();
+        let changes = vec![
+            (seg("editor.fontSize"), Some(json!(15))),
+            (seg("editor.tabSize"), None),
+            (seg("keymapOverrides"), Some(json!({ "editor.action.x": ["Meta+K"] }))),
+        ];
+        store.apply_global_changes(&changes, false).unwrap();
+        assert_eq!(store.reload().editor.font_size, 13.0, "a check writes nothing");
+        store.apply_global_changes(&changes, true).unwrap();
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.starts_with("# mine\n[editor]\nfontSize = 15 # big\n"), "{text}");
+        let settings = store.effective();
+        assert_eq!((settings.editor.font_size, settings.editor.tab_size), (15.0, 4));
+        assert_eq!(settings.keymap_overrides["editor.action.x"], ["Meta+K"]);
+        let invalid = vec![(seg("editor.fontSize"), Some(json!("big")))];
+        assert!(store.apply_global_changes(&invalid, true).is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
     }
 
     #[test]
