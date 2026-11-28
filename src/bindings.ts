@@ -446,6 +446,11 @@ export const commands = {
 	/**  Completions for an expression typed in Evaluate (`line` / `column` 0-based, UTF-16). */
 	debugCompletions: (session: DebugSessionId, frameId: number | null, text: string, line: number, column: number) => typedError<DebugCompletion[], IdeError>(__TAURI_INVOKE("debug_completions", { session, frameId, text, line, column })),
 	debugDataBreakpointInfo: (session: DebugSessionId, container: number, name: string, frameId: number | null) => typedError<DataBreakpointInfo, IdeError>(__TAURI_INVOKE("debug_data_breakpoint_info", { session, container, name, frameId })),
+	/**
+	 *  Disassembly view: `count` instructions from `before` instructions ahead of `memory_reference`
+	 *  (a frame's instruction pointer or an instruction's address).
+	 */
+	debugDisassemble: (session: DebugSessionId, memoryReference: string, before: number, count: number) => typedError<Instruction_Serialize[], IdeError>(__TAURI_INVOKE("debug_disassemble", { session, memoryReference, before, count })),
 	debugEvaluate: (session: DebugSessionId, frameId: number | null, expression: string) => typedError<Variable_Serialize, IdeError>(__TAURI_INVOKE("debug_evaluate", { session, frameId, expression })),
 	/**  Evaluate with an explicit DAP context: `repl`, `watch`, `hover` or `clipboard`. */
 	debugEvaluateIn: (session: DebugSessionId, frameId: number | null, expression: string, context: string | null) => typedError<Variable_Serialize, IdeError>(__TAURI_INVOKE("debug_evaluate_in", { session, frameId, expression, context })),
@@ -535,21 +540,23 @@ export const commands = {
 	/**  Method breakpoints (all files); states aligned with `breakpoints`. */
 	debugSetFunctionBreakpoints: (breakpoints: FunctionBreakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_function_breakpoints", { breakpoints })),
 	debugSetVariable: (session: DebugSessionId, container: number, name: string, evaluateName: string | null, frameId: number | null, value: string) => typedError<Variable_Serialize, IdeError>(__TAURI_INVOKE("debug_set_variable", { session, container, name, evaluateName, frameId, value })),
-	debugStackTrace: (session: DebugSessionId, threadId: number) => typedError<StackFrame[], IdeError>(__TAURI_INVOKE("debug_stack_trace", { session, threadId })),
+	debugStackTrace: (session: DebugSessionId, threadId: number) => typedError<StackFrame_Serialize[], IdeError>(__TAURI_INVOKE("debug_stack_trace", { session, threadId })),
 	/**  Starts a session owned by this window: its events (and those of child sessions) go here only. */
 	debugStart: (config: LaunchConfig) => typedError<DebugSessionId, IdeError>(__TAURI_INVOKE("debug_start", { config })),
 	debugStep: (session: DebugSessionId, threadId: number, kind: StepKind) => typedError<null, IdeError>(__TAURI_INVOKE("debug_step", { session, threadId, kind })),
 	debugStepInTarget: (session: DebugSessionId, threadId: number, targetId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_step_in_target", { session, threadId, targetId })),
 	/**  Smart Step Into: the calls on the current line of `frame_id`. */
 	debugStepInTargets: (session: DebugSessionId, frameId: number) => typedError<StepInTarget[], IdeError>(__TAURI_INVOKE("debug_step_in_targets", { session, frameId })),
+	/**  Step Over / Into Instruction: a step by one machine instruction. */
+	debugStepInstruction: (session: DebugSessionId, threadId: number, kind: StepKind) => typedError<null, IdeError>(__TAURI_INVOKE("debug_step_instruction", { session, threadId, kind })),
 	debugStop: (session: DebugSessionId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_stop", { session })),
 	/**  The stream chains around `frame`'s line; `top`: it is the thread's top frame. */
-	debugStreamChains: (session: DebugSessionId, frame: StackFrame, top: boolean) => typedError<StreamChainInfo_Serialize[], IdeError>(__TAURI_INVOKE("debug_stream_chains", { session, frame, top })),
+	debugStreamChains: (session: DebugSessionId, frame: StackFrame_Deserialize, top: boolean) => typedError<StreamChainInfo_Serialize[], IdeError>(__TAURI_INVOKE("debug_stream_chains", { session, frame, top })),
 	/**
 	 *  Traces chain `chain_index` of [`debug_stream_chains`], whose `range` the UI showed, while the
 	 *  program runs it; cancelling `request` stops recording.
 	 */
-	debugStreamTrace: (session: DebugSessionId, request: RequestId, threadId: number, frame: StackFrame, chainIndex: number, range: Range, onProgress: Channel<TraceProgress>) => typedError<StreamTraceResult_Serialize, IdeError>(__TAURI_INVOKE("debug_stream_trace", { session, request, threadId, frame, chainIndex, range, onProgress })),
+	debugStreamTrace: (session: DebugSessionId, request: RequestId, threadId: number, frame: StackFrame_Deserialize, chainIndex: number, range: Range, onProgress: Channel<TraceProgress>) => typedError<StreamTraceResult_Serialize, IdeError>(__TAURI_INVOKE("debug_stream_trace", { session, request, threadId, frame, chainIndex, range, onProgress })),
 	/**  Ends the running trace's terminal operation; `None` when no trace runs. */
 	debugStreamTraceAbort: (session: DebugSessionId) => typedError<{ kind: "interrupted" } | { kind: "stopped" } | 
 /**  Suspended threads that own a monitor the terminal may be waiting for: `(thread id, name)`. */
@@ -6029,6 +6036,10 @@ export type DebugCapabilities = {
 	streamTrace: boolean,
 	/**  The program's raw memory can be read ([`DebugManager::read_memory`]): the Memory View. */
 	readMemory: boolean,
+	/**  The program's machine code can be disassembled ([`DebugManager::disassemble`]): the Disassembly view. */
+	disassemble: boolean,
+	/**  Steps can move by one instruction ([`DebugManager::step_instruction`]). */
+	instructionStepping: boolean,
 };
 
 /**  A completion the adapter offers for an expression (DAP `completions`). */
@@ -9109,6 +9120,33 @@ export type InstalledIntellijTheme = {
 	dark: boolean,
 	/**  The IDE is set to this theme. */
 	active: boolean,
+};
+
+/**  One disassembled instruction. */
+export type Instruction = Instruction_Serialize | Instruction_Deserialize;
+
+/**  One disassembled instruction. */
+export type Instruction_Deserialize = {
+	/**  Address as the adapter writes it (`0x5555…`); also a memory reference for the next request. */
+	address: string,
+	/**  The instruction in the adapter's syntax (`mov    -0x28(%rbp),%rax`). */
+	instruction: string,
+	/**  Its machine code as hex (`488b45d8`), when the adapter sends it. */
+	bytes?: string | null,
+	/**  The function it belongs to, when the adapter names it (often on the first instruction only). */
+	symbol?: string | null,
+};
+
+/**  One disassembled instruction. */
+export type Instruction_Serialize = {
+	/**  Address as the adapter writes it (`0x5555…`); also a memory reference for the next request. */
+	address: string,
+	/**  The instruction in the adapter's syntax (`mov    -0x28(%rbp),%rax`). */
+	instruction: string,
+	/**  Its machine code as hex (`488b45d8`), when the adapter sends it. */
+	bytes?: string | null,
+	/**  The function it belongs to, when the adapter names it (often on the first instruction only). */
+	symbol?: string | null,
 };
 
 export type IntellijThemeFile = {
@@ -13953,7 +13991,9 @@ export type SshSettings = {
 	configs?: SshConfiguration[],
 };
 
-export type StackFrame = {
+export type StackFrame = StackFrame_Serialize | StackFrame_Deserialize;
+
+export type StackFrame_Deserialize = {
 	id: number,
 	name: string,
 	path: IpcPath | null,
@@ -13961,6 +14001,20 @@ export type StackFrame = {
 	column: number,
 	/**  `subtle` frames (library/generated) are collapsed in the UI. */
 	presentationHint: string | null,
+	/**  The frame's program counter, for [`DebugManager::disassemble`] (DAP `instructionPointerReference`). */
+	instructionPointerReference?: string | null,
+};
+
+export type StackFrame_Serialize = {
+	id: number,
+	name: string,
+	path: IpcPath | null,
+	line: number,
+	column: number,
+	/**  `subtle` frames (library/generated) are collapsed in the UI. */
+	presentationHint: string | null,
+	/**  The frame's program counter, for [`DebugManager::disassemble`] (DAP `instructionPointerReference`). */
+	instructionPointerReference?: string | null,
 };
 
 export type StagedText = {

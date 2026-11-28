@@ -9,6 +9,7 @@ const ipc = vi.hoisted(() => {
     ok,
     runStop: vi.fn(() => ok(null)),
     debugStep: vi.fn(() => ok(null)),
+    debugStepInstruction: vi.fn(() => ok(null)),
     debugResume: vi.fn(() => ok(null)),
     debugForceStepOver: vi.fn(() => ok(null)),
     debugRunTo: vi.fn(() => ok(null)),
@@ -107,6 +108,7 @@ import { forgetMemory, selectMemoryClass } from "../memory/memoryState";
 import { forgetInstances, setInstancesLead, showInstances, useInstances } from "../memory/instancesState";
 import { InstancesPane } from "../memory/InstancesPane";
 import { forgetMemoryView, useMemoryView } from "../memoryView/memoryViewState";
+import { useDisassembly } from "../disassembly/disassemblyState";
 
 const caps = (p: Partial<DebugCapabilities> = {}): DebugCapabilities => ({
   restartFrame: false,
@@ -125,6 +127,8 @@ const caps = (p: Partial<DebugCapabilities> = {}): DebugCapabilities => ({
   liveEvaluate: false,
   streamTrace: false,
   readMemory: false,
+  disassemble: false,
+  instructionStepping: false,
   ...p,
 });
 
@@ -207,6 +211,9 @@ describe("debugger actions (IDEA parity)", () => {
       "debug.memory.showReferrers": undefined,
       "debug.memory.closeInstances": undefined,
       "debug.viewMemory": undefined,
+      "debug.showDisassembly": undefined,
+      "debug.stepOverInstruction": undefined,
+      "debug.stepIntoInstruction": undefined,
       "debug.toggleMethodBreakpoint": undefined,
       "debug.toggleFieldWatchpoint": undefined,
       "debug.traceStreamChain": undefined,
@@ -654,6 +661,50 @@ describe("View Memory", () => {
     expect(useMemoryView.getState().bySession[3]).toMatchObject({ expression: "0x7fffffff9f69", start: -9 });
     expect(notify).not.toHaveBeenCalled();
     forgetMemoryView(3);
+  });
+});
+
+describe("Disassembly and instruction steps", () => {
+  const notify = vi.fn();
+  const show = vi.fn();
+  beforeEach(() => {
+    provideNotificationService({ notify });
+    provideToolWindowService({ show } as unknown as ToolWindowService);
+    useDisassembly.setState({ bySession: {}, revealPending: false });
+  });
+
+  it.each([
+    ["debug.stepOverInstruction", "Step Over Instruction"],
+    ["debug.stepIntoInstruction", "Step Into Instruction"],
+    ["debug.showDisassembly", "Disassembly"],
+  ])("%s says when the session's debugger cannot do it", async (id, what) => {
+    paused({ adapter: "debugpy" });
+    await executeAction(id);
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: `${what} is not supported by debugpy` }));
+    expect(ipc.debugStepInstruction).not.toHaveBeenCalled();
+    expect(show).not.toHaveBeenCalled();
+    expect(useDebug.getState().sessions[3]?.status).toBe("paused");
+  });
+
+  it.each([
+    ["debug.stepOverInstruction", "over"],
+    ["debug.stepIntoInstruction", "into"],
+  ] as const)("%s steps the paused thread by one instruction", async (id, kind) => {
+    paused({ adapter: "gdb", caps: caps({ instructionStepping: true }) });
+    await executeAction(id);
+    await settle();
+    expect(ipc.debugStepInstruction).toHaveBeenCalledWith(3, 1, kind);
+    expect(ipc.debugStep).not.toHaveBeenCalled();
+    expect(useDebug.getState().sessions[3]).toMatchObject({ status: "running", frames: [] });
+  });
+
+  it("opens the Disassembly view at a frame of the Frames list", async () => {
+    paused({ adapter: "lldb-dap", caps: caps({ disassemble: true }) });
+    await executeAction("debug.showDisassembly", 70);
+    expect(show).toHaveBeenCalledWith("debug", true);
+    expect(useDisassembly.getState().revealPending).toBe(true);
+    expect(useDebug.getState().sessions[3]?.selectedFrame).toBe(70);
+    expect(notify).not.toHaveBeenCalled();
   });
 });
 

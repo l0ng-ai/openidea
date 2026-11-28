@@ -174,6 +174,7 @@ debug_breakpoint_states                      trusted            project_host bin
 debug_capabilities                           trusted            project_host bindings sync
 debug_completions                            trusted            project_host bindings async
 debug_data_breakpoint_info                   trusted            project_host bindings async
+debug_disassemble                            trusted            project_host bindings async
 debug_evaluate                               trusted            project_host bindings async
 debug_evaluate_in                            trusted            project_host bindings async
 debug_exception_filters                      trusted            project_host bindings sync
@@ -222,6 +223,7 @@ debug_start                                  trusted            project_host bin
 debug_step                                   trusted            project_host bindings async
 debug_step_in_target                         trusted            project_host bindings async
 debug_step_in_targets                        trusted            project_host bindings async
+debug_step_instruction                       trusted            project_host bindings async
 debug_stop                                   always             project_host bindings async
 debug_stream_chains                          trusted            project_host bindings async
 debug_stream_trace                           trusted            project_host bindings async

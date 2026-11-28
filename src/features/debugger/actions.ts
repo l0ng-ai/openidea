@@ -56,6 +56,7 @@ import { refreshMemory, useMemory } from "./memory/memoryState";
 import { closeInstances, instancesOutdated, showInstances, showReferrers, useInstances } from "./memory/instancesState";
 import { jumpToClass } from "./memory/jumpToClass";
 import { revealMemoryView, showMemoryAt } from "./memoryView/memoryViewState";
+import { revealDisassembly } from "./disassembly/disassemblyState";
 import { captureHeap } from "./heap/heapState";
 import { stopRecording, traceStreamChain } from "./streams/streamState";
 import { isTracing, useStreamTrace } from "./streams/streamStore";
@@ -80,11 +81,13 @@ import {
   evaluate,
   isLive,
   justDetached,
+  markInstructionStep,
   pausedThread,
   rerunSession,
   revealFrame,
   rootOf,
   selectedFrame,
+  selectFrame,
   sessionSupports,
   showExecutionPoint,
   startBrowserSession,
@@ -197,6 +200,20 @@ function viewMemory(reference: unknown) {
   // The address field shows the address itself: entered again, it reads the same memory.
   if (typeof reference === "string") void showMemoryAt(s.id, reference, reference);
   revealMemoryView();
+  toolWindowService().show("debug", true);
+}
+
+/**
+ * Show Disassembly: the Disassembly view, at the frame `frameId` (from the Frames list) when given,
+ * otherwise at the selected frame. Adapters without `disassemble` say so instead.
+ */
+function showDisassembly(frameId: unknown) {
+  const s = activeSession();
+  if (!s || !isLive(s)) return;
+  if (!sessionSupports("disassemble", s)) return notSupported("Disassembly", s);
+  if (typeof frameId === "number" && s.status === "paused" && s.frames.some((f) => f.id === frameId))
+    selectFrame(s.id, frameId, false);
+  revealDisassembly();
   toolWindowService().show("debug", true);
 }
 
@@ -521,6 +538,30 @@ export function registerDebugActions(): () => void {
           title,
           resumeExecution(t.s.id, () => call(commands.debugStep(t.s.id, t.thread, kind))),
         );
+    },
+  });
+
+  // Its stop selects the frame that holds the program counter, also one without source.
+  const stepInstruction = (id: string, title: string, kind: "over" | "into", icon: string): Action => ({
+    id,
+    title,
+    category: "Debug",
+    icon,
+    keywords: ["instruction", "assembly", "disassembly", "machine code"],
+    when: paused,
+    run: () => {
+      const t = pausedTarget();
+      if (!t) return;
+      if (!sessionSupports("instructionStepping", t.s)) return notSupported(title, t.s);
+      markInstructionStep(t.s.id, true);
+      const sent = resumeExecution(t.s.id, () => call(commands.debugStepInstruction(t.s.id, t.thread, kind)));
+      void report(
+        title,
+        sent.catch((e: unknown) => {
+          markInstructionStep(t.s.id, false);
+          throw e;
+        }),
+      );
     },
   });
 
@@ -920,6 +961,17 @@ export function registerDebugActions(): () => void {
     step("debug.stepOver", "Step Over", "over", "step-over"),
     step("debug.stepInto", "Step Into", "into", "step-into"),
     step("debug.stepOut", "Step Out", "out", "step-out"),
+    stepInstruction("debug.stepOverInstruction", "Step Over Instruction", "over", "step-over"),
+    stepInstruction("debug.stepIntoInstruction", "Step Into Instruction", "into", "step-into"),
+    {
+      // The Frames list passes the frame; without one, the selected frame.
+      id: "debug.showDisassembly",
+      title: "Show Disassembly",
+      category: "Debug",
+      keywords: ["assembly", "instructions", "machine code", "asm", "program counter"],
+      when: "debugSessionActive",
+      run: ({ arg }) => showDisassembly(arg),
+    },
     {
       id: "debug.forceStepOver",
       title: "Force Step Over",

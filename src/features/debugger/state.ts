@@ -1276,8 +1276,18 @@ export function topFrame(frames: StackFrame[]): StackFrame | null {
   return frames.find((f) => f.path && f.presentationHint !== "label") ?? frames[0] ?? null;
 }
 
+/** Sessions whose next stop ends an instruction step: it selects the frame that holds the program counter. */
+const instructionSteps = new Set<DebugSessionId>();
+
+/** The step about to be sent moves by one instruction (`false`: it was not sent after all). */
+export function markInstructionStep(id: DebugSessionId, on: boolean) {
+  if (on) instructionSteps.add(id);
+  else instructionSteps.delete(id);
+}
+
 function markTerminated(id: DebugSessionId) {
   stopTaskbarFlash();
+  instructionSteps.delete(id);
   forgetImports(id);
   const page = serverPages.get(id)?.page;
   if (serverPages.delete(id) && page != null) void stopSession(page);
@@ -1331,8 +1341,11 @@ export function selectFrame(id: DebugSessionId, frameId: number, reveal = true) 
   void loadLocals(id, frameId);
 }
 
-/** `newStop`: false when returning to an earlier stop, whose breakpoint hit was handled when it happened. */
-async function loadFrames(id: DebugSessionId, threadId: number, reveal: boolean, newStop = true) {
+/**
+ * `newStop`: false when returning to an earlier stop, whose breakpoint hit was handled when it happened.
+ * `exact`: select the innermost frame even without source (after an instruction step into a library).
+ */
+async function loadFrames(id: DebugSessionId, threadId: number, reveal: boolean, newStop = true, exact = false) {
   if (useDebug.getState().sessions[id]?.framesError) patch(id, { framesError: null });
   const before = useDebug.getState().sessions[id];
   let frames: StackFrame[] = [];
@@ -1346,7 +1359,7 @@ async function loadFrames(id: DebugSessionId, threadId: number, reveal: boolean,
   const s = useDebug.getState().sessions[id];
   if (!s || s.status !== "paused" || s.selectedThread !== threadId || s.frames !== before?.frames) return;
   patch(id, { frames, framesError });
-  const top = topFrame(frames);
+  const top = exact ? (frames[0] ?? null) : topFrame(frames);
   if (newStop && top?.path && (s.stopReason === "breakpoint" || s.stopReason === "function breakpoint")) {
     void logSuspendingHit(id, top);
     consumeTemporary(top.path, top.line);
@@ -1644,7 +1657,13 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
       updateExecutionPoint();
       void loadThreads(id);
       // The stop a stream trace ends in would bring the source tab over the trace tab that shows its result.
-      void loadFrames(id, event.threadId, !markTraceStop(id, event.threadId, s.stops + 1));
+      void loadFrames(
+        id,
+        event.threadId,
+        !markTraceStop(id, event.threadId, s.stops + 1),
+        true,
+        instructionSteps.delete(id),
+      );
       const dbg = workflowSettings().debugger;
       try {
         // A session debugged in place from Services shows its debugger there (#4773).

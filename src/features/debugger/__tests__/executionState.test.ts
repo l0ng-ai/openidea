@@ -30,6 +30,7 @@ import {
   adoptSession,
   handleDebugEvent,
   isThreadSuspended,
+  markInstructionStep,
   selectThread,
   resumeExecution,
   useDebug,
@@ -80,6 +81,30 @@ describe("execution point state", () => {
     await settle();
     expect(useDebug.getState().sessions[1]?.selectedThread).toBe(1);
     expect(useExecutionPoint.getState()).toMatchObject({ path, line: 9 });
+  });
+
+  it("selects the frame without source an instruction step stopped in, and the first with source otherwise", async () => {
+    // GDB, one instruction into `atoi@plt` from `parse` (#5922): the innermost frame has no source.
+    const plt: StackFrame = {
+      id: 0,
+      name: "atoi@plt",
+      path: null,
+      line: 0,
+      column: 0,
+      presentationHint: null,
+      instructionPointerReference: "0x555555555090",
+    };
+    ipc.debugStackTrace.mockResolvedValue(ipc.ok([plt, frame(5, 1)]));
+    markInstructionStep(1, true);
+    stopped();
+    await settle();
+    expect(useDebug.getState().sessions[1]?.selectedFrame).toBe(0);
+    expect(useExecutionPoint.getState().path).toBeNull();
+    // Only that stop: the next (a line step, a breakpoint) selects the first frame with source again.
+    stopped();
+    await settle();
+    expect(useDebug.getState().sessions[1]?.selectedFrame).toBe(1);
+    expect(useExecutionPoint.getState()).toMatchObject({ path, line: 5 });
   });
 
   it("keeps a failed stack trace's reason for the frames list, and a retry loads the frames", async () => {

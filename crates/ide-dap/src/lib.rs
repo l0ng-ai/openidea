@@ -13,6 +13,7 @@ pub mod attach;
 mod cargo;
 pub mod connection;
 mod debugpy;
+mod disassembly;
 mod exception_classes;
 pub mod jdwp;
 mod js_cdp;
@@ -27,6 +28,7 @@ pub mod unity;
 
 use adapter::{AdapterLauncher, AdapterSpec, ProcessLauncher};
 use connection::{Connection, DapError};
+pub use disassembly::{Instruction, MAX_INSTRUCTIONS};
 pub use exception_classes::{ExceptionClassBreakpoint, ExceptionClassSupport};
 use futures::future::join_all;
 use ide_core::{DebugSessionId, IdeError, IdeResult, RunId, SharedSink};
@@ -158,6 +160,10 @@ pub struct DebugCapabilities {
     pub stream_trace: bool,
     /// The program's raw memory can be read ([`DebugManager::read_memory`]): the Memory View.
     pub read_memory: bool,
+    /// The program's machine code can be disassembled ([`DebugManager::disassemble`]): the Disassembly view.
+    pub disassemble: bool,
+    /// Steps can move by one instruction ([`DebugManager::step_instruction`]).
+    pub instruction_stepping: bool,
 }
 
 /// Result of [`DebugManager::redefine_classes`].
@@ -224,6 +230,10 @@ pub struct StackFrame {
     pub column: u32,
     /// `subtle` frames (library/generated) are collapsed in the UI.
     pub presentation_hint: Option<String>,
+    /// The frame's program counter, for [`DebugManager::disassemble`] (DAP `instructionPointerReference`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub instruction_pointer_reference: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -614,6 +624,11 @@ pub(crate) fn frame_from(f: &Value) -> StackFrame {
         line: (f.get("line").and_then(Value::as_u64).unwrap_or(0) as u32).saturating_sub(1),
         column: (f.get("column").and_then(Value::as_u64).unwrap_or(0) as u32).saturating_sub(1),
         presentation_hint: hint,
+        instruction_pointer_reference: f
+            .get("instructionPointerReference")
+            .and_then(Value::as_str)
+            .filter(|r| !r.is_empty())
+            .map(str::to_owned),
     }
 }
 
@@ -691,6 +706,8 @@ pub(crate) fn capabilities_from(caps: &Value) -> DebugCapabilities {
         live_evaluate: false,
         stream_trace: false,
         read_memory: has("supportsReadMemoryRequest"),
+        disassemble: has("supportsDisassembleRequest"),
+        instruction_stepping: has("supportsSteppingGranularity"),
     }
 }
 
@@ -1977,6 +1994,22 @@ impl DebugManager {
     }
 
     pub async fn step(&self, s: DebugSessionId, thread_id: i64, kind: StepKind) -> IdeResult<()> {
+        self.step_with(s, thread_id, kind, json!({ "threadId": thread_id })).await
+    }
+
+    /// Step Over / Into Instruction: a step by one machine instruction (DAP `granularity`).
+    pub async fn step_instruction(&self, s: DebugSessionId, thread_id: i64, kind: StepKind) -> IdeResult<()> {
+        let session = self.session(s)?;
+        if !session.supports("supportsSteppingGranularity") {
+            return Err(IdeError::unavailable(format!(
+                "debug adapter `{}` cannot step by instruction",
+                session.adapter
+            )));
+        }
+        self.step_with(s, thread_id, kind, json!({ "threadId": thread_id, "granularity": "instruction" })).await
+    }
+
+    async fn step_with(&self, s: DebugSessionId, thread_id: i64, kind: StepKind, args: Value) -> IdeResult<()> {
         let command = match kind {
             StepKind::Over => "next",
             StepKind::Into => "stepIn",
@@ -1988,7 +2021,7 @@ impl DebugManager {
             quirks.step_sent();
         }
         let ticket = session.suspended.ticket();
-        let sent = session.conn.request_timeout(command, json!({ "threadId": thread_id }), REQUEST_TIMEOUT).await;
+        let sent = session.conn.request_timeout(command, args, REQUEST_TIMEOUT).await;
         step_settled(&session, sent)?;
         // A step runs its thread; other threads stopped by their own events stay stopped.
         session.finish_resume(ticket, thread_id, false);
@@ -2165,6 +2198,49 @@ impl DebugManager {
             )
             .await?;
         memory::memory_block(&body, count)
+    }
+
+    /// `count` instructions (at most [`MAX_INSTRUCTIONS`]) from `before` instructions ahead of
+    /// `memory_reference` (a frame's instruction pointer or an instruction's address). Adapters that
+    /// cannot disassemble backwards start at the reference instead.
+    pub async fn disassemble(
+        &self,
+        s: DebugSessionId,
+        memory_reference: String,
+        before: u32,
+        count: u32,
+    ) -> IdeResult<Vec<Instruction>> {
+        let session = self.session(s)?;
+        if !session.supports("supportsDisassembleRequest") {
+            return Err(IdeError::unavailable(format!("debug adapter `{}` cannot disassemble", session.adapter)));
+        }
+        let count = count.clamp(1, MAX_INSTRUCTIONS);
+        let before = before.min(count - 1);
+        let request = |offset: i64, count: u32| {
+            session.conn.request_timeout(
+                "disassemble",
+                json!({
+                    "memoryReference": memory_reference,
+                    "offset": 0,
+                    "instructionOffset": offset,
+                    "instructionCount": count,
+                    "resolveSymbols": true,
+                }),
+                REQUEST_TIMEOUT,
+            )
+        };
+        if before > 0 {
+            // GDB (up to 17 at least) answers a negative instruction offset with the instructions after
+            // the reference, or fails: only an answer with the reference in its place is used.
+            if let Ok(body) = request(-i64::from(before), count).await {
+                let instructions = disassembly::instructions(&body);
+                if disassembly::at_index(&instructions, &memory_reference, before as usize) {
+                    return Ok(instructions.into_iter().flatten().collect());
+                }
+            }
+        }
+        let body = request(0, count - before).await?;
+        Ok(disassembly::instructions(&body).into_iter().flatten().collect())
     }
 
     pub fn capabilities(&self, s: DebugSessionId) -> IdeResult<DebugCapabilities> {

@@ -1,6 +1,6 @@
 //! Drives real debug adapters against tiny programs (one per language), checking the
 //! launch templates and the IDEA-parity features: line / method breakpoints, Smart Step
-//! Into, Reset Frame, Force Step Over, Force Run to Cursor, Set Value and the Memory View.
+//! Into, Reset Frame, Force Step Over, Force Run to Cursor, Set Value, the Memory View and the Disassembly view.
 //!
 //! Ignored by default (needs the adapters installed). Run with
 //! `OPENIDEA_DAP_FIXTURES=<dir> cargo test -p ide-dap --test real_adapters -- --ignored --nocapture`
@@ -306,6 +306,52 @@ async fn scenario(case: &Case) -> Result<Vec<String>, String> {
     } else {
         report.push("memory view: readMemory not supported".into());
     }
+
+    // Disassembly: the instructions around the stop's instruction pointer, then two instruction steps,
+    // which stay on the loop line and inside the instructions shown.
+    let address = |a: &str| u128::from_str_radix(a.trim_start_matches("0x"), 16).ok();
+    match (caps.disassemble, top.instruction_pointer_reference.clone()) {
+        (true, Some(pc)) => match m.disassemble(s, pc.clone(), 8, 24).await {
+            Ok(list) => {
+                let shown = |a: &str| list.iter().position(|i| address(&i.address) == address(a));
+                match shown(&pc) {
+                    Some(at) => report.push(format!(
+                        "disassembly at {pc}: {} instructions, the instruction pointer is #{at}: `{}` ({:?})",
+                        list.len(),
+                        list[at].instruction,
+                        list[at].bytes
+                    )),
+                    None => report.push(format!("disassembly at {pc}: FAILED, not among {list:?}")),
+                }
+                if caps.instruction_stepping {
+                    let mut steps = vec![pc];
+                    for _ in 0..2 {
+                        let seen = run.seen();
+                        m.step_instruction(s, thread, StepKind::Over).await.map_err(|e| e.message)?;
+                        run.stopped_after(seen).await.ok_or("no stop after step over instruction")?;
+                        let f = run.top(s, thread).await;
+                        if f.line != case.loop_line {
+                            report.push(format!(
+                                "step over instruction: left the loop line for {}:{}",
+                                f.name,
+                                f.line + 1
+                            ));
+                        }
+                        steps.push(f.instruction_pointer_reference.unwrap_or_default());
+                    }
+                    let all = steps.iter().all(|a| shown(a).is_some());
+                    report.push(format!("step over instruction: {} (all shown: {all})", steps.join(" -> ")));
+                } else {
+                    report.push("instruction stepping: not supported".into());
+                }
+            }
+            Err(e) => report.push(format!("disassembly at {pc}: FAILED {}", e.message)),
+        },
+        (true, None) => report.push("disassembly: the top frame has no instruction pointer".into()),
+        (false, _) => report.push("disassembly: not supported".into()),
+    }
+    // Instruction steps resumed the thread: frame ids from before them may be gone.
+    let top = run.top(s, thread).await;
 
     // Set Value on the first local that is an integer.
     let scopes = m.scopes(s, top.id).await.map_err(|e| e.message)?;
