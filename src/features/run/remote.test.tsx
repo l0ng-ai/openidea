@@ -54,6 +54,7 @@ import { duplicateConfig, upsertConfig, userConfigs } from "./configs";
 import { activate } from "./index";
 import {
   containerExecutorBlocked,
+  containerTarget,
   remoteDebugBlocked,
   remoteLabel,
   startRemedy,
@@ -378,6 +379,25 @@ describe("coverage and profiling", () => {
     expect(containerExecutorBlocked(cfg("app"), [box, container])).toBe(false);
     expect(containerExecutorBlocked(cfg("app", { target: "box" }), [box, container])).toBe(false);
     expect(notify).not.toHaveBeenCalled();
+  });
+});
+
+describe("the container a run is in", () => {
+  const web: RunTargetValid = { ...DEFAULT_RUN_TARGET, kind: "compose", id: "web", name: "web", service: "web" };
+  const settings = (interpreter: string) =>
+    useProject.setState({ settings: { runTargets: [box, web], languages: { python: { interpreter } } } as never });
+
+  it("is the configuration's own target, else a Python configuration's interpreter target", () => {
+    settings("target:web");
+    const targets = [box, web];
+    expect(containerTarget(cfg("a", { kind: "pytest" }), targets)).toBe("web");
+    expect(containerTarget(cfg("a", { command: "/usr/bin/python3.12" }), targets)).toBe("web");
+    expect(containerTarget(cfg("a", { command: "npm" }), targets)).toBeNull();
+    expect(containerTarget(cfg("a", { kind: "python", target: "" }), targets)).toBeNull();
+    expect(containerTarget(cfg("a", { kind: "python", target: "box" }), targets)).toBeNull();
+    settings(".venv/bin/python");
+    expect(containerTarget(cfg("a", { kind: "python" }), targets)).toBeNull();
+    expect(containerTarget(cfg("a", { target: "web" }), targets)).toBe("web");
   });
 });
 

@@ -6,12 +6,14 @@ use ide_core::remote_settings::{RunTarget, RunTargetKind};
 use ide_core::{IdeError, IdeResult};
 use ide_docker::DockerEndpoint;
 use ide_remote::docker::{
-    ContainerDebug, ContainerRun, DEBUG_BOOTSTRAP, DEBUG_BOOTSTRAP_NAME, compose_container_root, container_config,
-    container_name, default_container_root,
+    ContainerDebug, ContainerRun, DEBUG_BOOTSTRAP, DEBUG_BOOTSTRAP_NAME, compose_bind_mounts, compose_container_root,
+    container_config, container_name, default_container_root,
 };
 use ide_run::RunConfig;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
+use std::time::SystemTime;
 
 /// Set by the Debug action on a configuration that runs on a container target: the
 /// program starts under debugpy and waits for the debugger.
@@ -84,6 +86,56 @@ pub(crate) fn container_root(endpoint: &DockerEndpoint, root: &Path, target: &Ru
         "" => default_container_root(root),
         folder => folder.to_owned(),
     })
+}
+
+/// Compose files `docker compose` reads when a target names none.
+const DEFAULT_COMPOSE_FILES: [&str; 8] = [
+    "compose.yaml",
+    "compose.yml",
+    "docker-compose.yaml",
+    "docker-compose.yml",
+    "compose.override.yaml",
+    "compose.override.yml",
+    "docker-compose.override.yaml",
+    "docker-compose.override.yml",
+];
+
+type Mounts = Vec<(PathBuf, String)>;
+/// The modification times of the Compose files a result was read with.
+type Stamp = Vec<Option<SystemTime>>;
+
+/// `docker compose config`'s mounts per project and target, until a Compose file changes.
+type MountCache = HashMap<(PathBuf, String), (Stamp, Mounts)>;
+static COMPOSE_MOUNTS: LazyLock<Mutex<MountCache>> = LazyLock::new(Default::default);
+
+/// The folders of the project a container of `target` mounts: `(folder here, folder in
+/// the container)`. A Compose service's come from `docker compose config` (cached).
+pub(crate) fn mounts(data_dir: &Path, root: &Path, target: &RunTarget) -> IdeResult<Mounts> {
+    match target.container_root.trim() {
+        "" if target.kind == RunTargetKind::Compose => {}
+        "" => return Ok(vec![(root.to_path_buf(), default_container_root(root))]),
+        folder => return Ok(vec![(root.to_path_buf(), folder.to_owned())]),
+    }
+    let files: Vec<PathBuf> = if target.compose_files.iter().all(|f| f.trim().is_empty()) {
+        DEFAULT_COMPOSE_FILES.iter().map(|f| root.join(f)).collect()
+    } else {
+        target.compose_files.iter().map(|f| root.join(f.trim())).collect()
+    };
+    let stamp: Stamp = files.iter().map(|f| std::fs::metadata(f).and_then(|m| m.modified()).ok()).collect();
+    let key = (root.to_path_buf(), format!("{}\0{}\0{}", target.id, target.service, target.compose_files.join(";")));
+    let cache = || COMPOSE_MOUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((seen, mounts)) = cache().get(&key)
+        && *seen == stamp
+    {
+        return Ok(mounts.clone());
+    }
+    let json = ide_docker::compose_config(&endpoint(data_dir, target)?, root, &target.compose_files)?;
+    let mounts: Mounts = compose_bind_mounts(&json, target.service.trim())?
+        .into_iter()
+        .map(|(source, folder)| (PathBuf::from(source), folder))
+        .collect();
+    cache().insert(key, (stamp, mounts.clone()));
+    Ok(mounts)
 }
 
 /// What a debug run mounts and publishes.

@@ -9,6 +9,8 @@ import { executeAction } from "@/platform/actions";
 import { tx, txTemplate } from "@/platform/i18n";
 import { call, commands, IpcError, type RunConfig } from "@/platform/ipc";
 import { inContainer, type SshConfigValid } from "@/platform/remoteSettings";
+import { validateLanguages } from "@/platform/languageSettings";
+import { useProject } from "@/platform/project";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { notifications } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
@@ -52,6 +54,28 @@ export function useRemoteLabel(): (config: Pick<RunConfig, "name" | "target">) =
 export function withTarget(config: RunConfig, target: string): RunConfig {
   const { target: _previous, ...rest } = config;
   return target || workflowSettings().run.defaultTarget ? { ...rest, target } : rest;
+}
+
+const PYTHON_KINDS = new Set(["python", "pytest", "unittest", "doctest", "django-test"]);
+
+/**
+ * The id of the Docker / Compose run target `config` runs in: its own target, else, for a Python
+ * configuration, the project interpreter's (`target:<id>`, as ide-sdk's `run_target` picks it).
+ */
+export function containerTarget(
+  config: RunConfig | null | undefined,
+  targets: readonly RuntimeRunTarget[] = allRunTargets(),
+): string | null {
+  if (!config) return null;
+  const interpreter = validateLanguages(useProject.getState().settings?.languages).python.interpreter.trim();
+  const program = config.command.split(/[\\/]/).at(-1) ?? "";
+  const python = PYTHON_KINDS.has(config.kind) || /^python[\d.]*(\.exe)?$/.test(program);
+  const id =
+    config.target ??
+    (python && interpreter.startsWith("target:") ? interpreter.slice("target:".length).trim() : null) ??
+    withRunTarget(config).target;
+  const target = id ? targetOf({ target: id }, targets) : undefined;
+  return target && inContainer(target) ? target.id : null;
 }
 
 /** A Python configuration on a Docker / Compose target: debugged in its container (`debugInContainer`). */

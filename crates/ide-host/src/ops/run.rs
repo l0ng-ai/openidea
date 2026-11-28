@@ -857,37 +857,39 @@ mod ownership_tests {
     }
 }
 
-/// The file here of a path a container printed (`/app/main.py`, a `site-packages` module
-/// in a traceback): in the project a Docker or Compose run target mounts, or in the copy
-/// of the container interpreter's libraries. `None`: no such file.
+/// The file here of a path a run in a container of `target` printed (`/app/main.py`, a
+/// `site-packages` module in a traceback): in a folder of the project the container mounts,
+/// or, when `target` is the project interpreter's, in the copy of its libraries. `None`: no
+/// such file.
 #[command(trust = trusted)]
-pub async fn run_container_path(host: &Host, window: &str, path: String) -> IdeResult<Option<ide_core::IpcPath>> {
+pub async fn run_container_path(
+    host: &Host,
+    window: &str,
+    path: String,
+    target: String,
+) -> IdeResult<Option<ide_core::IpcPath>> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    if !path.starts_with('/') {
-        return Ok(None);
-    }
     let settings = project.settings.effective();
-    let (root, data_dir) = (project.root.clone(), host.data_dir.clone());
-    if let Some(file) =
-        crate::ops::sdk::container_python::library_file(host, &root, &settings, &path).filter(|p| p.is_file())
-    {
-        return Ok(Some(file.into()));
-    }
-    let targets: Vec<_> = settings.run_targets.into_iter().filter(|t| t.kind != RunTargetKind::Ssh).collect();
-    if targets.is_empty() {
+    let Some(run_target) =
+        settings.run_targets.iter().find(|t| t.id == target && t.kind != RunTargetKind::Ssh).cloned()
+    else {
         return Ok(None);
-    }
+    };
+    let snapshots = crate::ops::sdk::container_python::snapshots_of(host, &project.root, &settings, &target);
+    let (root, data_dir) = (project.root.clone(), host.data_dir.clone());
     host.blocking(move || {
-        for target in &targets {
-            // A Compose target's folder comes from `docker compose config`; one that fails is skipped.
-            let Ok(endpoint) = container::endpoint(&data_dir, target) else { continue };
-            let Ok(folder) = container::container_root(&endpoint, &root, target) else { continue };
-            if let Some(file) = ide_remote::docker::project_file(&path, &folder, &root).filter(|p| p.is_file()) {
-                return Ok(Some(file.into()));
-            }
+        if !path.starts_with('/') {
+            return Ok(None);
         }
-        Ok(None)
+        let library = snapshots
+            .and_then(|dir| ide_sdk::container_python::current(&dir))
+            .and_then(|(dir, snapshot)| ide_sdk::container_python::snapshot_file(&dir, &snapshot, &path));
+        let file = library.filter(|f| f.is_file()).or_else(|| {
+            let mounts = container::mounts(&data_dir, &root, &run_target).ok()?;
+            ide_remote::docker::mounted_file(&path, &mounts).filter(|f| f.is_file())
+        });
+        Ok(file.map(Into::into))
     })
     .await
 }

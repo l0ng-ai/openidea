@@ -24,7 +24,7 @@ import { ConsoleModel } from "./console";
 import { ConsoleView } from "./ConsoleView";
 import { TerminalConsole } from "./TerminalConsole";
 import { runDirectory } from "./navigate";
-import { remoteLabel } from "./remote";
+import { containerTarget, remoteLabel } from "./remote";
 import {
   acceptsInput,
   baseConfigOf,
@@ -145,6 +145,7 @@ export function SessionPanel({
   const running = isLive(session);
   const testsRunning = testsRun(session, rt?.tests) === "running";
   const cwd = runDirectory(session.config.cwd);
+  const container = containerTarget(session.config);
   const baseConfig = useRun(() => baseConfigOf(session));
   // Test results mutate in place; their version refreshes the selection.
   const failedSelection = useMemo(
@@ -251,6 +252,7 @@ export function SessionPanel({
           onFindOpenChange={setFindOpen}
           cwd={cwd}
           module={session.config.module}
+          container={container}
           onClear={() => clearConsole(session.id)}
           // A test run's Previous / Next Occurrence go through its failed tests.
           occurrences={rt.tests ? undefined : showLifecycle ? "run" : SERVICES_WINDOW}
@@ -414,6 +416,7 @@ export function SessionPanel({
                 version={version}
                 cwd={cwd}
                 module={session.config.module}
+                container={container}
                 running={testsRunning}
                 name={session.config.name}
                 selected={selectedTest}

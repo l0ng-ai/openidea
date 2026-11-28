@@ -93,11 +93,10 @@ pub(crate) fn configure_server(
     snapshots::configure_server(cfg, current.as_ref().map(|(d, s)| (d.as_path(), s)));
 }
 
-/// The copy here of a file of the project interpreter's container libraries
-/// (a `site-packages` module in a traceback).
-pub(crate) fn library_file(host: &Host, root: &Path, settings: &Settings, container_path: &str) -> Option<PathBuf> {
-    let (dir, snapshot) = current(&Dirs::of(host), root, settings)?;
-    snapshots::snapshot_file(&dir, &snapshot, container_path)
+/// The folder of `target`'s snapshots, when `target` is the project interpreter's
+/// (no file is read: [`snapshots::current`] reads it).
+pub(crate) fn snapshots_of(host: &Host, root: &Path, settings: &Settings, target: &str) -> Option<PathBuf> {
+    (settings.languages.python.run_target() == Some(target)).then(|| Dirs::of(host).target(root, target))
 }
 
 /// External Libraries: the snapshot's folders, named after the run target.

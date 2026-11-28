@@ -61,12 +61,20 @@ pub fn default_container_root(root: &Path) -> String {
     format!("/workspaces/{}", if name.is_empty() { "project" } else { &name })
 }
 
-/// The file on this machine of `container_path`, a path inside the project folder
-/// `container_root` of a container (a traceback line); `None` outside it.
-pub fn project_file(container_path: &str, container_root: &str, root: &Path) -> Option<std::path::PathBuf> {
-    let rest = container_path.strip_prefix(container_root.trim_end_matches('/'))?.strip_prefix('/')?;
+/// The file here of `container_path` (a traceback line), through the mount whose container
+/// folder is the longest prefix of it: `(folder here, folder in the container)`. `None`
+/// outside every mount, and for `..`.
+pub fn mounted_file(container_path: &str, mounts: &[(std::path::PathBuf, String)]) -> Option<std::path::PathBuf> {
+    let (local, rest) = mounts
+        .iter()
+        .filter_map(|(local, folder)| {
+            let rest = container_path.strip_prefix(folder.trim_end_matches('/'))?.strip_prefix('/')?;
+            Some((local, folder.trim_end_matches('/').len(), rest))
+        })
+        .max_by_key(|(_, len, _)| *len)
+        .map(|(local, _, rest)| (local, rest))?;
     let parts: Vec<&str> = rest.split('/').filter(|c| !c.is_empty() && *c != ".").collect();
-    (!parts.is_empty() && !parts.contains(&"..")).then(|| parts.iter().fold(root.to_path_buf(), |p, c| p.join(c)))
+    (!parts.is_empty() && !parts.contains(&"..")).then(|| parts.iter().fold(local.clone(), |p, c| p.join(c)))
 }
 
 /// A container name for a run of `config_id`: Docker allows `[a-zA-Z0-9][a-zA-Z0-9_.-]*`.
@@ -311,28 +319,29 @@ fn shell_word(word: &str) -> String {
     }
 }
 
-/// The project's folder in the container of a Compose `service`, from the JSON of
-/// `docker compose config --format json`: the target of a bind mount of the project
-/// or a folder above it.
-pub fn compose_container_root(config_json: &str, service: &str, root: &Path) -> IdeResult<String> {
+/// The bind mounts of a Compose `service`, from the JSON of `docker compose config
+/// --format json`: `(source here, target in the container)`.
+pub fn compose_bind_mounts(config_json: &str, service: &str) -> IdeResult<Vec<(String, String)>> {
     let model: serde_json::Value = serde_json::from_str(config_json)
         .map_err(|e| IdeError::internal(format!("cannot read `docker compose config`: {e}")))?;
     let Some(svc) = model.pointer(&format!("/services/{}", service.replace('~', "~0").replace('/', "~1"))) else {
         return Err(IdeError::not_found(format!("the Compose files have no service '{service}'")));
     };
     let mounts = svc.get("volumes").and_then(|v| v.as_array()).into_iter().flatten();
+    Ok(mounts
+        .filter(|m| m.get("type").and_then(|t| t.as_str()) == Some("bind"))
+        .filter_map(|m| Some((m.get("source")?.as_str()?.to_owned(), m.get("target")?.as_str()?.to_owned())))
+        .collect())
+}
+
+/// The project's folder in the container of a Compose `service`, from the JSON of
+/// `docker compose config --format json`: the target of a bind mount of the project
+/// or a folder above it.
+pub fn compose_container_root(config_json: &str, service: &str, root: &Path) -> IdeResult<String> {
     let mut best: Option<(usize, String)> = None;
-    for m in mounts {
-        if m.get("type").and_then(|t| t.as_str()) != Some("bind") {
-            continue;
-        }
-        let (Some(source), Some(target)) =
-            (m.get("source").and_then(|s| s.as_str()), m.get("target").and_then(|t| t.as_str()))
-        else {
-            continue;
-        };
-        let Ok(rel) = root.strip_prefix(source) else { continue };
-        let depth = Path::new(source).components().count();
+    for (source, target) in compose_bind_mounts(config_json, service)? {
+        let Ok(rel) = root.strip_prefix(&source) else { continue };
+        let depth = Path::new(&source).components().count();
         if best.as_ref().is_none_or(|(d, _)| depth > *d) {
             let rel = crate::mapping::posix(rel);
             let target = target.trim_end_matches('/');
@@ -579,12 +588,19 @@ mod tests {
     }
 
     #[test]
-    fn maps_project_files_printed_in_the_container() {
+    fn maps_files_printed_in_the_container_through_the_longest_mount() {
         let root = Path::new("project");
-        assert_eq!(project_file("/app/pkg/main.py", "/app/", root), Some(root.join("pkg").join("main.py")));
-        assert_eq!(project_file("/app/./main.py", "/app", root), Some(root.join("main.py")));
+        let mounts = [
+            (root.to_path_buf(), "/app/".to_owned()),
+            (root.join("config").join("prod"), "/app/config".to_owned()),
+            (root.join("src"), "/code".to_owned()),
+        ];
+        assert_eq!(mounted_file("/app/pkg/main.py", &mounts), Some(root.join("pkg").join("main.py")));
+        assert_eq!(mounted_file("/app/./main.py", &mounts), Some(root.join("main.py")));
+        assert_eq!(mounted_file("/app/config/db.py", &mounts), Some(root.join("config").join("prod").join("db.py")));
+        assert_eq!(mounted_file("/code/mypkg/a.py", &mounts), Some(root.join("src").join("mypkg").join("a.py")));
         for outside in ["/application/main.py", "/app", "/app/", "/app/../etc/passwd", "/usr/lib/x.py"] {
-            assert_eq!(project_file(outside, "/app", root), None, "{outside}");
+            assert_eq!(mounted_file(outside, &mounts), None, "{outside}");
         }
     }
 
@@ -602,6 +618,10 @@ mod tests {
         }}"#;
         let root = Path::new("/work/proj");
         assert_eq!(compose_container_root(json, "web", root).unwrap(), "/app", "the closest mount wins");
+        assert_eq!(
+            compose_bind_mounts(json, "web").unwrap(),
+            [("/work".to_owned(), "/src".to_owned()), ("/work/proj".to_owned(), "/app/".to_owned())]
+        );
         assert_eq!(compose_container_root(json, "worker", root).unwrap(), "/src/proj");
         assert!(compose_container_root(json, "db", root).unwrap_err().message.contains("does not mount"));
         assert_eq!(compose_container_root(json, "api", root).unwrap_err().kind, ide_core::error::ErrorKind::NotFound);
