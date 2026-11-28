@@ -518,7 +518,7 @@ describe("Vim engine", () => {
     view.destroy();
   });
 
-  it("publishes the mode and lets the editor's Escape bindings (popups) go first", () => {
+  it("publishes the mode and leaves Insert mode on the Escape that closes a popup", () => {
     let popupOpen = true;
     const closePopup = Prec.highest(
       keymap.of([{ key: "Escape", run: () => (popupOpen ? !(popupOpen = false) : false) }]),
@@ -544,14 +544,38 @@ describe("Vim engine", () => {
       );
     escape();
     expect(popupOpen).toBe(false);
-    expect(cm.state.vim?.insertMode).toBe(true);
-    escape();
     expect(cm.state.vim?.insertMode).toBe(false);
     Vim.handleKey(cm as never, "v", "user");
     expect(useVimMode.getState().mode).toBe("visual");
     expect(getContext()["vim.mode"]).toBe("visual");
     expect(modes).toEqual(expect.arrayContaining(["insert", "normal", "visual"]));
     offModes();
+    view.destroy();
+  });
+
+  it("runs the editor's Escape bindings once when Insert mode ends", () => {
+    let runs = 0;
+    const countEscape = Prec.lowest(
+      keymap.of([
+        {
+          key: "Escape",
+          run: () => {
+            runs++;
+            return false;
+          },
+        },
+      ]),
+    );
+    const view = makeView([vimExtension(), countEscape]);
+    view.focus();
+    const cm = getCM(view)!;
+    Vim.handleKey(cm as never, "i", "user");
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true }),
+    );
+    // Vim prevents the default on Escape, so CodeMirror does not replay the keymap.
+    expect(cm.state.vim?.insertMode).toBe(false);
+    expect(runs).toBe(1);
     view.destroy();
   });
 });
