@@ -123,6 +123,8 @@ export interface ValidSettings extends WorkflowSettings {
   remoteDevelopment: { idleTimeoutMinutes: number };
   /** Tools › Download sources: a mirror prefix for the installer's release downloads. */
   toolDownloads: { githubMirror: string; configuredRegistriesOnly: boolean };
+  /** Settings Sync (global): the repository and the categories that sync. */
+  settingsSync: SettingsSyncValid;
   languages: LanguagesValid;
   cmake: ReturnType<typeof validateCMake>;
   projectStructure: ProjectStructureValid;
@@ -185,6 +187,19 @@ function validateSpelling(raw: unknown): SpellingValid {
 
 export { ACCENT_PRESETS } from "@/workbench/theme";
 
+type SettingsSyncValid = NonNullable<Settings["settingsSync"]>;
+const DEFAULT_SETTINGS_SYNC: SettingsSyncValid = {
+  repository: "",
+  auto: true,
+  appearance: true,
+  editor: true,
+  keymaps: true,
+  other: true,
+  templates: true,
+  macros: true,
+  ui: true,
+};
+
 export const DEFAULT_SETTINGS: ValidSettings = {
   plugins: {},
   scopes: [],
@@ -232,6 +247,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   proxy: DEFAULT_PROXY,
   remoteDevelopment: { idleTimeoutMinutes: DEFAULT_REMOTE_IDLE_MINUTES },
   toolDownloads: { githubMirror: "", configuredRegistriesOnly: false },
+  settingsSync: DEFAULT_SETTINGS_SYNC,
   languages: DEFAULT_LANGUAGES,
   cmake: {},
   projectStructure: DEFAULT_PROJECT_STRUCTURE,
@@ -451,6 +467,12 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
           : "",
       configuredRegistriesOnly: obj(root.toolDownloads).configuredRegistriesOnly === true,
     },
+    settingsSync: Object.fromEntries(
+      Object.entries(DEFAULT_SETTINGS_SYNC).map(([key, fallback]) => {
+        const value = obj(root.settingsSync)[key];
+        return [key, typeof value === typeof fallback ? value : fallback];
+      }),
+    ) as SettingsSyncValid,
     languages: validateLanguages(root.languages),
     cmake: validateCMake(root.cmake),
     projectStructure: validateProjectStructure(root.projectStructure),

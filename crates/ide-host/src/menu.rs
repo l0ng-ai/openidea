@@ -251,6 +251,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
                 act("file.exportSettings", "Export Settings…"),
                 act("file.importSettings", "Import Settings…"),
                 act("file.importJetBrainsSettings", "Import Settings from JetBrains IDE…"),
+                act("file.syncSettings", "Sync Settings Now"),
             ],
         ),
         sub(

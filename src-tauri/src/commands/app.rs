@@ -293,6 +293,13 @@ pub struct SettingsImport {
 #[specta::specta]
 pub async fn settings_import(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<SettingsImport> {
     let (_, storage) = state.global_settings.import_bundle(&path)?;
+    let settings = global_settings_replaced(&window, &state);
+    Ok(SettingsImport { settings, storage })
+}
+
+/// After the global settings file was replaced: every window and service re-reads it. Returns
+/// the calling window's effective settings.
+fn global_settings_replaced(window: &Window, state: &AppState) -> Settings {
     ide_host::ops::agent::move_user_mcp_values(&state.host);
     for project in state.projects() {
         let effective = project.settings.reload();
@@ -302,14 +309,56 @@ pub async fn settings_import(window: Window, state: State<'_, AppState>, path: P
         let lsp = project.lsp.clone();
         tauri::async_runtime::spawn(async move { lsp.reconfigure().await });
     }
-    crate::commands::ssh::apply_ssh_settings(&state);
+    crate::commands::ssh::apply_ssh_settings(state);
     state.host.mcp.apply(&state.host);
     state.host.apply_proxy();
     state.host.apply_git_executable();
     state.updates.wake.notify_one();
     state.sink.emit(ide_core::IdeEvent::SettingsChanged { key: String::new() });
-    let settings = ide_host::ops::project::settings_get(&state.host, window.label());
-    Ok(SettingsImport { settings, storage })
+    ide_host::ops::project::settings_get(&state.host, window.label())
+}
+
+#[derive(Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsSyncOutcome {
+    pub result: ide_host::ops::settings_sync::SettingsSyncResult,
+    /// Effective settings of the calling window when the sync changed them.
+    pub settings: Option<Settings>,
+}
+
+type SyncStorage = std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>;
+
+/// Settings › Settings Sync › Sync Now, or an automatic sync. `storage`: the frontend's syncable
+/// entries by category. `interactive`: whether git may ask for credentials.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub async fn settings_sync_now(
+    window: Window,
+    state: State<'_, AppState>,
+    storage: SyncStorage,
+    mode: Option<ide_host::ops::settings_sync::SettingsSyncMode>,
+    interactive: bool,
+) -> IdeResult<SettingsSyncOutcome> {
+    let host = state.host.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        ide_host::ops::settings_sync::sync_now(&host, &storage, mode, interactive)
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))??;
+    let settings = result.settings_changed.then(|| global_settings_replaced(&window, &state));
+    Ok(SettingsSyncOutcome { result, settings })
+}
+
+/// Whether the settings differ from what this computer last synced (no network).
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub async fn settings_sync_has_local_changes(state: State<'_, AppState>, storage: SyncStorage) -> IdeResult<bool> {
+    let host = state.host.clone();
+    tauri::async_runtime::spawn_blocking(move || ide_host::ops::settings_sync::has_local_changes(&host, &storage))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
 /// Import Settings… with a JetBrains `settings.zip` or an IDE's settings folder: reads it; the
@@ -416,6 +465,8 @@ ide_command::desktop_domain!(
     set_recent_project_groups,
     settings_export,
     settings_import,
+    settings_sync_now,
+    settings_sync_has_local_changes,
     settings_list_jetbrains_ides,
     settings_read_jetbrains,
 );

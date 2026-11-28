@@ -1415,6 +1415,7 @@ mod tests {
                 "file.exportSettings",
                 "file.importSettings",
                 "file.importJetBrainsSettings",
+                "file.syncSettings",
                 "file.togglePowerSave",
                 "macro.startRecording",
                 "macro.stopRecording",
