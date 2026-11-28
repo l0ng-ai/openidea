@@ -1,14 +1,16 @@
 /**
- * Debugging Python on Docker / Compose run targets: the run starts the program in a new
- * container under debugpy (the bootstrap of `ide_remote::docker`), which prints its port
- * once it listens; the debugger then attaches like a Python Remote Debug configuration,
- * with the project folder mapped. Output stays in the Run tab; stopping the debugger
- * stops the container.
+ * Debugging Python on run targets: the run starts the program under debugpy (the bootstrap
+ * of `ide_remote::docker`) in a new container, or on the SSH host with an SSH forward of
+ * the port, and the bootstrap prints the port once debugpy listens; the debugger then
+ * attaches like a Python Remote Debug configuration, with the project folder mapped.
+ * Output stays in the Run tab; stopping the debugger stops the program.
  */
 import { executeAction } from "@/platform/actions";
 import type { RunConfig } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { notifications } from "@/workbench/contributions";
+import { inContainer } from "@/platform/remoteSettings";
+import { targetOf } from "./remote";
 import { isLive, startRun, stopSession, useRun } from "./store";
 
 /** The bootstrap's line (`ide_remote::docker::DEBUG_READY`). */
@@ -26,12 +28,14 @@ export function debugpyReady(line: string): Ready | null {
 }
 
 /** `config` as the backend runs it for debugging: under debugpy, waiting for the debugger. */
-export function containerDebugLaunch(config: RunConfig): RunConfig {
-  return { ...config, params: { ...config.params, containerDebug: "true" } };
+export function targetDebugLaunch(config: RunConfig): RunConfig {
+  return { ...config, params: { ...config.params, targetDebug: "true" } };
 }
 
-/** Runs `config` in its container under debugpy and attaches the debugger. */
-export async function debugInContainer(config: RunConfig): Promise<void> {
+/** Runs `config` on its run target under debugpy and attaches the debugger. */
+export async function debugOnTarget(config: RunConfig): Promise<void> {
+  const target = targetOf(config);
+  const container = !target || inContainer(target);
   let sessionId: string | null = null;
   let ready: Ready | null = null;
   let done = false;
@@ -43,7 +47,12 @@ export async function debugInContainer(config: RunConfig): Promise<void> {
   };
   const fail = (body: string) => {
     finish();
-    notifications().notify({ group: "run", level: "error", title: tx("Cannot start container debugging"), body });
+    notifications().notify({
+      group: "run",
+      level: "error",
+      title: container ? tx("Cannot start container debugging") : tx("Cannot start debugging on the SSH host"),
+      body,
+    });
   };
   const attach = ({ port, remoteRoot }: Ready) => {
     if (done) return;
@@ -60,7 +69,7 @@ export async function debugInContainer(config: RunConfig): Promise<void> {
     });
   };
   const session = await startRun(config, undefined, undefined, {
-    launch: containerDebugLaunch(config),
+    launch: targetDebugLaunch(config),
     onLine: (line) => {
       if (done) return;
       const parsed = debugpyReady(line);
@@ -75,11 +84,18 @@ export async function debugInContainer(config: RunConfig): Promise<void> {
     const current = useRun.getState().sessions.find((s) => s.id === sessionId);
     if (!current || current.stopped || current.status === "failed") finish();
     else if (!isLive(current))
-      fail(tx("The container exited before debugpy was ready. Check the Run console for errors."));
+      fail(
+        container
+          ? tx("The container exited before debugpy was ready. Check the Run console for errors.")
+          : tx("The program exited before debugpy was ready. Check the Run console for errors."),
+      );
   };
   pending.unsubscribe = useRun.subscribe(check);
   check();
   if (done) return;
+  if (ready) return attach(ready);
+  // Over SSH, the project and debugpy may be uploaded first, for as long as the link needs.
+  if (!container) return;
   pending.timer = setTimeout(() => {
     fail(
       tx(
@@ -88,5 +104,4 @@ export async function debugInContainer(config: RunConfig): Promise<void> {
     );
     void stopSession(session.id);
   }, 120_000);
-  if (ready) attach(ready);
 }

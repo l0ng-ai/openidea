@@ -9,13 +9,10 @@ use ide_remote::docker::{
     ContainerDebug, ContainerRun, DEBUG_BOOTSTRAP, DEBUG_BOOTSTRAP_NAME, compose_container_root, container_config,
     container_name, default_container_root,
 };
+use ide_remote::target::DEBUG_PARAM;
 use ide_run::RunConfig;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-
-/// Set by the Debug action on a configuration that runs on a container target: the
-/// program starts under debugpy and waits for the debugger.
-const DEBUG_PARAM: &str = "containerDebug";
 
 /// `config` rewritten to run in a new container of `target`'s image or service.
 pub(super) async fn prepare(host: &Host, root: &Path, target: RunTarget, config: RunConfig) -> IdeResult<RunConfig> {
@@ -99,12 +96,16 @@ impl Debugging {
         let bootstrap_dir = data_dir.join("container-debug");
         std::fs::create_dir_all(&bootstrap_dir)?;
         std::fs::write(bootstrap_dir.join(DEBUG_BOOTSTRAP_NAME), DEBUG_BOOTSTRAP)?;
-        // The managed install the local debugger falls back to (`ide_dap::adapter::prepare_debugpy`).
-        let tools = ide_dap::adapter::tools_root().unwrap_or_else(|| ide_tools::tools_dir(data_dir));
-        let lib = ide_tools::python_lib_dir(&tools, ide_dap::adapter::DEBUGPY_TOOL);
-        let debugpy = lib.join("debugpy").join("__init__.py").is_file().then_some(lib);
-        Ok(Self { port: free_port()?, bootstrap_dir, debugpy })
+        Ok(Self { port: free_port()?, bootstrap_dir, debugpy: ide_debugpy(data_dir) })
     }
+}
+
+/// The managed install the local debugger falls back to (`ide_dap::adapter::prepare_debugpy`):
+/// the folder holding the `debugpy` package, when it is installed.
+pub(super) fn ide_debugpy(data_dir: &Path) -> Option<PathBuf> {
+    let tools = ide_dap::adapter::tools_root().unwrap_or_else(|| ide_tools::tools_dir(data_dir));
+    let lib = ide_tools::python_lib_dir(&tools, ide_dap::adapter::DEBUGPY_TOOL);
+    lib.join("debugpy").join("__init__.py").is_file().then_some(lib)
 }
 
 /// A port nobody listens on here: debugpy listens on the same port in the container,

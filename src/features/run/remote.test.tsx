@@ -212,8 +212,42 @@ describe("remote debugging", () => {
     await executeAction("run.debugConfig", remote.id);
     expect(startConfig).not.toHaveBeenCalled();
     expect(notify).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "Debugging on run targets is not supported", level: "warning" }),
+      expect.objectContaining({ title: "Only Python can be debugged on SSH run targets", level: "warning" }),
     );
+  });
+
+  it("runs Python on an SSH host under debugpy and attaches through the forwarded port", async () => {
+    const attach = vi.fn();
+    const off = registerActions([{ id: "debug.attach", title: "Attach", run: ({ arg }) => attach(arg) }]);
+    vi.useFakeTimers();
+    try {
+      const py = cfg("app", { target: "box", debugAdapter: "debugpy" });
+      useRun.setState({ configs: [py], loaded: true });
+      ipc.runStart.mockResolvedValueOnce(ok);
+      await executeAction("run.debugConfig", py.id);
+      expect(ipc.runStart).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "app", params: { targetDebug: "true" } }),
+        expect.anything(),
+        expect.any(Number),
+      );
+      // Uploading the project and debugpy may take longer than a container start: no timeout.
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(ipc.runStop).not.toHaveBeenCalled();
+      const channel = ipc.runStart.mock.calls.at(-1)![1] as { onmessage: (m: unknown) => void };
+      channel.onmessage({
+        kind: "stderr",
+        text: "debugpy is waiting for the debugger on port 50123, project folder /home/me/app\n",
+      });
+      await vi.waitFor(() =>
+        expect(attach).toHaveBeenCalledWith(
+          expect.objectContaining({ hostName: "127.0.0.1", port: 50123, remoteRoot: "/home/me/app", process: 3 }),
+        ),
+      );
+      expect(notify).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      off();
+    }
   });
 
   describe("in containers", () => {
@@ -311,7 +345,7 @@ describe("remote debugging", () => {
       await executeAction("run.debugConfig", py.id);
       expect(startConfig).not.toHaveBeenCalled();
       expect(ipc.runStart).toHaveBeenCalledWith(
-        expect.objectContaining({ id: "app", params: { containerDebug: "true" } }),
+        expect.objectContaining({ id: "app", params: { targetDebug: "true" } }),
         expect.anything(),
         expect.any(Number),
       );

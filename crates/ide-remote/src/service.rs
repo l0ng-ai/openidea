@@ -3,7 +3,10 @@
 
 use crate::deploy::{Deployment, FileStamp, SyncEntry, SyncStatus, SyncStep, TransferError, TransferReport, status};
 use crate::mapping::{Excludes, Mappings, ResolvedMapping, posix};
-use crate::target::{RemoteRuns, RemoteStart, SyncFn, rewrite_external_classpath};
+use crate::target::{
+    DEBUG_PARAM, RemoteDebug, RemoteRuns, RemoteStart, SyncFn, debug_interpreter, debugpy_probe, remote_command,
+    rewrite_external_classpath, ssh_debug_command,
+};
 use ide_core::remote_settings::{AutoUpload, DeploymentServer, DeploymentType, RunTarget};
 use ide_core::settings::Settings;
 use ide_core::{CancellationToken, IdeError, IdeResult, SharedSink};
@@ -421,11 +424,14 @@ impl RemoteService {
     // --- run targets ---------------------------------------------------------------
 
     /// Starts `config` on its run target.
+    /// `debugpy_lib`: the IDE's debugpy (the folder holding the `debugpy` package), uploaded for
+    /// a debug run when the target's interpreter has none.
     pub async fn run(
         &self,
         settings: &Settings,
         root: &Path,
         config: &RunConfig,
+        debugpy_lib: Option<&Path>,
         sink: SharedSink,
         on_output: Box<dyn Fn(OutputChunk) + Send + Sync>,
     ) -> IdeResult<RunInfo> {
@@ -470,6 +476,17 @@ impl RemoteService {
                 )));
             }
         }
+        let (debug, upload) = if config.extras.params.get(DEBUG_PARAM).is_some_and(|v| v == "true") {
+            match prepare_debug(&session, &fs, &target, &config, root, &remote_root, debugpy_lib).await {
+                Ok((debug, upload)) => (Some(debug), upload),
+                Err(e) => {
+                    fs.close().await;
+                    return Err(e);
+                }
+            }
+        } else {
+            (None, None)
+        };
         let sync: Option<SyncFn> = if target.sync_before_run {
             let deployment = settings.deployment.clone();
             let root = root.to_path_buf();
@@ -532,9 +549,95 @@ impl RemoteService {
             fs.close().await;
             None
         };
-        let start = RemoteStart { session, target, root: root.to_path_buf(), remote_root, sync };
+        // The project first, then the IDE's debugpy.
+        let sync = match (sync, upload) {
+            (sync, None) => sync,
+            (None, upload) => upload,
+            (Some(sync), Some(upload)) => {
+                let both: SyncFn = Box::new(move |out| {
+                    Box::pin(async move {
+                        sync(out.clone()).await?;
+                        upload(out).await
+                    })
+                });
+                Some(both)
+            }
+        };
+        let start = RemoteStart { session, target, root: root.to_path_buf(), remote_root, sync, debug };
         Ok(self.runs.start(start, &config, sink, on_output))
     }
+}
+
+/// Where the debug bootstrap and the IDE's debugpy go on an SSH host, under its home folder.
+const DEBUG_FOLDER: &str = ".openidea/debug";
+
+/// A debug run of `config` on an SSH target: writes the bootstrap to the host, picks the IDE's
+/// debugpy for an interpreter without one (the upload, when the host doesn't have this version
+/// yet, runs before the program) and forwards a free local port to the same port on the host's
+/// loopback interface, where debugpy listens.
+async fn prepare_debug(
+    session: &Arc<ide_ssh::Session>,
+    fs: &RemoteFs,
+    target: &RunTarget,
+    config: &RunConfig,
+    root: &Path,
+    remote_root: &str,
+    debugpy_lib: Option<&Path>,
+) -> IdeResult<(RemoteDebug, Option<SyncFn>)> {
+    if config.debug_adapter.as_deref() != Some("debugpy") {
+        return Err(IdeError::invalid(format!(
+            "'{}' can't be debugged on an SSH run target: only Python run configurations can",
+            config.name
+        )));
+    }
+    let dir = join(&fs.home().await?, DEBUG_FOLDER);
+    let bootstrap = join(&dir, crate::docker::DEBUG_BOOTSTRAP_NAME);
+    fs.write(&bootstrap, crate::docker::DEBUG_BOOTSTRAP.as_bytes(), None).await?;
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0))?.local_addr()?.port();
+    let plain = remote_command(config, target, root, remote_root);
+    let mut command = ssh_debug_command(&plain, target, remote_root, port, &bootstrap, None)?;
+    let mut upload: Option<SyncFn> = None;
+    let has_debugpy = session.exec(&debugpy_probe(&command, &bootstrap), None).await?.code == Some(0);
+    if !has_debugpy {
+        let Some(lib) = debugpy_lib else {
+            return Err(IdeError::unavailable(format!(
+                "debugpy is not installed for {} on {}. Install OpenIDEA's copy, which is uploaded to the host for debugging, or install debugpy there",
+                debug_interpreter(&command, &bootstrap).display(),
+                session.label()
+            )));
+        };
+        // One folder per debugpy version (its `.dist-info` name), complete once `.complete` exists.
+        let version = std::fs::read_dir(lib)?
+            .flatten()
+            .filter_map(|e| e.file_name().to_str()?.strip_suffix(".dist-info").map(str::to_owned))
+            .next()
+            .unwrap_or_else(|| "debugpy".into());
+        let remote_lib = join(&dir, &version);
+        command = ssh_debug_command(&plain, target, remote_root, port, &bootstrap, Some(&remote_lib))?;
+        let done = join(&remote_lib, ".complete");
+        if fs.stat(&done).await?.is_none() {
+            let copy = RemoteFs::new(session.sftp().await?);
+            let lib = lib.to_path_buf();
+            upload = Some(Box::new(move |out| {
+                Box::pin(async move {
+                    out(OutputChunk::System { text: format!("Uploading OpenIDEA's debugpy to {remote_lib}...\n") });
+                    let result = match sync_external_libraries(&copy, &[(lib, remote_lib)], true).await {
+                        Ok(_) => copy.write(&done, b"", None).await,
+                        Err(e) => Err(e),
+                    };
+                    copy.close().await;
+                    result
+                })
+            }));
+        }
+    }
+    let tunnel = ide_ssh::Tunnel::listen_on(session.clone(), Some(port), "127.0.0.1", port).await?;
+    if tunnel.port() != port {
+        return Err(IdeError::unavailable(format!(
+            "local port {port} for the debugger was taken meanwhile; try again"
+        )));
+    }
+    Ok((RemoteDebug { command, tunnel }, upload))
 }
 
 /// Uploads outside-root classpath entries to their mirrored remote copies,

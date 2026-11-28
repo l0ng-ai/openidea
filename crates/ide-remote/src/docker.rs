@@ -156,7 +156,15 @@ pub fn container_config(config: &RunConfig, run: &ContainerRun) -> IdeResult<Run
         }
         (Some(line), None) => args.extend(["sh".into(), "-c".into(), line]),
         (None, Some(debug)) => {
-            args.extend(debug_command(&command.program, &command.args, target, debug.port, run.container_root)?)
+            let bootstrap = format!("{DEBUG_DIR}/{DEBUG_BOOTSTRAP_NAME}");
+            args.extend(debug_command(
+                &command.program,
+                &command.args,
+                target,
+                debug.port,
+                run.container_root,
+                &bootstrap,
+            )?)
         }
         (None, None) => {
             args.push(command.program);
@@ -227,16 +235,17 @@ fn is_python(program: &str) -> bool {
     name == "python" || name == "python2" || name.starts_with("python3")
 }
 
-/// The container's command line that runs `program args` under [`DEBUG_BOOTSTRAP`]:
-/// `python [options] <bootstrap> <port> <folder> (script | -m module | -c code) args`.
+/// The command line that runs `program args` under [`DEBUG_BOOTSTRAP`] (at `bootstrap` in the
+/// container or on the SSH host): `python [options] <bootstrap> <port> <folder> (script | -m module | -c code) args`.
 /// A console script (`pytest`) runs as a module of the interpreter next to it, or of the
 /// target's; `uv run …` and the like keep the manager in front.
-fn debug_command(
+pub(crate) fn debug_command(
     program: &str,
     args: &[String],
     target: &RunTarget,
     port: u16,
     folder: &str,
+    bootstrap: &str,
 ) -> IdeResult<Vec<String>> {
     let tool_module = |tool: &str, rest: &[String]| -> Vec<String> {
         let module = tool.rsplit('/').next().unwrap_or(tool).to_owned();
@@ -250,7 +259,7 @@ fn debug_command(
     {
         if args[1].starts_with('-') {
             return Err(IdeError::invalid(
-                "container debugging does not support runner options before the executable: use `uv run python script.py` or `uv run pytest` with options after the script or module",
+                "debugging on a run target does not support runner options before the executable: use `uv run python script.py` or `uv run pytest` with options after the script or module",
             ));
         }
         if is_python(&args[1]) {
@@ -286,7 +295,7 @@ fn debug_command(
         }
         _ => {}
     }
-    line.extend([format!("{DEBUG_DIR}/{DEBUG_BOOTSTRAP_NAME}"), port.to_string(), folder.to_owned()]);
+    line.extend([bootstrap.to_owned(), port.to_string(), folder.to_owned()]);
     line.extend(rest.iter().cloned());
     Ok(line)
 }

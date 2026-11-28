@@ -16,6 +16,6 @@ pub use deploy::{
 };
 pub use mapping::{Excludes, Mappings, ResolvedMapping};
 pub use service::{DeployedPath, DeploymentRoot, RemoteService, default_targets};
-pub use target::{RemoteRuns, RemoteStart};
+pub use target::{RemoteDebug, RemoteRuns, RemoteStart};
 
 pub mod plugin_target;

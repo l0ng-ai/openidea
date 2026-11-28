@@ -70,8 +70,8 @@ import { selectedBuildTarget } from "./buildTarget";
 import { configurationChecks } from "./configurationChecks";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { compoundChildren, createdConfigs } from "./configs";
-import { containerDebuggable, remoteDebugBlocked } from "./remote";
-import { debugInContainer } from "./containerDebug";
+import { targetDebuggable, remoteDebugBlocked } from "./remote";
+import { debugOnTarget } from "./targetDebug";
 import { isDebugOnly, registerBuiltinTypes } from "./types";
 import { isZigBuildStep, zigDebugTarget } from "./zigDebug";
 import { junitType } from "./junitType";
@@ -207,9 +207,9 @@ async function debugLaunch(config: RunConfig, chain: readonly string[], show?: b
   }
   if (!(await prepareLaunch(config, chain, show))) return;
   if (config.kind === UNITY_CONFIG_KIND) return showUnityAttach(config);
-  // Python on a Docker / Compose target: debugpy in the container, the debugger attaches.
-  if (containerDebuggable(config) && getAction("debug.attach")) {
-    await debugInContainer(config);
+  // Python on an SSH / Docker / Compose target: debugpy there, the debugger attaches.
+  if (targetDebuggable(config) && getAction("debug.attach")) {
+    await debugOnTarget(config);
     return;
   }
   // A plugin configuration whose debugger attaches to a process the run starts.

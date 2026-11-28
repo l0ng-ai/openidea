@@ -11,6 +11,11 @@ export function buildToolRecovery(message: string) {
     };
     return { body: message, actions: [settings] };
   }
+  // Debugging on an SSH run target whose interpreter has no debugpy: OpenIDEA's copy is uploaded there.
+  if (message.startsWith("debugpy is not installed")) {
+    const install = { label: tx("Install debugpy"), run: () => void executeAction("tools.install", "debugpy") };
+    return { body: message, actions: [install] };
+  }
   const actions = downloadJdkActions(message);
   if (/No plugin found for prefix '[^']+'/.test(message)) {
     // Offline, or without the user's mirrors: the plugin group metadata is not in the local repository.

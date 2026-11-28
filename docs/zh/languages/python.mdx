@@ -154,6 +154,7 @@ Python 调试使用 debugpy。开始调试时如果缺少 debugpy，OpenIDEA 会
 
 - 可以调试脚本、`python -m` 模块，以及 `pytest`、`uvicorn` 这类命令行入口。通过 `uv run`、`poetry run`、`pdm run`、`pipenv run`、`hatch run` 或 `rye run` 启动的程序会在对应管理器的环境中运行。
 - 调试 `manage.py` 时会开启 debugpy 的 Django 支持。
+- 在 SSH、Docker 或 Compose 运行目标上运行的配置，会在目标上调试：程序在目标上以 debugpy 启动，调试器附加时把项目文件夹映射到目标上的文件夹。在 SSH 主机上，debugpy 只监听主机的回环地址，IDE 通过 SSH 连接访问它。主机的解释器没有 debugpy 时，IDE 会把自己的那份上传到主机的 `~/.openidea/debug`（每个 debugpy 版本上传一次）。
 - **附加到进程…**（`⌥⇧F5` / `Ctrl+Alt+F5`）会在 **Python (debugpy)** 分组下列出本机的 Python 进程。
 - **Python 远程调试 (debugpy)** 配置可以附加到用 `python -m debugpy --listen` 启动的进程，本机或远程机器都可以，并支持本地与远程根目录映射。
 - **Python 调试服务器** 配置方向相反：由 IDE 监听，程序用 `import debugpy; debugpy.connect(("localhost", 5678)); debugpy.wait_for_client()` 连接进来，也可以从容器或其他机器连接。程序所在环境要安装与 IDE 调试器相同版本的 debugpy，版本不同时调试控制台会给出警告。VS Code 里带 `"listen"` 的 `attach` 会导入成这种配置；其中 `listen.host` 的 `0.0.0.0` 是 VS Code 的绑定地址，所以导入成 `localhost`。程序在容器或其他机器上时，要把 IDE 主机名改成程序能访问到的地址，例如 `host.docker.internal`。
