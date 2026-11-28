@@ -1,10 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { Text } from "@codemirror/state";
+import { _resetI18nForTests, setLocale } from "@/platform/i18n";
 import { describeSummary, editPreviewLines, needsPreview, summarizeWorkspaceEdit } from "./workspaceEdit";
 
 const edit = (line: number) => ({ range: { start: { line, col: 0 }, end: { line, col: 3 } }, new_text: "new" });
 
 describe("summarizeWorkspaceEdit", () => {
+  afterEach(() => _resetI18nForTests());
+
   it("counts files and occurrences", () => {
     const s = summarizeWorkspaceEdit({
       files: [
@@ -36,6 +39,19 @@ describe("summarizeWorkspaceEdit", () => {
     expect(s.entries[0]).toMatchObject({ operation: "rename", to: "/p/b.ts", edits: 1 });
     expect(needsPreview(s)).toBe(true);
     expect(describeSummary(s)).toBe("1 occurrence in 1 file");
+  });
+
+  it("translates the count line", async () => {
+    await setLocale("zh");
+    const s = summarizeWorkspaceEdit({
+      files: [
+        { kind: "edit", path: "/p/a.py", edits: [edit(0), edit(1)] },
+        { kind: "edit", path: "/p/b.py", edits: [edit(0), edit(1)] },
+        { kind: "edit", path: "/p/c.py", edits: [] },
+        { kind: "edit", path: "/p/d.py", edits: [edit(2)] },
+      ],
+    });
+    expect(describeSummary(s)).toBe("3 个文件中的 5 处匹配项");
   });
 
   it("applies single-file renames directly", () => {
