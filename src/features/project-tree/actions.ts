@@ -333,7 +333,9 @@ export function registerProjectActions(): () => void {
       keywords: ["preview", "read", "peek", "space"],
       enabled: ({ arg }) =>
         typeof arg === "string" ? !!nodesFrom(arg).find((n) => !n.dir && !n.member) : selectedFiles().length === 1,
-      run: ({ arg }) => showQuickPreview(typeof arg === "string" ? arg : undefined),
+      run: ({ arg }) => {
+        showQuickPreview(typeof arg === "string" ? arg : undefined);
+      },
     },
     {
       id: "project.openInRightSplit",
