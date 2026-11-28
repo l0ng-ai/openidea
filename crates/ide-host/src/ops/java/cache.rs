@@ -657,6 +657,11 @@ mod delegation_tests {
             "copy /y src\\main\\java\\Main.java target\\classes\\Main.class >nul\r\n",
             "if exist src\\main\\kotlin\\Extra.kt copy /y src\\main\\kotlin\\Extra.kt target\\classes\\Extra.class >nul\r\n",
             "if exist edit-during-build echo changed>>src\\main\\java\\Main.java\r\n",
+            "if exist block-record (\r\n",
+            "if not exist cache\\java-launch\\records mkdir cache\\java-launch\\records\r\n",
+            "if exist cache\\java-launch\\records\\main.json del /q cache\\java-launch\\records\\main.json\r\n",
+            "mkdir cache\\java-launch\\records\\main.json\r\n",
+            ")\r\n",
             "exit /b 0\r\n",
         )).unwrap();
         #[cfg(unix)]
@@ -670,6 +675,9 @@ mod delegation_tests {
                 "mkdir -p target/classes\ncp src/main/java/Main.java target/classes/Main.class\n",
                 "if [ -f src/main/kotlin/Extra.kt ]; then cp src/main/kotlin/Extra.kt target/classes/Extra.class; fi\n",
                 "if [ -f edit-during-build ]; then echo changed >> src/main/java/Main.java; fi\n",
+                "if [ -f block-record ]; then\n",
+                "mkdir -p cache/java-launch/records\nrm -f cache/java-launch/records/main.json\n",
+                "mkdir cache/java-launch/records/main.json\nfi\n",
             )).unwrap();
             fs::set_permissions(script, fs::Permissions::from_mode(0o755)).unwrap();
         }
@@ -684,6 +692,36 @@ mod delegation_tests {
 
     fn calls(root: &Path) -> Vec<String> {
         fs::read_to_string(root.join("calls")).unwrap_or_default().lines().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn failed_record_publication_keeps_new_and_previous_snapshots_until_session_drop() {
+        for has_previous in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            let model = fixture(root, false);
+            let cache = root.join("cache");
+            let cancel = CancellationToken::new();
+            let mut session = Session::new(cache.clone());
+            if has_previous {
+                session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
+            }
+            fs::write(root.join("src/main/java/Main.java"), "edited-java-source").unwrap();
+            fs::write(root.join("block-record"), "").unwrap();
+            let error = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap_err();
+            // Reach publication, rather than accepting an earlier wrapper/build failure.
+            assert!(!error.message.starts_with("Build failed:"), "{error:?}");
+            assert!(cache.join("java-launch/records/main.json").is_dir());
+            assert_eq!(session.unreferenced.len(), if has_previous { 2 } else { 1 });
+            let snapshots = session.unreferenced.clone();
+            assert_eq!(
+                fs::read_to_string(snapshots.last().unwrap().join("0/Main.class")).unwrap(),
+                "edited-java-source"
+            );
+            assert!(snapshots.iter().all(|p| p.join("0/Main.class").is_file()));
+            drop(session);
+            assert!(snapshots.iter().all(|p| !p.exists()));
+        }
     }
 
     #[test]
@@ -1306,11 +1344,16 @@ mod tests {
         let model = fixture(root);
         let script = root.join("mvnw");
         let mut text = fs::read_to_string(&script).unwrap();
-        text.push_str("rm cache/java-launch/records/main.json\nmkdir cache/java-launch/records/main.json\n");
+        // Snapshot invalidation no longer writes a null record or creates its parent.
+        // Arrange a publish failure independently of that earlier implementation detail.
+        text.push_str("mkdir -p cache/java-launch/records\nrm -f cache/java-launch/records/main.json\nmkdir cache/java-launch/records/main.json\n");
         fs::write(script, text).unwrap();
         let cache = root.join("cache");
         let mut session = Session::new(cache.clone());
-        assert!(session.build(root, &model, root, BuildOptions::default(), None, &CancellationToken::new()).is_err());
+        let error =
+            session.build(root, &model, root, BuildOptions::default(), None, &CancellationToken::new()).unwrap_err();
+        assert!(!error.message.starts_with("Build failed:"), "{error:?}");
+        assert!(cache.join("java-launch/records/main.json").is_dir());
         assert_eq!(session.unreferenced.len(), 1);
         let snapshot = session.unreferenced[0].clone();
         assert!(snapshot.join("0/Main.class").is_file());
