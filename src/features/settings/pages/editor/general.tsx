@@ -806,7 +806,20 @@ const SMART_KEYS = editorPage({
   id: "editor.general.smartKeys",
   title: "Smart Keys",
   order: 9,
-  keywords: ["brackets", "quotes", "home", "camel humps", "paste", "indent", "semicolon"],
+  keywords: [
+    "brackets",
+    "quotes",
+    "home",
+    "camel humps",
+    "copy",
+    "cut",
+    "clipboard",
+    "line",
+    "paste",
+    "whitespace",
+    "indent",
+    "semicolon",
+  ],
   sections: [
     {
       items: [
@@ -833,6 +846,35 @@ const SMART_KEYS = editorPage({
           hint: "In foo(bar|), typing ; gives foo(bar);|. Only when nothing but ) follows the caret; not in for headers, strings or comments.",
         },
         { t: "check", key: `${P}.smartKeys.simultaneousTagEditing`, label: "Simultaneous <tag></tag> editing" },
+      ],
+    },
+    {
+      title: "Line Copy and Paste",
+      items: [
+        {
+          t: "check",
+          key: `${P}.smartKeys.copyLineWhenNoSelection`,
+          label: "Don't copy/cut the current line when invoking Copy or Cut with no selection",
+          invert: true,
+          children: [
+            {
+              t: "check",
+              key: `${P}.smartKeys.selectCopiedLine`,
+              label: "Don't select the copied line after invoking Copy with no selection",
+              invert: true,
+            },
+          ],
+        },
+        {
+          t: "select",
+          key: `${P}.smartKeys.linePasteMode`,
+          label: "When pasting a line copied with no selection",
+          options: [
+            { value: "above", label: "Paste above the caret line" },
+            { value: "caret", label: "Paste at the caret line" },
+            { value: "trim", label: "Trim if pasted in the middle of a line" },
+          ],
+        },
       ],
     },
     {

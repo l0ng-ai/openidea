@@ -67,6 +67,7 @@ import { linkedTags } from "./linkedTags";
 import { textDrag } from "./textDrag";
 import { stringClipboard } from "./stringClipboard";
 import { filterCopiedText } from "./clipboard";
+import { clipboardHistoryExtension } from "../clipboardHistory";
 import { LINE_INSET } from "./lineInset";
 import { codeLensPositions } from "./codeLens";
 import { stickyMove } from "./stickySelection";
@@ -817,6 +818,8 @@ export function prefsExtension(o: PrefsOptions): Extension {
   if (g.wheelZoom) out.push(wheelZoom);
   out.push(g.dragAndDrop ? textDrag : noTextDrag);
   if (g.caretScroll === "center") out.push(centerCaret);
+  // Before rich-text copy: record selections, but own no-selection line copies and cuts.
+  out.push(clipboardHistoryExtension(k));
   out.push(g.richTextCopy ? richCopyByDefault : plainCopyByDefault);
   if (!g.highlightModifiedLines || !g.highlightModifiedLinesInScrollbar)
     out.push(

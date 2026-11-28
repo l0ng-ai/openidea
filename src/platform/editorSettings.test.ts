@@ -15,3 +15,24 @@ it("keeps the encoding mappings that name a label", () => {
   expect(encodings.mappings).toEqual({ "src/main/java": "iso-8859-15" });
   expect(encodings.project).toBe("gbk");
 });
+
+it("defaults to whole-line copy, copied-line selection, and paste above", () => {
+  expect(validateEditorExtras(undefined).smartKeys).toMatchObject({
+    copyLineWhenNoSelection: true,
+    selectCopiedLine: true,
+    linePasteMode: "above",
+  });
+});
+
+it("validates every line clipboard option", () => {
+  expect(
+    validateEditorExtras({
+      smartKeys: { copyLineWhenNoSelection: false, selectCopiedLine: false, linePasteMode: "trim" },
+    }).smartKeys,
+  ).toMatchObject({ copyLineWhenNoSelection: false, selectCopiedLine: false, linePasteMode: "trim" });
+  expect(validateEditorExtras({ smartKeys: { linePasteMode: "caret" } }).smartKeys.linePasteMode).toBe("caret");
+  expect(validateEditorExtras({ smartKeys: { linePasteMode: "sideways" } }).smartKeys.linePasteMode).toBe("above");
+  expect(
+    validateEditorExtras({ smartKeys: { copyLineWhenNoSelection: "no", selectCopiedLine: 0 } }).smartKeys,
+  ).toMatchObject({ copyLineWhenNoSelection: true, selectCopiedLine: true });
+});

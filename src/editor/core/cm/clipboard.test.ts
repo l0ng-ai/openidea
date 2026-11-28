@@ -3,6 +3,7 @@ import { EditorSelection, EditorState, Transaction, type Extension } from "@code
 import { indentService, indentUnit } from "@codemirror/language";
 import { EditorView } from "@codemirror/view";
 import { commands } from "@/platform/ipc";
+import { EDITOR_EXTRA_DEFAULTS, type LineClipboardOptions } from "@/platform/editorSettings";
 import { isRemoteWindow } from "@/platform/remote";
 import {
   clearClipboardHistory,
@@ -221,11 +222,18 @@ it("does not insert into a read-only editor", async () => {
 });
 
 describe("line-wise paste", () => {
-  const make = (doc: string, positions: number[] = [1], extensions: Extension = []) => {
+  const lineClipboard = (options: Partial<LineClipboardOptions> = {}) =>
+    clipboardHistoryExtension({ ...EDITOR_EXTRA_DEFAULTS.smartKeys, ...options });
+  const make = (
+    doc: string,
+    positions: number[] = [1],
+    extensions: Extension = [],
+    options: Partial<LineClipboardOptions> = {},
+  ) => {
     const view = new EditorView({
       doc,
       selection: EditorSelection.create(positions.map((pos) => EditorSelection.cursor(pos))),
-      extensions: [clipboardHistoryExtension, EditorState.allowMultipleSelections.of(true), extensions],
+      extensions: [lineClipboard(options), EditorState.allowMultipleSelections.of(true), extensions],
       parent: document.body,
     });
     views.push(view);
@@ -242,6 +250,168 @@ describe("line-wise paste", () => {
     view.contentDOM.dispatchEvent(event);
     return text;
   };
+
+  const paste = (view: EditorView, text: string) => {
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      value: { getData: () => text, files: [], types: ["text/plain"] },
+    });
+    view.contentDOM.dispatchEvent(event);
+    return event.defaultPrevented;
+  };
+
+  it("copies a caret line and selects it by default", () => {
+    const view = make("one\ntwo", [1]);
+    expect(copy(view)).toBe("one");
+    expect(view.state.selection.main).toMatchObject({ anchor: 0, head: 4 });
+    expect(clipboardHistory()[0]).toEqual({ text: "one", linewise: true });
+  });
+
+  it("leaves a bubbled copy with a DOM selection outside the editor to the host", () => {
+    const view = make("one\ntwo", [1]);
+    const input = document.createElement("input");
+    input.value = "host selection";
+    document.body.appendChild(input);
+    input.focus();
+    input.select();
+    let text = "";
+    const event = new Event("copy", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      value: { clearData() {}, setData: (_type: string, value: string) => (text = value) },
+    });
+    view.contentDOM.dispatchEvent(event);
+    expect(text).toBe("");
+    expect(event.defaultPrevented).toBe(false);
+    expect(clipboardHistory()).toEqual([]);
+    input.remove();
+  });
+
+  it("cuts the whole last caret line without leaving its line break", () => {
+    const view = make("one\ntwo", [5]);
+    expect(copy(view, "cut")).toBe("two");
+    expect(view.state.doc.toString()).toBe("one");
+    expect(view.state.selection.main.head).toBe(1);
+    expect(clipboardHistory()[0]).toEqual({ text: "two", linewise: true });
+  });
+
+  it.each(["copy", "cut"])("%s does nothing without a selection when line copy is disabled", (type) => {
+    const view = make("one\ntwo", [1], [], { copyLineWhenNoSelection: false });
+    expect(copy(view, type)).toBe("");
+    expect(view.state.doc.toString()).toBe("one\ntwo");
+    expect(view.state.selection.main.head).toBe(1);
+    expect(clipboardHistory()).toEqual([]);
+  });
+
+  it("copies the caret line without selecting it when copied-line selection is disabled", () => {
+    const view = make("one\ntwo", [1], [], { selectCopiedLine: false });
+    expect(copy(view)).toBe("one");
+    expect(view.state.selection.main.head).toBe(1);
+    expect(clipboardHistory()[0]).toEqual({ text: "one", linewise: true });
+  });
+
+  it.each(["copy", "cut"])("%s preserves ordinary selection behavior when line copy is disabled", (type) => {
+    const view = make("one\ntwo", [1], [], { copyLineWhenNoSelection: false });
+    view.dispatch({ selection: { anchor: 1, head: 3 } });
+    expect(copy(view, type)).toBe("ne");
+    expect(view.state.doc.toString()).toBe(type === "cut" ? "o\ntwo" : "one\ntwo");
+    expect(clipboardHistory()[0]).toEqual({ text: "ne", linewise: false });
+  });
+
+  it("copies distinct multicaret lines once and selects each copied line", () => {
+    const view = make("one\ntwo\nthree", [1, 2, 5, 9]);
+    expect(copy(view)).toBe("one\ntwo\nthree");
+    expect(view.state.selection.ranges.map((range) => [range.from, range.to])).toEqual([
+      [0, 4],
+      [4, 8],
+      [8, 13],
+    ]);
+  });
+
+  it("cuts distinct non-adjacent multicaret lines and keeps a caret on each surviving target", () => {
+    const view = make("one\ntwo\nthree\nfour\nfive", [1, 2, 15]);
+    expect(copy(view, "cut")).toBe("one\nfour");
+    expect(view.state.doc.toString()).toBe("two\nthree\nfive");
+    expect(view.state.selection.ranges.map((range) => range.head)).toEqual([1, 5]);
+    expect(clipboardHistory()[0]).toEqual({ text: "one\nfour", linewise: true });
+  });
+
+  it("cuts adjacent multicaret lines once and collapses carets mapped to the same position", () => {
+    const view = make("one\ntwo\nthree\nfour", [1, 2, 5, 9]);
+    expect(copy(view, "cut")).toBe("one\ntwo\nthree");
+    expect(view.state.doc.toString()).toBe("four");
+    expect(view.state.selection.ranges.map((range) => range.head)).toEqual([1]);
+  });
+
+  it("allows line copy but not deletion in a read-only editor", () => {
+    const view = make("one\ntwo", [1], [EditorState.readOnly.of(true)]);
+    expect(copy(view, "cut")).toBe("one");
+    expect(view.state.doc.toString()).toBe("one\ntwo");
+    expect(view.state.selection.main.head).toBe(1);
+  });
+
+  it("pastes a linewise copy at the caret with its line break", () => {
+    const view = make("one\ntarget", [1], [], { linePasteMode: "caret" });
+    const text = copy(view);
+    view.dispatch({ selection: { anchor: 7 } });
+    dispatchPaste(view, text);
+    expect(view.state.doc.toString()).toBe("one\ntarone\nget");
+    expect(view.state.selection.main.head).toBe(11);
+  });
+
+  it("routes native at-caret paste through the configured mode instead of CodeMirror's paste-above", () => {
+    const view = make("one\ntarget", [1], [], { linePasteMode: "caret" });
+    const text = copy(view);
+    view.dispatch({ selection: { anchor: 7 } });
+    expect(paste(view, text)).toBe(true);
+    expect(view.state.doc.toString()).toBe("one\ntarone\nget");
+    expect(view.state.selection.main.head).toBe(11);
+  });
+
+  it("trims copied boundary whitespace when pasting in the middle of a line", () => {
+    const view = make("  one  \ntar  get", [2], [], { linePasteMode: "trim" });
+    const text = copy(view);
+    view.dispatch({ selection: { anchor: 12 } });
+    dispatchPaste(view, text);
+    expect(view.state.doc.toString()).toBe("  one  \ntar one get");
+    expect(view.state.selection.main.head).toBe(15);
+  });
+
+  it.each([4, 10])("trim mode still pastes above at line boundary column %s", (pos) => {
+    const view = make("one\ntarget", [1], [], { linePasteMode: "trim" });
+    const text = copy(view);
+    view.dispatch({ selection: { anchor: pos } });
+    dispatchPaste(view, text);
+    expect(view.state.doc.toString()).toBe("one\none\ntarget");
+    expect(view.state.selection.main.head).toBe(pos + 4);
+  });
+
+  it.each(["above", "caret", "trim"] as const)(
+    "%s mode still replaces an existing selection with linewise text",
+    (linePasteMode) => {
+      const view = make("one\ntarget", [1], [], { linePasteMode });
+      const text = copy(view);
+      view.dispatch({ selection: { anchor: 5, head: 8 } });
+      dispatchPaste(view, text);
+      expect(view.state.doc.toString()).toBe("one\ntoneet");
+      expect(view.state.selection.main.head).toBe(8);
+    },
+  );
+
+  it("keeps the per-caret clipboard splitter for at-caret multicaret paste", () => {
+    const view = make("a b\nc d", [1, 5], [], { linePasteMode: "caret" });
+    recordClipboard("one\ntwo", true);
+    dispatchPaste(view, "one\ntwo");
+    expect(view.state.doc.toString()).toBe("aone b\nctwo d");
+    expect(view.state.selection.ranges.map((range) => range.head)).toEqual([4, 11]);
+  });
+
+  it("trims each clipboard line for mid-line multicaret paste", () => {
+    const view = make("a b\nc d", [1, 5], [], { linePasteMode: "trim" });
+    recordClipboard("  one  \n  two  ", true);
+    dispatchPaste(view, "  one  \n  two  ");
+    expect(view.state.doc.toString()).toBe("aone b\nctwo d");
+    expect(view.state.selection.ranges.map((range) => range.head)).toEqual([4, 11]);
+  });
 
   it("pastes a copied caret line above the line through the context menu", async () => {
     const view = make("one\ntarget");
@@ -322,7 +492,9 @@ describe("line-wise paste", () => {
 
   it.each([0, 3])("moves a caret at column %s down with its original line", (pos) => {
     const view = make("one", [pos]);
-    dispatchPaste(view, copy(view));
+    const text = copy(view);
+    view.dispatch({ selection: { anchor: pos } });
+    dispatchPaste(view, text);
     expect(view.state.doc.toString()).toBe("one\none");
     expect(view.state.selection.main.head).toBe(pos + 4);
   });
