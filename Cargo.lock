@@ -4823,6 +4823,7 @@ dependencies = [
 name = "ide-run"
 version = "0.1.55"
 dependencies = [
+ "blake3",
  "dunce",
  "encoding_rs",
  "ide-build",

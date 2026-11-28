@@ -31,6 +31,8 @@ def _variables(namespace):
     for name, value in list(namespace.items()):
         if name.startswith("_") or name in _hidden or isinstance(value, types.ModuleType):
             continue
+        if name in _auto and _auto[name] is value:
+            continue
         try:
             text = _repr.repr(value)
         except Exception as error:  # a broken __repr__ must not break the console
@@ -86,10 +88,15 @@ except ImportError:
 
 
 ready = {"version": sys.version.split()[0], "ipython": flavour}
+# Names `manage.py shell` imports, hidden from the variables while they keep their value.
+_auto = {}
 # A Django project (PyCharm's Django Console): set Django up and import what `manage.py shell` does.
-if os.environ.get("OPENIDEA_DJANGO_SETTINGS"):
-    if not os.environ.get("DJANGO_SETTINGS_MODULE"):  # as manage.py: the environment's own wins
-        os.environ["DJANGO_SETTINGS_MODULE"] = os.environ["OPENIDEA_DJANGO_SETTINGS"]
+if os.environ.get("OPENIDEA_DJANGO_DIR"):
+    if os.environ["OPENIDEA_DJANGO_DIR"] not in sys.path:
+        sys.path.insert(0, os.environ["OPENIDEA_DJANGO_DIR"])  # where manage.py imports the settings from
+    if not os.environ.get("DJANGO_SETTINGS_MODULE") and os.environ.get("OPENIDEA_DJANGO_SETTINGS"):
+        os.environ["DJANGO_SETTINGS_MODULE"] = os.environ["OPENIDEA_DJANGO_SETTINGS"]  # as manage.py: the environment's wins
+if os.environ.get("OPENIDEA_DJANGO_DIR") and os.environ.get("DJANGO_SETTINGS_MODULE"):
     try:
         import django
 
@@ -98,11 +105,11 @@ if os.environ.get("OPENIDEA_DJANGO_SETTINGS"):
         try:
             from django.core.management.commands.shell import Command
 
-            imports = Command().get_namespace()  # Django 5.2+: the models and common utilities
+            # Django 5.2+: the models; 6.0+ also settings, timezone, models, functions…
+            _auto = Command().get_namespace()
         except Exception:
-            imports = {}
-        namespace.update(imports)
-        _hidden.update(imports)
+            pass
+        namespace.update(_auto)
     except Exception:
         import traceback
 

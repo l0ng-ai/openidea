@@ -16,14 +16,13 @@ import {
   mergeInRepos,
   newBranchInRepos,
   renameInRepos,
-  loadFavoriteBranches,
+  favoriteBranches,
   mergeIntoCurrent,
   newBranch,
   renameBranch,
-  toggleFavoriteBranch,
+  setFavoriteBranch,
   configuredRemoteNames,
   type BranchUpdateTarget,
-  useFavoriteBranches,
 } from "./branchOps";
 import { branchRebaseProblem } from "./branchRebase";
 import type { CommonBranch } from "./repoBranches";
@@ -63,13 +62,18 @@ function updateSelection(targets: readonly BranchUpdateTarget[]) {
   );
 }
 
-function favoriteMenuItem(b: Branch, run: Run): MenuItem {
-  loadFavoriteBranches();
-  const favorite = isFavoriteBranch(b, useFavoriteBranches.getState().names);
+/** `b` in each of `repos`: a favorite when it is one in any of them, and set in all of them (IDEA). */
+function favoriteMenuItem(
+  b: Branch,
+  run: Run,
+  repos: readonly (string | null)[],
+  branches?: readonly Branch[],
+): MenuItem {
+  const favorite = repos.some((repo) => isFavoriteBranch(b, favoriteBranches(repo)));
   return {
     label: favorite ? "Remove from Favorites" : "Add to Favorites",
     icon: "star",
-    run: run(() => toggleFavoriteBranch(b)),
+    run: run(() => Promise.all(repos.map((repo) => setFavoriteBranch(b, !favorite, repo, branches)))),
   };
 }
 
@@ -102,12 +106,16 @@ export function branchMenu(
   {
     selected = [],
     existingWorktree,
-    branches = useVcs.getState().branches,
+    branches: repoBranches,
+    repo = currentRepoRoot(),
     headCommit = useVcs.getState().branch?.headCommit,
   }: {
     selected?: readonly { repo?: string; branch?: Branch }[];
     existingWorktree?: string;
+    /** The branches of `repo`. */
     branches?: readonly Branch[];
+    /** The repository of `b`, whose favorites the menu reads and edits. */
+    repo?: string | null;
     headCommit?: string | null;
   } = {},
 ): MenuItem[] {
@@ -117,7 +125,8 @@ export function branchMenu(
   };
   const cur = current ?? "HEAD";
   const rebaseBase = current ?? headCommit?.slice(0, 8);
-  const favoriteItem = favoriteMenuItem(b, run);
+  const branches = repoBranches ?? useVcs.getState().branches;
+  const favoriteItem = favoriteMenuItem(b, run, [repo], repoBranches);
   const newWorktree = worktreeMenuItem(b, run);
   // Update Selected acts on every selected local branch, each in its own repository.
   const updating = !!useVcs.getState().remoteBusy;
@@ -139,7 +148,12 @@ export function branchMenu(
   const worktreeDiff = worktreeDiffItem(branchRef(b.name, b.remote), b.name, run);
   const upstream = !b.remote && b.upstream ? branches.find((ref) => ref.remote && ref.name === b.upstream) : undefined;
   const trackedActions: MenuItem[] = upstream
-    ? [{ label: tx`Tracked Branch '${upstream.name}'`, submenu: branchMenu(upstream, current, done, { branches }) }]
+    ? [
+        {
+          label: tx`Tracked Branch '${upstream.name}'`,
+          submenu: branchMenu(upstream, current, done, { branches: repoBranches, repo }),
+        },
+      ]
     : [];
   if (b.current) {
     return [
@@ -474,7 +488,7 @@ export function mergedBranchMenu(
   return tidySeparators([
     ...own,
     { kind: "separator" },
-    favoriteMenuItem(b, run),
+    favoriteMenuItem(b, run, roots),
     historyMenuItem(b.name, run),
     { kind: "separator" },
     ...selection,

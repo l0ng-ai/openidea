@@ -34,6 +34,7 @@
   overflow: hidden;
 }
 .shrink[data-status-item="editor.breadcrumbs"]:not(:empty) {
+  flex-shrink: 1000;
   min-width: min(152px, 28vw);
 }
 .shrink > * {

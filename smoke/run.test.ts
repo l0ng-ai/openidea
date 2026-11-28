@@ -4,7 +4,7 @@
  * reporting), parses the output into the test tree, and reruns the failed tests.
  */
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -166,10 +166,27 @@ const CASES: Record<string, Case | Case[]> = {
   },
   java: {
     fixture: "java-app",
+    setup: (root) => {
+      // The rerun should leave this suite's prior report alone without including its results.
+      writeFileSync(
+        join(root, "src/test/java/com/example/orders/PassingOrderBookTest.java"),
+        `package com.example.orders;
+
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+class PassingOrderBookTest {
+    @Test void startsEmpty() {
+        assertEquals(0, new OrderBook().size());
+    }
+}
+`,
+      );
+    },
     tests: {
       config: "maven:test",
       failing: (c) => args(c, ["-DopenideaFail=true"]),
-      passed: 2,
+      passed: 3,
       failed: "intentionallyFails",
       file: "OrderBookTest.java",
     },
@@ -311,7 +328,6 @@ async function smoke(c: Case) {
   expect(failedTests(id)).toHaveLength(1);
 
   // Rerun Failed Tests runs that one test only.
-  const rerunOutput: string[] = [];
   const before = useRun.getState().sessions.find((s) => s.id === id)!.startedAt;
   expect(await rerunFailed(id), "Rerun Failed Tests is offered").toBe(true);
   const ended = () => {
@@ -319,8 +335,10 @@ async function smoke(c: Case) {
     return s.startedAt > before && s.endedAt !== null && s.endedAt >= s.startedAt;
   };
   await expect.poll(ended, { timeout: 8 * 60_000 }).toBe(true);
-  const again = runtime(id)!.tests!;
-  rerunOutput.push(...again.roots.map((r) => `${r.name}: ${nodeStatus(r)}`));
+  const rerun = runtime(id)!;
+  const again = rerun.tests!;
+  const rerunOutput = again.roots.map((r) => `${r.name}: ${nodeStatus(r)}`);
+  rerunOutput.push("--- output ---", ...rerun.console.text().split("\n").slice(-80));
   expect(again.counts(), rerunOutput.join("\n")).toMatchObject({ passed: 0, failed: 1 });
   expect(again.firstFailure()?.name).toBe(c.tests.failed);
 }

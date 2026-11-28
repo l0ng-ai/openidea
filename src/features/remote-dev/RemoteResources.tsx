@@ -120,6 +120,7 @@ export function RemoteResources() {
           pressure.level === "warn" && styles.levelWarn,
           pressure.level === "danger" && styles.levelDanger,
         )}
+        data-no-tooltip=""
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-label={tx`Remote host resources: ${tooltip}`}

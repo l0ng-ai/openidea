@@ -96,6 +96,13 @@ it("reads the settings module manage.py sets", () => {
   expect(settingsModule(`    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")`)).toBe(
     "config.settings",
   );
+  expect(settingsModule(`os.environ['DJANGO_SETTINGS_MODULE'] = 'site.settings'`)).toBe("site.settings");
+  expect(
+    settingsModule(
+      `# os.environ.setdefault("DJANGO_SETTINGS_MODULE", "old")\nos.environ.setdefault("DJANGO_SETTINGS_MODULE", "new")`,
+    ),
+  ).toBe("new");
+  expect(settingsModule(`os.environ.setdefault("DJANGO_SETTINGS_MODULE", f"{SITE}.settings")`)).toBeNull();
   expect(settingsModule("print('hi')")).toBeNull();
 });
 

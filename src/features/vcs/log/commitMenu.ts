@@ -76,7 +76,10 @@ export function commitMenu(c: Commit, selection: Commit[] = [c], fileHistoryTarg
   const branchActions: MenuItem[] = many
     ? []
     : branches.map((branch) => {
-        const menu = branchMenu(branch, head, undefined, { headCommit: branchInfo?.headCommit ?? null });
+        const menu = branchMenu(branch, head, undefined, {
+          headCommit: branchInfo?.headCommit ?? null,
+          repo: checkoutRepo,
+        });
         return {
           label: tx`Branch '${branch.name}'`,
           submenu: repo ? inRepo(repo, menu) : menu,

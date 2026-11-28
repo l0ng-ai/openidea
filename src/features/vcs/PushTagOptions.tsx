@@ -6,11 +6,12 @@ import { Checkbox, Select } from "@/ui";
 import { useVcs } from "./store";
 import styles from "./common.module.css";
 
-function storageKey(): string | null {
+/** `prefix` scoped to the open project, like IDEA's workspace-level push settings. */
+export function projectPushStorageKey(prefix: string): string | null {
   const root = useProject.getState().project?.root ?? useVcs.getState().root;
   if (!root) return null;
   const target = useRemote.getState().session?.target;
-  return `openidea.vcs.pushTags:${target ? remoteLocation(target, root) : root}`;
+  return `${prefix}:${target ? remoteLocation(target, root) : root}`;
 }
 
 function readMode(key: string | null): PushTags | null {
@@ -25,7 +26,7 @@ function readMode(key: string | null): PushTags | null {
 
 export function usePushTagOptions() {
   const [{ key, initial }] = useState(() => {
-    const key = storageKey();
+    const key = projectPushStorageKey("openidea.vcs.pushTags");
     return { key, initial: readMode(key) };
   });
   const [enabled, setEnabled] = useState(initial !== null);

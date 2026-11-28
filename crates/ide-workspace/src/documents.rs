@@ -245,6 +245,16 @@ fn absolute(path: &Path) -> PathBuf {
     }
 }
 
+/// Whether the file became binary under a text buffer. Decoding in a given encoding never reports
+/// binary content, so the head is checked as detection does, except for UTF-16 text, which holds
+/// NUL bytes; a buffer already holding such bytes was opened as text on purpose.
+fn turned_binary(st: &DocState, loaded: &ide_vfs::LoadedText) -> IdeResult<bool> {
+    Ok(!loaded.binary
+        && !loaded.encoding.starts_with("utf-16")
+        && ide_vfs::probe(&st.path)?.binary
+        && !st.bytes_for_save(&st.doc).is_ok_and(|bytes| ide_vfs::looks_binary(&bytes)))
+}
+
 fn disk_len(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
@@ -1515,15 +1525,16 @@ impl Documents {
                 // from what saving this buffer would write, our own save's echo does not.
                 // Native-to-ascii properties documents and dirty documents keep the stamp
                 // dedup: the former's disk bytes legitimately differ from the buffer text,
-                // the latter warn once per disk state.
+                // the latter, and a reported conflict, warn once per disk state.
                 if unchanged
-                    && (!force_clean || st.dirty)
-                    && (dedup
-                        || st.dirty
-                        || st.native_to_ascii
-                        || ide_vfs::encode(&st.doc.text_for_save(), &st.encoding, st.has_bom)
-                            .map(|bytes| bytes == std::fs::read(&st.path).unwrap_or_default())
-                            .unwrap_or(true))
+                    && (st.disk_conflict
+                        || ((!force_clean || st.dirty)
+                            && (dedup
+                                || st.dirty
+                                || st.native_to_ascii
+                                || ide_vfs::encode(&st.doc.text_for_save(), &st.encoding, st.has_bom)
+                                    .map(|bytes| bytes == std::fs::read(&st.path).unwrap_or_default())
+                                    .unwrap_or(true))))
                 {
                     return Ok(());
                 }
@@ -1551,6 +1562,11 @@ impl Documents {
                     st.disk_mtime = loaded.mtime_ms;
                     st.disk_len = disk_len(&st.path);
                     st.disk_conflict = false;
+                    return Ok(());
+                }
+                // Keep the text, and keep autosave from writing it over the binary file.
+                if turned_binary(st, &loaded)? {
+                    self.disk_conflict(id, st, &meta);
                     return Ok(());
                 }
                 st.encoding = loaded.encoding;

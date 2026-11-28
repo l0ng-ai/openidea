@@ -30,31 +30,41 @@ const TRUNCATED_DEPTH = 4;
 
 /** The element whose text is cut off with an ellipsis around `node`, up to `stop`, if any. */
 function truncatedText(node: Element | null, stop: Element | null): HTMLElement | null {
+  if (stop?.hasAttribute("data-no-tooltip")) return null;
+  let found: HTMLElement | null = null;
   for (let el = node, depth = 0; el instanceof HTMLElement && depth < TRUNCATED_DEPTH; el = el.parentElement, depth++) {
     // A native tooltip shows instead, or the element opts out of auto-ellipsis tooltips.
     if (el.hasAttribute("title") || el.hasAttribute("data-no-tooltip")) return null;
-    if (isTruncated(el)) return el;
+    if (!found && isTruncated(el)) found = el;
     if (el === stop) break;
   }
-  return null;
+  return found;
 }
 
 const isTruncated = (el: HTMLElement) =>
   el.scrollWidth > el.clientWidth && getComputedStyle(el).textOverflow === "ellipsis" && !!el.textContent?.trim();
 
+interface TooltipContent {
+  text: string;
+  note?: string;
+  shortcut?: string;
+}
+
 /**
  * What the tooltip of `el` shows: its own text, and the whole of `cut`'s text while that is
  * cut off (with its own text beside it, when that says something else).
  */
-function tooltipText(el: HTMLElement, cut: HTMLElement | null): { text: string; note?: string } | undefined {
+function tooltipText(el: HTMLElement, cut: HTMLElement | null): TooltipContent | undefined {
   const own = el.dataset.tooltipVerbatim === undefined ? tx(el.dataset.tooltip) : el.dataset.tooltip;
+  const shortcut = el.dataset.tooltipShortcut;
   const whole = cut?.isConnected && isTruncated(cut) ? cut.textContent!.trim().replace(/\s+/g, " ") : undefined;
-  if (!whole) return own ? { text: own, note: el.dataset.tooltipShortcut } : undefined;
-  return { text: whole, note: own && !own.includes(whole) ? own : undefined };
+  if (!whole) return own ? { text: own, shortcut } : undefined;
+  return { text: whole, note: own && !own.includes(whole) ? own : undefined, shortcut };
 }
 
 interface Shown {
   text: string;
+  note?: string;
   shortcut?: string;
   x: number;
   y: number;
@@ -88,7 +98,8 @@ export function TooltipHost() {
       const stripe = el.dataset.tooltipStripe;
       setShown({
         text: shows.text,
-        shortcut: shows.note,
+        note: shows.note,
+        shortcut: shows.shortcut,
         x: -9999,
         y: -9999,
         placed: false,
@@ -168,11 +179,12 @@ export function TooltipHost() {
     <div
       ref={tipRef}
       role="tooltip"
-      className={clsx(styles.tooltip, shown.stripe && styles.stripe)}
+      className={clsx(styles.tooltip, shown.note && styles.withNote, shown.stripe && styles.stripe)}
       data-placed={shown.placed || undefined}
       style={{ left: shown.x, top: shown.y }}
     >
       <span className={styles.text}>{shown.text}</span>
+      {shown.note && <span className={styles.note}>{shown.note}</span>}
       {shown.shortcut && <span className={styles.shortcut}>{shown.shortcut}</span>}
     </div>,
     document.body,

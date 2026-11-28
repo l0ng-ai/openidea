@@ -81,7 +81,7 @@ export function frameworkFor(config: FrameworkConfig): Framework {
     return "node-test";
   if (config.testRunner === "mocha" || /(^|[\s/\\])_?mocha(\.cmd|\.js)?(\s|$)/.test(cmd)) return "mocha";
   if (config.testRunner === "jasmine" || /(^|[\s/\\])jasmine(\.cmd|\.js)?(\s|$)/.test(cmd)) return "jasmine";
-  if (isJunitRunner(config)) return "jvm";
+  if (config.testRunner === "jvm" || isJunitRunner(config)) return "jvm";
   switch (config.kind) {
     case "dotnet-test":
       return "dotnet";

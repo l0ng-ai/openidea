@@ -76,6 +76,11 @@ function fileNodeAt<F>(nodes: readonly FileTreeNode<F>[], key: string): FileTree
   return null;
 }
 
+/** `nodes` with `prefix` on every key: the same file under two parents of a merge stays two rows. */
+function keyPrefixed<F>(nodes: readonly FileTreeNode<F>[], prefix: string): FileTreeNode<F>[] {
+  return nodes.map((n) => ({ ...n, key: `${prefix}${n.key}`, children: keyPrefixed(n.children, prefix) }));
+}
+
 /**
  * The selected commits' changes: one commit's files against its first parent, or, for several
  * (IDEA), their combined changes with every selected commit listed below.
@@ -139,25 +144,28 @@ export function CommitDetails({ commits, fileHistory = false }: { commits: Commi
       const c = chosen[0]!;
       if (c.parents.length > 1) {
         const groups = await Promise.all(
-          c.parents.map(async (id, index) => {
+          c.parents.map(async (id) => {
             const files = await call(commands.vcsDiffRevisions(commitRoot ?? currentRepo(), id, c.id));
-            return toLogChanges(files, { ...c, parents: [id] }, commitRoot, readOnly).map((f) => ({
-              ...f,
-              group: `${tx("Parent")} ${index + 1}: ${id.slice(0, 8)}`,
-            }));
+            return toLogChanges(files, { ...c, parents: [id] }, commitRoot, readOnly);
           }),
         );
-        if (fromParents) return parentIndex < 0 ? groups.flat() : (groups[parentIndex] ?? []);
         // A merge's combined changes are files changed against every parent.
-        return groups[0]!
+        const merged = groups[0]!
           .filter((f) => groups.every((group) => group.some((x) => x.path === f.path)))
           .map((f) => ({
             ...f,
-            group: undefined,
             mergeParents: c.parents
               .slice(0, 2)
               .map((rev, i) => ({ rev, path: groups[i]!.find((x) => x.path === f.path)?.oldPath ?? f.path })),
           }));
+        if (!fromParents) return merged;
+        // IDEA's Show Changes to Parents: the merge's own changes, then "Changes to <parent>" for each parent.
+        return [
+          ...merged,
+          ...groups.flatMap((files, index) =>
+            parentIndex < 0 || parentIndex === index ? files.map((f) => ({ ...f, group: c.parents[index]! })) : [],
+          ),
+        ];
       }
       const files = await call(commands.vcsCommitFiles(commitRoot ?? currentRepo(), c.id));
       return toLogChanges(files, c, commitRoot, readOnly);
@@ -204,13 +212,35 @@ export function CommitDetails({ commits, fileHistory = false }: { commits: Commi
   }, [changes, showLineStats]);
   const multipleRoots = new Set(chosen.map(commitRepo)).size > 1;
   const changeTreePath = useCallback(
-    (f: LogChange) => `${multipleRoots ? `${repoName(f.repo ?? "")}/` : ""}${f.group ? `${f.group}/` : ""}${f.path}`,
+    (f: LogChange) => `${multipleRoots ? `${repoName(f.repo ?? "")}/` : ""}${f.path}`,
     [multipleRoots],
   );
-  const tree = useMemo(
-    () => (groupByDirectory ? buildFileTree(changes, changeTreePath) : flatFileNodes(changes, changeTreePath)),
-    [changes, groupByDirectory, changeTreePath],
-  );
+  const tree = useMemo(() => {
+    const build = (files: readonly LogChange[]) =>
+      groupByDirectory ? buildFileTree(files, changeTreePath) : flatFileNodes(files, changeTreePath);
+    const parents = [...new Set(changes.flatMap((f) => (f.group ? [f.group] : [])))];
+    if (!parents.length) return build(changes);
+    // A merge with Show Changes to Parents (IDEA): its own changes, then a node per parent.
+    const own = changes.filter((f) => !f.group);
+    const ownNodes: FileTreeNode<LogChange>[] = own.length
+      ? build(own)
+      : [{ key: "merge:none", name: tx("No merge conflicts"), file: null, children: [], count: 0 }];
+    return [
+      ...ownNodes,
+      ...parents.map((id): FileTreeNode<LogChange> => {
+        const children = keyPrefixed(build(changes.filter((f) => f.group === id)), `parent:${id}:`);
+        const summary = commit && commits.find((p) => p.id === id && commitRepo(p) === commitRoot)?.summary;
+        const parent = summary ? `${id.slice(0, 8)} ${summary}` : id.slice(0, 8);
+        return {
+          key: `parent:${id}`,
+          name: tx`Changes to ${parent}`,
+          file: null,
+          children,
+          count: children.reduce((n, c) => n + c.count, 0),
+        };
+      }),
+    ];
+  }, [changes, groupByDirectory, changeTreePath, commits, commit, commitRoot]);
   const allDirs = useMemo(() => dirKeys(tree), [tree]);
   const ordered = useMemo(() => filesUnder(tree), [tree]);
   const chosenChanges = useMemo(() => filesUnder(tree, selectedKeys), [tree, selectedKeys]);
@@ -610,6 +640,16 @@ function LineStats({ added, removed }: { added: number; removed: number }) {
 
 function ChangedFileRow({ node, flat = false }: { node: FileTreeNode<ChangedFile | LogChange>; flat?: boolean }) {
   const stats = nodeLineCount(node);
+  // A merge's "No merge conflicts" and "Changes to <parent>" nodes are labels, not folders (IDEA's tag nodes).
+  if (node.key === "merge:none") return <span className={clsx(styles.fileRow, styles.fileDir)}>{node.name}</span>;
+  if (!node.file && node.key.startsWith("parent:") && !node.key.slice("parent:".length).includes(":"))
+    return (
+      <span className={styles.fileRow}>
+        <span className={styles.fileName}>{node.name}</span>
+        <span className={styles.fileDir}>{fileCount(node.count)}</span>
+        {stats && <LineStats added={stats.added} removed={stats.removed} />}
+      </span>
+    );
   if (!node.file)
     return (
       <span className={styles.fileRow}>

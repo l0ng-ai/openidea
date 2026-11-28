@@ -1,6 +1,7 @@
 //! Process lifecycle for run configurations: spawn (on pipes, or on a pseudo-terminal
 //! for "Emulate terminal in output console"), stream output, stdin, stop.
 
+use crate::junit::{ReportSnapshot, TestCaseReport};
 use crate::utf8::OutputDecoder;
 use crate::{OutputChunk, RunAttach, RunConfig, RunInfo};
 use ide_core::pty::native_pty_system;
@@ -14,7 +15,7 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 const BATCH_INTERVAL: Duration = Duration::from_millis(8);
 
@@ -91,6 +92,7 @@ struct StopCommand {
 
 struct Entry {
     project_root: PathBuf,
+    test_reports: Option<ReportSnapshot>,
     id: RunId,
     config: RunConfig,
     config_id: String,
@@ -141,9 +143,11 @@ pub struct StartOptions {
     pub ruby_reporter: Option<PathBuf>,
     /// The Plots tool window's matplotlib backend (see [`crate::plots`]); Python runs use it.
     pub plots: Option<crate::plots::Plots>,
+    /// Capture the existing JUnit XML before this build-tool test run starts.
+    pub capture_junit_reports: bool,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ProcessManager {
     runs: Arc<Mutex<BTreeMap<RunId, Arc<Entry>>>>,
 }
@@ -493,6 +497,7 @@ impl ProcessManager {
             cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | ide_core::process::CREATE_NO_WINDOW);
         }
 
+        let test_reports = options.capture_junit_reports.then(|| ReportSnapshot::capture(&cwd));
         let mut child = cmd.spawn().map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => IdeError::unavailable(format!("command not found: {}", config.command)),
             _ => IdeError::from(e),
@@ -528,6 +533,7 @@ impl ProcessManager {
         let entry = Arc::new(Entry {
             project_root: root.to_path_buf(),
             id,
+            test_reports,
             config: config.clone(),
             config_id: config.id.clone(),
             name: config.name.clone(),
@@ -650,6 +656,7 @@ impl ProcessManager {
         let wait_readable = ide_core::input::readable(
             pair.master.as_raw_fd().ok_or_else(|| std::io::Error::other("PTY has no file descriptor"))?,
         )?;
+        let test_reports = options.capture_junit_reports.then(|| ReportSnapshot::capture(cwd));
         let mut child = pair.slave.spawn_command(cmd).map_err(|e| {
             let text = e.to_string();
             if text.contains("No such file") || text.contains("not found") {
@@ -677,6 +684,7 @@ impl ProcessManager {
         let entry = Arc::new(Entry {
             project_root: root.to_path_buf(),
             id,
+            test_reports,
             config: config.clone(),
             config_id: config.id.clone(),
             name: config.name.clone(),
@@ -753,6 +761,24 @@ impl ProcessManager {
 
     fn entry(&self, id: RunId) -> IdeResult<Arc<Entry>> {
         self.runs.lock().get(&id).cloned().ok_or_else(|| IdeError::not_found(format!("no such run: {id}")))
+    }
+
+    /// Reads reports in the completed run's working directory for the same project.
+    pub fn test_reports(&self, id: RunId, root: &Path, since: SystemTime) -> Vec<TestCaseReport> {
+        let Ok(entry) = self.entry(id) else { return Vec::new() };
+        if entry.project_root != root || !entry.exited.load(Ordering::Acquire) {
+            return Vec::new();
+        }
+        let reports = match &entry.test_reports {
+            Some(snapshot) => snapshot.read(),
+            None => {
+                // A client without snapshot support may have started this run before reattaching.
+                let cwd = resolve_cwd(root, entry.config.cwd.as_deref());
+                crate::junit::read_reports(&crate::junit::report_dirs(&cwd), since)
+            }
+        };
+        // Starting the same configuration can replace the completed entry while the XML is read.
+        if self.runs.lock().contains_key(&id) { reports } else { Vec::new() }
     }
 
     pub fn write_stdin(&self, id: RunId, data: &str) -> IdeResult<()> {

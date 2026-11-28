@@ -109,6 +109,18 @@ test("shows compact remote CPU+RAM pill beside SSH status and opens detailed das
   await expect(pill).toBeVisible();
   await expect(pill).toContainText("22% · 5.8G");
 
+  // Hovering the pill (even on a narrow window) renders a single clean horizontal tooltip, never a vertical char stack.
+  await page.setViewportSize({ width: 480, height: 700 });
+  await pill.hover();
+  const tooltip = page.getByRole("tooltip");
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip).toContainText("CPU 22% · Memory 5.8 GB / 16 GB");
+  await expect(tooltip).not.toContainText("22% · 5.8GCPU");
+  const tipBox = (await tooltip.boundingBox())!;
+  expect(tipBox.height).toBeLessThan(80);
+  expect(tipBox.x + tipBox.width).toBeLessThanOrEqual(480);
+  await page.setViewportSize({ width: 1280, height: 720 });
+
   // Sits immediately to the right of the Remote Host status bar item.
   const leftOrder = await statusBar
     .locator(":scope > [data-status-item]")

@@ -1,6 +1,14 @@
 import { useProject } from "@/platform/project";
 import { workflowSettings } from "@/platform/workflowSettings";
-import { getSession, newTab, splitTab, syncTerminalProject, unbindTerminals, useTerminals } from "./store";
+import {
+  applySettingsToAll,
+  getSession,
+  newTab,
+  splitTab,
+  syncTerminalProject,
+  unbindTerminals,
+  useTerminals,
+} from "./store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FIT_SETTLE_MS } from "./fit";
 import { findTerminalLinks, type TerminalLink } from "./links";
@@ -616,6 +624,22 @@ describe("terminal font zoom", () => {
     syncTerminalProject(null);
     syncTerminalProject("/font-zoom");
     for (const tab of useTerminals.getState().tabs) expect(getSession(tab.session)!.term.options.fontSize).toBe(18);
+  });
+});
+
+describe("terminal settings", () => {
+  afterEach(() => {
+    unbindTerminals();
+    useProject.setState({ settings: null });
+  });
+
+  it("re-applies a line height below xterm's minimum without throwing", () => {
+    useProject.setState({ settings: { terminal: { lineHeight: 0.8 } } } as never);
+    syncTerminalProject("/line-height");
+    const session = getSession(newTab("/line-height").session)!;
+    // This runs in a settings listener: a throw there kept the window's later listeners (Appearance…) from applying.
+    expect(() => applySettingsToAll()).not.toThrow();
+    expect(session.term.options.lineHeight).toBe(1);
   });
 });
 
