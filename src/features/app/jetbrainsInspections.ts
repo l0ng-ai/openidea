@@ -5,6 +5,7 @@
  */
 import {
   BUILTIN_INSPECTIONS,
+  customProfileId,
   CUCUMBER_UNDEFINED_STEP_INSPECTION,
   JAVA_SERIAL_VERSION_INSPECTION,
   PYTHON_REQUIREMENTS_INSPECTION,
@@ -38,6 +39,7 @@ const LEVELS: Record<string, InspectionLevel> = {
   "SERVER PROBLEM": "serverProblem",
   TYPO: "typo",
   INFORMATION: "none",
+  INFO: "none",
   "TEXT ATTRIBUTES": "none",
 };
 
@@ -46,8 +48,11 @@ const SPELLING_KEYS = new Set<string>(Object.values(SPELLING_OPTIONS));
 export interface JetBrainsInspectionsImport {
   /** Writes to the global layer: `inspections.default` and/or `inspections.ideProfiles`. */
   writes: [key: string, value: unknown][];
-  /** Profile name → inspections carried over. */
-  profiles: { name: string; count: number }[];
+  /**
+   * Profile name → inspections carried over; `id` of a named profile (`ide:<key>`), and
+   * whether it replaces an IDE profile of the same name.
+   */
+  profiles: { name: string; count: number; id?: string; replaces?: boolean }[];
   /** Inspections (and parts of them) with no counterpart here. */
   unmapped: string[];
   invalid: string[];
@@ -64,7 +69,10 @@ function parseTool(tool: Element, out: Record<string, InspectionOverride>, unmap
   // With scopes, `enabled_by_default` is "everywhere else"; without, it equals `enabled`.
   const on = attr(tool, "enabled_by_default") ?? attr(tool, "enabled");
   const enabled = on === undefined ? undefined : on === "true";
-  const severity = LEVELS[attr(tool, "level") ?? ""];
+  const level = attr(tool, "level");
+  const severity = LEVELS[level ?? ""];
+  // A severity defined in the JetBrains IDE (Settings › Editor › Inspections › Severities).
+  if (level && !severity) unmapped.add(`${name} (${level})`);
   const options = Array.from(tool.children).filter((c) => c.tagName === "option");
 
   if (CODE_LISTS.has(name)) {
@@ -122,13 +130,17 @@ export function parseJetBrainsInspections(files: Record<string, string>, current
     let count = 0;
     for (const tool of Array.from(profile.children))
       if (tool.tagName === "inspection_tool" && parseTool(tool, overrides, unmapped)) count++;
-    if (name === "Default") defaults = { ...defaults, ...overrides };
-    else {
+    if (name === "Default") {
+      defaults = { ...defaults, ...overrides };
+      result.profiles.push({ name, count });
+    } else {
       // Replaces an earlier import of the same profile instead of adding a second one.
-      const key = Object.entries(customs).find(([, p]) => p.name === name)?.[0] ?? newProfileKey(name, customs);
+      const existing = Object.entries(customs).find(([, p]) => p.name === name)?.[0];
+      const key = existing ?? newProfileKey(name, customs);
       customs = { ...customs, [key]: { name, overrides } };
+      const replaces = !!existing && !!settings.ideProfiles[existing];
+      result.profiles.push({ name, count, id: customProfileId("ide", key), replaces });
     }
-    result.profiles.push({ name, count });
   }
   if (defaults !== settings.default) result.writes.push(["inspections.default", defaults]);
   if (customs !== settings.ideProfiles) result.writes.push(["inspections.ideProfiles", customs]);

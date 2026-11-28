@@ -44,6 +44,8 @@ export interface JetBrainsImportPlan {
   unknownActions: string[];
   /** Inspections of the imported profiles that have no counterpart here. */
   unmappedInspections: string[];
+  /** Imported named inspection profiles, offered for the open project after the import. */
+  inspectionProfiles?: { id: string; name: string }[];
   /** Custom live templates are committed once after confirmation, not through settings writes. */
   liveTemplates?: JetBrainsTemplateImport;
 }
@@ -387,7 +389,13 @@ export async function planJetBrainsImport(
     const parsed = parseJetBrainsInspections(inspectionFiles, current.inspections);
     plan.writes.push(...parsed.writes);
     for (const p of parsed.profiles)
-      plan.rows.push({ label: tx("Inspection profile"), value: tx`${p.name} (inspections: ${p.count})` });
+      plan.rows.push({
+        label: tx("Inspection profile"),
+        value: p.replaces
+          ? tx`${p.name} (inspections: ${p.count}, replaces the existing profile)`
+          : tx`${p.name} (inspections: ${p.count})`,
+      });
+    plan.inspectionProfiles = parsed.profiles.flatMap((p) => (p.id ? [{ id: p.id, name: p.name }] : []));
     plan.unmappedInspections = parsed.unmapped;
     plan.invalid.push(...parsed.invalid);
   }
@@ -456,4 +464,23 @@ export async function importJetBrainsSettings(path: string) {
   if (plan.liveTemplates?.templates.length) saveImportedTemplates(plan.liveTemplates.templates);
   useProject.setState({ settings });
   notifications().notify({ level: "info", title: "Settings imported", body: path, key: "app.settingsImport" });
+  if (useProject.getState().project && plan.inspectionProfiles?.length)
+    offerInspectionProfiles(plan.inspectionProfiles);
+}
+
+/** JetBrains keeps the profile in use per project, so the import only offers it for the open one. */
+function offerInspectionProfiles(profiles: { id: string; name: string }[]) {
+  notifications().notify({
+    level: "info",
+    sticky: true,
+    key: "app.settingsImport.inspections",
+    title: tx("Use an imported inspection profile in this project?"),
+    actions: profiles.slice(0, 3).map(({ id, name: displayName }) => ({
+      label: tx`Use ${displayName}`,
+      run: async () => {
+        const settings = await call(commands.settingsSet("project", "inspections.profile", JSON.stringify(id)));
+        useProject.setState({ settings });
+      },
+    })),
+  });
 }

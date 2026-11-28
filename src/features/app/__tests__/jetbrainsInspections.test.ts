@@ -14,6 +14,7 @@ const strict =
   '<option name="processCode" value="false" /><option name="processLiterals" value="true" />' +
   "</inspection_tool>" +
   '<inspection_tool class="PyUnresolvedReferencesInspection" enabled="false" level="WARNING" enabled_by_default="false" />' +
+  '<inspection_tool class="PyRedundantOverrideInspection" enabled="true" level="MY_SEVERITY" enabled_by_default="true" />' +
   "</profile>";
 
 it("turns a named profile into an IDE-level copy, and lists what has no counterpart", () => {
@@ -34,16 +35,19 @@ it("turns a named profile into an IDE-level copy, and lists what has no counterp
               severity: "none",
               options: { processCode: false, processLiterals: true },
             },
+            // The custom severity is left out; the inspection still turns on.
+            "builtin:python-redundant-override": { enabled: true },
           },
         },
       },
     ],
   ]);
-  expect(result.profiles).toEqual([{ name: "Strict", count: 4 }]);
+  expect(result.profiles).toEqual([{ name: "Strict", count: 5, id: "ide:strict", replaces: false }]);
   expect(result.unmapped).toEqual([
     "PyPep8Inspection: W5",
     "SpellCheckingInspection (Tests)",
     "PyUnresolvedReferencesInspection",
+    "PyRedundantOverrideInspection (MY_SEVERITY)",
   ]);
   expect(result.invalid).toEqual(["bad.xml"]);
 });
@@ -56,9 +60,12 @@ it("merges Default into the Default profile and replaces an earlier import by na
   const def =
     '<profile version="1.0"><option name="myName" value="Default" />' +
     '<inspection_tool class="SpellCheckingInspection" enabled="false" level="TYPO" enabled_by_default="false" /></profile>';
-  const writes = Object.fromEntries(
-    parseJetBrainsInspections({ "inspection/Default.xml": def, "inspection/Strict.xml": strict }, current).writes,
-  );
+  const result = parseJetBrainsInspections({ "inspection/Default.xml": def, "inspection/Strict.xml": strict }, current);
+  expect(result.profiles.map((p) => [p.name, p.replaces])).toEqual([
+    ["Default", undefined],
+    ["Strict", true],
+  ]);
+  const writes = Object.fromEntries(result.writes);
   expect(writes["inspections.default"]).toEqual({
     "builtin:sql": { enabled: false },
     "builtin:spelling": { enabled: false, severity: "typo" },
