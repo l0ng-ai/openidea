@@ -1215,7 +1215,7 @@ describe("File Details", () => {
     const { result } = renderHook(() => useProjectHeaderMenu());
     type Item = Extract<MenuItem, { id?: string }>;
     const toggle = () =>
-      ((result.current.find((item) => item.label === "Appearance") as Item).submenu as Item[]).find(
+      ((result.current.find((item) => "label" in item && item.label === "Appearance") as Item).submenu as Item[]).find(
         (item) => item.id === "showFileDetails",
       )!;
     expect(toggle()).toMatchObject({ label: "File Details", checked: false });
