@@ -100,6 +100,10 @@
 .bytes {
   color: var(--fg-subtle);
 }
+/* Disassemblers align operands with runs of spaces. */
+.instruction {
+  white-space: pre;
+}
 
 .symbol {
   padding-top: 4px;
