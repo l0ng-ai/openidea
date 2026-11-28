@@ -1015,7 +1015,7 @@ function need<T>(s: T | undefined, name: string): T {
   return s;
 }
 
-export const provideEditorService = (s: EditorService) => void (services.editor = s);
+export const provideEditorService = (s: EditorService | undefined) => void (services.editor = s);
 export const provideToolWindowService = (s: ToolWindowService) => void (services.toolWindows = s);
 export const provideNotificationService = (s: NotificationService) => void (services.notifications = s);
 export const provideEmbeddedTerminal = (f: EmbeddedTerminalFactory | undefined) => void (services.embeddedTerminal = f);
