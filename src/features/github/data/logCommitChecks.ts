@@ -4,7 +4,7 @@ import { graphql, repoVariables } from "../api/client";
 import type { GHCommitStatusContextState, GHRepositoryCoordinates } from "../api/types";
 import { githubRemotes } from "./repository";
 
-type Target = GHRepositoryCoordinates & { root: string };
+type Target = GHRepositoryCoordinates & { root: string; host: string };
 export interface LogCommitCheck {
   state: GHCommitStatusContextState;
   target: Target;
@@ -20,7 +20,7 @@ async function targets(root: string): Promise<Target[]> {
   if (previous && previous.expires > Date.now()) return previous.targets;
   const remotes = githubRemotes(await call(commands.vcsRemotes(root)).catch(() => []), root);
   remotes.sort((a, b) => Number(b.remote === "origin") - Number(a.remote === "origin"));
-  const resolved = remotes.map(({ owner, name }) => ({ owner, name, root }));
+  const resolved = remotes.map(({ owner, name, host }) => ({ owner, name, root, host: host ?? "github.com" }));
   if (remoteCache.size >= 128) remoteCache.delete(remoteCache.keys().next().value!);
   remoteCache.set(root, { targets: resolved, expires: Date.now() + REMOTE_TTL });
   return resolved;
@@ -37,7 +37,7 @@ async function queryBatch(target: Target, revisions: string[]) {
   const variables = Object.fromEntries(revisions.map((oid, i) => [`oid${i}`, oid]));
   const data = await graphql<{
     repository: Record<string, { statusCheckRollup: { state: GHCommitStatusContextState } | null } | null> | null;
-  }>(doc, { ...repoVariables(target), ...variables }, target.root);
+  }>(doc, { ...repoVariables(target), ...variables }, target.root, target.host);
   return revisions.map((_, i) => data.repository?.[`c${i}`]?.statusCheckRollup?.state ?? null);
 }
 

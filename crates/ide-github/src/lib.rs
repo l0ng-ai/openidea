@@ -111,7 +111,17 @@ pub fn availability(root: &Path) -> GhAvailability {
     let login = login.ok().and_then(Result::ok).map(|l| l.trim().to_owned()).filter(|l| !l.is_empty());
     match repo {
         Ok(Ok(out)) if out.success => match parse_repo(&out.stdout) {
-            Ok(repo) => GhAvailability::Ready { repo, login },
+            Ok(repo) => {
+                // The login above is github.com's; an Enterprise repository has its own.
+                let login = match url_host(&repo.url).filter(|h| !h.eq_ignore_ascii_case("github.com")) {
+                    Some(host) => run(root, &["api", "--hostname", host, "user", "--jq", ".login"])
+                        .ok()
+                        .map(|l| l.trim().to_owned())
+                        .filter(|l| !l.is_empty()),
+                    None => login,
+                };
+                GhAvailability::Ready { repo, login }
+            }
             Err(e) => GhAvailability::Error { message: format!("unexpected gh output: {e}") },
         },
         Ok(Ok(out)) => classify_failure(if out.stderr.trim().is_empty() { &out.stdout } else { &out.stderr }),
@@ -286,6 +296,10 @@ pub struct GhApiRequest {
     pub body: Option<String>,
     /// Follow REST `Link` pages; the result is the array of all pages (`--slurp`).
     pub paginate: bool,
+    /// The repository's GitHub host (`ghe.example.com`); none: gh's default host. `gh api`
+    /// doesn't take the host from the remote as `gh pr` does.
+    #[serde(default)]
+    pub host: Option<String>,
 }
 
 const METHODS: &[&str] = &["GET", "POST", "PATCH", "PUT", "DELETE"];
@@ -301,6 +315,13 @@ pub fn api_args(req: &GhApiRequest) -> IdeResult<Vec<String>> {
         return Err(IdeError::invalid(format!("not a GitHub API endpoint: {endpoint}")));
     }
     let mut args: Vec<String> = vec!["api".into(), "--method".into(), method, endpoint.into()];
+    if let Some(host) = req.host.as_deref().map(str::trim).filter(|h| !h.is_empty()) {
+        if !is_host(host) {
+            return Err(IdeError::invalid(format!("not a GitHub host: {host}")));
+        }
+        args.push("--hostname".into());
+        args.push(host.into());
+    }
     if req.body.is_some() {
         args.push("--input".into());
         args.push("-".into());
@@ -310,6 +331,24 @@ pub fn api_args(req: &GhApiRequest) -> IdeResult<Vec<String>> {
         args.push("--slurp".into());
     }
     Ok(args)
+}
+
+/// `host` or `host:port`, as gh's `--hostname` takes it.
+fn is_host(host: &str) -> bool {
+    let (name, port) = host.split_once(':').unwrap_or((host, "1"));
+    !name.is_empty()
+        && !name.starts_with(['-', '.'])
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
+        && !port.is_empty()
+        && port.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// The host of a repository URL from gh (`https://ghe.example.com/o/r` → `ghe.example.com`).
+pub fn url_host(url: &str) -> Option<&str> {
+    let rest = url.split_once("://")?.1;
+    let host = rest.split('/').next()?;
+    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+    is_host(host).then_some(host)
 }
 
 /// Runs `req`; returns the response body (JSON text, empty for `204 No Content`).

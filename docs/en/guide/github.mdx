@@ -21,7 +21,7 @@ OpenIDEA works with GitHub through the [GitHub CLI](https://cli.github.com) (`gh
     **Retry** when you are done.
   </Step>
   <Step title="Open a project with a GitHub remote">
-    The project needs a Git remote on `github.com`. With one GitHub remote, OpenIDEA connects to it automatically. With
+    The project needs a Git remote on `github.com` or on a GitHub Enterprise Server host. With one GitHub remote, OpenIDEA connects to it automatically. With
     several, the tool window asks you to pick a **Repository**; the choice is remembered per project. To switch later,
     use **Change Repository or Account…** in the tool window's `⋮` menu.
 
@@ -35,7 +35,11 @@ OpenIDEA works with GitHub through the [GitHub CLI](https://cli.github.com) (`gh
   </Step>
 </Steps>
 
-<Note>Only `github.com` is supported. GitHub Enterprise hosts, GitLab and Bitbucket are not.</Note>
+### GitHub Enterprise Server
+
+Sign in to the server with `gh auth login --hostname ghe.example.com`. When gh resolves the project's repository on that host, its remotes there count as GitHub remotes, and every API call goes to that host with gh's active account for it. Choosing a project account (above) applies to `github.com` only; switch the Enterprise account with `gh auth switch --hostname ghe.example.com`.
+
+<Note>GitLab is covered by the community plugin `aritti.gitlab`. Bitbucket is not supported.</Note>
 
 ## Menu and shortcuts
 
@@ -154,6 +158,7 @@ In the editor or the Project view, **Open In › GitHub** opens the file (at the
 
 ## Not supported
 
-- GitHub Enterprise, GitLab, Bitbucket.
+- Bitbucket. GitLab: see the community plugin `aritti.gitlab`.
+- Cloning from, and the commit checks column for, GitHub Enterprise Server.
 - Issues, gists, notifications and creating or sharing repositories.
 - Managing GitHub Actions (re-running jobs, reading logs).

@@ -46,9 +46,12 @@ export function trackedBranch(
   if (!remote || !merge || remote === ".") return null;
   const found = remotes.find((r) => r.name === remote);
   const url = found?.url ?? remote;
-  const repository =
-    parseGitHubRemote(found?.resolvedUrl ?? url) ??
-    (connected && remoteOfRepository([{ name: remote, url }], connected) ? connected : null);
+  const parsed = parseGitHubRemote(found?.resolvedUrl ?? url);
+  const repository = parsed
+    ? { owner: parsed.owner, name: parsed.name }
+    : connected && remoteOfRepository([{ name: remote, url }], connected)
+      ? connected
+      : null;
   if (!repository) return null;
   const pr = /^refs\/pull\/(\d+)\/head$/.exec(merge);
   if (pr) return { repository, branch: null, pullRequest: Number(pr[1]) };

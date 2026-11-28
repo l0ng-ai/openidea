@@ -19,7 +19,7 @@ OpenIDEA 通过 [GitHub CLI](https://cli.github.com)（`gh`）对接 GitHub：�
     按钮，点击后在内置终端中执行该命令。完成后点 **重试**。
   </Step>
   <Step title="打开带 GitHub 远程的项目">
-    项目需要有一个指向 `github.com` 的 Git 远程。只有一个 GitHub 远程时自动连接；有多个时，工具窗口会让你选择
+    项目需要有一个指向 `github.com` 或 GitHub Enterprise Server 主机的 Git 远程。只有一个 GitHub 远程时自动连接；有多个时，工具窗口会让你选择
     **仓库**，选择按项目记住。之后要切换，可在工具窗口的 `⋮` 菜单中选 **更改仓库或账户…**。
 
     当 `gh` 中登录了多个 `github.com` 账户时，**自动**模式沿用 `gh` 当前的活动账户，不会在项目环境中设置 `GH_TOKEN`。在 **设置 › 版本控制 › GitHub** 和 **拉取请求** 标题栏中，OpenIDEA 会根据仓库远程提示匹配的账户（**对此项目使用 `<login>`**），也可以手动为项目指定账户（保存在 `.openidea/settings.toml`）。显式选择账户后，OpenIDEA 会将该账户的 `GH_TOKEN` 传递给此项目中启动的进程（终端、智能体、Git、拉取请求和运行配置），而不会改动全局的 `gh auth switch` 状态。
@@ -27,7 +27,11 @@ OpenIDEA 通过 [GitHub CLI](https://cli.github.com)（`gh`）对接 GitHub：�
   </Step>
 </Steps>
 
-<Note>只支持 `github.com`，不支持 GitHub Enterprise、GitLab 和 Bitbucket。</Note>
+### GitHub Enterprise Server
+
+先用 `gh auth login --hostname ghe.example.com` 登录服务器。gh 把项目仓库解析到该主机后，指向该主机的远程都算作 GitHub 远程，所有 API 调用都发往该主机，使用 gh 在该主机上的活动账户。上面的项目账户选择只对 `github.com` 生效；要切换 Enterprise 账户，请用 `gh auth switch --hostname ghe.example.com`。
+
+<Note>GitLab 由社区插件 `aritti.gitlab` 提供。不支持 Bitbucket。</Note>
 
 ## 菜单与快捷键
 
@@ -146,6 +150,7 @@ Git 日志可以显示每个提交在 GitHub 上的检查状态。在日志的 *
 
 ## 暂不支持
 
-- GitHub Enterprise、GitLab、Bitbucket。
+- Bitbucket。GitLab 请使用社区插件 `aritti.gitlab`。
+- 从 GitHub Enterprise Server 克隆，以及它的提交检查列。
 - Issue、Gist、通知，以及创建或分享仓库。
 - 管理 GitHub Actions（重新运行作业、查看日志）。
