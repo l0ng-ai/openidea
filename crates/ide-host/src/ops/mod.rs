@@ -17,6 +17,7 @@ pub mod docker;
 pub mod env;
 pub mod flutter;
 pub mod fs;
+pub mod github;
 pub mod heap;
 pub mod history;
 pub mod host_metrics;
@@ -94,6 +95,7 @@ ide_command::domains!(
     env: crate::ops::env,
     flutter: crate::ops::flutter,
     fs: crate::ops::fs,
+    github: crate::ops::github,
     heap: crate::ops::heap,
     history: crate::ops::history,
     host_metrics: crate::ops::host_metrics,

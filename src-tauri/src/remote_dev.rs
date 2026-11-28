@@ -1272,6 +1272,7 @@ pub async fn remote_invoke(
                 if (batch_execution && name == "onProgress")
                     || (cmd == "vcs_watch_commit_messages" && name == "onMessages")
                     || cmd.starts_with("docker_")
+                    || cmd.starts_with("gh_")
                 {
                     finite_channel = Some(own);
                 }
