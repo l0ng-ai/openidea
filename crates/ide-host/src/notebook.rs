@@ -363,29 +363,40 @@ impl NotebookService {
         }
     }
 
-    /// Opens the debugger of the notebook's kernel, starting `target` when none runs, and the
-    /// notebook's code cells as (URI, source): what Debug Cell needs (see `ide_notebook::kernel::debug`).
+    /// Opens the debugger of the notebook's kernel, starting `target` first (or replacing a
+    /// kernel of another target). Also returns the notebook's code cells as (URI, source), read
+    /// when called, and the prefix of its cell URIs: what Debug Cell needs (see
+    /// `ide_notebook::kernel::debug`).
     pub(crate) async fn debugger(
         &self,
         id: &str,
         target: KernelTarget,
         cancel: CancellationToken,
-    ) -> IdeResult<(ide_notebook::kernel::KernelDebugger, Vec<(String, String)>)> {
+    ) -> IdeResult<(ide_notebook::kernel::KernelDebugger, impl Fn() -> Vec<(String, String)> + Send + 'static, String)>
+    {
         let document = self.resolve(id)?;
         if document.state.lock().active.is_some() {
             return Err(IdeError::unavailable("notebook is running"));
         }
-        if !self.kernels.running(&document.path) {
-            self.kernels.execute(&document.path, target, "", cancel, Arc::new(|_| {})).await?;
+        // The drop-down's kernel, which may not be the one running yet.
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(IdeError::cancelled()),
+            result = self.kernels.start(&document.path, target) => result?,
         }
         let debugger = self.kernels.debugger(&document.path)?;
-        let cells = snapshot(&document)?
-            .cells
-            .into_iter()
-            .filter(|cell| cell.cell_type == "code")
-            .map(|cell| (ide_lsp::cell_uri(&document.path, &cell.id), cell.source))
-            .collect();
-        Ok((debugger, cells))
+        let prefix = ide_lsp::cell_uri(&document.path, "");
+        // Read again on each use: cells are added and edited while the session runs.
+        let cells = move || {
+            let Ok(snapshot) = snapshot(&document) else { return Vec::new() };
+            snapshot
+                .cells
+                .into_iter()
+                .filter(|cell| cell.cell_type == "code")
+                .map(|cell| (ide_lsp::cell_uri(&document.path, &cell.id), cell.source))
+                .collect()
+        };
+        Ok((debugger, cells, prefix))
     }
 
     pub(crate) fn admit(

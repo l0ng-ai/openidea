@@ -125,6 +125,8 @@ pub(crate) struct Session {
     pub stream_tracer: parking_lot::Mutex<Option<Arc<dyn ide_jvm_inspect::StreamTracer>>>,
     /// Given at start: the class breakpoints must be armed before `configurationDone`.
     pub(crate) exception_classes: Option<Arc<dyn ide_jvm_inspect::ExceptionClassBreakpoints>>,
+    /// A notebook kernel's session: the prefix of its notebook's cell URIs (`…/a.ipynb#`).
+    pub(crate) notebook_cells: Option<String>,
     /// Held from `setExceptionBreakpoints`, which drops the class breakpoints, until they are
     /// armed again, so that the last list armed is the manager's.
     pub(crate) exception_turn: tokio::sync::Mutex<()>,
@@ -342,6 +344,7 @@ impl Session {
             run: None,
             stream_tracer: parking_lot::Mutex::new(None),
             exception_classes: None,
+            notebook_cells: None,
             exception_turn: tokio::sync::Mutex::default(),
             stream_trace: parking_lot::Mutex::new(None),
             stream_trace_done: parking_lot::Mutex::new(None),
@@ -426,9 +429,11 @@ impl Session {
     /// Sends the breakpoints of one file (disabled ones omitted, plus an optional
     /// temporary line) and returns verification states aligned with `breakpoints`.
     /// Whether this session gets the breakpoints of `path`: a notebook cell's go only to the
-    /// notebook kernel's debugger, which knows the cell's code.
+    /// session of that notebook's kernel, which knows the cell's code.
     pub(crate) fn takes(&self, path: &Path) -> bool {
-        self.adapter == crate::NOTEBOOK_ADAPTER || !path.to_string_lossy().starts_with(crate::NOTEBOOK_CELL_SCHEME)
+        let path = path.to_string_lossy();
+        !path.starts_with(crate::NOTEBOOK_CELL_SCHEME)
+            || self.notebook_cells.as_deref().is_some_and(|cells| path.starts_with(cells))
     }
 
     pub async fn send_breakpoints(

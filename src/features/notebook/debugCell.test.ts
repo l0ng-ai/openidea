@@ -85,7 +85,8 @@ describe("Debug Cell", () => {
     const done = debugCell(session as unknown as NotebookSession, "a");
     await vi.waitFor(() => expect(session.execute).toHaveBeenCalled());
     setStatus(7, "terminated");
-    expect(session.interrupt).toHaveBeenCalled();
+    setStatus(7, "terminated");
+    expect(session.interrupt).toHaveBeenCalledTimes(1);
     finish();
     await done;
     expect(debug.stopSession).not.toHaveBeenCalled();

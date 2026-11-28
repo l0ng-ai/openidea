@@ -177,7 +177,7 @@ pub async fn notebook_debug_start(
     let project = host.project(window)?;
     let cancel = project.closed.child_token();
     let target = kernel_target(host, &project, python, &cancel).await?;
-    let (debugger, cells) = project.notebooks.debugger(&id, target, cancel).await?;
+    let (debugger, cells, notebook_cells) = project.notebooks.debugger(&id, target, cancel).await?;
     let (reader, writer) = tokio::io::split(ide_notebook::kernel::debug::dap_stream(debugger, cells));
     let io = ide_dap::adapter::AdapterIo {
         launch_after_configuration: false,
@@ -190,7 +190,7 @@ pub async fn notebook_debug_start(
     };
     let owner = ide_dap::SessionOwner::new(host.owner_window(window), host.window_sink(window));
     let arguments = serde_json::json!({ "justMyCode": just_my_code });
-    host.debugger.start_over(io, name, ide_dap::NOTEBOOK_ADAPTER.into(), arguments, owner).await
+    host.debugger.start_over(io, name, ide_dap::NOTEBOOK_ADAPTER.into(), arguments, owner, Some(notebook_cells)).await
 }
 
 /// A kernel choice on a Jupyter server, `<server base URL>#<kernel spec>`, with its saved token.

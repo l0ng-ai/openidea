@@ -307,9 +307,10 @@ impl KernelManager {
         Ok(result?.user_expressions)
     }
 
-    /// Whether the notebook has a running kernel.
-    pub fn running(&self, notebook: &Path) -> bool {
-        self.slots.lock().get(notebook).is_some_and(|slot| slot.debug.attached())
+    /// Starts `target` for the notebook, or replaces a kernel of another target; a kernel
+    /// already running for `target` is kept.
+    pub async fn start(&self, notebook: &Path, target: impl Into<KernelTarget>) -> IdeResult<()> {
+        self.execute(notebook, target, "", CancellationToken::new(), Arc::new(|_| {})).await.map(|_| ())
     }
 
     /// Opens the debugger of the notebook's running kernel. One session at a time; it ends
@@ -326,6 +327,8 @@ impl KernelManager {
     pub async fn interrupt(&self, notebook: &Path) -> IdeResult<()> {
         let slot = self.slots.lock().get(notebook).cloned();
         if let Some(slot) = slot {
+            // A run paused at a breakpoint goes on first; paused, it would not answer in time.
+            slot.debug.release().await;
             slot.cancel();
             // Wait for native interrupt delivery/drain, not just token mutation.
             let _drained = slot.operation.lock().await;

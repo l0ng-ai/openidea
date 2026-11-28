@@ -1090,7 +1090,8 @@ impl DebugManager {
 
     /// Starts an `attach` session named `name` over `io`: a debugger reached without an
     /// adapter process, such as a notebook kernel's over its control channel
-    /// ([`NOTEBOOK_ADAPTER`]). `arguments` is the `attach` request's.
+    /// ([`NOTEBOOK_ADAPTER`]). `arguments` is the `attach` request's. `notebook_cells`, the
+    /// prefix of a notebook's cell URIs, gives the session that notebook's cell breakpoints.
     pub async fn start_over(
         &self,
         io: AdapterIo,
@@ -1098,6 +1099,7 @@ impl DebugManager {
         adapter: String,
         arguments: Value,
         owner: SessionOwner,
+        notebook_cells: Option<String>,
     ) -> IdeResult<DebugSessionId> {
         let spec = AdapterSpec {
             adapter: adapter.clone(),
@@ -1125,7 +1127,7 @@ impl DebugManager {
             None,
             None,
             cancel,
-            Some(io),
+            Some((io, notebook_cells)),
         )
         .await
     }
@@ -1181,7 +1183,7 @@ impl DebugManager {
         reuse_port: Option<u16>,
         exception_classes: Option<Arc<dyn ide_jvm_inspect::ExceptionClassBreakpoints>>,
         cancel: ide_core::CancellationToken,
-        connected: Option<AdapterIo>,
+        connected: Option<(AdapterIo, Option<String>)>,
     ) -> IdeResult<DebugSessionId> {
         if request != "launch" && request != "attach" {
             return Err(IdeError::invalid(format!("request must be `launch` or `attach`, got `{request}`")));
@@ -1189,13 +1191,16 @@ impl DebugManager {
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }
-        let io = match connected {
-            Some(io) => io,
-            None => tokio::select! {
-                biased;
-                _ = cancel.cancelled() => return Err(IdeError::cancelled()),
-                io = self.launcher.launch(spec.clone(), reuse_port) => io?,
-            },
+        let (io, notebook_cells) = match connected {
+            Some((io, cells)) => (io, cells),
+            None => (
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return Err(IdeError::cancelled()),
+                    io = self.launcher.launch(spec.clone(), reuse_port) => io?,
+                },
+                None,
+            ),
         };
         let launch_after_configuration = io.launch_after_configuration && request == "launch";
         let stderr = io.stderr.clone();
@@ -1208,6 +1213,7 @@ impl DebugManager {
             .flatten();
         let mut session = Session::new(id, owner, name, adapter_name, parent, request, conn, spec, io.port, io.child);
         session.exception_classes = exception_classes;
+        session.notebook_cells = notebook_cells;
         session.run = take_run_link(&mut arguments);
         let session = Arc::new(session);
         if let Some(launch_type) = arguments.get("type").and_then(Value::as_str) {

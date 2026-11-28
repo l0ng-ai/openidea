@@ -698,7 +698,7 @@ async fn the_dap_bridge_speaks_in_cell_uris_and_disconnects_when_closed() {
         ("vscode-notebook-cell:/p/bridge.ipynb#helper", "vscode-notebook-cell:/p/bridge.ipynb#call");
     assert_eq!(run(&manager, &notebook, &python, helper).await.0.unwrap().status, "ok");
     let cells = vec![(helper_uri.to_owned(), helper.to_owned()), (cell_uri.to_owned(), "b = double(21)\n".to_owned())];
-    let stream = ide_notebook::kernel::debug::dap_stream(manager.debugger(&notebook).unwrap(), cells);
+    let stream = ide_notebook::kernel::debug::dap_stream(manager.debugger(&notebook).unwrap(), move || cells.clone());
     let (read, mut write) = tokio::io::split(stream);
     let mut read = tokio::io::BufReader::new(read);
     let mut seq = 0;
@@ -750,5 +750,66 @@ async fn the_dap_bridge_speaks_in_cell_uris_and_disconnects_when_closed() {
     let (result, outputs) = run(&manager, &notebook, &python, "double(5)").await;
     assert_eq!(result.unwrap().status, "ok");
     assert!(outputs.iter().any(|o| o.kind == "execute_result" && o.content["data"]["text/plain"] == "10"));
+    manager.shutdown().await;
+}
+
+#[tokio::test]
+#[ignore = "requires OPENIDEA_TEST_PYTHON and OPENIDEA_TEST_JUPYTER_URL"]
+async fn a_debugger_opened_after_switching_kernels_survives_the_run() {
+    let root = tempfile::tempdir().unwrap();
+    let manager = manager(root.path());
+    let notebook = root.path().join("switch.ipynb");
+    assert_eq!(run(&manager, &notebook, &python(), "x = 1").await.0.unwrap().status, "ok");
+    // The drop-down now names a kernel on a server; Debug Cell starts it before attaching.
+    let (_, _, remote) = remote(None).await;
+    manager.start(&notebook, remote.clone()).await.unwrap();
+    let mut debugger = manager.debugger(&notebook).unwrap();
+    let (mut seq, mut events) = (0, Vec::new());
+    assert_eq!(run(&manager, &notebook, remote, "y = 2").await.0.unwrap().status, "ok");
+    dap(&mut debugger, &mut seq, &mut events, "initialize", serde_json::json!({"adapterID": "python"})).await;
+    drop(debugger);
+    manager.shutdown_kernel(&notebook).await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires OPENIDEA_TEST_PYTHON with real ipykernel (and debugpy)"]
+async fn interrupting_a_run_paused_at_a_breakpoint_keeps_the_kernel() {
+    let root = tempfile::tempdir().unwrap();
+    let manager = manager(root.path());
+    let notebook = root.path().join("paused.ipynb");
+    let python = python();
+    let helper = "def double(x):\n    y = x * 2\n    return y\n";
+    assert_eq!(run(&manager, &notebook, &python, &format!("{helper}kept = 7")).await.0.unwrap().status, "ok");
+    let mut debugger = manager.debugger(&notebook).unwrap();
+    let (mut seq, mut events) = (0, Vec::new());
+    dap(&mut debugger, &mut seq, &mut events, "initialize", serde_json::json!({"adapterID": "python"})).await;
+    dap(&mut debugger, &mut seq, &mut events, "attach", serde_json::json!({})).await;
+    let path =
+        dap(&mut debugger, &mut seq, &mut events, "dumpCell", serde_json::json!({"code": format!("{helper}kept = 7")}))
+            .await;
+    let path = path["body"]["sourcePath"].as_str().unwrap().to_owned();
+    dap(
+        &mut debugger,
+        &mut seq,
+        &mut events,
+        "setBreakpoints",
+        serde_json::json!({"source": {"path": path}, "breakpoints": [{"line": 3}]}),
+    )
+    .await;
+    dap(&mut debugger, &mut seq, &mut events, "configurationDone", serde_json::json!({})).await;
+    let running = {
+        let (manager, notebook, python) = (manager.clone(), notebook.clone(), python.clone());
+        tokio::spawn(async move { run(&manager, &notebook, &python, "double(1)").await })
+    };
+    while !events.iter().any(|e| e["event"] == "stopped") {
+        events.push(tokio::time::timeout(Duration::from_secs(20), debugger.receive()).await.unwrap().unwrap());
+    }
+    // The notebook's own Interrupt, not the debug session's Stop.
+    tokio::time::timeout(Duration::from_secs(20), manager.interrupt(&notebook)).await.unwrap().unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(20), running).await.unwrap();
+    drop(debugger);
+    let (result, outputs) = run(&manager, &notebook, &python, "kept").await;
+    assert_eq!(result.unwrap().status, "ok", "the kernel and its state survive");
+    assert!(outputs.iter().any(|o| o.kind == "execute_result" && o.content["data"]["text/plain"] == "7"));
     manager.shutdown().await;
 }

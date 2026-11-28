@@ -4,7 +4,7 @@ use ide_core::{CancellationToken, IdeError, IdeResult};
 use jupyter_protocol::{ExecuteRequest, JupyterMessage, KernelInfoRequest, ShutdownRequest};
 use jupyter_zmq_client::{Connection, DealerSendConnection, RawMessage};
 use parking_lot::Mutex;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -125,6 +125,9 @@ enum Channel {
     Control,
 }
 
+/// A `disconnect` sent before an interrupt: its seq, and who waits for the answer.
+type Release = (i64, oneshot::Sender<()>);
+
 /// A kernel's debugger, in the Jupyter debugger protocol: DAP messages go out as
 /// `debug_request` on the control channel and come back as `debug_reply` there and
 /// `debug_event` on IOPub. Kept per notebook across kernel generations.
@@ -134,6 +137,10 @@ pub(super) struct DebugPort {
     control: Arc<Mutex<Option<mpsc::Sender<JupyterMessage>>>>,
     /// The open debug session's inbox, if any.
     sink: Arc<Mutex<Option<mpsc::UnboundedSender<Value>>>>,
+    /// Whether the running kernel said it has a debugger.
+    capable: Arc<AtomicBool>,
+    /// A `disconnect` sent before an interrupt, by seq, and who waits for its answer.
+    release: Arc<Mutex<Option<Release>>>,
 }
 
 impl DebugPort {
@@ -142,14 +149,19 @@ impl DebugPort {
         if kind != "debug_reply" && kind != "debug_event" {
             return false;
         }
+        let mut release = self.release.lock();
+        if release
+            .as_ref()
+            .is_some_and(|(seq, _)| content["request_seq"].as_i64() == Some(*seq) && content["type"] == "response")
+        {
+            let _ = release.take().map(|(_, done)| done.send(()));
+            return true;
+        }
+        drop(release);
         if let Some(sink) = self.sink.lock().as_ref() {
             let _ = sink.send(content.clone());
         }
         true
-    }
-
-    pub fn attached(&self) -> bool {
-        self.control.lock().as_ref().is_some_and(|control| !control.is_closed())
     }
 
     fn attach(&self, control: mpsc::Sender<JupyterMessage>) {
@@ -165,6 +177,9 @@ impl DebugPort {
             .clone()
             .filter(|control| !control.is_closed())
             .ok_or_else(|| IdeError::unavailable("the notebook's kernel is not running"))?;
+        if !self.capable.load(Ordering::Acquire) {
+            return Err(IdeError::unavailable(CANNOT_DEBUG));
+        }
         let mut sink = self.sink.lock();
         if sink.as_ref().is_some_and(|sink| !sink.is_closed()) {
             return Err(IdeError::unavailable("the notebook is already being debugged"));
@@ -173,6 +188,37 @@ impl DebugPort {
         *sink = Some(tx);
         Ok((control, inbox))
     }
+
+    /// Before an interrupt: a debug session's `disconnect`, so that a run paused at a breakpoint
+    /// goes on and can be interrupted (a paused kernel does not answer SIGINT in time and is
+    /// stopped). Waits a little for the kernel to answer.
+    pub async fn release(&self) {
+        if !self.sink.lock().as_ref().is_some_and(|sink| !sink.is_closed()) {
+            return;
+        }
+        let Some(control) = self.control.lock().clone() else { return };
+        const SEQ: i64 = (1 << 50) + 1;
+        let (done, answered) = oneshot::channel();
+        *self.release.lock() = Some((SEQ, done));
+        let request = json!({"type": "request", "seq": SEQ, "command": "disconnect",
+            "arguments": {"restart": false, "terminateDebuggee": false}});
+        let message: JupyterMessage = jupyter_protocol::DebugRequest { content: request }.into();
+        if control.send(message).await.is_ok() {
+            let _ = tokio::time::timeout(Duration::from_secs(3), answered).await;
+        }
+        self.release.lock().take();
+    }
+}
+
+/// The reason Debug Cell gives for a kernel without a debugger.
+pub(super) const CANNOT_DEBUG: &str =
+    "this kernel has no debugger: Debug Cell needs a Python kernel with ipykernel 6 or later and debugpy installed";
+
+/// Whether a `kernel_info_reply` announces the debugger: `debugger: true` (ipykernel 6) or
+/// `"debugger"` among `supported_features` (ipykernel 7).
+fn has_debugger(reply: &Value) -> bool {
+    reply["debugger"] == true
+        || reply["supported_features"].as_array().is_some_and(|features| features.iter().any(|f| f == "debugger"))
 }
 
 /// Sends what arrives on the returned channel over `connection`, until either closes.
@@ -387,7 +433,8 @@ impl Session {
         Ok(Self { link: Link::Local { process, shell, control }, frames, failure, _readers: readers })
     }
 
-    async fn ready(&mut self, stop: &CancellationToken) -> IdeResult<()> {
+    /// Waits for the kernel to answer; whether it has a debugger (`kernel_info_reply`).
+    async fn ready(&mut self, stop: &CancellationToken) -> IdeResult<bool> {
         let remote = matches!(self.link, Link::Remote(_));
         let deadline = Instant::now() + if remote { REMOTE_STARTUP_TIMEOUT } else { STARTUP_TIMEOUT };
         let mut probe = tokio::time::interval(Duration::from_millis(250));
@@ -395,6 +442,7 @@ impl Session {
         let mut request = String::new();
         let mut reply = false;
         let mut idle = false;
+        let mut debugger = false;
         loop {
             tokio::select! {
                 biased;
@@ -425,9 +473,12 @@ impl Session {
                 frame = self.frames.recv() => {
                     let frame = frame.ok_or_else(|| IdeError::unavailable("kernel readers closed during startup"))?;
                     if frame.parent != request { continue; }
-                    if frame.channel == Channel::Shell && frame.kind == "kernel_info_reply" { reply = true; }
+                    if frame.channel == Channel::Shell && frame.kind == "kernel_info_reply" {
+                        reply = true;
+                        debugger = has_debugger(&frame.content);
+                    }
                     if frame.channel == Channel::Iopub && is_idle(&frame) { idle = true; }
-                    if reply && idle { return Ok(()); }
+                    if reply && idle { return Ok(debugger); }
                 }
             }
         }
@@ -641,7 +692,8 @@ async fn supervise(
     };
     let startup = async {
         let mut session = Session::connect(&runtime, &notebook, &target, &debug).await?;
-        session.ready(&stop).await?;
+        let debugger = session.ready(&stop).await?;
+        debug.capable.store(debugger, Ordering::Release);
         IdeResult::Ok(session)
     };
     let result = tokio::select! {
@@ -717,3 +769,17 @@ async fn supervise(
 #[cfg(test)]
 #[path = "transport_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod debugger_tests {
+    use super::has_debugger;
+    use serde_json::json;
+
+    #[test]
+    fn kernel_info_announces_the_debugger_either_way() {
+        assert!(has_debugger(&json!({"debugger": true})));
+        assert!(has_debugger(&json!({"supported_features": ["kernel subshells", "debugger"]})));
+        assert!(!has_debugger(&json!({"supported_features": ["kernel subshells"]})));
+        assert!(!has_debugger(&json!({"implementation": "IRkernel"})));
+    }
+}

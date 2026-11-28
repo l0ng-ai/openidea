@@ -126,7 +126,9 @@ Click a code cell's gutter to set a breakpoint, as in a file. Then choose **Debu
 - The **Debug** tool window shows the frames and variables. Stepping, Evaluate Expression and the inline values work as in a Python debug session, and a stop opens its cell at the line.
 - The session ends when the cell finishes. **Stop** interrupts the cell; the kernel and its variables are kept.
 
-This works the same for a kernel on a Jupyter server. The kernel needs debugpy (ipykernel 6 or later with `debugpy` installed); without it, Debug Cell says so.
+This works the same for a kernel on a Jupyter server, and for the kernel chosen in the interpreter list even before it has run. It needs a Python kernel with ipykernel 6 or later and `debugpy` installed: for another kernel (an older ipykernel, R, Julia), Debug Cell starts it and then says it cannot debug.
+
+A breakpoint goes to the cell's current code. In a cell edited since it last ran, it stops only once the cell runs again. When two cells have the same code, only the first one's breakpoints are used.
 
 ## Limits
 

@@ -100,7 +100,12 @@ export function activate(): () => void {
         run: () => {
           const path = editorService().activePath();
           const session = path ? existingNotebookSession(path) : undefined;
-          const cell = session?.selectedCell ?? session?.cells().find((c) => c.cellType === "code")?.id;
+          const cells = session?.cells() ?? [];
+          // The selected cell when it is code, else the first code cell.
+          const cell = (
+            cells.find((c) => c.id === session?.selectedCell && c.cellType === "code") ??
+            cells.find((c) => c.cellType === "code")
+          )?.id;
           if (session && cell)
             void import("./debugCell").then((m) => m.debugCell(session, cell)).catch((e) => session.report(e));
         },

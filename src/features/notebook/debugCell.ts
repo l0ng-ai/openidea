@@ -32,7 +32,9 @@ export async function debugCell(session: NotebookSession, cell: string): Promise
   if (id == null) return;
   // Stop in the Debug window ends the session: the cell is interrupted, the kernel keeps running.
   const stopped = useDebug.subscribe((state) => {
-    if (!isLive(state.sessions[id]) && session.getState().running) void session.interrupt();
+    if (isLive(state.sessions[id])) return;
+    stopped();
+    if (session.getState().running) void session.interrupt();
   });
   try {
     await session.execute([cell]);
