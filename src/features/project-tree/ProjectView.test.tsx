@@ -523,7 +523,9 @@ describe("ProjectView", () => {
     const open = async () => {
       fireEvent.mouseDown(row("README.md"));
       tree.focus();
-      act(() => executeAction("project.quickPreview"));
+      await act(async () => {
+        await executeAction("project.quickPreview");
+      });
       await screen.findByRole("dialog", { name: "Quick Preview" });
     };
 
