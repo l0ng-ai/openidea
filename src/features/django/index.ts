@@ -47,7 +47,9 @@ export function activate(): () => void {
       const doc = docOf(view);
       if (!doc || doc.virtual || doc.language !== "python") return null;
       const line = view.state.doc.lineAt(offset);
-      return urlNavigation(line.text, line.from, offset);
+      // With what comes before the line: `reverse(` may end the one above.
+      const base = Math.max(0, line.from - 200);
+      return urlNavigation(view.state.doc.sliceString(base, line.to), base, offset);
     }),
     registerEditorContribution({ id: "django.urlNames", extensions: urlCompletionExtension }),
     registerEditorContribution({ id: "django.lookups", extensions: lookupCompletionExtension }),
