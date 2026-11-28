@@ -38,6 +38,7 @@ ide-build.workspace = true
 ide-analysis.workspace = true
 ide-coverage.workspace = true
 ide-spell.workspace = true
+ide-grammar.workspace = true
 ide-terminal.workspace = true
 ide-run.workspace = true
 ide-sdk.workspace = true

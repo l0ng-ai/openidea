@@ -26,6 +26,11 @@ function NaturalLanguagesPage() {
           <T>Used by Proofreading › Typo</T>
         </span>
       </Row>
+      <Row label="English grammar" hint="Bundled Harper rules, checked on this machine.">
+        <span className={formStyles.hint}>
+          <T>Used by Proofreading › Grammar</T>
+        </span>
+      </Row>
     </Section>
   );
 }

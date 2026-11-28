@@ -336,6 +336,9 @@ gradle_dependencies                          trusted            project_host bin
 gradle_link_projects                         trusted            project_host bindings async
 gradle_published_catalog                     trusted            project_host bindings async
 gradle_unlink_projects                       trusted            project_host bindings async
+grammar_check                                always             project_host bindings async
+grammar_check_text                           always             project_host bindings async
+grammar_rules                                always             project_host bindings async
 gtk_pick_paths                               trusted            desktop      bindings async
 history_content                              always             project_host bindings async
 history_list                                 always             project_host bindings async

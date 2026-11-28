@@ -58,6 +58,8 @@ pub struct Settings {
     pub inspections: InspectionSettings,
     /// Editor › Natural Languages › Spelling.
     pub spelling: SpellingSettings,
+    /// Editor › Natural Languages › Grammar.
+    pub grammar: GrammarSettings,
     /// Tools › SSH Configurations.
     pub ssh: SshSettings,
     pub remote_development: RemoteDevelopmentSettings,
@@ -604,6 +606,7 @@ impl Default for Settings {
             tool_downloads: ToolDownloadSettings::default(),
             inspections: InspectionSettings::default(),
             spelling: SpellingSettings::default(),
+            grammar: GrammarSettings::default(),
             ssh: SshSettings::default(),
             remote_development: RemoteDevelopmentSettings::default(),
             deployment: DeploymentSettings::default(),

@@ -43,6 +43,7 @@ import { foreground } from "./foreground";
 import { iconNode } from "@/ui/iconNode";
 import { editorPrefs } from "@/platform/editorSettings";
 import { spellingIntentions } from "./spelling";
+import { grammarIntentions } from "./grammar";
 import { inspectionsAt, type EditorDiagnostic } from "./diagnostics";
 import { SPELLING_INSPECTION, type InspectionRef } from "@/platform/inspections";
 import { editInspectionSettings, intentionControls } from "@/platform/inspectionControls";
@@ -552,7 +553,11 @@ export const INTENTIONS_POPUP_DELAY_MS = 100;
 export async function showIntentions(view: EditorView) {
   const state = view.state;
   // Local inspections need no language server.
-  const local: ListPopupItem[] = [...spellingIntentions(view), ...contributedIntentions(view)];
+  const local: ListPopupItem[] = [
+    ...spellingIntentions(view),
+    ...grammarIntentions(view),
+    ...contributedIntentions(view),
+  ];
   const anchor: PopupPoint = caretAnchor(view, state.selection.main.head);
   const resolved = new Map<CodeAction, Promise<CodeAction>>();
   const previews = new Map<string, CodeAction>();
@@ -767,7 +772,7 @@ const bulbPlugin = ViewPlugin.fromClass(
       // As in IDEA, only the focused editor shows the bulb.
       if (!doc || doc.readOnly || !this.view.dom.isConnected || !this.view.hasFocus) return;
       const state = this.view.state;
-      const typoFix = spellingIntentions(this.view).length > 0;
+      const typoFix = spellingIntentions(this.view).length > 0 || grammarIntentions(this.view).length > 0;
       const selection = state.selection.main;
       const ownFix = contributedQuickFixes(this.view, selection.from, selection.to).length > 0;
       this.asked?.abort();

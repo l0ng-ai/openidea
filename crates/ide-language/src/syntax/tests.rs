@@ -1632,6 +1632,16 @@ fn spelling_regions_cover_declared_names_only() {
         .map(|r| &py[r.start..r.end])
         .collect();
     assert_eq!(names, ["load_config", "path", "retries", "total"]);
+    // A string statement is a docstring; an assigned one is not.
+    let doc_src = "x = \"a\"\n\"\"\"Doc.\"\"\"\n";
+    let docs: Vec<&str> = syntax()
+        .spelling_regions(&lang("python"), doc_src)
+        .unwrap()
+        .iter()
+        .filter(|r| r.doc)
+        .map(|r| &doc_src[r.start..r.end])
+        .collect();
+    assert_eq!(docs, ["\"\"\"Doc.\"\"\""]);
     // Names in paths and calls are uses.
     let rs = "use crate::ui::keymap;\nfn run() { let n = std::ffi::OsStr::new(\"x\"); a::b::millis(); }\n";
     let names: Vec<&str> = syntax()

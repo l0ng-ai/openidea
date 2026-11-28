@@ -1,6 +1,6 @@
 ---
 title: "Inspections"
-description: "Problems in the editor and the Problems tool window, quick fixes and intentions, inspection profiles, batch analysis and spell checking."
+description: "Problems in the editor and the Problems tool window, quick fixes and intentions, inspection profiles, batch analysis, spell and grammar checking."
 ---
 
 OpenIDEA treats every source of problems as an inspection: each language server (and, where the server reports codes, each of its diagnostic codes) plus a few built-in checks such as syntax errors, unresolved file references, unresolved merge conflict markers, build problems and spelling. All of them are shown the same way and can be configured in one place.
@@ -78,6 +78,14 @@ On a typo, `⌥↵` / `Alt+Enter` offers:
 - when no custom dictionary is configured, opening the Spelling settings to add one.
 
 Manage the project and application dictionaries, and add your own dictionary files, in **Settings › Editor › Natural Languages › Spelling**. The page's **Default dictionary** selects where the plain "Save '…' to dictionary" row writes (project dictionary by default); the → submenu always offers every dictionary. Typo's severity and options are in **Settings › Editor › Inspections** like any other inspection.
+
+## Grammar checking
+
+The **Proofreading › Grammar** inspection checks comments, Python docstrings, Markdown and plain-text files, and the commit message with [Harper](https://github.com/Automattic/harper)'s English rules. The check runs inside the IDE; no text leaves your machine. Comment markers, docstring quotes, doctest lines and Markdown code are not checked, and spelling is left to Typo.
+
+On a grammar problem, `⌥↵` / `Alt+Enter` offers Harper's suggested edits, **Disable grammar rule '…'**, and, when a single word is flagged, saving it to the spelling dictionary (Harper then accepts it too). The commit message box lists its problems below the text, each with its first fix and **Disable rule**.
+
+Choose the English dialect (American, British, Canadian, Australian or Indian) and turn single rules on or off in **Settings › Editor › Natural Languages › Grammar**.
 
 ## Before committing
 
