@@ -10962,5 +10962,15 @@
   "Keep Key": "保留键",
   "Drop Index": "删除索引",
   "Keep Index": "保留索引",
-  "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite 无法删除主键或唯一约束的索引。"
+  "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite 无法删除主键或唯一约束的索引。",
+  "Memory View": "内存视图",
+  "View Memory": "查看内存",
+  "Address or expression, such as &buffer[0]": "地址或表达式，例如 &buffer[0]",
+  "Address or expression": "地址或表达式",
+  "Go to Address": "转到地址",
+  "ASCII": "ASCII",
+  "Memory is read while the program is paused.": "程序暂停时才会读取内存。",
+  "The memory at {address} cannot be read.": "无法读取 {address} 处的内存。",
+  "Enter an address or an expression, or choose View Memory on a variable.": "输入地址或表达式，或在变量上选择“查看内存”。",
+  "“{expression}” is not an address. Enter a pointer or an address, such as &buffer[0].": "“{expression}”不是地址。请输入指针或地址，例如 &buffer[0]。"
 }

@@ -506,6 +506,11 @@ export const commands = {
 	 */
 	debugListenForJvm: (request: RequestId, host: string, port: number) => typedError<number, IdeError>(__TAURI_INVOKE("debug_listen_for_jvm", { request, host, port })),
 	debugPause: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_pause", { session, threadId })),
+	/**
+	 *  Memory View: `count` bytes from `offset` bytes after `memory_reference` (a variable's,
+	 *  an evaluation result's or an earlier read's address).
+	 */
+	debugReadMemory: (session: DebugSessionId, memoryReference: string, offset: number, count: number) => typedError<MemoryBlock, IdeError>(__TAURI_INVOKE("debug_read_memory", { session, memoryReference, offset, count })),
 	/**  HotSwap (Reload Changed Classes) in a java-debug session. */
 	debugRedefineClasses: (session: DebugSessionId) => typedError<HotSwapResult, IdeError>(__TAURI_INVOKE("debug_redefine_classes", { session })),
 	/**  Replaces all of this window's line breakpoints with `files`. */
@@ -6040,6 +6045,8 @@ export type DebugCapabilities = {
 	 *  Can change during the session, like `jvm_instances`.
 	 */
 	streamTrace: boolean,
+	/**  The program's raw memory can be read ([`DebugManager::read_memory`]): the Memory View. */
+	readMemory: boolean,
 };
 
 /**  A completion the adapter offers for an expression (DAP `completions`). */
@@ -10596,6 +10603,14 @@ export type McpTransport = "stdio" | "http" | "sse";
  */
 export type McpUiRequest = { type: "confirm"; client: string; tool: string; subject: string; project: string; detail: string | null } | { type: "openFile"; path: IpcPath; line: number | null; column: number | null } | { type: "agentRun"; name: string; command: string; cwd: IpcPath; env: { [key in string]: string } } | { type: "runConfiguration"; config: unknown };
 
+/**  Answer of `readMemory`: `data` starts at `address`; the `unreadable_bytes` after it could not be read. */
+export type MemoryBlock = {
+	/**  Address of the first byte, as the adapter writes it (`0x7ffd…`; may be wider than 53 bits). */
+	address: string,
+	data: number[],
+	unreadableBytes: number,
+};
+
 export type MemoryCategory = 
 /**  The backend and its WebView processes. */
 "app" | "languageServer" | 
@@ -14954,6 +14969,8 @@ export type Variable_Deserialize = {
 	 *  `variables` returns for `variables_reference` holds the value and its children.
 	 */
 	lazy?: boolean,
+	/**  Where the value points to or is stored, for [`DebugManager::read_memory`] (DAP `memoryReference`). */
+	memoryReference?: string | null,
 };
 
 export type Variable_Serialize = {
@@ -14968,6 +14985,8 @@ export type Variable_Serialize = {
 	 *  `variables` returns for `variables_reference` holds the value and its children.
 	 */
 	lazy?: boolean,
+	/**  Where the value points to or is stored, for [`DebugManager::read_memory`] (DAP `memoryReference`). */
+	memoryReference?: string | null,
 };
 
 /**  Version Control › Confirmation. */

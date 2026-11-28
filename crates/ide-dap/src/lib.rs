@@ -20,6 +20,7 @@ mod js_debug;
 mod jvm_memory;
 pub mod kotlin;
 pub mod kotlin_lsp;
+mod memory;
 mod session;
 mod stream_trace;
 pub mod unity;
@@ -33,6 +34,7 @@ use ide_language::LanguageRegistry;
 pub use js_cdp::JsResponseRule;
 pub use js_debug::JsResponseBody;
 pub use jvm_memory::*;
+pub use memory::{MAX_READ, MemoryBlock};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -154,6 +156,8 @@ pub struct DebugCapabilities {
     /// A stream chain can be traced while the program runs it ([`DebugManager::stream_trace`]).
     /// Can change during the session, like `jvm_instances`.
     pub stream_trace: bool,
+    /// The program's raw memory can be read ([`DebugManager::read_memory`]): the Memory View.
+    pub read_memory: bool,
 }
 
 /// Result of [`DebugManager::redefine_classes`].
@@ -244,6 +248,10 @@ pub struct Variable {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[specta(optional)]
     pub lazy: bool,
+    /// Where the value points to or is stored, for [`DebugManager::read_memory`] (DAP `memoryReference`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub memory_reference: Option<String>,
 }
 
 /// A completion the adapter offers for an expression (DAP `completions`).
@@ -682,6 +690,7 @@ pub(crate) fn capabilities_from(caps: &Value) -> DebugCapabilities {
         js_page: false,
         live_evaluate: false,
         stream_trace: false,
+        read_memory: has("supportsReadMemoryRequest"),
     }
 }
 
@@ -770,7 +779,13 @@ pub(crate) fn variable_from(v: &Value) -> Variable {
         variables_reference: v.get("variablesReference").and_then(Value::as_i64).unwrap_or(0),
         evaluate_name: s("evaluateName"),
         lazy: v.pointer("/presentationHint/lazy").and_then(Value::as_bool).unwrap_or(false),
+        memory_reference: memory_reference(v),
     }
+}
+
+/// A variable's or evaluation result's `memoryReference`.
+fn memory_reference(v: &Value) -> Option<String> {
+    v.get("memoryReference").and_then(Value::as_str).filter(|r| !r.is_empty()).map(str::to_owned)
 }
 
 async fn session_variables(session: &Session, reference: i64) -> IdeResult<Vec<Variable>> {
@@ -796,6 +811,7 @@ async fn resolve_in(session: &Session, variable: Variable) -> IdeResult<Variable
             value: value.value,
             variables_reference: value.variables_reference,
             lazy: value.lazy,
+            memory_reference: value.memory_reference.or(variable.memory_reference),
         },
         _ => variable,
     })
@@ -1274,7 +1290,7 @@ impl DebugManager {
                     "supportsProgressReporting": true,
                     // kotlin-lsp sends `invalidated` either way.
                     "supportsInvalidatedEvent": is_kotlin_lsp,
-                    "supportsMemoryReferences": false,
+                    "supportsMemoryReferences": true,
                     "supportsArgsCanBeInterpretedByShell": false,
                 }),
                 INIT_TIMEOUT,
@@ -1731,6 +1747,7 @@ impl DebugManager {
             variables_reference: body.get("variablesReference").and_then(Value::as_i64).unwrap_or(0),
             evaluate_name: evaluate_name.or(Some(name)),
             lazy: false,
+            memory_reference: memory_reference(&body),
         })
     }
 
@@ -1868,6 +1885,7 @@ impl DebugManager {
             variables_reference: body.get("variablesReference").and_then(Value::as_i64).unwrap_or(0),
             evaluate_name: Some(expression),
             lazy: body.pointer("/presentationHint/lazy").and_then(Value::as_bool).unwrap_or(false),
+            memory_reference: memory_reference(&body),
         };
         if !session.spec.resolve_lazy_variables {
             return Ok(result);
@@ -2122,6 +2140,31 @@ impl DebugManager {
         }
         session.conn.request_timeout("restartFrame", json!({ "frameId": frame_id }), REQUEST_TIMEOUT).await?;
         Ok(())
+    }
+
+    /// `count` bytes (at most [`MAX_READ`]) from `offset` bytes after `memory_reference`, which
+    /// comes from a variable, an evaluation result or an earlier read's address.
+    pub async fn read_memory(
+        &self,
+        s: DebugSessionId,
+        memory_reference: String,
+        offset: i64,
+        count: u32,
+    ) -> IdeResult<MemoryBlock> {
+        let session = self.session(s)?;
+        if !session.supports("supportsReadMemoryRequest") {
+            return Err(IdeError::unavailable(format!("debug adapter `{}` cannot read memory", session.adapter)));
+        }
+        let count = count.min(MAX_READ);
+        let body = session
+            .conn
+            .request_timeout(
+                "readMemory",
+                json!({ "memoryReference": memory_reference, "offset": offset, "count": count }),
+                REQUEST_TIMEOUT,
+            )
+            .await?;
+        memory::memory_block(&body, count)
     }
 
     pub fn capabilities(&self, s: DebugSessionId) -> IdeResult<DebugCapabilities> {

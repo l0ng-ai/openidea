@@ -10,6 +10,7 @@ import { resolveMonoFont } from "@/platform/fonts";
 import { useProject } from "@/platform/project";
 import { activeEditor } from "@/editor/api";
 import { notifications } from "@/workbench/contributions";
+import { executeAction } from "@/platform/actions";
 import { addFieldWatchpoint } from "../breakpoints/special";
 import { methodAt } from "../breakpoints/symbols";
 import {
@@ -52,6 +53,8 @@ interface VarNode {
   container: number;
   /** `value` is not computed yet; `reference` holds it as a single nameless variable. */
   lazy: boolean;
+  /** Where the value points to or is stored, for View Memory. */
+  memoryReference?: string | null;
 }
 
 function fromRoot(r: VarRoot): VarNode {
@@ -85,6 +88,7 @@ function fromRoot(r: VarRoot): VarNode {
         depth0: true,
         container: 0,
         lazy: !!r.variable?.lazy,
+        memoryReference: r.variable?.memoryReference,
       };
   }
 }
@@ -102,6 +106,7 @@ function fromVariable(key: string, v: Variable, container: number, depth0 = fals
     depth0,
     container,
     lazy: !!v.lazy,
+    memoryReference: v.memoryReference,
   };
 }
 
@@ -113,6 +118,7 @@ function toVariable(n: VarNode): Variable {
     variablesReference: n.reference,
     evaluateName: n.evaluateName,
     lazy: n.lazy,
+    memoryReference: n.memoryReference,
   };
 }
 
@@ -422,6 +428,13 @@ export function VariablesView({
         run: () => void addWatchpointFor(session!, node),
       });
     if (watchActions.length) items.push({ kind: "separator" }, ...watchActions);
+    const memoryReference = node.memoryReference;
+    if (memoryReference && sessionSupports("readMemory"))
+      items.push({
+        label: "View Memory",
+        icon: "file-binary",
+        run: () => void executeAction("debug.viewMemory", memoryReference),
+      });
 
     items.push(
       { kind: "separator" },

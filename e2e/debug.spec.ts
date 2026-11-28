@@ -192,6 +192,60 @@ test("Memory gives class filtering the available toolbar width and exposes chang
   await expect(changed).toBeChecked();
 });
 
+test("Memory View shows the bytes at an address expression with hex and ASCII aligned", async ({ workbench: page }) => {
+  await stubDesktop(page);
+  await page.evaluate(async (id) => {
+    // The reporter's `msg` (#5921) where GDB put it, 9 bytes into its row; other bytes count up.
+    const msg = "Hello, World!\n\0";
+    const at = 0x7fffffff9f69;
+    const h = window.__ipc.handlers;
+    const caps = { readMemory: true };
+    h.debug_capabilities = () => caps;
+    h.debug_evaluate_in = (args) => ({
+      name: args.expression,
+      value: '0x7fffffff9f69 "Hello, World!\\n"',
+      typeName: "const char *",
+      variablesReference: 0,
+      evaluateName: args.expression,
+      memoryReference: "0x7fffffff9f69",
+    });
+    h.debug_read_memory = (args) => {
+      const start = Number(args.memoryReference) + (args.offset as number);
+      const data = Array.from({ length: args.count as number }, (_, i) => {
+        const a = start + i;
+        return a >= at && a < at + msg.length ? msg.charCodeAt(a - at) : a & 0xff;
+      });
+      return { address: `0x${start.toString(16)}`, data, unreadableBytes: 0 };
+    };
+    const debugPath = "/src/features/debugger/state.ts";
+    const { adoptSession } = await import(/* @vite-ignore */ debugPath);
+    adoptSession(id, { adapter: "gdb", name: "app-c", status: "paused", stops: 1, caps });
+    const dockPath = "/src/workbench/toolwindows/store.ts";
+    const layout = await import(/* @vite-ignore */ dockPath);
+    layout.moveToolWindow("debug", "bottom");
+    layout.setToolWindowSize("bottom", 360);
+    layout.showToolWindow("debug", true);
+  }, SESSION);
+
+  const debug = page.getByRole("region", { name: "Debug", exact: true });
+  await debug.getByRole("tab", { name: "Memory View" }).click();
+  const field = debug.getByRole("textbox", { name: "Address or expression" });
+  await field.fill("&msg[0]");
+  await field.press("Enter");
+  const grid = debug.getByRole("grid", { name: "Memory", exact: true });
+  await expect(grid.getByRole("rowheader", { name: "0x00007FFFFFFF9F60" })).toBeVisible();
+  expect(await ipcCalls(page, "debug_read_memory")).toEqual([
+    { session: SESSION, memoryReference: "0x7fffffff9f69", offset: -9, count: 256 },
+  ]);
+  // Monospaced columns: each row's hex and ASCII start where the row above starts them.
+  const rows = grid.getByRole("row");
+  const left = async (row: number, cell: number) =>
+    (await rows.nth(row).getByRole("gridcell").nth(cell).boundingBox())!.x;
+  for (const cell of [0, 1]) expect(await left(2, cell)).toBeCloseTo(await left(1, cell), 0);
+  await expect(rows.nth(1).getByRole("gridcell").nth(1)).toHaveText("`abcdefghHello, ");
+  await expect(rows.nth(2).getByRole("gridcell").nth(1)).toHaveText(/^World!\.\./);
+});
+
 test("Evaluate keeps a multiline expression and its result visible in a short dialog", async ({ workbench: page }) => {
   await page.setViewportSize({ width: 580, height: 420 });
   await stubDesktop(page);

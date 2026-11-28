@@ -551,6 +551,19 @@ pub async fn debug_evaluate_in(
     host.debugger.evaluate_in(session, frame_id, expression, context).await
 }
 
+/// Memory View: `count` bytes from `offset` bytes after `memory_reference` (a variable's,
+/// an evaluation result's or an earlier read's address).
+#[command(trust = trusted)]
+pub async fn debug_read_memory(
+    host: &Host,
+    session: DebugSessionId,
+    memory_reference: String,
+    offset: i64,
+    count: u32,
+) -> IdeResult<ide_dap::MemoryBlock> {
+    host.debugger.read_memory(session, memory_reference, offset, count).await
+}
+
 /// Last known verification states of a file's breakpoints (refetch on `breakpointsChanged`).
 #[command(trust = trusted)]
 pub fn debug_breakpoint_states(host: &Host, path: PathBuf) -> IdeResult<Vec<BreakpointState>> {
@@ -1077,6 +1090,7 @@ ide_command::domain!(
     debug_jvm_thread_dump,
     debug_listen_for_jvm,
     debug_pause,
+    debug_read_memory,
     debug_redefine_classes,
     debug_replace_breakpoints,
     debug_resolve_variable,
