@@ -523,7 +523,7 @@ describe("ProjectView", () => {
     const open = async () => {
       fireEvent.mouseDown(row("README.md"));
       tree.focus();
-      fireEvent.keyDown(tree, { key: " ", code: "Space" });
+      act(() => executeAction("project.quickPreview"));
       await screen.findByRole("dialog", { name: "Quick Preview" });
     };
 
