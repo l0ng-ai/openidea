@@ -71,6 +71,11 @@ export function DocView({ host, history, themeClasses }: { host: DocHost; histor
     findInputRef.current?.focus();
     findInputRef.current?.select();
   };
+  const openFind = () => {
+    setFindOpen(true);
+    if (findOpen) focusFind();
+    else requestAnimationFrame(focusFind);
+  };
   const closeFind = () => {
     setFindOpen(false);
     setQuery("");
@@ -90,8 +95,7 @@ export function DocView({ host, history, themeClasses }: { host: DocHost; histor
     if (host === "window" && !e.altKey && !e.shiftKey && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
       e.preventDefault();
       e.stopPropagation();
-      setFindOpen(true);
-      if (findOpen) focusFind();
+      openFind();
       return;
     }
     if (findOpen && e.key === "Escape") {
@@ -138,8 +142,8 @@ export function DocView({ host, history, themeClasses }: { host: DocHost; histor
     }
     let matches: DocSearchMatch[] = [];
     let disposed = false;
-    const observer = new MutationObserver(() => apply(true));
-    const apply = (keepActive: boolean) => {
+    const observer = new MutationObserver(() => apply(true, false));
+    const apply = (keepActive: boolean, scroll: boolean) => {
       if (disposed) return;
       observer.disconnect();
       matches = highlightDocSearch(body, query);
@@ -152,12 +156,12 @@ export function DocView({ host, history, themeClasses }: { host: DocHost; histor
       searchRef.current = matches;
       setMatchCount(matches.length);
       setActiveMatch(active);
-      if (active >= 0) activateDocMatch(matches, active);
+      if (active >= 0) activateDocMatch(matches, active, { scroll });
       observer.observe(body, { childList: true, characterData: true, subtree: true });
     };
-    apply(false);
-    // Markdown and code highlighting can finish after the first paint. Reapply to the new DOM
-    // without treating our own marks as content changes (the observer is disconnected while applying).
+    apply(false, true);
+    // Markdown and code highlighting can finish after the first paint. Re-mark without moving the
+    // viewport; only a new query or documentation page scrolls to its first active match.
     return () => {
       disposed = true;
       observer.disconnect();
@@ -230,6 +234,15 @@ export function DocView({ host, history, themeClasses }: { host: DocHost; histor
             title="Edit Source"
             shortcut="F4"
             onClick={() => void editDocSource(host)}
+          />
+        )}
+        {host === "window" && (
+          <IconButton
+            icon="search"
+            size="small"
+            title={tx("Find in Documentation")}
+            shortcut={shortcutLabel("find.inFile") || undefined}
+            onClick={openFind}
           />
         )}
         {host === "popup" ? (

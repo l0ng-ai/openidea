@@ -1,6 +1,7 @@
 import { createRef, useState } from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { useI18n } from "@/platform/i18n";
 import { DocFindBar } from "./DocFindBar";
 
 function Harness({ onClose }: { onClose(): void }) {
@@ -40,6 +41,32 @@ describe("Documentation find bar", () => {
     expect(screen.getByRole("status")).toHaveTextContent("No matches");
     expect(screen.getByRole("button", { name: "Previous Match" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Next Match" })).toBeDisabled();
+  });
+
+  it("translates the search, navigation and close button labels", () => {
+    const before = useI18n.getState().texts;
+    act(() =>
+      useI18n.setState({
+        texts: {
+          ...before,
+          "Find in Documentation": "在文档中查找",
+          "Previous Match": "上一个匹配项",
+          "Next Match": "下一个匹配项",
+          Close: "关闭",
+        },
+      }),
+    );
+    try {
+      const onClose = vi.fn();
+      render(<Harness onClose={onClose} />);
+      expect(screen.getByRole("textbox", { name: "在文档中查找" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "上一个匹配项" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "下一个匹配项" })).toBeEnabled();
+      fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+      expect(onClose).toHaveBeenCalledOnce();
+    } finally {
+      act(() => useI18n.setState({ texts: before }));
+    }
   });
 
   it("navigates with Enter, Shift+Enter and the buttons, wrapping in both directions", () => {

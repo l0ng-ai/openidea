@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import type { Location } from "@/bindings";
 import { registerAction } from "@/platform/actions";
+import { useI18n } from "@/platform/i18n";
 import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { usePlatform } from "@/platform/platformInfo";
 
@@ -296,6 +297,26 @@ describe("documentation", () => {
     expect(useDocWindow.getState().index).toBe(0);
   });
 
+  it("opens Find in Documentation from its translated toolbar button", () => {
+    const before = useI18n.getState().texts;
+    act(() => useI18n.setState({ texts: { ...before, "Find in Documentation": "在文档中查找" } }));
+    try {
+      const text = (value: string) => ({ markup: { kind: "plaintext" as const, value }, language: null });
+      useDocWindow.setState({ entries: [text("beta beta")], index: 0, themeClasses: "" });
+      const { container } = render(<DocumentationWindow />);
+      const find = screen.getByRole("button", { name: "在文档中查找" });
+
+      fireEvent.click(find);
+      const input = screen.getByRole("textbox", { name: "在文档中查找" });
+      expect(input).toHaveFocus();
+      fireEvent.change(input, { target: { value: "beta" } });
+      expect(screen.getByRole("status")).toHaveTextContent("1/2");
+      expect(container.querySelectorAll("[data-doc-search-match]")).toHaveLength(2);
+    } finally {
+      act(() => useI18n.setState({ texts: before }));
+    }
+  });
+
   it("finds and navigates matches only in the Documentation tool window", () => {
     const text = (value: string) => ({ markup: { kind: "plaintext" as const, value }, language: null });
     openPopup({ kind: "doc", anchor: { x: 0, y: 0 }, entries: [text("popup beta")], index: 0, themeClasses: "" });
@@ -369,23 +390,31 @@ describe("documentation", () => {
     expect(container.querySelectorAll("[data-doc-search-match]")).toHaveLength(2);
   });
 
-  it("rehighlights asynchronously updated documentation and keeps the active match", async () => {
-    const text = (value: string) => ({ markup: { kind: "plaintext" as const, value }, language: null });
-    useDocWindow.setState({ entries: [text("beta beta")], index: 0, themeClasses: "" });
-    const { container } = render(<DocumentationWindow />);
-    const frame = container.querySelector<HTMLElement>('[data-lsp-doc="window"]')!;
-    fireEvent.keyDown(frame, { key: "f", ctrlKey: true });
-    const input = screen.getByRole("textbox", { name: "Find in Documentation" });
-    fireEvent.change(input, { target: { value: "beta" } });
-    fireEvent.keyDown(input, { key: "Enter" });
-    expect(screen.getByRole("status")).toHaveTextContent("2/2");
+  it("rehighlights asynchronously updated documentation and keeps the active match without scrolling", async () => {
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
+    try {
+      const text = (value: string) => ({ markup: { kind: "plaintext" as const, value }, language: null });
+      useDocWindow.setState({ entries: [text("beta beta")], index: 0, themeClasses: "" });
+      const { container } = render(<DocumentationWindow />);
+      const frame = container.querySelector<HTMLElement>('[data-lsp-doc="window"]')!;
+      fireEvent.keyDown(frame, { key: "f", ctrlKey: true });
+      const input = screen.getByRole("textbox", { name: "Find in Documentation" });
+      fireEvent.change(input, { target: { value: "beta" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+      expect(screen.getByRole("status")).toHaveTextContent("2/2");
+      scroll.mockClear();
 
-    await act(async () => {
-      frame.querySelector(".cm-lsp-markdown")!.replaceChildren("beta beta beta");
-    });
-    await vi.waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("2/3"));
-    expect(container.querySelectorAll("[data-doc-search-match]")).toHaveLength(3);
-    expect(container.querySelector("[data-doc-search-current]")).toHaveTextContent("beta");
+      await act(async () => {
+        frame.querySelector(".cm-lsp-markdown")!.replaceChildren("beta beta beta");
+      });
+      await vi.waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("2/3"));
+      expect(container.querySelectorAll("[data-doc-search-match]")).toHaveLength(3);
+      const current = container.querySelector("[data-doc-search-current]");
+      expect(current?.getAttribute("data-doc-search-match")).toBe("1");
+      expect(scroll).not.toHaveBeenCalled();
+    } finally {
+      scroll.mockRestore();
+    }
   });
 
   it("reserves Find and Escape from the IDE keymap only while the Documentation bar owns them", () => {

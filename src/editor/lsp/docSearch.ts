@@ -64,11 +64,15 @@ export function highlightDocSearch(root: HTMLElement, query: string): DocSearchM
   return matches;
 }
 
-/** Selects one logical match and scrolls its first visible fragment into view. */
-export function activateDocMatch(matches: readonly DocSearchMatch[], index: number): void {
+/** Selects one logical match, scrolling its first visible fragment into view unless disabled. */
+export function activateDocMatch(
+  matches: readonly DocSearchMatch[],
+  index: number,
+  { scroll = true }: { scroll?: boolean } = {},
+): void {
   for (const match of matches) for (const mark of match) mark.removeAttribute(DOC_SEARCH_CURRENT);
   const marks = matches[index];
   if (!marks?.length) return;
   for (const mark of marks) mark.setAttribute(DOC_SEARCH_CURRENT, "");
-  marks[0]!.scrollIntoView({ block: "center", inline: "nearest" });
+  if (scroll) marks[0]!.scrollIntoView({ block: "center", inline: "nearest" });
 }

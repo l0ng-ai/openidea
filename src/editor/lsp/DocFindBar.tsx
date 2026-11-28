@@ -60,7 +60,7 @@ export function DocFindBar({ query, onChange, count, active, inputRef, onNext, o
         </span>
         <IconButton
           icon="arrow-up"
-          title="Previous Match"
+          title={tx("Previous Match")}
           shortcut={formatBinding("Shift+Enter")}
           size="small"
           disabled={count === 0}
@@ -68,14 +68,14 @@ export function DocFindBar({ query, onChange, count, active, inputRef, onNext, o
         />
         <IconButton
           icon="arrow-down"
-          title="Next Match"
+          title={tx("Next Match")}
           shortcut="↵"
           size="small"
           disabled={count === 0}
           onClick={onNext}
         />
       </div>
-      <IconButton icon="close" title="Close" shortcut="⎋" size="small" onClick={onClose} />
+      <IconButton icon="close" title={tx("Close")} shortcut="⎋" size="small" onClick={onClose} />
     </div>
   );
 }

@@ -54,6 +54,19 @@ describe("documentation DOM search", () => {
     expect(root.textContent).toBe("one two three and two three");
   });
 
+  it("can mark the active match without scrolling after a DOM update", () => {
+    const root = document.body.appendChild(document.createElement("div"));
+    root.textContent = "beta beta";
+    const matches = highlightDocSearch(root, "beta");
+    const scroll = vi.fn();
+    matches[1]![0]!.scrollIntoView = scroll;
+
+    activateDocMatch(matches, 1, { scroll: false });
+    expect(matches[0]!.every((mark) => !mark.hasAttribute(DOC_SEARCH_CURRENT))).toBe(true);
+    expect(matches[1]!.every((mark) => mark.hasAttribute(DOC_SEARCH_CURRENT))).toBe(true);
+    expect(scroll).not.toHaveBeenCalled();
+  });
+
   it("escapes regex syntax and never parses matched text as HTML", () => {
     const root = document.body.appendChild(document.createElement("div"));
     root.textContent = "a.b [x] a.b <img src=x onerror=alert(1)>";
