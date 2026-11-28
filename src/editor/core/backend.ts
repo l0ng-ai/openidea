@@ -314,6 +314,15 @@ const MEM_LANGUAGES: LanguageInfo[] = [
     blockComment: null,
     indent: { tabSize: 4, insertSpaces: true },
   },
+  {
+    id: "sql",
+    name: "SQL",
+    extensions: ["sql", "ddl", "dml", "psql", "pgsql", "mysql"],
+    uiMode: "SQL",
+    lineComment: "--",
+    blockComment: ["/*", "*/"],
+    indent: { tabSize: 4, insertSpaces: true },
+  },
   ...["xml", "html", "vue", "css"].map((id): LanguageInfo => ({
     id,
     name: id.toUpperCase(),

@@ -1,8 +1,39 @@
 diff --git a/dist/index.cjs b/dist/index.cjs
-index b20aa9d84be6ff4b85b126bdd930065277668a26..e677ab06ca9668407e202979e14b75ab7641d6b1 100644
+index b20aa9d..cf4dbc0 100644
 --- a/dist/index.cjs
 +++ b/dist/index.cjs
-@@ -9675,7 +9675,9 @@ const hideNativeSelection = state.Prec.highest(EditorView.theme({
+@@ -6568,6 +6568,14 @@ class ViewState {
+             }
+             gaps.push(gap);
+         };
++        let head = this.scrollTarget ? this.scrollTarget.range.head : -1, targetX = null;
++        if (head >= 0 && !wrapping) {
++            // Unwrapped lines all centre on the target's x, taken from the target's own line (long or not). The
++            // target's fraction of another line is 1 above it and negative below it, so every long line above
++            // the caret was drawn from its end, then back after the scroll.
++            let line = this.state.doc.lineAt(head), structure = lineStructure(line.from, line.to, this.stateDeco);
++            targetX = (structure.total ? findFraction(structure, head) * structure.total : 0) * this.heightOracle.charWidth;
++        }
+         let checkLine = (line) => {
+             if (line.length < doubleMargin || line.type != exports.BlockType.Text)
+                 return;
+@@ -6604,11 +6612,10 @@ class ViewState {
+                     }
+                 let pxLeft = this.pixelViewport.left + horizOffset, pxRight = this.pixelViewport.right + horizOffset;
+                 let left, right;
+-                if (target != null) {
+-                    let targetFrac = findFraction(structure, target);
+-                    let spaceFrac = ((pxRight - pxLeft) / 2 + marginWidth) / totalWidth;
+-                    left = targetFrac - spaceFrac;
+-                    right = targetFrac + spaceFrac;
++                if (targetX != null) {
++                    let space = (pxRight - pxLeft) / 2 + marginWidth;
++                    left = (targetX - space) / totalWidth;
++                    right = (targetX + space) / totalWidth;
+                 }
+                 else {
+                     left = (pxLeft - marginWidth) / totalWidth;
+@@ -9675,7 +9682,9 @@ const hideNativeSelection = state.Prec.highest(EditorView.theme({
          "& :focus": {
              caretColor: "initial !important",
              ...drawMainRange ? {
@@ -14,10 +45,41 @@ index b20aa9d84be6ff4b85b126bdd930065277668a26..e677ab06ca9668407e202979e14b75ab
                  }
              } : {}
 diff --git a/dist/index.js b/dist/index.js
-index 216f754db06f65f7f17f056b47d8f6fab45067bf..22282993239d836ea1da19af10ccfc61b6480cc5 100644
+index 216f754..c09c479 100644
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -9670,7 +9670,9 @@ const hideNativeSelection = /*@__PURE__*/Prec.highest(/*@__PURE__*/EditorView.th
+@@ -6563,6 +6563,14 @@ class ViewState {
+             }
+             gaps.push(gap);
+         };
++        let head = this.scrollTarget ? this.scrollTarget.range.head : -1, targetX = null;
++        if (head >= 0 && !wrapping) {
++            // Unwrapped lines all centre on the target's x, taken from the target's own line (long or not). The
++            // target's fraction of another line is 1 above it and negative below it, so every long line above
++            // the caret was drawn from its end, then back after the scroll.
++            let line = this.state.doc.lineAt(head), structure = lineStructure(line.from, line.to, this.stateDeco);
++            targetX = (structure.total ? findFraction(structure, head) * structure.total : 0) * this.heightOracle.charWidth;
++        }
+         let checkLine = (line) => {
+             if (line.length < doubleMargin || line.type != BlockType.Text)
+                 return;
+@@ -6599,11 +6607,10 @@ class ViewState {
+                     }
+                 let pxLeft = this.pixelViewport.left + horizOffset, pxRight = this.pixelViewport.right + horizOffset;
+                 let left, right;
+-                if (target != null) {
+-                    let targetFrac = findFraction(structure, target);
+-                    let spaceFrac = ((pxRight - pxLeft) / 2 + marginWidth) / totalWidth;
+-                    left = targetFrac - spaceFrac;
+-                    right = targetFrac + spaceFrac;
++                if (targetX != null) {
++                    let space = (pxRight - pxLeft) / 2 + marginWidth;
++                    left = (targetX - space) / totalWidth;
++                    right = (targetX + space) / totalWidth;
+                 }
+                 else {
+                     left = (pxLeft - marginWidth) / totalWidth;
+@@ -9670,7 +9677,9 @@ const hideNativeSelection = /*@__PURE__*/Prec.highest(/*@__PURE__*/EditorView.th
          "& :focus": {
              caretColor: "initial !important",
              ...drawMainRange ? {
