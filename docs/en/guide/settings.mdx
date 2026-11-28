@@ -45,6 +45,21 @@ Under **File › Manage IDE Settings**:
 - **Import Settings…** replaces your global settings with those in an exported file. Restart when asked to apply the imported templates, macros, layouts and view options. Choosing a JetBrains `settings.zip` here imports from a JetBrains IDE instead.
 - **Import Settings from JetBrains IDE…** imports from a JetBrains IDE installed on this computer. See [Migrate](/en/guide/migrate#import-settings).
 
+## Settings Sync
+
+**Settings › Settings Sync** keeps your IDE settings in a Git repository you choose, so several computers share them. A secret GitHub Gist works too (use its clone URL), but anyone with the gist's link can read it. Git signs in with your own credentials (SSH keys, a credential helper); OpenIDEA stores none.
+
+1. Enter the **Repository URL** and choose what syncs: appearance and themes, editor, keymaps, templates, macros, tool window layouts and view options, plugins, and other settings.
+2. Apply, then click **Sync Now**, or run **File › Manage IDE Settings › Sync Settings Now**.
+
+With **Sync automatically** on (the default), settings also sync on startup and 30 seconds after they change; templates and macros sync on startup and with Sync Now. An automatic sync only notifies you when it brought in settings, kept this computer's value over another's, or failed. It never asks the first-sync question below: it leaves a notification, and Sync Now asks.
+
+Each sync merges setting by setting with the last synced version: a setting changed on one computer only takes that change. When both computers changed the same setting, this computer's value wins and the notification lists it; earlier values stay in the repository's history. The first sync with a repository that already holds settings asks whether to merge them, use the repository's, or use this computer's.
+
+Plugins sync as a list only: each computer records the plugins it has installed. When your other computers have plugins this one lacks and the marketplace offers them, a notification lets you pick which to install, each with its usual consent page. Nothing is installed or uninstalled on its own.
+
+Never synced: passwords and tokens, environment variables, arguments, commands and paths (interpreters, SDKs, tools, shells), URLs with credentials, proxy, SSH, deployment and run target settings, the download mirror, the MCP server and what agents may run. A list syncs only when nothing in it is one of those, so a CMake profile with its build folder stays on this computer. Syncing never changes this computer's values of any of these.
+
 ## Settings files
 
 Settings are stored as TOML: the global values in `settings.toml` in the configuration directory, the project values in `<project>/.openidea/settings.toml`. You can edit them by hand. See the [settings reference](/en/reference/settings) for the file format and keys, and [Data directories](/en/reference/data-directories) for where the global file lives.

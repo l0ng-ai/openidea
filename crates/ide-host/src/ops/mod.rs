@@ -39,6 +39,7 @@ pub mod run;
 pub mod scaffold;
 pub mod sdk;
 pub mod search;
+pub mod settings_sync;
 pub mod spell;
 pub mod ssh;
 pub mod stream_trace;
