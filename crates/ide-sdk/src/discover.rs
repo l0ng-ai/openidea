@@ -251,6 +251,53 @@ fn conda_environments_txt_prefixes(output: &str) -> Vec<PathBuf> {
     output.lines().map(|l| l.trim()).filter(|l| !l.is_empty() && !l.starts_with('#')).map(PathBuf::from).collect()
 }
 
+/// Default conda installation folders: per-user ones in the home directory, Homebrew's and
+/// `/opt`'s, and the all-users install in `%ProgramData%` on Windows.
+fn conda_install_guesses(home: &Path, env: impl Fn(&str) -> Option<OsString>) -> Vec<PathBuf> {
+    const NAMES: [&str; 5] = ["miniconda3", "anaconda3", "miniforge3", "mambaforge", "micromamba"];
+    let mut roots: Vec<PathBuf> = NAMES.iter().chain(&["opt/miniconda3"]).map(|d| home.join(d)).collect();
+    roots.push(PathBuf::from("/opt/homebrew/Caskroom/miniconda/base"));
+    roots.push(PathBuf::from("/opt/miniconda3"));
+    roots.push(PathBuf::from("/opt/anaconda3"));
+    if let Some(data) = env("ProgramData").filter(|d| !d.is_empty()) {
+        roots.extend(NAMES.iter().map(|d| Path::new(&data).join(d)));
+    }
+    roots
+}
+
+/// The `conda` executable of the installation at `root`: `Scripts\conda.exe` on Windows,
+/// `bin/conda` elsewhere.
+fn conda_of_install(root: &Path) -> Option<PathBuf> {
+    let conda = if cfg!(windows) { root.join("Scripts").join("conda.exe") } else { root.join("bin").join("conda") };
+    conda.is_file().then_some(conda)
+}
+
+/// The conda to run: the one on PATH, else `CONDA_EXE`, else the conda of an installation
+/// in a default folder or behind a prefix in `~/.conda/environments.txt`. The Windows
+/// installers leave conda off PATH by default, while its environments are still listed.
+pub(crate) fn conda_exe() -> Option<PathBuf> {
+    let home = home_dir()?;
+    conda_exe_in(which("conda"), &home, |key| host_var_os(key))
+}
+
+fn conda_exe_in(on_path: Option<PathBuf>, home: &Path, env: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    if on_path.is_some() {
+        return on_path;
+    }
+    if let Some(exe) = env("CONDA_EXE").map(PathBuf::from).filter(|p| p.is_file()) {
+        return Some(exe);
+    }
+    let registered = std::fs::read_to_string(home.join(".conda").join("environments.txt"))
+        .map(|text| conda_environments_txt_prefixes(&text))
+        .unwrap_or_default();
+    // A registered prefix is an installation itself (`base`) or `<installation>/envs/<name>`.
+    let roots = registered.into_iter().flat_map(|prefix| {
+        let install = prefix.parent().filter(|p| p.ends_with("envs")).and_then(Path::parent).map(Path::to_path_buf);
+        [Some(prefix), install].into_iter().flatten()
+    });
+    conda_install_guesses(home, env).into_iter().chain(roots).find_map(|root| conda_of_install(&root))
+}
+
 /// The host's directory conventions; a parameter so tests cover every platform.
 #[derive(Clone, Copy)]
 enum Host {
@@ -508,14 +555,7 @@ fn python(root: Option<&Path>, which_hatch: impl Fn(&str) -> Option<PathBuf>) ->
         for (v, manager) in version_managers::installs(Tool::Python) {
             found.extend(pinned::python_in_install(&v).map(|p| (p, manager)));
         }
-        let mut conda_roots: Vec<PathBuf> =
-            ["miniconda3", "anaconda3", "miniforge3", "mambaforge", "micromamba", "opt/miniconda3"]
-                .iter()
-                .map(|d| home.join(d))
-                .collect();
-        conda_roots.push(PathBuf::from("/opt/homebrew/Caskroom/miniconda/base"));
-        conda_roots.push(PathBuf::from("/opt/miniconda3"));
-        conda_roots.push(PathBuf::from("/opt/anaconda3"));
+        let mut conda_roots = conda_install_guesses(&home, |key| host_var_os(key));
         if let Some(prefix) = std::env::var_os("CONDA_PREFIX") {
             conda_roots.push(PathBuf::from(prefix));
         }
@@ -531,7 +571,7 @@ fn python(root: Option<&Path>, which_hatch: impl Fn(&str) -> Option<PathBuf>) ->
         // in ProgramData): the binary lives at <root>/Scripts/conda.exe (Windows) or
         // <root>/bin/conda. Without this, an install outside the home-dir guesses keeps
         // every `envs/` environment invisible (#2240).
-        if let Some(conda) = which("conda") {
+        if let Some(conda) = conda_exe() {
             if let Some(root) = conda.parent().and_then(Path::parent) {
                 conda_roots.push(root.to_path_buf());
             }
@@ -1939,5 +1979,48 @@ mod env_manager_dir_tests {
         let temp = tmp.path().join(".temp");
         std::fs::create_dir_all(&temp).unwrap();
         assert_eq!(uv_python(&temp), None);
+    }
+}
+
+#[cfg(test)]
+mod conda_exe_tests {
+    use super::*;
+
+    /// A conda installation at `root`, its executable where conda puts it on this OS.
+    fn install(root: &Path) -> PathBuf {
+        let conda = if cfg!(windows) { root.join("Scripts").join("conda.exe") } else { root.join("bin").join("conda") };
+        std::fs::create_dir_all(conda.parent().unwrap()).unwrap();
+        std::fs::write(&conda, "").unwrap();
+        conda
+    }
+
+    #[test]
+    fn conda_off_path_is_found_through_its_registered_environments() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let none = |_: &str| None;
+        assert_eq!(conda_exe_in(None, &home, none), None);
+        // Anaconda on another drive, known only because one of its environments is registered.
+        let conda = install(&tmp.path().join("D/Anaconda3"));
+        std::fs::create_dir_all(home.join(".conda")).unwrap();
+        let env = tmp.path().join("D/Anaconda3/envs/demo");
+        std::fs::write(home.join(".conda/environments.txt"), format!("{}\n", env.display())).unwrap();
+        assert_eq!(conda_exe_in(None, &home, none), Some(conda.clone()));
+        // A per-user default install wins over the registry; PATH and CONDA_EXE win over both.
+        let own = install(&home.join("miniconda3"));
+        assert_eq!(conda_exe_in(None, &home, none), Some(own.clone()));
+        let var = |key: &str| (key == "CONDA_EXE").then(|| conda.clone().into_os_string());
+        assert_eq!(conda_exe_in(None, &home, var), Some(conda.clone()));
+        let path = PathBuf::from("/usr/bin/conda");
+        assert_eq!(conda_exe_in(Some(path.clone()), &home, var), Some(path));
+    }
+
+    #[test]
+    fn all_users_installs_are_found_in_program_data() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conda = install(&tmp.path().join("ProgramData/anaconda3"));
+        let data = tmp.path().join("ProgramData").into_os_string();
+        let var = |key: &str| (key == "ProgramData").then(|| data.clone());
+        assert_eq!(conda_exe_in(None, &tmp.path().join("home"), var), Some(conda));
     }
 }

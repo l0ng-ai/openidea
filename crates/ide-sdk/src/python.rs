@@ -49,6 +49,7 @@ pub fn create_venv(
     cancel: &CancellationToken,
     on_line: &dyn Fn(String),
 ) -> IdeResult<Sdk> {
+    let which = |tool: &str| if tool == "conda" { crate::discover::conda_exe() } else { which(tool) };
     create_venv_with(tool, base, location, install, which, cancel, on_line)
 }
 
