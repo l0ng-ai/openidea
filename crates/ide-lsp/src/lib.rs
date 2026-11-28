@@ -137,6 +137,25 @@ struct Attached {
     opened_gen: Option<u64>,
 }
 
+/// Marks a document as having a revision request in flight, whatever way that
+/// request ends (including cancellation).
+struct RevisionBusy<'a> {
+    lsp: &'a LspManager,
+    doc: DocId,
+}
+
+impl Drop for RevisionBusy<'_> {
+    fn drop(&mut self) {
+        self.lsp.revision_busy.lock().remove(&self.doc);
+    }
+}
+
+/// A document whose text the server currently holds as a Git revision's.
+struct SwappedRevision {
+    /// The working copy's text, to put back when it is needed again.
+    text: Arc<DocText>,
+}
+
 struct DocState {
     path: PathBuf,
     /// `path` with links resolved, to recognise a document under another name.
@@ -155,6 +174,24 @@ struct DocState {
     flutter_outline: Option<FlutterOutline>,
     /// The Dart server's closing labels for the current text; dropped on the next change.
     closing_labels: Option<ClosingLabels>,
+}
+
+/// Sends the document's current text to every server that has it open, as one
+/// full-text change at the document's version.
+fn send_full_text(d: &DocState, text: &str) {
+    for a in &d.servers {
+        let Some(run) = a.server.running() else { continue };
+        if a.opened_gen != Some(run.generation) || run.caps.read().sync == SyncKind::None {
+            continue;
+        }
+        let params = json!({
+            "textDocument": { "uri": d.uri, "version": d.version },
+            "contentChanges": [{ "text": text }],
+        });
+        if let Err(e) = run.peer.notify("textDocument/didChange", params) {
+            tracing::debug!("{}: didChange (revision): {e}", a.server.name);
+        }
+    }
 }
 
 struct ClosingLabels {
@@ -263,6 +300,16 @@ pub struct LspManager {
     runtime: tokio::runtime::Handle,
     servers: Mutex<Vec<Arc<Server>>>,
     docs: Mutex<HashMap<DocId, DocState>>,
+    /// Documents whose text is currently a Git revision's, so the working copy
+    /// can be put back when a request or edit needs it again.
+    swapped: Mutex<HashMap<PathBuf, SwappedRevision>>,
+    /// The last version the servers have seen for a file. Two documents can
+    /// share one file (an editor tab and a diff pane), while the server keeps a
+    /// single version counter: every change we send goes through this one.
+    served: Mutex<HashMap<PathBuf, i32>>,
+    /// Documents with a revision definition in flight: their swap must survive
+    /// that request, even though the request asks for their targets.
+    revision_busy: Mutex<std::collections::HashSet<DocId>>,
     apply_edit_hook: RwLock<Option<ApplyEditHook>>,
     applied_edits: tokio::sync::broadcast::Sender<(ide_core::ServerId, WorkspaceEdit)>,
     config_hook: RwLock<Option<ConfigHook>>,
@@ -558,6 +605,9 @@ impl LspManager {
             runtime: runtime_handle(),
             servers: Mutex::new(Vec::new()),
             docs: Mutex::new(HashMap::new()),
+            swapped: Mutex::new(HashMap::new()),
+            served: Mutex::new(HashMap::new()),
+            revision_busy: Mutex::new(std::collections::HashSet::new()),
             apply_edit_hook: RwLock::new(None),
             applied_edits: tokio::sync::broadcast::channel(64).0,
             config_hook: RwLock::new(None),
@@ -1319,11 +1369,15 @@ impl LspManager {
             flutter_outline: None,
             closing_labels: None,
         };
+        // The same file can be open as two documents (an editor tab and a diff
+        // pane) while the server keeps one version counter.
+        state.version = self.next_version(&state.path, state.version);
         let compose_added = {
             let mut docs = self.docs.lock();
             let already_detected =
                 compose_detected && docs.values().any(|d| d.compose_detected && d.path == state.path);
             let params = state.did_open_params();
+            let opened_path = state.path.clone();
             for a in &mut state.servers {
                 if let Some(run) = a.server.running() {
                     if run.caps.read().open_close {
@@ -1333,6 +1387,7 @@ impl LspManager {
                 }
             }
             docs.insert(doc, state);
+            self.swapped.lock().remove(&opened_path);
             compose_detected && !already_detected
         };
         self.schedule_pull(doc, None, Duration::ZERO);
@@ -1361,10 +1416,14 @@ impl LspManager {
     }
 
     pub fn did_change(&self, doc: DocId, version: u32, changes: &[AppliedChange], full_text: &dyn Fn() -> String) {
+        self.restore_revision(doc);
         let _gate = self.injections.gate.lock();
         let mut docs = self.docs.lock();
         let Some(d) = docs.get_mut(&doc) else { return };
-        d.version = version as i32;
+        // One counter per file, above the swap's versions too: a change the
+        // server sees as stale would be dropped, leaving its text on the
+        // revision.
+        d.version = self.next_version(&d.path, version as i32);
         d.changed = std::time::Instant::now();
         d.closing_labels = None;
 
@@ -1430,7 +1489,18 @@ impl LspManager {
         } else {
             false
         };
+        // The same file can be open twice (an editor tab and a diff pane): they
+        // share one server document, so they must share its text.
         drop(docs);
+        {
+            let mut all = self.docs.lock();
+            let shared = all.get(&doc).map(|d| (d.path.clone(), d.text.clone()));
+            if let Some((path, text)) = shared {
+                for other in all.values_mut().filter(|o| o.path == path) {
+                    other.text = text.clone();
+                }
+            }
+        }
         if compose_changed && let Some(me) = self.me.upgrade() {
             me.reconfigure_soon();
         }
@@ -1505,6 +1575,7 @@ impl LspManager {
         if compose_removed && let Some(me) = self.me.upgrade() {
             me.reconfigure_soon();
         }
+        self.swapped.lock().remove(&d.path);
         for a in &d.servers {
             self.forget_pulled(&a.server, &d.path, a.server.running().as_ref());
             let Some(run) = a.server.running() else { continue };
@@ -1562,6 +1633,8 @@ impl LspManager {
         feature: &str,
         pred: impl Fn(&ServerCaps) -> bool,
     ) -> IdeResult<(DocSnap, Vec<Target>)> {
+        // A request on the working copy means the revision text must go.
+        self.restore_revision(doc);
         let snap = self.snapshot(doc)?;
         let targets = self.ready_targets(&snap.servers, pred).await;
         if targets.is_empty() {
@@ -1793,6 +1866,89 @@ impl LspManager {
         let (method, cap, feature) = goto_method(kind);
         let (snap, targets) = self.doc_targets(doc, feature, |c| c.has(cap)).await?;
         self.goto_in(&snap, &targets, method, pos, None, None).await
+    }
+
+    /// Answers a definition inside a Git revision's text by swapping the working
+    /// document in the server, the way a second isolated analysis would: the
+    /// revision text stays in place while the diff pane is in use, and the
+    /// working copy returns on the next request or edit that needs it.
+    pub async fn revision_definition(&self, doc: DocId, text: &str, pos: Pos) -> IdeResult<Vec<Location>> {
+        self.revision_busy.lock().insert(doc);
+        // Cleared on drop as well: a cancelled request (the editor abandons it)
+        // must not leave the document marked busy, which would block every
+        // later restore and leave the server on the revision text.
+        let _busy = RevisionBusy { lsp: self, doc };
+        self.swap_revision_text(doc, text);
+        let result = self.goto(doc, pos, GotoKind::Definition).await;
+        self.arm_revision_restore(doc);
+        result
+    }
+
+    /// The version to send the server for `path`: above both the editor's own
+    /// counter and anything already sent, since two documents can share a file.
+    fn next_version(&self, path: &Path, client: i32) -> i32 {
+        let mut served = self.served.lock();
+        let v = served.get(path).copied().unwrap_or(0).saturating_add(1).max(client);
+        served.insert(path.to_path_buf(), v);
+        v
+    }
+
+    /// Sends `text` as the document's content, keeping the working copy to
+    /// restore. Same document, same version counter: nothing else changes.
+    fn swap_revision_text(&self, doc: DocId, text: &str) {
+        let mut docs = self.docs.lock();
+        let path = docs.get(&doc).map(|d| d.path.clone());
+        let Some(path) = path else { return };
+        // The working copy to restore: the entry's, if one is already swapped
+        // (its text is the revision's now), else the document's own.
+        let previous = match self.swapped.lock().get(&path).map(|s| s.text.clone()) {
+            Some(working) => {
+                // The document already holds this revision: nothing to send.
+                if docs.get(&doc).is_some_and(|d| d.text.as_str() == text) {
+                    return;
+                }
+                working
+            }
+            None => docs.get(&doc).map(|d| d.text.clone()).unwrap_or_else(|| Arc::new(DocText::new(""))),
+        };
+        let version = self.next_version(&path, docs.get(&doc).map_or(0, |d| d.version));
+        if let Some(d) = docs.get_mut(&doc) {
+            d.version = version;
+            d.text = Arc::new(DocText::new(text));
+            send_full_text(d, text);
+        }
+        self.swapped.lock().insert(path, SwappedRevision { text: previous });
+    }
+
+    /// Puts the working copy back on every document of the file: they share one
+    /// server document, so they must share one text and one version too.
+    fn restore_revision(&self, doc: DocId) -> bool {
+        if self.revision_busy.lock().contains(&doc) {
+            return false;
+        }
+        let mut docs = self.docs.lock();
+        let Some(path) = docs.get(&doc).map(|d| d.path.clone()) else { return false };
+        let Some(state) = self.swapped.lock().remove(&path) else { return false };
+        let version = self.next_version(&path, 0);
+        for other in docs.values_mut().filter(|d| d.path == path) {
+            other.text = state.text.clone();
+            other.version = version;
+        }
+        // Send through the document the request came from: it is open on the
+        // servers. Every document of the file now holds the same text.
+        let Some(caller) = docs.get_mut(&doc) else { return false };
+        send_full_text(caller, caller.text.as_str());
+        true
+    }
+
+    /// Restores after a quiet spell, so a diff left open does not keep the
+    /// editor's document swapped.
+    fn arm_revision_restore(&self, doc: DocId) {
+        let Some(me) = self.me.upgrade() else { return };
+        self.runtime.spawn(async move {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            me.restore_revision(doc);
+        });
     }
 
     /// Go to Implementation, with the implementations found first passed to `partial` while
