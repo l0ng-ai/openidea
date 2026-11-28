@@ -241,8 +241,8 @@ describe("wheel over a pane that cannot scroll further", () => {
     const b = view(text(right));
     const controller = new UnalignedPanes({ sync });
     controller.attach({ a, b, chunks: Chunk.build(a.state.doc, b.state.doc) } as unknown as MergeView);
-    const wheel = (el: Element, deltaY: number, deltaMode = 0) => {
-      const e = new WheelEvent("wheel", { deltaY, deltaMode, cancelable: true });
+    const wheel = (el: Element, deltaY: number, deltaMode = 0, init: WheelEventInit = {}) => {
+      const e = new WheelEvent("wheel", { deltaY, deltaMode, cancelable: true, ...init });
       el.dispatchEvent(e);
       return e.defaultPrevented;
     };
@@ -395,6 +395,64 @@ describe("wheel over a pane that cannot scroll further", () => {
       expect(p.wheel(p.divider, 120)).toBe(true);
       expect(p.b.scrollDOM.scrollBy).toHaveBeenLastCalledWith(0, 120);
       expect(p.a.scrollDOM.scrollBy).not.toHaveBeenCalled();
+    } finally {
+      p.controller.destroy();
+      frame.mockRestore();
+    }
+  });
+
+  it("keeps a horizontal wheel on the pane under the pointer at its end", () => {
+    const frame = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+    const p = panes(); // both panes at the top
+    try {
+      p.wheel(p.b.scrollDOM, -1, 0, { deltaX: 40 });
+      p.b.scrollDOM.scrollLeft = 40; // the native horizontal scroll
+      p.b.scrollDOM.dispatchEvent(new Event("scroll"));
+      expect(p.b.scrollDOM.scrollLeft).toBe(40);
+      expect(p.a.scrollDOM.scrollLeft).toBe(40);
+      p.wheel(p.b.scrollDOM, 120, 0, { shiftKey: true });
+      expect(p.a.scrollDOM.scrollBy).not.toHaveBeenCalled();
+    } finally {
+      p.controller.destroy();
+      frame.mockRestore();
+    }
+  });
+
+  it("passes on the vertical part of a mostly vertical wheel and keeps its horizontal part", () => {
+    const frame = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+    const p = panes();
+    try {
+      expect(p.wheel(p.b.scrollDOM, 120, 0, { deltaX: 10 })).toBe(false);
+      expect(p.a.scrollDOM.scrollBy).toHaveBeenLastCalledWith(0, 120);
+      p.a.scrollDOM.dispatchEvent(new Event("scroll"));
+      p.b.scrollDOM.scrollLeft = 10; // the native horizontal scroll
+      p.b.scrollDOM.dispatchEvent(new Event("scroll"));
+      expect(p.b.scrollDOM.scrollLeft).toBe(10);
+      expect(p.a.scrollDOM.scrollLeft).toBe(10);
+      expect(p.a.scrollDOM.scrollTop).toBe(120);
+    } finally {
+      p.controller.destroy();
+      frame.mockRestore();
+    }
+  });
+
+  it("lets the pane under the pointer lead when it cannot hold still for a scroll back", () => {
+    const frame = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+    const p = panes(true, { left: 200, right: 50 });
+    try {
+      const end = 50 * LINE - 500;
+      p.b.scrollDOM.scrollTop = end;
+      p.b.scrollDOM.dispatchEvent(new Event("scroll"));
+      p.wheel(p.b.scrollDOM, 120);
+      p.a.scrollDOM.dispatchEvent(new Event("scroll"));
+      vi.mocked(p.a.scrollDOM.scrollBy).mockClear();
+      // A later event of a gesture that may not be cancelled: the right pane scrolls natively.
+      expect(p.wheel(p.b.scrollDOM, -120, 0, { cancelable: false })).toBe(false);
+      expect(p.a.scrollDOM.scrollBy).not.toHaveBeenCalled();
+      p.b.scrollDOM.scrollTop = end - 120;
+      p.b.scrollDOM.dispatchEvent(new Event("scroll"));
+      p.a.scrollDOM.dispatchEvent(new Event("scroll"));
+      expect(p.b.scrollDOM.scrollTop).toBe(end - 120);
     } finally {
       p.controller.destroy();
       frame.mockRestore();
