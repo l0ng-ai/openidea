@@ -364,8 +364,6 @@ export class UnalignedPanes implements DiffPanes {
   private scrolling: Side | null = null;
   private scrollTimer: ReturnType<typeof setTimeout> | undefined;
   private wheelLeader: Side | null = null;
-  /** The pane under the wheel: it leads horizontally when a passed-on wheel made the other one the leader. */
-  private wheelX: Side | null = null;
   private wheelTimer: ReturnType<typeof setTimeout> | undefined;
   private frame = -1;
   private resize: ResizeObserver | null = null;
@@ -418,9 +416,8 @@ export class UnalignedPanes implements DiffPanes {
       const onScroll = () => this.scrolled(side);
       const onWheel = (e: WheelEvent) => {
         this.interruptScroll();
-        // The pane the wheel moves leads, or syncing would pull a passed-on scroll back; its
-        // horizontal part still moves `side`, which keeps leading horizontally.
-        this.leadWheel(this.passOn(side, e) ? (side === "a" ? "b" : "a") : side, side);
+        this.leadWheel(side);
+        this.passOn(side, e);
       };
       const onPointer = () => {
         this.interruptScroll();
@@ -504,7 +501,8 @@ export class UnalignedPanes implements DiffPanes {
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       this.interruptScroll();
-      this.leadWheel(this.passOn("b", e) ? "a" : "b", "b");
+      this.leadWheel("b");
+      this.passOn("b", e);
       mv.b.scrollDOM.scrollBy(e.deltaX, e.deltaY);
     };
     this.divider.addEventListener("wheel", onWheel, { passive: false });
@@ -549,15 +547,14 @@ export class UnalignedPanes implements DiffPanes {
     this.view(side).scrollDOM.scrollTo(options);
   }
 
-  private leadWheel(side: Side, x: Side = side) {
+  private leadWheel(side: Side) {
     this.wheelLeader = this.sync ? side : null;
-    this.wheelX = this.wheelLeader && x;
     clearTimeout(this.wheelTimer);
-    if (this.wheelLeader) this.wheelTimer = setTimeout(() => this.clearWheel(), 150);
+    if (this.wheelLeader) this.wheelTimer = setTimeout(() => (this.wheelLeader = null), 150);
   }
 
   private clearWheel() {
-    this.wheelLeader = this.wheelX = null;
+    this.wheelLeader = null;
     clearTimeout(this.wheelTimer);
   }
 
@@ -604,12 +601,13 @@ export class UnalignedPanes implements DiffPanes {
 
   /**
    * A synchronized vertical wheel over `side` at its end scrolls the other pane, or else a deleted
-   * tail is reachable only with the pointer over the longer pane; returns whether it did. A wheel
-   * back closes that overshoot over the next notches rather than in one jump (WebKit lets no wheel
-   * of a trackpad gesture but the first be cancelled, so `side` scrolls natively meanwhile).
+   * tail is reachable only with the pointer over the longer pane. `side` keeps leading, and
+   * `follow` leaves the other pane past where `side` maps it while the wheel lasts. A wheel back
+   * closes that overshoot over the next notches rather than in one jump (WebKit lets no wheel of
+   * a trackpad gesture but the first be cancelled, so `side` scrolls natively meanwhile).
    */
-  private passOn(side: Side, e: WheelEvent): boolean {
-    if (!this.mv || !this.sync || e.shiftKey || !(Math.abs(e.deltaY) > Math.abs(e.deltaX))) return false;
+  private passOn(side: Side, e: WheelEvent) {
+    if (!this.mv || !this.sync || e.shiftKey || !(Math.abs(e.deltaY) > Math.abs(e.deltaX))) return;
     const view = this.view(side);
     const el = view.scrollDOM;
     const to: Side = side === "a" ? "b" : "a";
@@ -627,11 +625,7 @@ export class UnalignedPanes implements DiffPanes {
       const native = Math.min(Math.abs(dy), Math.max(0, room));
       const gap = Math.abs(this.followTop(side) - other.scrollTop);
       scroll(Math.sign(dy) * Math.min(Math.abs(dy) + native, gap + native), passed.dir);
-      return false;
-    }
-    if (room > 1) return false;
-    scroll(dy, Math.sign(dy));
-    return true;
+    } else if (room <= 1) scroll(dy, Math.sign(dy));
   }
 
   private scrolled(side: Side) {
@@ -650,12 +644,11 @@ export class UnalignedPanes implements DiffPanes {
       // Keep the actively wheel-scrolled pane in charge so follower measure adjustments never pull it back.
       const moved = this.moved[side];
       moved.top = moved.left = null;
-      const x = this.wheelX ?? this.wheelLeader;
       if (side === this.wheelLeader) {
-        this.leadWheel(side, x);
-        if (this.sync) this.follow(side, x);
+        this.leadWheel(side);
+        if (this.sync) this.follow(side);
       } else if (this.sync) {
-        this.follow(this.wheelLeader, x);
+        this.follow(this.wheelLeader);
       }
       this.schedule();
       return;
@@ -694,9 +687,10 @@ export class UnalignedPanes implements DiffPanes {
     return Math.max(0, Math.min(y + docOffset(slave) - anchor, el.scrollHeight - el.clientHeight));
   }
 
-  /** Scrolls the other pane to match `from`, and the pane that isn't `leftFrom` to match its scrollLeft. */
-  private follow(from: Side, leftFrom: Side = from) {
+  /** Scrolls the other pane to match `from`. */
+  private follow(from: Side) {
     const to: Side = from === "a" ? "b" : "a";
+    const master = this.view(from);
     const el = this.view(to).scrollDOM;
     const top = this.followTop(from);
     const moved = this.moved[to];
@@ -709,13 +703,11 @@ export class UnalignedPanes implements DiffPanes {
       el.scrollTop = top;
       if (el.scrollTop !== before) moved.top = el.scrollTop;
     }
-    const lto: Side = leftFrom === "a" ? "b" : "a";
-    const target = this.view(lto).scrollDOM;
-    const left = this.view(leftFrom).scrollDOM.scrollLeft;
-    if (target.scrollLeft !== left) {
-      const before = target.scrollLeft;
-      target.scrollLeft = left;
-      if (target.scrollLeft !== before) this.moved[lto].left = target.scrollLeft;
+    const left = master.scrollDOM.scrollLeft;
+    if (el.scrollLeft !== left) {
+      const before = el.scrollLeft;
+      el.scrollLeft = left;
+      if (el.scrollLeft !== before) moved.left = el.scrollLeft;
     }
   }
 
