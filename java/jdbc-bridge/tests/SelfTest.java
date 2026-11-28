@@ -185,6 +185,17 @@ public class SelfTest {
         return bytes;
     }
 
+    static void rejectedLake(DataOutputStream out, DataInputStream in, int connection, String expected, String... fields)
+            throws IOException {
+        sendOn(out, 40, connection, fields);
+        try (var response = new DataInputStream(new ByteArrayInputStream(expect(in, 40, 0).data()))) {
+            assert !response.readBoolean();
+            String message = new String(response.readNBytes(response.readInt()), StandardCharsets.UTF_8);
+            assert message.contains(expected) : message;
+            assert !message.contains("private-token") : message;
+        }
+    }
+
     static void sendOn(DataOutputStream out, long id, int connection, String... fields) throws IOException {
         out.writeLong(id);
         out.writeInt(connection);
@@ -227,6 +238,33 @@ public class SelfTest {
         try (var out = new DataOutputStream(child.getOutputStream());
              var in = new DataInputStream(child.getInputStream());
              var log = child.errorReader()) {
+            String duckdb = "org.duckdb.DuckDBDriver", memory = "jdbc:duckdb:";
+            rejectedLake(out, in, 0, "standard DuckDB connection", "openDuckLake", Fixture.class.getName(), memory,
+                "", "", "true", "secret", "sample", "");
+            rejectedLake(out, in, 0, "standard DuckDB connection", "openDuckLake", duckdb, memory + ";private-token",
+                "", "", "true", "secret", "sample", "");
+            rejectedLake(out, in, 0, "standard DuckDB connection", "openDuckLake", duckdb, memory,
+                "", "private-token", "true", "secret", "sample", "");
+            rejectedLake(out, in, 0, "Invalid JDBC connection open request", "openDuckLake", duckdb, memory,
+                "", "", "true", "secret", "sample", "", "arbitrary");
+            rejectedLake(out, in, 1, "Invalid JDBC connection open request", "openDuckLake", duckdb, memory,
+                "", "", "true", "secret", "sample", "");
+            rejectedLake(out, in, 0, "read-only", "openDuckLake", duckdb, memory,
+                "", "", "false", "file", "unused", "");
+            rejectedLake(out, in, 0, "absolute", "openDuckLake", duckdb, memory,
+                "", "", "true", "file", "relative/catalog.ducklake", "");
+            Path temp = Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath();
+            rejectedLake(out, in, 0, "regular DuckLake catalog file", "openDuckLake", duckdb, memory,
+                "", "", "true", "file", temp.toString(), "");
+            rejectedLake(out, in, 0, "does not exist", "openDuckLake", duckdb, memory,
+                "", "", "true", "file", temp.resolve(UUID.randomUUID() + "-private-token").toString(), "");
+            rejectedLake(out, in, 0, "existing DuckLake secret name", "openDuckLake", duckdb, memory,
+                "", "", "true", "secret", "postgresql://user:private-token@localhost/catalog", "");
+            rejectedLake(out, in, 0, "absolute", "openDuckLake", duckdb, memory,
+                "", "", "true", "secret", "sample", "s3://bucket/path");
+            rejectedLake(out, in, 0, "default data location", "openDuckLake", duckdb, memory,
+                "", "", "false", "create", "unused", "nonempty");
+
             sendOn(out, 100, 0, "open", Fixture.class.getName(), "jdbc:fixture:", "", "", "false");
             try {
                 expect(in, 100, 1);

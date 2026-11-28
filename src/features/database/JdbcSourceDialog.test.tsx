@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { DataSource, DbJdbcDriver, ProjectInfo } from "@/platform/ipc";
+import { IpcError, type DataSource, type DbJdbcDriver, type ProjectInfo } from "@/platform/ipc";
 import { registerHostPathChooser } from "@/platform/choosePath";
 import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
@@ -11,7 +11,13 @@ import { sourceIcon, sourceLabel } from "./model";
 import { newMenu, nodeMenu } from "./treeMenu";
 import { useDatabase } from "./store";
 
-const backend = vi.hoisted(() => ({ call: vi.fn(), saveSource: vi.fn(), pick: vi.fn(), pickNew: vi.fn() }));
+const backend = vi.hoisted(() => ({
+  call: vi.fn(),
+  saveSource: vi.fn(),
+  pick: vi.fn(),
+  pickNew: vi.fn(),
+  confirm: vi.fn(),
+}));
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
   const request =
@@ -27,9 +33,11 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       clipboardText: request("clipboard"),
       dbJdbcDriverClasses: request("classes"),
       dbApproveJdbcSource: request("approve"),
+      dbApproveDucklakeSource: request("approveLake"),
       dbSaveJdbcDriver: request("save"),
       dbRemoveJdbcDriver: request("remove"),
       dbTest: request("test"),
+      dbCreateDucklake: request("createLake"),
     },
   };
 });
@@ -38,6 +46,10 @@ vi.mock("./store", async (importOriginal) => ({
   saveSource: backend.saveSource,
 }));
 vi.mock("@/platform/dialog", () => ({ open: backend.pick, save: backend.pickNew }));
+vi.mock("@/workbench/messages", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/workbench/messages")>()),
+  confirm: backend.confirm,
+}));
 
 const driver: DbJdbcDriver = {
   id: "example-driver",
@@ -60,6 +72,7 @@ beforeEach(() => {
   backend.saveSource.mockResolvedValue(undefined);
   backend.pick.mockResolvedValue(driver.jars);
   backend.pickNew.mockResolvedValue(null);
+  backend.confirm.mockResolvedValue(false);
   useDatabase.setState({ sources: [], dialog: null, loaded: true });
   useProject.setState({ project: null });
 });
@@ -78,6 +91,201 @@ describe("DuckDB data sources", () => {
     select("Data source type", "DuckDB");
     return dialog;
   };
+
+  it("tests and saves an existing DuckLake file read-only", async () => {
+    backend.call.mockImplementation(async ([op]) => (op === "list" ? [duckdb] : "DuckDB"));
+    backend.pick.mockResolvedValueOnce("/tmp/warehouse.ducklake");
+    startDuckDb();
+    fireEvent.click(screen.getByRole("button", { name: "DuckLake" }));
+    const catalog = screen.getByLabelText("Catalog file:");
+    const testConnection = screen.getByRole("button", { name: "Test Connection" });
+    fireEvent.change(catalog, { target: { value: "relative.ducklake" } });
+    expect(testConnection).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Browse for DuckLake catalog" }));
+    await waitFor(() => expect(catalog).toHaveValue("/tmp/warehouse.ducklake"));
+    expect(backend.pick).toHaveBeenCalledWith(expect.objectContaining({ directory: false, multiple: false }));
+    expect(screen.queryByLabelText("User:")).toBeNull();
+    expect(screen.queryByLabelText("Password:")).toBeNull();
+    expect(screen.queryByRole("tab", { name: "Advanced" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Options" }));
+    expect(screen.getByRole("checkbox", { name: "Read-only" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Read-only" })).toBeDisabled();
+    fireEvent.click(testConnection);
+    const source = expect.objectContaining({
+      driver: "jdbc",
+      vendor: "duckdb",
+      jdbcDriver: duckdb.id,
+      url: "jdbc:duckdb:",
+      readOnly: true,
+      user: "",
+      savePassword: false,
+      properties: [],
+      duckLake: { kind: "file", value: "/tmp/warehouse.ducklake", dataPath: null },
+    });
+    await waitFor(() => expect(backend.call).toHaveBeenCalledWith(["test", source, null, null]));
+    const save = screen.getByRole("button", { name: "OK" });
+    await waitFor(() => expect(save).toBeEnabled());
+    fireEvent.click(save);
+    await waitFor(() => expect(backend.saveSource).toHaveBeenCalledWith(source, null, undefined));
+    expect(backend.call).toHaveBeenCalledWith(["approveLake", source]);
+    expect(backend.call.mock.calls.map(([request]) => request[0])).not.toContain("createLake");
+  });
+
+  it.each([
+    {
+      global: false,
+      kind: "protocol" as const,
+      message: "command db_approve_ducklake_source is not available remotely",
+      expected: "Update the remote OpenIDEA server to save DuckLake data sources.",
+    },
+    {
+      global: true,
+      kind: "protocol" as const,
+      message: "command db_approve_ducklake_source is not available remotely",
+      expected: "Update the remote OpenIDEA server to save DuckLake data sources.",
+    },
+    {
+      global: false,
+      kind: "invalidInput" as const,
+      message: "DuckLake requires a valid catalog file",
+      expected: "DuckLake requires a valid catalog file",
+    },
+  ])("stops before saving a DuckLake when $kind approval fails (global=$global)", async (entry) => {
+    backend.call.mockImplementation(async ([op]) => {
+      if (op === "approveLake") throw new IpcError({ kind: entry.kind, message: entry.message });
+      return op === "list" ? [duckdb] : undefined;
+    });
+    render(
+      <SourceDialog
+        initial={{
+          driver: "jdbc",
+          vendor: "duckdb",
+          jdbcDriver: duckdb.id,
+          url: "jdbc:duckdb:",
+          duckLake: { kind: "file", value: "/tmp/warehouse.ducklake" },
+          global: entry.global,
+        }}
+      />,
+    );
+    const save = screen.getByRole("button", { name: "OK" });
+    await waitFor(() => expect(save).toBeEnabled());
+    fireEvent.click(save);
+    expect(await screen.findByText(entry.expected)).toBeVisible();
+    expect(backend.call.mock.calls.map(([request]) => request[0])).toEqual(["list", "approveLake"]);
+    expect(backend.saveSource).not.toHaveBeenCalled();
+  });
+
+  it("restores the Lake secret and restricts data directory overrides to host paths", async () => {
+    backend.call.mockImplementation(async ([op]) => (op === "list" ? [duckdb] : "DuckDB"));
+    backend.pick.mockResolvedValueOnce("/tmp/lake-data");
+    render(
+      <SourceDialog
+        initial={{
+          driver: "jdbc",
+          vendor: "duckdb",
+          jdbcDriver: duckdb.id,
+          duckLake: { kind: "secret", value: "warehouse_catalog" },
+          url: "jdbc:duckdb:",
+          user: "old-user",
+          savePassword: true,
+          properties: [{ name: "threads", value: "4" }],
+          options: { startupScript: "setup.sql", defaultSchema: "old_schema", timeZone: "UTC", transaction: "manual" },
+        }}
+        presetPassword="synthetic-old-password"
+      />,
+    );
+    expect(screen.getByRole("button", { name: "DuckLake", pressed: true })).toBeVisible();
+    const secret = screen.getByLabelText("Secret name:");
+    expect(secret).toHaveValue("warehouse_catalog");
+    const testConnection = screen.getByRole("button", { name: "Test Connection" });
+    await waitFor(() => expect(testConnection).toBeEnabled());
+    fireEvent.change(secret, { target: { value: "postgres:dbname=example" } });
+    expect(testConnection).toBeDisabled();
+    fireEvent.change(secret, { target: { value: "warehouse_catalog" } });
+    const dataDirectory = screen.getByLabelText("Data directory:");
+    fireEvent.change(dataDirectory, { target: { value: "s3://example/data" } });
+    expect(testConnection).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Browse for DuckLake data directory" }));
+    await waitFor(() => expect(dataDirectory).toHaveValue("/tmp/lake-data"));
+    expect(backend.pick).toHaveBeenCalledWith(expect.objectContaining({ directory: true, multiple: false }));
+    fireEvent.click(testConnection);
+    await waitFor(() =>
+      expect(backend.call).toHaveBeenCalledWith([
+        "test",
+        expect.objectContaining({
+          readOnly: true,
+          user: "",
+          savePassword: false,
+          properties: [],
+          options: expect.objectContaining({ startupScript: "", defaultSchema: "", timeZone: "", transaction: "auto" }),
+          duckLake: { kind: "secret", value: "warehouse_catalog", dataPath: "/tmp/lake-data" },
+        }),
+        null,
+        null,
+      ]),
+    );
+  });
+
+  it("creates a new DuckLake only after a separate confirmation", async () => {
+    backend.call.mockImplementation(async ([op]) => (op === "list" ? [duckdb] : undefined));
+    backend.pickNew.mockResolvedValue("/tmp/new-lake");
+    startDuckDb();
+    fireEvent.click(screen.getByRole("button", { name: "DuckLake" }));
+    const create = screen.getByRole("button", { name: "Create New DuckLake…" });
+    await waitFor(() => expect(create).toBeEnabled());
+    expect(screen.getByRole("button", { name: "OK" })).toBeDisabled();
+    fireEvent.click(create);
+    await waitFor(() => expect(backend.confirm).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(create).toBeEnabled());
+    expect(backend.confirm).toHaveBeenCalledWith({
+      title: "Create New DuckLake",
+      message: "Create a DuckLake in '/tmp/new-lake'? The directory must not already exist.",
+      ok: "Create",
+    });
+    expect(backend.call.mock.calls.map(([request]) => request[0])).not.toContain("createLake");
+
+    backend.confirm.mockResolvedValueOnce(true);
+    fireEvent.click(create);
+    await waitFor(() => expect(backend.call).toHaveBeenCalledWith(["createLake", duckdb.id, "/tmp/new-lake"]));
+    expect(await screen.findByText("DuckLake created. The data source opens it read-only.")).toBeVisible();
+    expect(screen.getByLabelText("Catalog file:")).toHaveValue("/tmp/new-lake/catalog.ducklake");
+    const ops = backend.call.mock.calls.map(([request]) => request[0]);
+    expect(ops.filter((op) => op === "createLake")).toHaveLength(1);
+    expect(ops).not.toContain("test");
+    expect(backend.saveSource).not.toHaveBeenCalled();
+  });
+
+  it("browses DuckLake paths on the database host in a remote window", async () => {
+    const choose = vi
+      .fn()
+      .mockResolvedValueOnce(["/srv/project/catalog.ducklake"])
+      .mockResolvedValueOnce(["/srv/project/data"])
+      .mockResolvedValueOnce(["/srv/project/new-lake"]);
+    const unregister = registerHostPathChooser(choose);
+    useRemote.setState({ session: { root: "/srv/project", os: "linux", commands: [] } as never });
+    useProject.setState({ project: { root: "/srv/project" } as ProjectInfo });
+    try {
+      backend.call.mockImplementation(async ([op]) => (op === "list" ? [duckdb] : "OK"));
+      startDuckDb();
+      fireEvent.click(screen.getByRole("button", { name: "DuckLake" }));
+      fireEvent.click(screen.getByRole("button", { name: "Browse for DuckLake catalog" }));
+      await waitFor(() => expect(screen.getByLabelText("Catalog file:")).toHaveValue("/srv/project/catalog.ducklake"));
+      fireEvent.click(screen.getByRole("button", { name: "Browse for DuckLake data directory" }));
+      await waitFor(() => expect(screen.getByLabelText("Data directory:")).toHaveValue("/srv/project/data"));
+      fireEvent.click(screen.getByRole("button", { name: "Create New DuckLake…" }));
+      await waitFor(() => expect(backend.confirm).toHaveBeenCalled());
+      expect(choose).toHaveBeenNthCalledWith(1, expect.objectContaining({ directory: false }));
+      expect(choose).toHaveBeenNthCalledWith(2, expect.objectContaining({ directory: true }));
+      expect(choose).toHaveBeenNthCalledWith(3, expect.objectContaining({ save: true }));
+      expect(backend.pick).not.toHaveBeenCalled();
+      expect(backend.pickNew).not.toHaveBeenCalled();
+      expect(backend.call.mock.calls.map(([request]) => request[0])).not.toContain("createLake");
+    } finally {
+      unregister();
+      useRemote.setState({ session: null });
+    }
+  });
 
   it("offers DuckDB in the new data source menu", () => {
     const dataSource = newMenu().find((item) => "label" in item && item.label === "Data Source");

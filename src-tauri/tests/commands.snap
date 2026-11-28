@@ -107,6 +107,7 @@ coverage_import                              always             project_host bin
 coverage_prepare                             trusted            project_host bindings async
 cucumber_sources                             trusted            desktop      bindings async
 db_apply_edits                               trusted            project_host bindings async
+db_approve_ducklake_source                   trusted            project_host bindings sync
 db_approve_external_tunnel                   trusted            desktop      bindings async
 db_approve_jdbc_source                       trusted            project_host bindings sync
 db_catalog_table_details                     trusted            project_host bindings async
@@ -118,6 +119,7 @@ db_console_path                              always             project_host bin
 db_consoles                                  always             project_host bindings sync
 db_consoles_dir                              always             project_host bindings sync
 db_create_database                           trusted            project_host bindings async
+db_create_ducklake                           trusted            project_host bindings async
 db_database_catalog                          trusted            project_host bindings async
 db_databases                                 trusted            project_host bindings async
 db_ddl                                       trusted            project_host bindings async

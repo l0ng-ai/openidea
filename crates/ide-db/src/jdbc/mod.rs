@@ -15,6 +15,7 @@ use tokio::sync::Mutex;
 use tokio::time::timeout;
 
 mod bridge;
+mod ducklake;
 
 use bridge::Bridge;
 
@@ -79,6 +80,13 @@ pub fn jdbc_driver_classes(jars: &[String]) -> IdeResult<Vec<String>> {
 }
 
 impl DbJdbcDriver {
+    fn require_vendor(&self, vendor: &str) -> IdeResult<()> {
+        if self.vendor.as_deref() != Some(vendor) {
+            return Err(IdeError::invalid("The JDBC driver profile is not associated with this data source type"));
+        }
+        Ok(())
+    }
+
     fn validate(&self) -> IdeResult<()> {
         if self.id.is_empty()
             || self.name.trim().is_empty()
@@ -138,6 +146,30 @@ impl DbManager {
         self.update_jdbc_driver(id, None)
     }
 
+    fn record_jdbc_approval(&self, source: &DataSource) -> IdeResult<()> {
+        let (path, fingerprint) = self.jdbc_approval(source)?;
+        persist_local(&path, fingerprint.as_bytes())
+    }
+
+    fn jdbc_driver_by_id(&self, id: &str) -> IdeResult<DbJdbcDriver> {
+        self.jdbc_drivers()?
+            .into_iter()
+            .find(|d| d.id == id)
+            .ok_or_else(|| IdeError::invalid("Select an installed JDBC driver profile"))
+    }
+
+    fn check_jdbc_project_approval(&self, source: &DataSource, testing: bool) -> IdeResult<()> {
+        if !testing && !source.global {
+            let (path, expected) = self.jdbc_approval(source)?;
+            if std::fs::read_to_string(path).ok().as_deref() != Some(&expected) {
+                return Err(IdeError::invalid(
+                    "Review this project's JDBC URL and properties, then save the data source before connecting",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn jdbc_approval(&self, source: &DataSource) -> IdeResult<(PathBuf, String)> {
         let registry = self.jdbc_registry()?;
         let key = serde_json::to_vec(&(&self.root, &source.id)).map_err(|e| IdeError::internal(e.to_string()))?;
@@ -150,7 +182,10 @@ impl DbManager {
             &source.options,
         ))
         .map_err(|e| IdeError::internal(e.to_string()))?;
-        if self.jdbc_password_isolated(source) {
+        if let Some(lake) = &source.duck_lake {
+            settings.extend_from_slice(b"\0ducklake\0");
+            serde_json::to_writer(&mut settings, lake).map_err(|e| IdeError::internal(e.to_string()))?;
+        } else if self.jdbc_password_isolated(source) {
             settings.extend_from_slice(b"\0jdbc-password");
         }
         Ok((
@@ -164,8 +199,10 @@ impl DbManager {
         if source.driver != crate::DbDriver::Jdbc || source.plugin_owner.is_some() {
             return Err(IdeError::invalid("Expected a user-managed JDBC data source"));
         }
-        let (path, fingerprint) = self.jdbc_approval(source)?;
-        persist_local(&path, fingerprint.as_bytes())
+        if source.duck_lake.is_some() {
+            return self.approve_ducklake_source(source);
+        }
+        self.record_jdbc_approval(source)
     }
 
     pub(crate) async fn open_pool(
@@ -174,27 +211,19 @@ impl DbManager {
         password: Option<&str>,
         testing: bool,
     ) -> IdeResult<crate::Pool> {
+        if let Some(lake) = &source.duck_lake {
+            return self.open_ducklake(source, lake, testing).await;
+        }
         if source.driver != crate::DbDriver::Jdbc {
             return crate::Pool::connect(source, password, Some(&self.root)).await;
         }
         if source.plugin_owner.is_some() {
             return Err(IdeError::invalid("Plugins cannot start custom JDBC drivers"));
         }
-        if !testing && !source.global {
-            let (path, expected) = self.jdbc_approval(source)?;
-            if std::fs::read_to_string(path).ok().as_deref() != Some(&expected) {
-                return Err(IdeError::invalid(
-                    "Review this project's JDBC URL and properties, then save the data source before connecting",
-                ));
-            }
-        }
-        let driver = self
-            .jdbc_drivers()?
-            .into_iter()
-            .find(|d| d.id == source.jdbc_driver)
-            .ok_or_else(|| IdeError::invalid("Select an installed JDBC driver profile"))?;
-        if !source.vendor.is_empty() && driver.vendor.as_deref() != Some(source.vendor.as_str()) {
-            return Err(IdeError::invalid("The JDBC driver profile is not associated with this data source type"));
+        self.check_jdbc_project_approval(source, testing)?;
+        let driver = self.jdbc_driver_by_id(&source.jdbc_driver)?;
+        if !source.vendor.is_empty() {
+            driver.require_vendor(&source.vendor)?;
         }
         JdbcPool::connect(source, password, driver, self.jdbc_registry()?.with_file_name("jdbc"))
             .await
@@ -277,10 +306,12 @@ impl JdbcPool {
         driver: DbJdbcDriver,
         cache: PathBuf,
     ) -> IdeResult<Self> {
-        driver.validate()?;
+        if source.duck_lake.is_some() {
+            return Err(IdeError::invalid("DuckLake catalogs require a DuckLake connection"));
+        }
         let mut fields = vec![
             "open".to_string(),
-            driver.class_name,
+            driver.class_name.clone(),
             source.url.clone(),
             source.user.clone(),
             password.unwrap_or_default().to_owned(),
@@ -292,6 +323,11 @@ impl JdbcPool {
             }
             fields.extend([p.name.clone(), p.value.clone()]);
         }
+        Self::open(driver, cache, fields).await
+    }
+
+    async fn open(driver: DbJdbcDriver, cache: PathBuf, fields: Vec<String>) -> IdeResult<Self> {
+        driver.validate()?;
         let bridge = tokio::task::spawn_blocking(move || Bridge::start(&cache, &driver.jars))
             .await
             .map_err(|e| IdeError::internal(e.to_string()))??;
@@ -306,7 +342,7 @@ impl JdbcPool {
             bridge: Arc::new(bridge),
             service: Session::new(0),
             consoles: Default::default(),
-            shared_connection: private_database_url(&source.url),
+            shared_connection: private_database_url(&fields[2]),
             version: metadata.next().flatten().unwrap_or_else(|| "Connected".into()),
             identifier_quote: metadata.next().flatten().unwrap_or_default().trim().into(),
         })
@@ -748,7 +784,9 @@ mod tests {
         assert!(catalogs.contains(&vec![Some("memory".into()), Some("1".into())]));
         assert!(catalogs.contains(&vec![Some("first".into()), Some("0".into())]));
         assert!(catalogs.contains(&vec![Some(archive.into()), Some("0".into())]));
-        let schemas = pool.metadata(&["schemas", archive]).await?;
+        let mut schemas = pool.metadata(&["schemas", archive]).await?;
+        // DuckDB JDBC 1.1.3 also lists these system schemas for attached catalogs.
+        schemas.retain(|row| !matches!(row[0].as_deref(), Some("information_schema" | "pg_catalog")));
         assert_eq!(schemas, ["main", "qaSimilar", "qa_%"].map(|schema| vec![Some(schema.into())]));
         let tables = pool.metadata(&["tables", "qa_%", archive]).await?;
         assert_eq!(tables.len(), 1);

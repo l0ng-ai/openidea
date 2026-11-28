@@ -48,15 +48,23 @@ import { DUCKDB_JDBC_PREFIX, VENDORS, blankSnowflake, sourceUrl, vendorById, ven
 import { JdbcDriverProfiles, jdbcProfileOption, useJdbcDrivers } from "./JdbcDriverProfiles";
 import styles from "./Database.module.css";
 import { isImeKey } from "@/platform/ime";
+import { confirm } from "@/workbench/messages";
 
 type Tab = "general" | "options" | "ssh" | "schemas" | "advanced";
 type ConnectionMethod = "direct" | "ssh" | "external";
-type DuckDbMode = "file" | "memory" | "url";
+type DuckDbMode = "file" | "memory" | "url" | "ducklake";
+type DuckLake = NonNullable<DataSource["duckLake"]>;
 
 const DUCKDB_MODES: Array<{ id: DuckDbMode; label: string }> = [
   { id: "file", label: "File" },
   { id: "memory", label: "In memory" },
+  { id: "ducklake", label: "DuckLake" },
   { id: "url", label: "JDBC URL" },
+];
+
+const DUCKLAKE_CATALOGS: Array<SelectOption<DuckLake["kind"]>> = [
+  { value: "file", label: "Catalog file" },
+  { value: "secret", label: "DuckDB secret" },
 ];
 
 const TYPES: SelectOption[] = VENDORS.map((v) => ({ value: v.id, label: v.label, icon: v.icon }));
@@ -222,6 +230,13 @@ function jdbcDatabaseFile(file: string | null | undefined, root: string | undefi
   return `${directory.replace(/\/+$/, "")}/${path}`;
 }
 
+function duckLakePath(path: string, root: string | undefined, projectRelative = false): string | null {
+  if (!path.trim() || /[\0\r\n]/.test(path) || path.startsWith("//") || path.startsWith("\\")) return null;
+  return absoluteDatabaseFile(path, root) || (projectRelative && root && !path.includes(":"))
+    ? jdbcDatabaseFile(path, root)
+    : null;
+}
+
 function builtInTarget(s: DataSource, driver: DataSource["driver"], root: string | undefined): Partial<DataSource> {
   const url = s.url ?? "";
   if (driver === "sqlite") {
@@ -289,6 +304,9 @@ function FileField({
   value,
   placeholder,
   disabled,
+  invalid,
+  browseLabel,
+  directory = false,
   title,
   onChange,
 }: {
@@ -297,6 +315,9 @@ function FileField({
   value: string;
   placeholder?: string;
   disabled?: boolean;
+  invalid?: boolean;
+  browseLabel?: string;
+  directory?: boolean;
   title: string;
   onChange: (v: string) => void;
 }) {
@@ -310,14 +331,16 @@ function FileField({
           id={id}
           className={styles.fill}
           disabled={disabled}
+          invalid={invalid}
           value={value}
           placeholder={placeholder}
           onChange={(e) => onChange(e.target.value)}
         />
         <Button
           disabled={disabled}
+          aria-label={browseLabel && tx(browseLabel)}
           onClick={() =>
-            void pickFile(title).then((f) => {
+            void choosePath({ directory, title: tx(title) }).then((f) => {
               if (f) onChange(f);
             })
           }
@@ -498,7 +521,7 @@ export function SourceDialog({
   const [sshSecret, setSshSecret] = useState<string | undefined>(undefined);
   const [tab, setTab] = useState<Tab>("general");
   const [test, setTest] = useState<{ ok: boolean; text: string; trust?: boolean; tunnel?: boolean } | null>(null);
-  const [busyKind, setBusy] = useState<"connecting" | "external" | null>(null);
+  const [busyKind, setBusy] = useState<"connecting" | "external" | "creatingLake" | null>(null);
   const busy = busyKind !== null;
   const [reviewRequest, setReviewRequest] = useState(0);
   const reviewPanel = useRef<HTMLDivElement>(null);
@@ -531,9 +554,12 @@ export function SourceDialog({
   const duckdb = vendor.id === "duckdb";
   const jdbcOnly = vendor.driver === "jdbc";
   const [duckDbMode, setDuckDbMode] = useState<DuckDbMode>(() => {
+    if (s.duckLake) return "ducklake";
     if (s.urlOnly) return "url";
     return !s.file && s.url === DUCKDB_JDBC_PREFIX ? "memory" : "file";
   });
+  const lakeMode = duckdb && duckDbMode === "ducklake";
+  const lake: DuckLake = s.duckLake ?? { kind: "file", value: "", dataPath: null };
   const savedJdbcWithPreset = initial?.driver === "jdbc" && (!genericJdbc || vendorOf(initial).driver !== "jdbc");
   const jdbcProfiles = useJdbcDrivers();
   const availableProfiles = jdbcProfiles.drivers?.filter((d) => genericJdbc || d.vendor === vendor.id);
@@ -541,6 +567,13 @@ export function SourceDialog({
   const jdbcProfile = availableProfiles?.find((d) => d.id === selectedProfileId);
   const installedJdbcProfile = jdbcProfiles.drivers?.find((d) => d.id === s.jdbcDriver);
   const projectRoot = useProject((st) => st.project?.root);
+  const lakeValue =
+    lake.kind === "file"
+      ? duckLakePath(lake.value, projectRoot, true)
+      : /^[A-Za-z_][A-Za-z0-9_]*$/.test(lake.value)
+        ? lake.value
+        : null;
+  const lakeDataPath = lake.dataPath ? duckLakePath(lake.dataPath, projectRoot) : null;
   const remote = useRemote((st) => st.session !== null);
   const nativeUrl = nativeSource?.urlOnly ? parseSourceUrl(nativeSource.url ?? "") : null;
   const nativeOptions = nativeSource?.options;
@@ -575,6 +608,10 @@ export function SourceDialog({
   const loadedSchemas = useDatabase((st) => (initial?.id ? st.schemas[initial.id] : undefined));
 
   const set = (patch: Partial<DataSource>) => setS((x) => ({ ...x, ...patch }));
+  const setLake = (patch: Partial<DuckLake>) => {
+    set({ duckLake: { ...lake, ...patch } });
+    setTest(null);
+  };
   const ssh: DbSsh = { ...blankSsh(), ...s.ssh };
   const sshConfigs = useWorkflowSettings((w) => w.ssh.configs);
   const sshConfigId = ssh.config?.trim() ?? "";
@@ -598,7 +635,7 @@ export function SourceDialog({
 
   const sqlite = s.driver === "sqlite";
   const postgres = s.driver === "postgres";
-  const externalTunnel = s.externalTunnel;
+  const externalTunnel = lakeMode ? null : s.externalTunnel;
   const setExternalTunnel = (patch: Partial<DbExternalTunnel>) =>
     setS((x) => (x.externalTunnel ? { ...x, externalTunnel: { ...x.externalTunnel, ...patch } } : x));
   const externalAvailable = postgres && isTauri() && !remote && !s.pluginOwner;
@@ -624,7 +661,7 @@ export function SourceDialog({
     (genericJdbc
       ? (jdbcProfile?.name ?? tx("Custom JDBC"))
       : duckdb
-        ? (duckDbMode === "file" && fileSourceName(s.file ?? "")) || vendor.label
+        ? (lakeMode && tx("DuckLake")) || (duckDbMode === "file" && fileSourceName(s.file ?? "")) || vendor.label
         : vendor.driver === "sqlite"
           ? fileSourceName(s.file ?? "")
           : `${database || s.user || "db"}@${host || "localhost"}`);
@@ -667,7 +704,7 @@ export function SourceDialog({
         ? ""
         : DUCKDB_JDBC_PREFIX + duckDbFile
       : duckdb
-        ? duckDbMode === "memory"
+        ? duckDbMode === "memory" || lakeMode
           ? DUCKDB_JDBC_PREFIX
           : (urlDraft ?? s.url ?? "")
         : fromTemplate
@@ -729,6 +766,7 @@ export function SourceDialog({
       : /^jdbc:[^\s:]+:[^\r\n]*$/.test(jdbcUrl) &&
         !jdbcUrlPlaceholder.test(jdbcUrl) &&
         (!duckdb || jdbcUrl.startsWith(DUCKDB_JDBC_PREFIX));
+  const lakeDriver = jdbcProfile?.className === "org.duckdb.DuckDBDriver";
   const valid =
     (!externalTunnel ||
       (!externalError &&
@@ -738,6 +776,7 @@ export function SourceDialog({
       ? !!jdbcProfile &&
         jdbcUrlValid &&
         !(duckDbMemory && s.readOnly) &&
+        (!lakeMode || (lakeDriver && !!lakeValue && (!lake.dataPath || !!lakeDataPath))) &&
         (!reviewJdbcSecurity || connectionSecurityConfirmed)
       : (!reviewBuiltinSecurity || connectionSecurityConfirmed) &&
         (sqlite
@@ -759,10 +798,16 @@ export function SourceDialog({
           url: jdbcUrl,
           urlOnly: !duckdb || duckDbMode === "url",
           ...(duckdb && { file: duckDbFile }),
+          duckLake: lakeMode ? { kind: lake.kind, value: lakeValue ?? "", dataPath: lakeDataPath } : null,
+          ...(lakeMode && { readOnly: true, user: "", savePassword: false, properties: [], externalTunnel: null }),
           ssh: null,
-          options: { ...options, transaction: "auto" as const },
+          options: {
+            ...options,
+            transaction: "auto" as const,
+            ...(lakeMode && { startupScript: "", defaultSchema: "", timeZone: "" }),
+          },
         }
-      : {}),
+      : { duckLake: null }),
   });
 
   const setType = (id: string, builtIn = false) => {
@@ -911,7 +956,7 @@ export function SourceDialog({
       } else {
         const v = await call(
           request === null
-            ? commands.dbTest(source, password ?? null, secret)
+            ? commands.dbTest(source, lakeMode ? null : (password ?? null), secret)
             : commands.dbTestExternalTunnel(request, source, password ?? null),
         );
         if (stillTesting()) setTest({ ok: true, text: tx`Succeeded: ${v}` });
@@ -946,16 +991,28 @@ export function SourceDialog({
     setBusy("connecting");
     try {
       const source = { ...draft, properties: draft.properties?.filter((p) => p.name?.trim()) ?? [] };
-      if (jdbc && !source.global) await call(commands.dbApproveJdbcSource(source));
+      // An older host can discard DuckLake settings when saving a regular source.
+      if (source.duckLake) await call(commands.dbApproveDucklakeSource(source));
+      else if (jdbc && !source.global) await call(commands.dbApproveJdbcSource(source));
       if (source.externalTunnel) await call(commands.dbApproveExternalTunnel(source));
       await saveSource(
         source,
-        sqlite ? undefined : password === undefined ? undefined : password || null,
+        lakeMode ? null : sqlite || password === undefined ? undefined : password || null,
         !sshOn || sshSecret === undefined || sshUsed.auth === "openSsh" ? undefined : sshSecret || null,
       );
       if (useDatabase.getState().dialog === dialog) closeDialog();
     } catch (e) {
-      setTest({ ok: false, text: e instanceof Error ? e.message : String(e) });
+      const unsupported =
+        draft.duckLake &&
+        e instanceof IpcError &&
+        e.kind === "protocol" &&
+        e.message === "command db_approve_ducklake_source is not available remotely";
+      const text = unsupported
+        ? tx("Update the remote OpenIDEA server to save DuckLake data sources.")
+        : e instanceof Error
+          ? e.message
+          : String(e);
+      setTest({ ok: false, text });
     } finally {
       setBusy(null);
     }
@@ -972,7 +1029,7 @@ export function SourceDialog({
     { id: "options", label: "Options" },
     ...(sqlite || snowflake || jdbc ? [] : [{ id: "ssh" as const, label: "SSH/SSL" }]),
     ...(sqlite ? [] : [{ id: "schemas" as const, label: "Schemas" }]),
-    { id: "advanced", label: "Advanced" },
+    ...(lakeMode ? [] : [{ id: "advanced" as const, label: "Advanced" }]),
   ];
   const current = tabs.some((t) => t.id === tab) ? tab : "general";
   const props = duckdb
@@ -992,6 +1049,36 @@ export function SourceDialog({
     if (file) {
       set({ file });
       setTest(null);
+    }
+  };
+
+  const createLake = async () => {
+    if (busy || !lakeDriver || (reviewJdbcSecurity && !connectionSecurityConfirmed)) return;
+    setBusy("creatingLake");
+    setTest(null);
+    try {
+      const picked = await chooseSavePath({
+        title: tx("Choose a new DuckLake directory"),
+        defaultPath: jdbcDatabaseFile("ducklake", projectRoot) ?? "ducklake",
+      });
+      if (!picked) return;
+      const directory = duckLakePath(picked, projectRoot);
+      if (!directory) throw new Error(tx("Choose an absolute directory on the database host."));
+      const approved = await confirm({
+        title: "Create New DuckLake",
+        message: tx`Create a DuckLake in '${directory}'? The directory must not already exist.`,
+        ok: "Create",
+      });
+      if (!approved) return;
+      const path = `${directory.replace(/\/+$/, "")}/catalog.ducklake`;
+      const duckLake = { kind: "file" as const, value: path, dataPath: null };
+      await call(commands.dbCreateDucklake(selectedProfileId, directory));
+      set({ duckLake });
+      setTest({ ok: true, text: tx("DuckLake created. The data source opens it read-only.") });
+    } catch (e) {
+      setTest({ ok: false, text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -1072,6 +1159,7 @@ export function SourceDialog({
                 type="button"
                 key={id}
                 aria-pressed={id === duckDbMode}
+                disabled={busy}
                 onClick={() => {
                   setDuckDbMode(id);
                   if (id === "url" && duckDbMode !== "url" && urlDraft === null) set({ url: jdbcUrl });
@@ -1122,21 +1210,102 @@ export function SourceDialog({
               )}
             </>
           )}
-          <label className={styles.formLabel} htmlFor="db-url">
-            <T>URL:</T>
-          </label>
-          <Input
-            id="db-url"
-            mono
-            value={jdbcUrl}
-            readOnly={duckDbMode !== "url"}
-            invalid={duckDbMode === "url" && !!jdbcUrl && !jdbcUrlValid}
-            placeholder={DUCKDB_JDBC_PREFIX}
-            onChange={(e) => {
-              setUrlDraft(e.target.value);
-              setTest(null);
-            }}
-          />
+          {lakeMode ? (
+            <>
+              <span className={styles.formLabel}>
+                <T>Catalog type:</T>
+              </span>
+              <Select
+                aria-label={tx("Catalog type")}
+                options={DUCKLAKE_CATALOGS}
+                value={lake.kind}
+                disabled={busy}
+                onChange={(kind) => setLake({ kind, value: "" })}
+              />
+              {lake.kind === "file" ? (
+                <FileField
+                  id="db-ducklake-file"
+                  label="Catalog file:"
+                  title="Open DuckLake Catalog"
+                  browseLabel="Browse for DuckLake catalog"
+                  disabled={busy}
+                  invalid={!!lake.value && !lakeValue}
+                  value={lake.value}
+                  onChange={(value) => setLake({ value })}
+                />
+              ) : (
+                <>
+                  <label className={styles.formLabel} htmlFor="db-ducklake-secret">
+                    <T>Secret name:</T>
+                  </label>
+                  <Input
+                    id="db-ducklake-secret"
+                    disabled={busy}
+                    invalid={!!lake.value && !lakeValue}
+                    value={lake.value}
+                    onChange={(e) => setLake({ value: e.target.value })}
+                  />
+                </>
+              )}
+              <span />
+              <span className={styles.formHint}>
+                {lake.kind === "file" ? (
+                  <T>Choose an existing catalog file on the database host.</T>
+                ) : (
+                  <T>Use the name of an existing DuckDB secret of type ducklake.</T>
+                )}
+              </span>
+              <FileField
+                id="db-ducklake-data"
+                label="Data directory:"
+                title="Choose DuckLake Data Directory"
+                browseLabel="Browse for DuckLake data directory"
+                value={lake.dataPath ?? ""}
+                disabled={busy}
+                invalid={!!lake.dataPath && !lakeDataPath}
+                directory
+                onChange={(dataPath) => setLake({ dataPath })}
+              />
+              <span />
+              <span className={styles.formHint}>
+                <T>
+                  Optional absolute directory on the database host. Leave empty to use the catalog’s stored location.
+                </T>
+              </span>
+              <span />
+              <div className={styles.formRow}>
+                <Button
+                  disabled={busy || !lakeDriver || !!(reviewJdbcSecurity && !connectionSecurityConfirmed)}
+                  onClick={() => void createLake()}
+                >
+                  <T>Create New DuckLake…</T>
+                </Button>
+              </div>
+              {jdbcProfile && !lakeDriver && (
+                <span className={styles.formFull} role="alert">
+                  <T>DuckLake requires the official DuckDB JDBC driver.</T>
+                </span>
+              )}
+            </>
+          ) : (
+            <>
+              <label className={styles.formLabel} htmlFor="db-url">
+                <T>URL:</T>
+              </label>
+              <Input
+                id="db-url"
+                mono
+                value={jdbcUrl}
+                readOnly={duckDbMode !== "url"}
+                invalid={duckDbMode === "url" && !!jdbcUrl && !jdbcUrlValid}
+                placeholder={DUCKDB_JDBC_PREFIX}
+                onChange={(e) => {
+                  setUrlDraft(e.target.value);
+                  setTest(null);
+                }}
+              />
+            </>
+          )}
           {duckDbMemory && (
             <>
               <span />
@@ -1458,8 +1627,8 @@ export function SourceDialog({
       <Section title="Connection" />
       <span />
       <Checkbox
-        checked={!!s.readOnly}
-        disabled={duckDbMemory && !s.readOnly}
+        checked={lakeMode || !!s.readOnly}
+        disabled={lakeMode || (duckDbMemory && !s.readOnly)}
         onChange={(readOnly) => set({ readOnly })}
         label="Read-only"
       />
@@ -2163,7 +2332,9 @@ export function SourceDialog({
           {busy && !shownTest
             ? busyKind === "external"
               ? tx("Testing external TCP tunnel and PostgreSQL connection…")
-              : tx("Connecting…")
+              : busyKind === "creatingLake"
+                ? tx("Creating DuckLake…")
+                : tx("Connecting…")
             : (externalError ?? shownTest?.text)}
           {shownTest?.trust && (
             <>

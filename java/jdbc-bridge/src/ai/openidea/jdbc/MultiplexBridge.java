@@ -26,10 +26,12 @@ final class MultiplexBridge {
     private final ConcurrentMap<Integer, Session> sessions = new ConcurrentHashMap<>();
     // Closing drivers still count towards the cap until their Connection.close returns.
     private final Set<Session> live = ConcurrentHashMap.newKeySet();
+    private record Settings(List<String> parameters, boolean duckLake) {}
+
     // Reserve before large writes and encodings, not while JDBC executes. This keeps
     // frame copies and encoding temporaries within the 192 MiB JVM's headroom.
     private final Semaphore largeReplies = new Semaphore(1, true);
-    private volatile List<String> settings;
+    private volatile Settings settings;
     private final AtomicBoolean stopping = new AtomicBoolean();
 
     MultiplexBridge(DataInputStream input, DataOutputStream output) {
@@ -97,8 +99,9 @@ final class MultiplexBridge {
         session.canceller.shutdown();
     }
 
-    private Connection connect(List<String> options) throws Exception {
-        if (!options.get(0).equals("org.duckdb.DuckDBDriver")) return OpenIdeaJdbc.connect(options);
+    private Connection connect(Settings options) throws Exception {
+        if (!options.parameters().get(0).equals(OpenIdeaJdbc.DUCKDB_CLASS))
+            return OpenIdeaJdbc.connect(options.parameters());
         // A second DuckDB login would create a different unnamed in-memory database.
         // Call duplicate on the service worker so it never races another operation
         // on the same JDBC Connection.
@@ -106,7 +109,18 @@ final class MultiplexBridge {
         if (service == null) throw new SQLException("The DuckDB service connection is unavailable");
         return service.worker.submit(() -> {
             Connection source = service.jdbc.connection;
-            return (Connection) source.getClass().getMethod("duplicate").invoke(source);
+            Connection duplicate = (Connection) source.getClass().getMethod("duplicate").invoke(source);
+            // Attachments are shared by DuckDB, but the current catalog is connection-local.
+            if (options.duckLake()) {
+                try (var statement = duplicate.createStatement()) {
+                    statement.execute("USE " + OpenIdeaJdbc.DUCKLAKE_CATALOG);
+                } catch (SQLException failure) {
+                    try { duplicate.close(); }
+                    catch (SQLException closeFailure) { failure.addSuppressed(closeFailure); }
+                    throw failure;
+                }
+            }
+            return duplicate;
         }).get();
     }
 
@@ -124,12 +138,13 @@ final class MultiplexBridge {
             return;
         }
 
-        boolean open = op.equals("open");
-        List<String> options = settings;
+        boolean duckLake = op.equals("openDuckLake");
+        boolean open = op.equals("open") || duckLake;
+        Settings options = settings;
         if (open) {
             boolean valid = connection == SERVICE
-                ? fields.size() >= 6 && fields.size() % 2 == 0
-                : fields.size() == 1 && options != null;
+                ? (duckLake ? fields.size() == 9 : fields.size() >= 6 && fields.size() % 2 == 0)
+                : !duckLake && fields.size() == 1 && options != null;
             if (!valid || session != null) {
                 send(id, status("Invalid JDBC connection open request"));
                 return;
@@ -138,7 +153,7 @@ final class MultiplexBridge {
                 send(id, status("JDBC connection limit reached. Close a console or wait for its connection to finish closing, then try again."));
                 return;
             }
-            if (connection == SERVICE) options = List.copyOf(fields.subList(1, fields.size()));
+            if (connection == SERVICE) options = new Settings(List.copyOf(fields.subList(1, fields.size())), duckLake);
             session = new Session(connection);
             sessions.put(connection, session);
             live.add(session);
@@ -161,7 +176,7 @@ final class MultiplexBridge {
     }
 
     private void schedule(Session session, OpenIdeaJdbc.Work work, List<String> fields,
-                          boolean open, List<String> options) {
+                          boolean open, Settings options) {
         session.worker.execute(() -> {
             try (var buffer = new ReplyBuffer(largeReplies)) {
                 var answer = session.jdbc.reply(work, fields,

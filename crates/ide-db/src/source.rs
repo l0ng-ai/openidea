@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 pub(crate) const FILE: &str = "data-sources.toml";
+pub(crate) const DUCKDB_URL: &str = "jdbc:duckdb:";
 pub(crate) const FOLDERS_FILE: &str = "data-source-folders.toml";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
@@ -306,6 +307,25 @@ pub struct DbExternalTunnel {
     pub arguments: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DbDuckLakeKind {
+    File,
+    Secret,
+}
+
+/// How to open an existing DuckLake catalog read-only through DuckDB.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DbDuckLake {
+    pub kind: DbDuckLakeKind,
+    /// A local catalog file or an existing DuckDB secret name.
+    pub value: String,
+    /// An existing local data directory overriding the catalog's data path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_path: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase", default)]
 pub struct DataSource {
@@ -346,6 +366,8 @@ pub struct DataSource {
     pub properties: Vec<DbProperty>,
     /// Snowflake settings (`None`: not a Snowflake data source, or all defaults).
     pub snowflake: Option<DbSnowflake>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duck_lake: Option<DbDuckLake>,
     /// Stored app-wide and listed in every project. Implied by the file it is read from,
     /// so not written to it.
     pub global: bool,
@@ -386,6 +408,7 @@ impl Default for DataSource {
             introspection: DbIntrospection::default(),
             properties: Vec::new(),
             snowflake: None,
+            duck_lake: None,
             global: false,
             plugin_owner: None,
             plugin_source_id: None,
@@ -513,7 +536,69 @@ pub fn parse_url(raw: &str) -> IdeResult<ParsedUrl> {
     Ok(parsed)
 }
 
+pub(crate) fn duck_lake_path(value: &str, relative: bool) -> IdeResult<&Path> {
+    let path = Path::new(value);
+    if value.trim().is_empty()
+        || value.contains(['\0', '\r', '\n'])
+        || value.starts_with("//")
+        || value.starts_with('\\')
+        || (!path.is_absolute() && (!relative || value.starts_with('/') || value.contains(':')))
+    {
+        return Err(IdeError::invalid("Choose a local DuckLake path on the database host"));
+    }
+    Ok(path)
+}
+
 impl DataSource {
+    pub(crate) fn validate_duck_lake(&self) -> IdeResult<()> {
+        let Some(lake) = &self.duck_lake else { return Ok(()) };
+        if self.driver != DbDriver::Jdbc
+            || self.vendor != "duckdb"
+            || self.url != DUCKDB_URL
+            || self.url_only
+            || !self.read_only
+            || self.plugin_owner.is_some()
+        {
+            return Err(IdeError::invalid("Existing DuckLake catalogs require a read-only DuckDB JDBC data source"));
+        }
+        if !self.user.is_empty()
+            || self.save_password
+            || self.ssh.is_some()
+            || self.external_tunnel.is_some()
+            || !self.properties.is_empty()
+        {
+            return Err(IdeError::invalid(
+                "DuckLake uses its catalog file or named secret without JDBC credentials, properties or tunnels",
+            ));
+        }
+        if self.options.transaction != DbTxMode::Auto
+            || !self.options.default_schema.is_empty()
+            || !self.options.time_zone.is_empty()
+            || !self.options.startup_script.is_empty()
+        {
+            return Err(IdeError::invalid("DuckLake does not use JDBC session overrides"));
+        }
+        match lake.kind {
+            DbDuckLakeKind::File => {
+                duck_lake_path(&lake.value, true)?;
+            }
+            DbDuckLakeKind::Secret => {
+                let mut chars = lake.value.bytes();
+                if !chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == b'_')
+                    || !chars.all(|c| c.is_ascii_alphanumeric() || c == b'_')
+                {
+                    return Err(IdeError::invalid(
+                        "Enter an existing DuckLake secret name using letters, digits or underscores",
+                    ));
+                }
+            }
+        }
+        if let Some(path) = lake.data_path.as_deref().filter(|path| !path.is_empty()) {
+            duck_lake_path(path, false)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn select_database(&mut self, database: Option<&str>) {
         if let Some(db) = database {
             // The configured schema belongs to the configured database.
@@ -536,6 +621,7 @@ impl DataSource {
     /// database, user, SSL and driver properties come from the URL (properties
     /// of the Advanced tab still apply after the URL's).
     pub fn resolved(&self) -> IdeResult<DataSource> {
+        self.validate_duck_lake()?;
         if self.driver == DbDriver::Jdbc {
             if !self.url.starts_with("jdbc:") {
                 return Err(IdeError::invalid("Enter a JDBC URL starting with jdbc:"));

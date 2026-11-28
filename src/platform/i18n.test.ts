@@ -365,8 +365,9 @@ describe("catalogs", () => {
     "Deno",
     "Node.js",
     "bun-dap (Bun)",
-    // DuckDB data source: the product name, the JDBC URL field and its path placeholder.
+    // DuckDB and DuckLake product names, the JDBC URL field and its path placeholder.
     "DuckDB",
+    "DuckLake",
     "JDBC URL",
     "path/to/database.duckdb",
     // Unreal Engine projects: the product name and the .uproject path placeholder.

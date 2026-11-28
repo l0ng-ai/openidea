@@ -31,8 +31,9 @@ pub use conn::{Held, Pool, QueryResult, ResultColumn, TruncatedCell};
 pub use history::HistoryEntry;
 pub use plan::{PlanNode, PlanProperty};
 pub use source::{
-    DataSource, DbColor, DbDriver, DbExternalTunnel, DbIntrospection, DbOptions, DbProperty, DbSchemaSelection,
-    DbSnowflake, DbSnowflakeAuth, DbSourceFolder, DbSsh, DbSshAuth, DbSslMode, DbTxMode, DbVisibilityChange,
+    DataSource, DbColor, DbDriver, DbDuckLake, DbDuckLakeKind, DbExternalTunnel, DbIntrospection, DbOptions,
+    DbProperty, DbSchemaSelection, DbSnowflake, DbSnowflakeAuth, DbSourceFolder, DbSsh, DbSshAuth, DbSslMode, DbTxMode,
+    DbVisibilityChange,
 };
 pub use sql::{CellValue, DbRowEdit, SortKey};
 
@@ -478,6 +479,13 @@ pub fn split_target(target: &str) -> (&str, Option<&str>) {
     }
 }
 
+fn reject_duck_lake_password(password: Option<&str>) -> IdeResult<()> {
+    if password.is_some_and(|p| !p.is_empty()) {
+        return Err(IdeError::invalid("DuckLake uses a catalog file or named secret without a JDBC or SSH password"));
+    }
+    Ok(())
+}
+
 /// Says which leg failed when the database is unreachable from the SSH host.
 fn through_tunnel(e: IdeError, source: &DataSource, via: Option<&str>) -> IdeError {
     let Some(via) = via.filter(|_| e.kind == ErrorKind::Io) else { return e };
@@ -631,13 +639,16 @@ impl DbManager {
     /// Saves the data source list, preserving connections when only visibility rules change.
     /// Global ones (`global`) go to the app-wide list, the others to the project's.
     pub async fn save_sources(&self, mut sources: Vec<DataSource>) -> IdeResult<()> {
+        for source in &sources {
+            source.validate_duck_lake()?;
+        }
         if sources.iter().any(|s| s.global && s.plugin_owner.is_some()) {
             return Err(IdeError::invalid("plugin-owned data sources must stay project-scoped"));
         }
         let old = {
             let _guard = plugin::EDIT.lock();
             let old = self.sources().unwrap_or_default();
-            for source in sources.iter_mut().filter(|s| s.driver == DbDriver::Jdbc) {
+            for source in sources.iter_mut().filter(|s| s.driver == DbDriver::Jdbc && s.duck_lake.is_none()) {
                 // Retain the credential scope even when URL-only settings supplied the old authenticator.
                 if let Some(settings) = old.iter().find(|s| s.id == source.id).and_then(Self::non_password_snowflake) {
                     source.snowflake = Some(settings);
@@ -686,7 +697,7 @@ impl DbManager {
                             }
                         }
                         // Made global or project-level: its saved passwords move along.
-                        Some(n) if n.global != o.global => {
+                        Some(n) if n.global != o.global && n.duck_lake.is_none() && o.duck_lake.is_none() => {
                             for k in &keys {
                                 if let Some(p) = self.store_of(&o).get(k) {
                                     self.store_of(n).set(k, &p)?;
@@ -768,6 +779,9 @@ impl DbManager {
     /// the data source saves passwords (`None` forgets it).
     pub async fn set_password(&self, id: &str, password: Option<String>, save: bool) -> IdeResult<()> {
         let source = self.sources()?.into_iter().find(|s| s.id == id);
+        if source.as_ref().is_some_and(|s| s.duck_lake.is_some()) {
+            return reject_duck_lake_password(password.as_deref());
+        }
         let (store, key) = match source.as_ref() {
             Some(source) => (self.store_of(source), self.password_key(source)),
             None => (&self.saved_passwords, id.to_owned()),
@@ -778,7 +792,11 @@ impl DbManager {
     /// [`DbManager::set_password`] for the SSH password / key passphrase.
     /// A data source using an SSH configuration sets that configuration's secret.
     pub async fn set_ssh_secret(&self, id: &str, secret: Option<String>, save: bool) -> IdeResult<()> {
-        let config = self.sources()?.into_iter().find(|s| s.id == id).and_then(|s| s.ssh).map(|s| s.config);
+        let source = self.sources()?.into_iter().find(|s| s.id == id);
+        if source.as_ref().is_some_and(|s| s.duck_lake.is_some()) {
+            return reject_duck_lake_password(secret.as_deref());
+        }
+        let config = source.and_then(|s| s.ssh).map(|s| s.config);
         if let Some(c) = config.filter(|c| !c.trim().is_empty()) {
             let save = self.ssh.config(&c).map(|c| c.save_secret).unwrap_or(save);
             return self.ssh.set_secret(&c, secret, save);
@@ -823,6 +841,9 @@ impl DbManager {
     }
 
     async fn password(&self, source: &DataSource) -> Option<String> {
+        if source.duck_lake.is_some() {
+            return None;
+        }
         match self
             .secret(source, self.password_key(source), source.driver != DbDriver::Sqlite && source.save_password)
             .await
@@ -931,6 +952,10 @@ impl DbManager {
         purpose: route::RouteUse,
     ) -> IdeResult<String> {
         let source = &source.resolved()?;
+        if source.duck_lake.is_some() {
+            reject_duck_lake_password(password.as_deref())?;
+            reject_duck_lake_password(ssh_secret.as_deref())?;
+        }
         let password = match password {
             Some(p) => Some(p),
             None => self.password(source).await,
