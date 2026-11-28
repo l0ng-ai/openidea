@@ -27,10 +27,12 @@ afterEach(() => {
 });
 
 function mount(doc: string, marker = "f", unit = "    ", readOnly = false) {
+  const declaration = doc.indexOf(`def ${marker}`);
+  const markerAt = declaration >= 0 ? declaration + 4 : doc.indexOf(marker);
   const state = completedSyntaxState(
     EditorState.create({
       doc,
-      selection: { anchor: doc.indexOf(marker) + Math.floor(marker.length / 2) },
+      selection: { anchor: markerAt + Math.floor(marker.length / 2) },
       extensions: [python, indentUnit.of(unit), lspDoc.of({ ...ctx, readOnly })],
     }),
   );

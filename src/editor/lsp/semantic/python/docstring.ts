@@ -28,10 +28,11 @@ function stringExpression(node: SyntaxNode, text: Text): boolean {
     // Bytes and template strings are expressions, but not Python docstrings.
     return /^(?:r|u|ru|ur)?$/i.test(prefix);
   }
-  const parts = node.getChildren("String");
+  const parts: SyntaxNode[] = [];
+  for (let child = node.firstChild; child; child = child.nextSibling) parts.push(child);
   if (node.name === "ContinuedString") return parts.length > 0 && parts.every((part) => stringExpression(part, text));
   if (node.name === "ParenthesizedExpression") {
-    const expressions = node.getChildren().filter((child) => child.name !== "(" && child.name !== ")");
+    const expressions = parts.filter((child) => child.name !== "(" && child.name !== ")");
     return expressions.length === 1 && stringExpression(expressions[0]!, text);
   }
   return false;
@@ -96,8 +97,8 @@ function insertPythonDocstring(view: EditorView): void {
   const tail = inline ? headerLine.text.slice(target.body.from - headerLine.from + 1).trimStart() : "";
   const insert = `${br}${stub}${inline ? `${br}${indent}${tail}` : ""}`;
   view.dispatch({
-    changes: { from, insert },
-    selection: { anchor: from + br.length + indent.length },
+    changes: { from, to: inline ? headerLine.to : from, insert },
+    selection: { anchor: from + br.length + lines[0]!.length + br.length + lines[1]!.length },
     userEvent: "input",
     scrollIntoView: true,
   });
