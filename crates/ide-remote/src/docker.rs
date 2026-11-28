@@ -104,8 +104,14 @@ fn dev_server(
         })
     };
     let port = |given: Option<String>, default: u16| given.and_then(|p| p.trim().parse().ok()).unwrap_or(default);
+    // The word after `tool` and its options (`flask --app x run`): its index in `words`.
     let subcommand = |tool: &[&str], sub: &[&str]| {
-        words.windows(2).position(|w| tool.contains(&w[0].as_str()) && sub.contains(&w[1].as_str()))
+        let start = words.iter().position(|w| tool.contains(&w.as_str()))? + 1;
+        let mut i = start;
+        while let Some(w) = words.get(i).filter(|w| w.starts_with('-')) {
+            i += if matches!(w.as_str(), "--app" | "-A" | "--env-file" | "-e") { 2 } else { 1 };
+        }
+        words.get(i).filter(|w| sub.contains(&w.as_str())).map(|_| i - 1)
     };
     if let Some(i) = subcommand(&["manage", "django-admin", "django"], &["runserver"]) {
         // The first positional argument after `runserver` is `[address:]port`.
@@ -779,6 +785,10 @@ mod tests {
         );
         assert_eq!(run("django-admin", &["runserver"]), out(Some(8000), "runserver 0.0.0.0:8000", ""));
         assert_eq!(run("python", &["-m", "flask", "run"]), out(Some(5000), "-m flask run", "FLASK_RUN_HOST=0.0.0.0"));
+        assert_eq!(
+            run("flask", &["--app", "web", "run", "--port", "5001"]),
+            out(Some(5001), "--app web run --port 5001", "FLASK_RUN_HOST=0.0.0.0")
+        );
         assert_eq!(run("flask", &["run", "--host", "::", "-p", "7000"]), out(Some(7000), "run --host :: -p 7000", ""));
         assert_eq!(run("uvicorn", &["app:app", "--port=9001"]), out(Some(9001), "app:app --port=9001", ""));
         assert_eq!(run("fastapi", &["dev", "main.py"]), out(Some(8000), "dev main.py --host 0.0.0.0", ""));
