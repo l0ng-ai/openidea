@@ -92,9 +92,11 @@ pub(super) fn prepare_debug(
         let mut vars: BTreeMap<String, String> =
             object.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned()))).collect();
         let inherit = !vars.contains_key("PYTHONPATH");
+        let user_set: std::collections::HashSet<String> = vars.keys().cloned().collect();
         ide_run::python_path::extend(&mut vars, paths, inherit)?;
         if let Some(prefix) = conda {
-            ide_run::python_path::activate_conda(&mut vars, prefix, inherit)?;
+            // debugpy hands this env to the debuggee: PATH must keep the inherited entries.
+            ide_run::python_path::activate_conda(&mut vars, prefix, true, |k| user_set.contains(k))?;
         }
         if let Some((plots, dir)) = plots {
             ide_run::plots::add(&mut vars, plots, Some(dir))?;
@@ -104,9 +106,10 @@ pub(super) fn prepare_debug(
         }
         config.extra_json = extra.map(|e| e.to_string());
     } else {
+        let user_set: std::collections::HashSet<String> = config.env.keys().cloned().collect();
         ide_run::python_path::extend(&mut config.env, paths, true)?;
         if let Some(prefix) = conda {
-            ide_run::python_path::activate_conda(&mut config.env, prefix, true)?;
+            ide_run::python_path::activate_conda(&mut config.env, prefix, true, |k| user_set.contains(k))?;
         }
         if let Some((plots, dir)) = plots {
             ide_run::plots::add(&mut config.env, plots, Some(dir))?;
@@ -131,7 +134,10 @@ mod tests {
             args: vec![],
             cwd: None,
             env: BTreeMap::new(),
-            extra_json: Some(serde_json::json!({"env": {"CONDA_DEFAULT_ENV": "mine"}}).to_string()),
+            // A PYTHONPATH of its own must not cut PATH down to the environment's folders.
+            extra_json: Some(
+                serde_json::json!({"env": {"CONDA_DEFAULT_ENV": "mine", "PYTHONPATH": "src"}}).to_string(),
+            ),
         };
         prepare_debug(&mut config, std::slice::from_ref(&root), None, Some(&prefix)).unwrap();
         let value: serde_json::Value = serde_json::from_str(config.extra_json.as_deref().unwrap()).unwrap();
@@ -139,8 +145,11 @@ mod tests {
         assert_eq!(env["CONDA_PREFIX"], prefix.to_string_lossy().as_ref());
         assert_eq!(env["CONDA_DEFAULT_ENV"], "mine");
         let path = env.as_object().unwrap().iter().find(|(k, _)| k.eq_ignore_ascii_case("PATH")).unwrap().1;
-        let first = std::env::split_paths(path.as_str().unwrap()).next().unwrap();
-        assert!(first.starts_with(&prefix), "{first:?}");
+        let path: Vec<_> = std::env::split_paths(path.as_str().unwrap()).collect();
+        assert!(path[0].starts_with(&prefix), "{path:?}");
+        let inherited = ide_run::system_env().into_iter().find(|(k, _)| k.eq_ignore_ascii_case("PATH")).unwrap().1;
+        let system = std::env::split_paths(&inherited).next().unwrap();
+        assert!(path.contains(&system), "{path:?} lacks {system:?}");
     }
 
     #[test]

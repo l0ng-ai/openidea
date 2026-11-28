@@ -121,6 +121,8 @@ Ruff 只为位于 Ruff 配置之下的文件启动：`ruff.toml`、`.ruff.toml`�
 
 工具会通过项目的包管理器运行：有 `uv.lock` 时用 `uv run`，有 `poetry.lock` 时用 `poetry run`，有 `pdm.lock` 时用 `pdm run`，否则用 `.venv` 或 `venv` 中的工具，pixi 环境则用 `pixi run`。如果在设置中选了解释器，运行配置会直接使用它。
 
+如果这个解释器属于某个 conda 环境，运行、测试和调试时会设置 `conda activate` 会设的变量：`CONDA_PREFIX`、`CONDA_DEFAULT_ENV`，并把环境的目录放在 `PATH` 最前面（Windows 上还包括 `Library\bin`，numpy 等包要加载的 DLL 就在这里）。环境里 `etc/conda/activate.d` 下的脚本不会执行，它们设置的变量（例如 `GDAL_DATA`、`JAVA_HOME`）不会出现；需要时请把它们加到运行配置的环境变量里。
+
 编辑器左侧栏的图标可以运行或调试：
 
 - 文件中的 `if __name__ == "__main__":` 代码块；

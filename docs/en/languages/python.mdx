@@ -121,6 +121,8 @@ OpenIDEA detects run configurations in folders that contain `pyproject.toml`, `s
 
 Tools run through the project's manager: `uv run` when there is a `uv.lock`, `poetry run` with a `poetry.lock`, `pdm run` with a `pdm.lock`, the tools of `.venv` or `venv`, or `pixi run` for a pixi environment. When you select an interpreter in settings, the configurations use it directly.
 
+When that interpreter belongs to a conda environment, runs, tests and debug sessions get what `conda activate` sets: `CONDA_PREFIX`, `CONDA_DEFAULT_ENV` and the environment's folders at the front of `PATH` (on Windows also `Library\bin`, which holds the DLLs packages such as numpy load). The environment's `etc/conda/activate.d` scripts are not run, so variables they set (for example `GDAL_DATA` or `JAVA_HOME`) are missing; add them to the run configuration's environment variables.
+
 In the editor, gutter icons run or debug:
 
 - a file's `if __name__ == "__main__":` block,

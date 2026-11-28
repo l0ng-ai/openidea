@@ -30,16 +30,29 @@ pub fn extend(env: &mut BTreeMap<String, String>, roots: &[PathBuf], inherit: bo
 
 /// What `conda activate <prefix>` sets for a launch of that environment's Python:
 /// `CONDA_PREFIX`, `CONDA_DEFAULT_ENV` and the environment's folders in front of PATH (on
-/// Windows they hold the DLLs its packages load). Variables already in `env` are kept; PATH
-/// keeps its entries after the environment's.
-pub fn activate_conda(env: &mut BTreeMap<String, String>, prefix: &Path, inherit: bool) -> IdeResult<()> {
+/// Windows they hold the DLLs its packages load). The `CONDA_*` values replace inherited ones
+/// (an IDE started with `base` active) unless `user_set` says the launch's own configuration
+/// set them; PATH keeps its entries after the environment's.
+pub fn activate_conda(
+    env: &mut BTreeMap<String, String>,
+    prefix: &Path,
+    inherit: bool,
+    user_set: impl Fn(&str) -> bool,
+) -> IdeResult<()> {
+    let text = prefix.to_string_lossy().into_owned();
+    // As conda names it: `base`, the name of an env in an `envs/` folder, else its full path.
     let name = if prefix.join("condabin").is_dir() {
         "base".to_owned()
-    } else {
+    } else if prefix.parent().is_some_and(|p| p.file_name().is_some_and(|n| n == "envs")) {
         prefix.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    } else {
+        text.clone()
     };
-    env.entry("CONDA_PREFIX".into()).or_insert_with(|| prefix.to_string_lossy().into_owned());
-    env.entry("CONDA_DEFAULT_ENV".into()).or_insert(name);
+    for (key, value) in [("CONDA_PREFIX", text), ("CONDA_DEFAULT_ENV", name)] {
+        if !user_set(key) {
+            env.insert(key.into(), value);
+        }
+    }
     // Windows spells it `Path`; keys are case-insensitive there.
     let is_path = |k: &str| if cfg!(windows) { k.eq_ignore_ascii_case("PATH") } else { k == "PATH" };
     let key = env.keys().find(|k| is_path(k)).cloned();
@@ -99,11 +112,13 @@ mod tests {
         assert!(windows.contains(&prefix.join("Library").join("bin")), "{windows:?}");
 
         let other = std::env::temp_dir().join("tools");
+        // An env file brought the IDE's own `base` activation; the configuration set its env name.
         let mut env = BTreeMap::from([
             ("PATH".to_owned(), std::env::join_paths([&other]).unwrap().to_string_lossy().into_owned()),
+            ("CONDA_PREFIX".to_owned(), "/opt/miniforge3".to_owned()),
             ("CONDA_DEFAULT_ENV".to_owned(), "mine".to_owned()),
         ]);
-        activate_conda(&mut env, &prefix, false).unwrap();
+        activate_conda(&mut env, &prefix, false, |k| k == "CONDA_DEFAULT_ENV").unwrap();
         let path: Vec<_> = std::env::split_paths(&env["PATH"]).collect();
         assert_eq!(path.first(), conda_dirs(&prefix, cfg!(windows)).first());
         assert_eq!(path.last(), Some(&other));
@@ -111,8 +126,13 @@ mod tests {
         assert_eq!(env["CONDA_DEFAULT_ENV"], "mine");
         // Not inheriting and nothing set: PATH holds only the environment's folders.
         let mut env = BTreeMap::new();
-        activate_conda(&mut env, &prefix, false).unwrap();
+        activate_conda(&mut env, &prefix, false, |_| false).unwrap();
         assert_eq!(std::env::split_paths(&env["PATH"]).collect::<Vec<_>>(), conda_dirs(&prefix, cfg!(windows)));
         assert_eq!(env["CONDA_DEFAULT_ENV"], "ds");
+        // A `--prefix` environment outside `envs/` is named by its path, as conda does.
+        let elsewhere = std::env::temp_dir().join("work").join(".conda");
+        let mut env = BTreeMap::new();
+        activate_conda(&mut env, &elsewhere, false, |_| false).unwrap();
+        assert_eq!(env["CONDA_DEFAULT_ENV"], elsewhere.to_string_lossy());
     }
 }
