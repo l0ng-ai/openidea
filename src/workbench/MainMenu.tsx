@@ -150,12 +150,16 @@ function MainMenuBar({ merged, row, onExpandedChange }: MainMenuProps & { merged
     return () => onExpandedChange?.(false);
   }, [merged, expanded, onExpandedChange]);
 
-  // The invisible copy keeps the natural flex basis even while the slot shrinks.
-  // Measuring the allocated slot includes all neighbouring toolbar/caption controls.
+  // The invisible copy gives the full menu width; the visible presentation sizes the slot.
+  // Free space in the bar (its flex spacers) plus the slot is what the menu may take, so the
+  // collapsed slot shrinks to the hamburger instead of holding a blank gap.
   useLayoutEffect(() => {
     if (!merged || !slot.current || !measure.current) return;
     const update = () => {
-      const next = menus.length > 0 && slot.current!.clientWidth >= measure.current!.scrollWidth;
+      const free = [
+        ...(slot.current!.parentElement?.querySelectorAll<HTMLElement>("[data-toolbar-spacer]") ?? []),
+      ].reduce((w, el) => w + el.clientWidth, 0);
+      const next = menus.length > 0 && slot.current!.clientWidth + free >= measure.current!.scrollWidth;
       setFits(next);
       // Each presentation's menu closes with it, and must not reopen when it returns.
       if (next) setExpanded(false);
@@ -164,6 +168,7 @@ function MainMenuBar({ merged, row, onExpandedChange }: MainMenuProps & { merged
     const observer = new ResizeObserver(update);
     observer.observe(slot.current);
     observer.observe(measure.current);
+    if (slot.current.parentElement) observer.observe(slot.current.parentElement);
     update();
     return () => observer.disconnect();
   }, [merged, menus]);
