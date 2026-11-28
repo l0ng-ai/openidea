@@ -3,6 +3,16 @@ use ide_core::{IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Selects every open project window eligible to merge with `caller`.
+/// `is_project` returns `true` for open local or remote project windows and `false` for
+/// non-project windows (welcome screen, LightEdit).
+pub fn merge_candidates(windows: &[String], caller: &str, is_project: impl Fn(&str) -> bool) -> Vec<String> {
+    if !is_project(caller) {
+        return Vec::new();
+    }
+    windows.iter().filter(|label| is_project(label)).cloned().collect()
+}
+
 /// Platform adapters supply the system's tab preference and active project state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabbingPreference {
@@ -268,5 +278,22 @@ mod tests {
         );
         // A grouped window still opening its project: keep the previous session.
         assert_eq!(session(&groups, &windows, |l| (l != "project-2").then(|| PathBuf::from(l))), None);
+    }
+
+    #[test]
+    fn merge_candidates_includes_local_and_remote_project_windows() {
+        let windows = members(&["local-1", "local-2", "ssh-a-1", "ssh-b-1", "welcome", "light"]);
+        let is_project = |label: &str| matches!(label, "local-1" | "local-2" | "ssh-a-1" | "ssh-b-1");
+
+        assert_eq!(
+            merge_candidates(&windows, "local-1", is_project),
+            members(&["local-1", "local-2", "ssh-a-1", "ssh-b-1"])
+        );
+        assert_eq!(
+            merge_candidates(&windows, "ssh-a-1", is_project),
+            members(&["local-1", "local-2", "ssh-a-1", "ssh-b-1"])
+        );
+        assert!(merge_candidates(&windows, "welcome", is_project).is_empty());
+        assert!(merge_candidates(&windows, "light", is_project).is_empty());
     }
 }

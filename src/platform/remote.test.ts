@@ -31,8 +31,13 @@ describe("remote invoke", () => {
       async invoke(command: string, call: { cmd: string; args: string; onChannel: Channel<ChannelFrame> }) {
         expect(command).toBe("remote_invoke");
         expect(call.cmd).toBe("db_execute_stream");
-        const { onProgress, console } = JSON.parse(call.args) as { onProgress: { $channel: number }; console: string };
+        const { onProgress, console, consoleManual } = JSON.parse(call.args) as {
+          onProgress: { $channel: number };
+          console: string;
+          consoleManual: boolean;
+        };
         expect(console).toBe("/remote/console.sql");
+        expect(consoleManual).toBe(true);
         call.onChannel.onmessage({ id: onProgress.$channel, data: JSON.stringify(done) });
         return "null";
       },
@@ -48,7 +53,7 @@ describe("remote invoke", () => {
     const channel = new Channel<ExecutionEvent>(progress);
     try {
       expect(
-        await call(commands.dbExecuteStream(1, "test-db", [], 10, null, null, channel, "/remote/console.sql")),
+        await call(commands.dbExecuteStream(1, "test-db", [], 10, null, null, channel, "/remote/console.sql", true)),
       ).toBeNull();
       expect(unregisterCallback).toHaveBeenCalledExactlyOnceWith(channel.id);
       expect(progress).toHaveBeenCalledExactlyOnceWith(done);

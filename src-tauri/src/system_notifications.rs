@@ -3,7 +3,8 @@
 //! Driven by `show_system_notification` from the notification store. Honour
 //! global `[notifications].systemNotifications`; suppressed while any window is
 //! active. Click focuses the window that raised the toast — balloon actions stay
-//! in the IDE.
+//! in the IDE. On macOS a click only activates the app: tracking clicks there costs
+//! a waiting thread per toast.
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -53,6 +54,12 @@ static STATE: LazyLock<State> = LazyLock::new(State::new);
 /// Registers the notification plugin's activation handler once.
 pub fn init(app: &AppHandle) {
     if STATE.ready.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    // macOS: with an action handler the plugin parks a thread per toast until it is clicked,
+    // so ignored toasts pile up threads and NSUserNotificationCenter CPU. A click on a toast
+    // already brings the app forward there, so leave the handler out.
+    if cfg!(target_os = "macos") {
         return;
     }
     let handle = app.clone();

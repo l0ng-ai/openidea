@@ -432,7 +432,8 @@ pub async fn sdk_python_package_index(
     result
 }
 
-/// Installs (`uninstall = false`) or removes a package; output streams through `on_output`.
+/// Installs (`uninstall = false`, in editable mode with `editable`) or removes a package; output
+/// streams through `on_output`.
 #[allow(clippy::too_many_arguments)]
 #[command(trust = outside_restricted)]
 pub async fn sdk_python_pip(
@@ -442,6 +443,7 @@ pub async fn sdk_python_pip(
     requirement: String,
     uninstall: bool,
     upgrade: bool,
+    editable: bool,
     request: RequestId,
     on_output: Channel<String>,
 ) -> IdeResult<()> {
@@ -455,7 +457,15 @@ pub async fn sdk_python_pip(
         if uninstall {
             ide_sdk::python::uninstall_package(&python, &requirement, &cancel, &send)
         } else {
-            ide_sdk::python::install_package(&python, &requirement, upgrade, project_root.as_deref(), &cancel, &send)
+            ide_sdk::python::install_package(
+                &python,
+                &requirement,
+                upgrade,
+                editable,
+                project_root.as_deref(),
+                &cancel,
+                &send,
+            )
         }
     })
     .await;

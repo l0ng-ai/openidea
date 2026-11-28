@@ -215,6 +215,58 @@
   height: 32px;
   margin-top: var(--space-0-5);
   font-size: var(--fs-ui);
+  --remote-badge-ring: var(--bg-island);
+}
+.tileRemote {
+  position: relative;
+  overflow: visible;
+}
+.remoteCorner {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 3.5px;
+  background: var(--accent);
+  color: var(--fg-on-accent);
+  --icon-color: currentColor;
+  border: 1.5px solid var(--remote-badge-ring, var(--bg-popup));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-style: normal;
+  pointer-events: none;
+}
+.projectBadge .remoteCorner {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+}
+.remoteHostPill {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: var(--space-1);
+  max-width: 100%;
+  min-width: 0;
+  color: var(--fg-secondary);
+  --icon-color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.remoteKind {
+  flex: none;
+  font-weight: normal;
+}
+.remoteDot {
+  flex: none;
+  opacity: 0.65;
+}
+.remoteHostText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 /* A project group: one line, folds its projects. */
 .group {

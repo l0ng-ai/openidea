@@ -39,7 +39,6 @@ import {
   editorService,
   maybeEditorService,
   notifications,
-  showServiceView,
   toolWindowService,
   type FileDecoration,
 } from "@/workbench/contributions";
@@ -57,6 +56,7 @@ import {
   idleTargets,
   newSourceId,
   sourceIcon,
+  supportsExplain,
   splitTarget,
   targetOf,
 } from "./model";
@@ -78,9 +78,10 @@ import type { TableSnapshot } from "./schemaCompare";
 import { resolutionScopeOf, resolutionScopesOf, type SqlResolutionScope } from "./resolutionScopes";
 import { databaseRequest, invalidateDatabaseRequests, projectRequest } from "./requests";
 import { tx } from "@/platform/i18n";
+import { revealDatabaseResults } from "./outputDestination";
+export { RESULTS_VIEW } from "./outputDestination";
 
 export const DB_TOOL_WINDOW = "database";
-export const RESULTS_VIEW = "dbResults";
 const BINDINGS_KEY = "openidea.database.consoles";
 const CONSOLE_SCHEMAS_KEY = "openidea.database.consoleSchemas";
 const VIEW_OPTIONS_KEY = "openidea.database.viewOptions";
@@ -135,6 +136,8 @@ export interface OutputLine {
   text: string;
   /** Prompt before a statement: the schema it ran in (`main>`). */
   prompt?: string;
+  /** SQL console or file that emitted the line. */
+  path?: string;
 }
 
 /** `activeResult` value of the Output tab. */
@@ -242,6 +245,7 @@ interface DatabaseState {
   inline: ResultTab[];
   /** Result tab id, or `OUTPUT_TAB`. */
   activeResult: number | null;
+  activeClientResults: Record<string, number>;
   output: OutputLine[];
   /** Console path → running request. */
   running: Record<string, RequestId>;
@@ -267,6 +271,8 @@ interface DatabaseState {
   manualCommit: Set<string>;
   /** Manual-commit data sources with statements not yet committed. */
   pendingTx: Set<string>;
+  consoleModes: Map<string, boolean>;
+  consolePendingTx: Set<string>;
 }
 
 function readBindings(): Record<string, string> {
@@ -334,6 +340,7 @@ export const useDatabase = create<DatabaseState>(() => ({
   results: [],
   inline: [],
   activeResult: null,
+  activeClientResults: {},
   output: [],
   running: {},
   executions: {},
@@ -348,6 +355,8 @@ export const useDatabase = create<DatabaseState>(() => ({
   paramValues: {},
   manualCommit: new Set(),
   pendingTx: new Set(),
+  consoleModes: new Map(),
+  consolePendingTx: new Set(),
 }));
 
 /**
@@ -355,7 +364,12 @@ export const useDatabase = create<DatabaseState>(() => ({
  * no result tab shows the statement any more (the backend also closes idle ones).
  */
 const resultKey = (tab: ResultTab) =>
-  JSON.stringify([tab.sourceId, tab.outcome.statement.text, tab.schema ?? consoleSchema(tab.path)]);
+  JSON.stringify([
+    tab.sourceId,
+    tab.outcome.statement.text,
+    tab.schema ?? consoleSchema(tab.path),
+    sourceById(tab.sourceId)?.driver === "postgres" ? tab.path : null,
+  ]);
 useDatabase.subscribe((state, previous) => {
   if (state.results === previous.results && state.inline === previous.inline) return;
   const shown = [...state.results, ...state.inline];
@@ -363,7 +377,10 @@ useDatabase.subscribe((state, previous) => {
   for (const tab of [...previous.results, ...previous.inline]) {
     if (tab.plan || keys.has(resultKey(tab))) continue;
     const schema = tab.schema ?? consoleSchema(tab.path);
-    void call(commands.dbReleaseResult(tab.sourceId, tab.outcome.statement.text, schema || null)).catch(() => {});
+    const console = sourceById(tab.sourceId)?.driver === "postgres" ? tab.path : null;
+    void call(commands.dbReleaseResult(tab.sourceId, tab.outcome.statement.text, schema || null, console)).catch(
+      () => {},
+    );
   }
 });
 
@@ -950,7 +967,16 @@ export async function disconnect(id: string): Promise<void> {
       connected.delete(t);
       connectionIntents.set(t, {});
     }
-    return { connected };
+    const consoleModes = new Map(s.consoleModes);
+    const consolePendingTx = new Set(s.consolePendingTx);
+    for (const [key, scope] of consoleScopes) {
+      if (connected.has(scope.id) || !targets.includes(scope.id)) continue;
+      scope.retired = true;
+      consoleScopes.delete(key);
+      consoleModes.delete(key);
+      consolePendingTx.delete(key);
+    }
+    return { connected, consoleModes, consolePendingTx };
   });
 }
 
@@ -958,8 +984,9 @@ export async function disconnect(id: string): Promise<void> {
 export function watchIdleConnections(everyMs = 5000): () => void {
   const timer = setInterval(() => {
     const s = useDatabase.getState();
-    const running = new Set(Object.keys(s.running).map((path) => s.consoles[path]));
-    const busy = (t: string) => running.has(t) || s.pendingTx.has(t);
+    const running = new Set(Object.keys(s.running).map(consoleSource));
+    const pending = new Set([...s.consolePendingTx].map((key) => consoleScopes.get(key)?.id));
+    const busy = (t: string) => running.has(t) || pending.has(t) || s.pendingTx.has(t);
     for (const t of idleTargets(s.connected, s.sources, lastUsed, busy, Date.now())) {
       lastUsed.delete(t);
       void disconnect(t).then(() => log("info", `${targetLabel(t)}: disconnected after being idle`));
@@ -1326,8 +1353,16 @@ const duckdbCatalogLoads = new Map<
   { names: Promise<DbDatabases>; catalog?: { name: string; schemas: Promise<DbCatalogSchema[]> } }
 >();
 const preparingConsoles = new Map<string, RequestId>();
-const clickhouseConsoles = new Set<string>();
-const closingClickhouseConsoles = new Map<string, Promise<unknown>>();
+interface ConsoleScope {
+  id: string;
+  path: string;
+  retired: boolean;
+  modeRequest: Promise<unknown>;
+}
+
+const consoleScopes = new Map<string, ConsoleScope>();
+const closingConsoles = new Map<string, Promise<unknown>>();
+const pendingExplains = new Map<string, RequestId>();
 const stopResultDelivery = new Map<RequestId, () => void>();
 const incompleteResultDelivery = Symbol("incomplete SQL result delivery");
 const streamingResultTabs = new Set<number>();
@@ -1409,8 +1444,10 @@ useProject.subscribe((state, previous) => {
   completionLoads.clear();
   duckdbCatalogLoads.clear();
   preparingConsoles.clear();
-  clickhouseConsoles.clear();
-  closingClickhouseConsoles.clear();
+  for (const scope of consoleScopes.values()) scope.retired = true;
+  consoleScopes.clear();
+  closingConsoles.clear();
+  pendingExplains.clear();
   lastUsed.clear();
   if (useDatabase.getState().pausedConsoleMetadata.size) useDatabase.setState({ pausedConsoleMetadata: new Set() });
 });
@@ -1439,6 +1476,26 @@ export function bindConsole(path: string, id: string | null) {
     }
     return { consoles, consoleSchemas };
   });
+}
+
+/** Rebinding resolves the old editor's pending PostgreSQL transaction before changing targets. */
+export async function rebindConsole(path: string, id: string | null): Promise<boolean> {
+  const previous = consoleSource(path);
+  if (previous === id) {
+    bindConsole(path, id);
+    return true;
+  }
+  if (useDatabase.getState().running[path]) return false;
+  const current = projectRequest();
+  const source = previous ? sourceById(previous) : undefined;
+  if (previous && source?.driver === "postgres" && consoleHasPending(useDatabase.getState(), previous, path)) {
+    const commit = await askEndTransaction(source, true);
+    if (commit === null || !current() || consoleSource(path) !== previous) return false;
+    if (!(await finishTransaction(previous, commit, path))) return false;
+  }
+  if (!current() || consoleSource(path) !== previous) return false;
+  bindConsole(path, id);
+  return true;
 }
 
 /** The schema a console's statements run in: its pick, else the connection's default. */
@@ -1495,7 +1552,7 @@ export function consoleSource(path: string): string | null {
 export async function openConsole(id: string, schema?: string): Promise<void> {
   try {
     const path = await call(commands.dbConsolePath(id));
-    bindConsole(path, id);
+    if (!(await rebindConsole(path, id))) return;
     announceConsoleFile(path);
     if (schema) setConsoleSchema(path, schema);
     await editorService().openFile(path, { focus: true });
@@ -1511,7 +1568,7 @@ export function consoleFiles(id: string): Promise<string[]> {
 
 /** Opens one of the query consoles of data source `id`, switched to `schema` if given. */
 export async function openConsoleFile(id: string, path: string, schema?: string): Promise<void> {
-  bindConsole(path, id);
+  if (!(await rebindConsole(path, id))) return;
   if (schema) setConsoleSchema(path, schema);
   await editorService().openFile(path, { focus: true });
 }
@@ -1539,17 +1596,17 @@ let nextTab = 1;
 let nextRun = 1;
 let nextLine = 1;
 
-function outputLine(kind: OutputLine["kind"], text: string, prompt?: string): OutputLine {
-  return { id: nextLine++, time: Date.now(), kind, text, prompt };
+function outputLine(kind: OutputLine["kind"], text: string, prompt?: string, path?: string): OutputLine {
+  return { id: nextLine++, time: Date.now(), kind, text, prompt, path };
 }
 
-export function log(kind: OutputLine["kind"], text: string, prompt?: string) {
-  const line = outputLine(kind, text, prompt);
+export function log(kind: OutputLine["kind"], text: string, prompt?: string, path?: string) {
+  const line = outputLine(kind, text, prompt, path);
   useDatabase.setState((s) => ({ output: [...s.output, line].slice(-MAX_OUTPUT) }));
 }
 
-export function clearOutput() {
-  useDatabase.setState({ output: [] });
+export function clearOutput(path?: string) {
+  useDatabase.setState((s) => ({ output: path === undefined ? [] : s.output.filter((line) => line.path !== path) }));
 }
 
 function elapsed(ms: number): string {
@@ -1590,24 +1647,27 @@ function outcomeUpdates(
   schema: string | undefined,
   outcomes: readonly DbStatementOutcome[],
   logConnected: boolean,
-): Pick<DatabaseState, "output" | "pendingTx"> {
+  path?: string,
+): Pick<DatabaseState, "output" | "pendingTx" | "consolePendingTx"> {
   const prompt = `${schema || promptOf(id)}>`;
-  const lines = logConnected ? [outputLine("info", "Connected")] : [];
+  const lines = logConnected ? [outputLine("info", "Connected", undefined, path)] : [];
   for (const outcome of outcomes) {
-    lines.push(outputLine("statement", outcome.statement.text, prompt));
+    lines.push(outputLine("statement", outcome.statement.text, prompt, path));
     lines.push(
       outcome.error
-        ? outputLine("error", `[${targetLabel(id)}] ${outcome.error}`)
-        : outputLine("result", outcomeSummary(outcome)),
+        ? outputLine("error", `[${targetLabel(id)}] ${outcome.error}`, undefined, path)
+        : outputLine("result", outcomeSummary(outcome), undefined, path),
     );
   }
   const pending =
-    state.manualCommit.has(id) &&
-    !state.pendingTx.has(id) &&
+    consoleUsesManualCommit(state, id, path) &&
+    !consoleHasPending(state, id, path) &&
     outcomes.some((outcome) => !outcome.error && !READS.test(outcome.statement.text));
+  const scope = postgresConsoleKey(state, id, path);
   return {
     output: [...state.output, ...lines].slice(-MAX_OUTPUT),
-    pendingTx: pending ? new Set(state.pendingTx).add(id) : state.pendingTx,
+    pendingTx: pending && !scope ? new Set(state.pendingTx).add(id) : state.pendingTx,
+    consolePendingTx: pending && scope ? new Set(state.consolePendingTx).add(scope) : state.consolePendingTx,
   };
 }
 
@@ -1618,7 +1678,7 @@ function outcomeUpdates(
  * each statement in it, so unqualified names resolve there.
  */
 /** Shows `id` disconnected when the backend closed its connection (it reconnects on next use). */
-async function syncDropped(id: string) {
+async function syncDropped(id: string, path?: string) {
   const current = databaseRequest(id);
   const server = await call(commands.dbConnected()).catch(() => null);
   if (!current() || !server || server.includes(id) || !useDatabase.getState().connected.has(id)) return;
@@ -1628,32 +1688,85 @@ async function syncDropped(id: string) {
     connected.delete(id);
     return { connected };
   });
-  log("info", `${targetLabel(id)}: the connection was lost; the next statement reconnects`);
+  log("info", `${targetLabel(id)}: the connection was lost; the next statement reconnects`, undefined, path);
 }
 
-/** Keep a named session while its editor or an operation on its results can use it. */
-export function watchClickhouseConsoles(): () => void {
+function consoleScopeKey(id: string, path: string): string {
+  return JSON.stringify([id, path]);
+}
+
+function openConsoleScope(id: string, path: string): ConsoleScope {
+  const key = consoleScopeKey(id, path);
+  const existing = consoleScopes.get(key);
+  if (existing) return existing;
+  const scope = { id, path, retired: false, modeRequest: Promise.resolve() };
+  consoleScopes.set(key, scope);
+  return scope;
+}
+
+function updateConsoleMode(scope: ConsoleScope, manual: boolean): Promise<boolean> {
+  const changed = scope.modeRequest.then(() => {
+    if (scope.retired) throw new IpcError({ kind: "cancelled", message: tx("Cancelled") });
+    return call(commands.dbSetConsoleManualCommit(scope.id, scope.path, manual));
+  });
+  scope.modeRequest = changed.catch(() => {});
+  return changed;
+}
+
+function postgresConsoleKey(state: DatabaseState, id: string, path?: string): string | null {
+  const source = state.sources.find((source) => source.id === splitTarget(id).id);
+  return source?.driver === "postgres" && path ? consoleScopeKey(id, path) : null;
+}
+
+/** Keep a console connection while the editor or one of its results can use it. */
+export function watchConsoleSessions(): () => void {
   const editor = maybeEditorService();
   const release = () => {
     const paths = editor?.openPaths?.();
-    if (!paths || !clickhouseConsoles.size) return;
+    if (!paths || !consoleScopes.size) return;
+    const open = new Set(paths);
     const { results, inline } = useDatabase.getState();
-    const retained = new Set([...paths, ...results.map((tab) => tab.path), ...inline.map((tab) => tab.path)]);
-    for (const path of clickhouseConsoles) {
-      if (retained.has(path)) continue;
-      clickhouseConsoles.delete(path);
-      preparingConsoles.delete(path);
-      cancelConsole(path);
-      const closing = call(commands.dbReleaseConsole(path)).catch(() => {});
-      closingClickhouseConsoles.set(path, closing);
+    const retained = new Set([...results, ...inline].map((tab) => consoleScopeKey(tab.sourceId, tab.path)));
+    for (const [key, scope] of consoleScopes) {
+      const { id, path } = scope;
+      if (retained.has(key) || (open.has(path) && consoleSource(path) === id)) continue;
+      scope.retired = true;
+      consoleScopes.delete(key);
+      if (!open.has(path)) {
+        preparingConsoles.delete(path);
+        cancelConsole(path);
+      }
+      const current = databaseRequest(id);
+      const pending = consoleHasPending(useDatabase.getState(), id, path);
+      const closing = scope.modeRequest
+        .then(() => {
+          if (current()) return call(commands.dbReleaseConsole(path, id));
+        })
+        .then(() => {
+          if (pending && current()) log("info", "Transaction rolled back");
+        })
+        .catch((error: unknown) => {
+          if (pending && current()) log("error", `[${targetLabel(id)}] ${message(error)}`);
+        });
+      closingConsoles.set(key, closing);
       void closing.then(() => {
-        if (closingClickhouseConsoles.get(path) === closing) closingClickhouseConsoles.delete(path);
+        if (closingConsoles.get(key) !== closing) return;
+        closingConsoles.delete(key);
+        if (!current()) return;
+        useDatabase.setState((s) => {
+          const consoleModes = new Map(s.consoleModes);
+          const consolePendingTx = new Set(s.consolePendingTx);
+          consoleModes.delete(key);
+          consolePendingTx.delete(key);
+          return { consoleModes, consolePendingTx };
+        });
       });
     }
   };
   const offTabs = editor?.onOpenTabsChange?.(release);
   const offResults = useDatabase.subscribe((state, previous) => {
-    if (state.results !== previous.results || state.inline !== previous.inline) release();
+    if (state.results !== previous.results || state.inline !== previous.inline || state.consoles !== previous.consoles)
+      release();
   });
   return () => {
     offTabs?.();
@@ -1661,18 +1774,43 @@ export function watchClickhouseConsoles(): () => void {
   };
 }
 
-function withConsoleConnection<T>(id: string, path: string | undefined, op: (console: string | null) => Promise<T>) {
+async function ensureConsoleManual(scope: ConsoleScope, current: () => boolean) {
+  const { id, path } = scope;
+  const pending = consoleHasPending(useDatabase.getState(), id, path);
+  const initialized = await updateConsoleMode(scope, true);
+  if (!current() || scope.retired) throw new IpcError({ kind: "cancelled", message: tx("Cancelled") });
+  if (initialized && pending) {
+    setPending(id, false, path);
+    throw new IpcError({
+      kind: "invalidInput",
+      message: tx(
+        "The previous transaction is no longer available. Check its outcome before running another statement.",
+      ),
+    });
+  }
+}
+
+function withConsoleConnection<T>(
+  id: string,
+  path: string | undefined,
+  op: (console: string | null, manual: boolean | null) => Promise<T>,
+) {
   const current = databaseRequest(id);
   return withConnection(id, async () => {
-    const console = sourceById(id)?.driver === "clickhouse" && path ? path : null;
-    if (console) {
-      // A reopened editor waits for the previous session's release before using the same path.
-      const closing = closingClickhouseConsoles.get(console);
-      if (closing) await closing;
-      if (!current()) throw new IpcError({ kind: "cancelled", message: tx("Cancelled") });
-      clickhouseConsoles.add(console);
-    }
-    return op(console);
+    const driver = sourceById(id)?.driver;
+    if (!path || (driver !== "clickhouse" && driver !== "postgres" && driver !== "jdbc")) return op(null, null);
+    const key = consoleScopeKey(id, path);
+    // A reopened editor waits for the previous session's release before using the same path.
+    const closing = closingConsoles.get(key);
+    if (closing) await closing;
+    if (!current()) throw new IpcError({ kind: "cancelled", message: tx("Cancelled") });
+    const scope = openConsoleScope(id, path);
+    await scope.modeRequest;
+    if (!current() || scope.retired) throw new IpcError({ kind: "cancelled", message: tx("Cancelled") });
+    const manual = driver === "postgres" ? consoleUsesManualCommit(useDatabase.getState(), id, path) : null;
+    if (manual) await ensureConsoleManual(scope, current);
+    if (scope.retired) throw new IpcError({ kind: "cancelled", message: tx("Cancelled") });
+    return op(path, manual);
   });
 }
 
@@ -1696,11 +1834,11 @@ async function run(
   // Only a query that is safe to run again has its cells cut: the whole value is read by running it again.
   const driver = sourceById(id)?.driver ?? "sqlite";
   const cellLimit = statements.every((s) => isReadOnlyQuery(s.text, driver)) ? CELL_LIMIT : null;
-  const outcomes = await withConsoleConnection(id, path, async (console) => {
+  const outcomes = await withConsoleConnection(id, path, async (console, manual) => {
     const execute = async () => {
       progress?.emit({ type: "started", index: 0 });
       const outcomes = await call(
-        commands.dbExecute(request, id, statements, skip, maxRows, schema || null, cellLimit, console),
+        commands.dbExecute(request, id, statements, skip, maxRows, schema || null, cellLimit, console, manual),
       ).catch((error: unknown) => {
         if (isCancelled(error)) progress?.onStatementCancelled();
         throw error;
@@ -1741,7 +1879,7 @@ async function run(
     try {
       // Large channel frames can arrive after the reply. Bound only this delivery wait.
       await call(
-        commands.dbExecuteStream(request, id, statements, maxRows, schema || null, cellLimit, channel, console),
+        commands.dbExecuteStream(request, id, statements, maxRows, schema || null, cellLimit, channel, console, manual),
       );
       acknowledged = true;
       waitForDelivery();
@@ -1771,10 +1909,10 @@ async function run(
   });
   if (!current()) return outcomes;
   // A failed statement can have found the session dead; the backend then dropped it.
-  if (outcomes.some((o) => o.error)) void syncDropped(id);
+  if (outcomes.some((o) => o.error)) void syncDropped(id, path);
   // Consoles publish the same outcome updates alongside their progress and grids.
   if (progress) return outcomes;
-  useDatabase.setState((s) => outcomeUpdates(s, id, schema, outcomes, !wasConnected));
+  useDatabase.setState((s) => outcomeUpdates(s, id, schema, outcomes, !wasConnected, path));
   if (outcomes.some((outcome) => changesSchema(id, outcome))) void refresh(id);
   return outcomes;
 }
@@ -1961,19 +2099,24 @@ export async function executeConsole(
     return [];
   }
   const current = databaseRequest(id);
+  const editor = maybeEditorService();
+  const wasOpen = sourceById(id)?.driver === "postgres" && editor?.openPaths?.()?.includes(path);
   const request = nextRequestId();
   const ownsRun = () => current() && useDatabase.getState().running[path] === request;
   preparingConsoles.set(path, request);
+  const earlierExplain = pendingExplains.get(path);
   const resultIds = new Set<number>();
   let finished = false;
   let selectOutput = false;
   let schemaChanged = false;
   let statementCancelled = false;
   let deliveryIncomplete = false;
+  const inline = inEditorResults();
   try {
     const statements = await consoleStatements(id, text, from, to, confirmUnsafe);
     if (!current() || preparingConsoles.get(path) !== request || !statements.length) return [];
     preparingConsoles.delete(path);
+    if (pendingExplains.get(path) === earlierExplain) pendingExplains.delete(path);
     const prev = useDatabase.getState().running[path];
     if (prev) cancelExecution(prev);
     const execution = { startedAt: Date.now(), statements: statements.length, active: null };
@@ -1982,11 +2125,10 @@ export async function executeConsole(
       executions: { ...s.executions, [path]: execution },
     }));
     onStart?.(statements);
-    const inline = inEditorResults();
-    if (!inline) showServiceView(RESULTS_VIEW, false);
+    if (!inline) revealDatabaseResults(path);
     const pageSize = useDatabase.getState().maxRows;
     const schema = consoleSchema(path) || (await loadCompletion(id))?.defaultSchema || "";
-    if (!ownsRun()) return [];
+    if (!ownsRun() || (wasOpen && !editor?.openPaths?.()?.includes(path))) return [];
     let logConnected = !useDatabase.getState().connected.has(id);
     let runNumber: number | undefined;
     let queued: StatementProgress[] = [];
@@ -2018,12 +2160,17 @@ export async function executeConsole(
       useDatabase.setState((s) => {
         const executions = { ...s.executions, [path]: { ...execution, active } };
         const state = completed.length
-          ? { executions, ...outcomeUpdates(s, id, schema, completed, logConnected) }
+          ? { executions, ...outcomeUpdates(s, id, schema, completed, logConnected, path) }
           : { executions };
         const latest = tabs.at(-1);
         if (!latest) return state;
         if (inline) return { ...state, inline: [...s.inline, ...tabs.map((tab) => ({ ...tab, inline: true }))] };
-        return { ...state, results: capResults([...s.results, ...tabs], resultIds), activeResult: latest.id };
+        return {
+          ...state,
+          results: capResults([...s.results, ...tabs], resultIds),
+          activeResult: latest.id,
+          activeClientResults: { ...s.activeClientResults, [path]: latest.id },
+        };
       });
       if (completed.length) logConnected = false;
     };
@@ -2052,9 +2199,9 @@ export async function executeConsole(
     if (!ownsRun()) return [];
     if (deliveryIncomplete) {
       const summary = tx("SQL result delivery was incomplete. The final execution status is unknown.");
-      log("info", summary);
+      log("info", summary, undefined, path);
       notifications().notify({ level: "warning", title: summary, key: "db-execute" });
-      if (useDatabase.getState().manualCommit.has(id)) setPending(id, true);
+      if (consoleUsesManualCommit(useDatabase.getState(), id, path)) setPending(id, true, path);
     }
     finished = !deliveryIncomplete;
     selectOutput = !inline && (!resultIds.size || outcomes.some((o) => o.error));
@@ -2062,14 +2209,15 @@ export async function executeConsole(
   } catch (e) {
     if (!current() || (!ownsRun() && preparingConsoles.get(path) !== request)) return [];
     if (!isCancelled(e)) {
-      log("error", message(e));
+      if (!inline) showOutputFor(path);
+      log("error", message(e), undefined, path);
       notifications().notify({ level: "error", title: "Cannot execute", body: message(e), key: "db-execute" });
     } else {
-      log("info", "Cancelled");
+      log("info", "Cancelled", undefined, path);
       // Interrupting a running statement discards its held transaction. Between statements it stays open.
-      if (statementCancelled && useDatabase.getState().pendingTx.has(id)) {
-        log("info", "Transaction rolled back");
-        setPending(id, false);
+      if (statementCancelled && consoleHasPending(useDatabase.getState(), id, path)) {
+        log("info", "Transaction rolled back", undefined, path);
+        setPending(id, false, path);
       }
     }
     return [];
@@ -2095,7 +2243,15 @@ export async function executeConsole(
             )
           : capResults(s.results, resultIds);
       }
-      return { running, executions, results, activeResult: selectOutput ? OUTPUT_TAB : s.activeResult };
+      return {
+        running,
+        executions,
+        results,
+        ...(selectOutput && {
+          activeResult: OUTPUT_TAB,
+          activeClientResults: { ...s.activeClientResults, [path]: OUTPUT_TAB },
+        }),
+      };
     });
     if (refreshMetadata) void refresh(id);
   }
@@ -2155,24 +2311,35 @@ async function consoleStatements(
 
 const PLAN_TITLE = "Query Plan";
 
-/** Shows `plan` of `statement` in the window's Query Plan tab (one per window, like IDEA's). */
-function showPlan(path: string, id: string, statement: SqlStatement, plan: DbPlanNode[]) {
+/** Publishes the plan, selecting its tab only if Explain still owns the selection. */
+function showPlan(
+  path: string,
+  id: string,
+  statement: SqlStatement,
+  schema: string | undefined,
+  plan: DbPlanNode[],
+  select: boolean,
+) {
   useDatabase.setState((s) => {
-    const old = s.results.find((r) => r.plan && !r.pinned);
+    const old = select ? s.results.find((r) => r.path === path && r.plan && !r.pinned) : undefined;
     const tab: ResultTab = {
       id: old?.id ?? nextTab++,
       title: old?.title ?? PLAN_TITLE,
       path,
       sourceId: id,
+      schema,
       outcome: { statement, result: null, error: null },
       plan,
     };
-    const results = old
-      ? s.results.map((r) => (r === old ? tab : r))
-      : capResults([...s.results, tab], new Set([tab.id]));
-    return { results, activeResult: tab.id };
+    const active = select ? tab.id : activeResultFor(s, path);
+    // Adding a late plan must not evict any of the selected tabs.
+    const keep = select
+      ? new Set([tab.id])
+      : new Set([tab.id, active, s.activeResult ?? OUTPUT_TAB, ...Object.values(s.activeClientResults)]);
+    const results = old ? s.results.map((r) => (r === old ? tab : r)) : capResults([...s.results, tab], keep);
+    const activeClientResults = { ...s.activeClientResults, [path]: active };
+    return select ? { results, activeResult: tab.id, activeClientResults } : { results, activeClientResults };
   });
-  showServiceView(RESULTS_VIEW, false);
 }
 
 async function explain(
@@ -2180,37 +2347,47 @@ async function explain(
   statement: SqlStatement,
   schema: string | undefined,
   path: string,
+  request = nextRequestId(),
 ): Promise<DbPlanNode[]> {
-  const plan = await withConsoleConnection(id, path, (console) =>
-    call(commands.dbExplain(nextRequestId(), id, statement.text, schema || null, console)),
+  const current = databaseRequest(id);
+  const plan = await withConsoleConnection(id, path, (console, manual) =>
+    call(commands.dbExplain(request, id, statement.text, schema || null, console, manual)),
   );
-  log("statement", `explain ${statement.text}`, `${schema || promptOf(id)}>`);
-  log("result", `${plan.length} plan node${plan.length === 1 ? "" : "s"}`);
+  if (current()) {
+    log("statement", `explain ${statement.text}`, `${schema || promptOf(id)}>`, path);
+    log("result", `${plan.length} plan node${plan.length === 1 ? "" : "s"}`, undefined, path);
+  }
   return plan;
 }
 
 /** Explain Plan: the plan of the statement at `from` (the first selected one) of console `path`. */
 export async function explainConsole(path: string, text: string, from: number, to: number): Promise<void> {
   const id = consoleSource(path);
-  if (!id || sourceById(id)?.driver === "jdbc") return;
+  if (!id || !supportsExplain(sourceById(id))) return;
+  const current = databaseRequest(id);
+  const request = nextRequestId();
+  pendingExplains.set(path, request);
+  const ownsSelection = () => pendingExplains.get(path) === request;
   try {
     const [statement] = await consoleStatements(id, text, from, to);
-    if (!statement) return;
-    showPlan(
-      path,
-      id,
-      statement,
-      await explain(id, statement, useDatabase.getState().consoleSchemas[path] || undefined, path),
-    );
+    if (!current() || !statement) return;
+    if (ownsSelection()) revealDatabaseResults(path);
+    const schema = consoleSchema(path);
+    const plan = await explain(id, statement, schema, path, request);
+    if (current()) showPlan(path, id, statement, schema, plan, ownsSelection());
   } catch (e) {
-    if (isCancelled(e)) return;
-    log("error", `[${targetLabel(id)}] ${message(e)}`);
+    if (!current() || isCancelled(e)) return;
+    log("error", `[${targetLabel(id)}] ${message(e)}`, undefined, path);
+    if (!ownsSelection()) return;
+    showOutputFor(path);
     notifications().notify({
       level: "error",
       title: "Cannot explain the statement",
       body: message(e),
       key: "db-explain",
     });
+  } finally {
+    if (ownsSelection()) pendingExplains.delete(path);
   }
 }
 
@@ -2253,7 +2430,7 @@ export async function rerunResult(tabId: number): Promise<void> {
       });
     } catch (e) {
       patchResult(tabId, { busy: false });
-      if (!isCancelled(e)) log("error", `[${targetLabel(tab.sourceId)}] ${message(e)}`);
+      if (!isCancelled(e)) log("error", `[${targetLabel(tab.sourceId)}] ${message(e)}`, undefined, tab.path);
     }
     return;
   }
@@ -2268,8 +2445,10 @@ export function pageable(tab: ResultTab): boolean {
 /** Row `row` (from 0, over all pages) of result tab `tab`'s query, with its cells whole. */
 export async function readResultRow(tab: ResultTab, row: number): Promise<DbQueryResult> {
   const schema = tab.schema ?? consoleSchema(tab.path);
-  return withConsoleConnection(tab.sourceId, tab.path, (console) =>
-    call(commands.dbResultRow(nextRequestId(), tab.sourceId, tab.outcome.statement, row, schema || null, console)),
+  return withConsoleConnection(tab.sourceId, tab.path, (console, manual) =>
+    call(
+      commands.dbResultRow(nextRequestId(), tab.sourceId, tab.outcome.statement, row, schema || null, console, manual),
+    ),
   );
 }
 
@@ -2278,7 +2457,7 @@ export async function readResultPage(tab: ResultTab): Promise<DbQueryResult> {
   const schema = tab.schema ?? consoleSchema(tab.path);
   const rows = Math.max(tab.outcome.result?.rows.length ?? 0, 1);
   const { skip } = pageFetch(tab.page ?? 0, tab.pageSize ?? rows);
-  const [outcome] = await withConsoleConnection(tab.sourceId, tab.path, (console) =>
+  const [outcome] = await withConsoleConnection(tab.sourceId, tab.path, (console, manual) =>
     call(
       commands.dbExecute(
         nextRequestId(),
@@ -2289,6 +2468,7 @@ export async function readResultPage(tab: ResultTab): Promise<DbQueryResult> {
         schema || null,
         null,
         console,
+        manual,
       ),
     ),
   );
@@ -2341,11 +2521,10 @@ export async function loadResultPage(tabId: number, page: number, pageSize: numb
       });
     } else patchResult(tabId, { busy: false });
     // A run of its console may have replaced the tab meanwhile.
-    if (outcome?.error && useDatabase.getState().results.some((r) => r.id === tabId))
-      useDatabase.setState({ activeResult: OUTPUT_TAB });
+    if (outcome?.error && useDatabase.getState().results.some((r) => r.id === tabId)) showOutputFor(tab.path);
   } catch (e) {
     patchResult(tabId, { busy: false });
-    if (!isCancelled(e)) log("error", message(e));
+    if (!isCancelled(e)) log("error", message(e), undefined, tab.path);
   }
 }
 
@@ -2383,7 +2562,7 @@ export async function countResult(tabId: number): Promise<number | null> {
     return known;
   } catch (e) {
     patchResult(tabId, { busy: false });
-    if (!isCancelled(e)) log("error", message(e));
+    if (!isCancelled(e)) log("error", message(e), undefined, tab.path);
     return null;
   }
 }
@@ -2391,36 +2570,62 @@ export async function countResult(tabId: number): Promise<number | null> {
 /** Statements that only read (they leave a manual transaction clean). */
 const READS = /^\s*(select|show|pragma|explain|describe|desc|values|table)\b/i;
 
-function setPending(id: string, pending: boolean) {
+export function consoleUsesManualCommit(state: DatabaseState, id: string, path?: string): boolean {
+  const key = postgresConsoleKey(state, id, path);
+  if (!key) return state.manualCommit.has(id);
+  const source = state.sources.find((source) => source.id === splitTarget(id).id);
+  return state.consoleModes.get(key) ?? source?.options?.transaction === "manual";
+}
+
+export function consoleHasPending(state: DatabaseState, id: string, path?: string): boolean {
+  const key = postgresConsoleKey(state, id, path);
+  return key ? state.consolePendingTx.has(key) : state.pendingTx.has(id);
+}
+
+function setPending(id: string, pending: boolean, path?: string) {
   useDatabase.setState((s) => {
-    const pendingTx = new Set(s.pendingTx);
-    if (pending) pendingTx.add(id);
-    else pendingTx.delete(id);
-    return { pendingTx };
+    const key = postgresConsoleKey(s, id, path);
+    const scope = key ?? id;
+    const updated = new Set(key ? s.consolePendingTx : s.pendingTx);
+    if (pending) updated.add(scope);
+    else updated.delete(scope);
+    return key ? { consolePendingTx: updated } : { pendingTx: updated };
   });
 }
 
-/** Commits or rolls back the open transaction of a manual-commit data source. */
-export async function finishTransaction(id: string, commit: boolean): Promise<boolean> {
-  if (sourceById(id)?.driver === "clickhouse" || sourceById(id)?.driver === "jdbc") return false;
+/** Commits or rolls back the open transaction of the console or legacy data source scope. */
+export async function finishTransaction(id: string, commit: boolean, path?: string): Promise<boolean> {
+  const driver = sourceById(id)?.driver;
+  if (driver === "clickhouse" || driver === "jdbc") return false;
+  const current = databaseRequest(id);
   try {
-    await call(commands.dbFinishTransaction(id, commit));
-    log("statement", commit ? "commit" : "rollback", `${promptOf(id)}>`);
-    log("result", commit ? "Transaction committed" : "Transaction rolled back");
-    setPending(id, false);
+    if (driver === "postgres" && path && consoleHasPending(useDatabase.getState(), id, path)) {
+      await ensureConsoleManual(openConsoleScope(id, path), current);
+    }
+    await call(
+      driver === "postgres" && path
+        ? commands.dbFinishConsoleTransaction(id, path, commit)
+        : commands.dbFinishTransaction(id, commit),
+    );
+    if (!current()) return false;
+    log("statement", commit ? "commit" : "rollback", `${promptOf(id)}>`, path);
+    log("result", commit ? "Transaction committed" : "Transaction rolled back", undefined, path);
+    setPending(id, false, path);
     return true;
   } catch (e) {
-    log("error", `[${targetLabel(id)}] ${message(e)}`);
+    log("error", `[${targetLabel(id)}] ${message(e)}`, undefined, path);
     notifications().notify({ level: "error", title: commit ? "Cannot commit" : "Cannot roll back", body: message(e) });
     return false;
   }
 }
 
-/** Leaving manual commit with changes pending (IDEA asks the same); null when cancelled. */
-async function askEndTransaction(source: DataSource): Promise<boolean | null> {
+/** Leaving a console scope with changes pending, or null when cancelled. */
+async function askEndTransaction(source: DataSource, rebind = false): Promise<boolean | null> {
   const { button } = await ask({
-    title: "Switch to Auto-Commit",
-    body: tx`${source.name} has uncommitted changes. Commit or roll them back before switching to auto-commit?`,
+    title: rebind ? "Switch Data Source" : "Switch to Auto-Commit",
+    body: rebind
+      ? tx`${source.name} has uncommitted changes. Commit or roll them back before switching data sources?`
+      : tx`${source.name} has uncommitted changes. Commit or roll them back before switching to auto-commit?`,
     buttons: [
       { id: "rollback", label: "Roll Back" },
       { id: "commit", label: "Commit", primary: true },
@@ -2429,27 +2634,44 @@ async function askEndTransaction(source: DataSource): Promise<boolean | null> {
   return button === "cancel" ? null : button === "commit";
 }
 
-/**
- * IDEA's Tx: Auto / Manual. Leaving manual mode with changes pending asks
- * whether to commit or roll them back.
- */
-export async function setManualCommit(id: string, manual: boolean): Promise<void> {
-  if (sourceById(id)?.driver === "jdbc" || (sourceById(id)?.driver === "clickhouse" && manual)) return;
+/** IDEA's Tx: Auto / Manual. Leaving manual mode resolves pending changes first. */
+export async function setManualCommit(id: string, manual: boolean, path?: string): Promise<void> {
+  const source = sourceById(id);
+  if (source?.driver === "jdbc" || (source?.driver === "clickhouse" && manual)) return;
   const st = useDatabase.getState();
-  if (manual === st.manualCommit.has(id)) return;
-  if (!manual && st.pendingTx.has(id)) {
-    const source = sourceById(id);
+  if (manual === consoleUsesManualCommit(st, id, path)) return;
+  const current = databaseRequest(id);
+  if (!manual && consoleHasPending(st, id, path)) {
     const commit = source ? await askEndTransaction(source) : false;
-    if (commit === null || !(await finishTransaction(id, commit))) return;
+    if (commit === null || !(await finishTransaction(id, commit, path))) return;
   }
-  await call(commands.dbSetManualCommit(id, manual));
-  useDatabase.setState((s) => {
-    const manualCommit = new Set(s.manualCommit);
-    if (manual) manualCommit.add(id);
-    else manualCommit.delete(id);
-    return { manualCommit };
-  });
-  setPending(id, false);
+  const key = postgresConsoleKey(st, id, path);
+  try {
+    if (key && path) {
+      const closing = closingConsoles.get(key);
+      if (closing) await closing;
+      if (!current()) return;
+      const scope = openConsoleScope(id, path);
+      if (manual) await withConnection(id, () => updateConsoleMode(scope, true));
+      else await updateConsoleMode(scope, false);
+      if (!current() || scope.retired) return;
+      useDatabase.setState((s) => ({ consoleModes: new Map(s.consoleModes).set(key, manual) }));
+    } else {
+      await call(commands.dbSetManualCommit(id, manual));
+      if (!current()) return;
+      useDatabase.setState((s) => {
+        const manualCommit = new Set(s.manualCommit);
+        if (manual) manualCommit.add(id);
+        else manualCommit.delete(id);
+        return { manualCommit };
+      });
+    }
+    setPending(id, false, path);
+  } catch (e) {
+    if (!current()) return;
+    log("error", `[${targetLabel(id)}] ${message(e)}`);
+    notifications().notify({ level: "error", title: "Cannot change transaction mode", body: message(e) });
+  }
 }
 
 export function cancelConsole(path: string) {
@@ -2462,14 +2684,53 @@ function cancelExecution(request: RequestId) {
   void commands.cancelRequest(request);
 }
 
+export function resultsFor(s: Pick<DatabaseState, "results">, path?: string) {
+  return path === undefined ? s.results : s.results.filter((tab) => tab.path === path);
+}
+
+export function activeResultFor(
+  s: Pick<DatabaseState, "activeResult" | "activeClientResults" | "results">,
+  path?: string,
+) {
+  const selected = path === undefined ? s.activeResult : s.activeClientResults[path];
+  if (
+    selected === OUTPUT_TAB ||
+    s.results.some((tab) => tab.id === selected && (path === undefined || tab.path === path))
+  )
+    return selected ?? OUTPUT_TAB;
+  return path === undefined ? OUTPUT_TAB : (resultsFor(s, path).at(-1)?.id ?? OUTPUT_TAB);
+}
+
+function showOutputFor(path: string) {
+  useDatabase.setState((s) => ({
+    activeResult: OUTPUT_TAB,
+    activeClientResults: { ...s.activeClientResults, [path]: OUTPUT_TAB },
+  }));
+}
+
+export function selectResult(id: number, path?: string) {
+  useDatabase.setState((s) =>
+    path === undefined ? { activeResult: id } : { activeClientResults: { ...s.activeClientResults, [path]: id } },
+  );
+}
+
 export function closeResult(id: number) {
   useDatabase.setState((s) => {
     const index = s.results.findIndex((r) => r.id === id);
     if (index < 0) return s;
+    const path = s.results[index]!.path;
     const results = s.results.filter((r) => r.id !== id);
+    const sameClient = resultsFor(s, path);
+    const clientIndex = sameClient.findIndex((r) => r.id === id);
     return {
       results,
       activeResult: s.activeResult === id ? ((results[index - 1] ?? results[index])?.id ?? OUTPUT_TAB) : s.activeResult,
+      ...(s.activeClientResults[path] === id && {
+        activeClientResults: {
+          ...s.activeClientResults,
+          [path]: (sameClient[clientIndex - 1] ?? sameClient[clientIndex + 1])?.id ?? OUTPUT_TAB,
+        },
+      }),
     };
   });
 }

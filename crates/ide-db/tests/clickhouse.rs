@@ -166,9 +166,9 @@ async fn clickhouse_named_console_sessions_run_concurrently_and_preserve_state()
         db.execute(id, "SELECT 1", 1, &CancellationToken::new()).await?;
     }
 
-    let a = ConsoleId { window: "window-a", path: "/console.sql" };
-    let b = ConsoleId { window: "window-a", path: "/console_1.sql" };
-    let other_window = ConsoleId { window: "window-b", path: "/console.sql" };
+    let a = ConsoleId::new("window-a", "/console.sql");
+    let b = ConsoleId::new("window-a", "/console_1.sql");
+    let other_window = ConsoleId::new("window-b", "/console.sql");
     let idle = CancellationToken::new();
     let run = |console, sql, cancel| db.execute_in_console("clickhouse", sql, 0, 1, cancel, None, Some(console));
     run(b, "SELECT 1", &idle).await?;
@@ -214,7 +214,7 @@ async fn clickhouse_named_console_sessions_run_concurrently_and_preserve_state()
         assert!(second.is_err_and(|error| error.message.contains("UNKNOWN_TABLE")));
     }
     run(b, "CREATE TEMPORARY TABLE console_state (id UInt8)", &idle).await?;
-    db.release_console(a);
+    db.release_console(a).await?;
     let reopened = run(a, "SELECT id FROM console_state", &idle).await;
     assert!(reopened.is_err_and(|error| error.message.contains("UNKNOWN_TABLE")));
     assert!(run(b, "SELECT id FROM console_state", &idle).await?.rows.is_empty());

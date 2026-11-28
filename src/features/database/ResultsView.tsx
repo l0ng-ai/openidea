@@ -1,7 +1,6 @@
 /**
- * Database Console service view (IDEA's): an Output tab logging every
- * executed statement with its outcome, and a `Result N` tab per result set —
- * a toolbar (re-run, export / copy as CSV, JSON, SQL…), the grid and a floating row count.
+ * SQL output and result tabs, shared by Database Output and Services.
+ * Results carry their own grids, plans, and pending data edits.
  */
 import { canModifyTable } from "./objects";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
@@ -14,6 +13,7 @@ import {
   useState,
   useSyncExternalStore,
   type MouseEvent,
+  type ReactNode,
 } from "react";
 import clsx from "clsx";
 import { useShallow } from "zustand/react/shallow";
@@ -53,6 +53,9 @@ import { analyze } from "./sql/analyze";
 import { nameMatcher } from "./sql/dialect";
 import {
   OUTPUT_TAB,
+  activeResultFor,
+  resultsFor,
+  selectResult,
   clearOutput,
   closeResult,
   countResult,
@@ -81,18 +84,20 @@ function time(t: number): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-function Output() {
-  const lines = useDatabase((s) => s.output);
+function Output({ path }: { path?: string }) {
+  const lines = useDatabase(
+    useShallow((s) => (path === undefined ? s.output : s.output.filter((line) => line.path === path))),
+  );
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = ref.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [lines.length]);
+  }, [lines.length, path]);
   return (
     <div className={styles.view}>
       <Toolbar className={styles.toolbar} aria-label="Output actions">
         <span className={styles.spacer} />
-        <IconButton icon="trash" title="Clear All" disabled={!lines.length} onClick={clearOutput} />
+        <IconButton icon="trash" title="Clear All" disabled={!lines.length} onClick={() => clearOutput(path)} />
       </Toolbar>
       <div
         ref={ref}
@@ -440,17 +445,18 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
       if (keyCells.length) await loadCells(tab, keyCells);
       const list = buildRowEdits(resultNames, rowsOf(r), pk, edits);
       // The Output log shows what the submit is about to change.
-      for (const s of editStatements(driver, target.schema ?? "", target.table, list)) log("statement", s);
+      for (const s of editStatements(driver, target.schema ?? "", target.table, list))
+        log("statement", s, undefined, tab.path);
       const n = await withConnection(tab.sourceId, () =>
         call(commands.dbApplyEdits(tab.sourceId, target.schema ?? "", target.table, list)),
       );
-      log("result", `${target.table}: ${n} row(s) changed`);
+      log("result", `${target.table}: ${n} row(s) changed`, undefined, tab.path);
       notifications().notify({ level: "info", title: `${target.table}: ${n} row(s) changed`, key: "db-submit" });
       // Also when this pane was unmounted meanwhile: the applied edits must not come back.
       setKeptEdits(r, NO_EDITS);
       await rerunResult(tab.id);
     } catch (e) {
-      log("error", e instanceof Error ? e.message : String(e));
+      log("error", e instanceof Error ? e.message : String(e), undefined, tab.path);
       notifications().notify({
         level: "error",
         title: "Changes were not submitted",
@@ -815,9 +821,10 @@ function PinButton({ tab }: { tab: ResultTab }) {
 }
 
 /** The most recently started console request, while it runs. */
-function useLatestExecution(): [string, ConsoleExecution] | undefined {
+function useLatestExecution(path?: string): [string, ConsoleExecution] | undefined {
   return useDatabase(
     useShallow((s) => {
+      if (path !== undefined) return s.executions[path] ? [path, s.executions[path]] : undefined;
       let latest: [string, ConsoleExecution] | undefined;
       for (const entry of Object.entries(s.executions))
         if (!latest || entry[1].startedAt > latest[1].startedAt) latest = entry;
@@ -854,11 +861,15 @@ function ExecutingBar({ path, execution }: { path: string; execution: ConsoleExe
 }
 
 export function ResultsView() {
-  const results = useDatabase((s) => s.results);
-  const execution = useLatestExecution();
-  const active = useDatabase((s) => s.activeResult);
+  return <ResultsContent />;
+}
+
+export function ResultsContent({ path, clientSelector }: { path?: string; clientSelector?: ReactNode }) {
+  const results = useDatabase(useShallow((s) => resultsFor(s, path)));
+  const execution = useLatestExecution(path);
+  const active = useDatabase((s) => activeResultFor(s, path));
   const hasOutput = useDatabase((s) => s.output.length > 0);
-  const root = useRef<HTMLDivElement>(null);
+  const tabPrefix = path === undefined ? "db-results" : "db-output-results";
   const panel = useRef<HTMLDivElement>(null);
   /** Tab from a result tab: its table, plan tree or output log (IDEA focuses the tab's content). */
   const focusContent = () => {
@@ -867,24 +878,29 @@ export function ResultsView() {
     return !!target && document.activeElement === target;
   };
   useEffect(() => {
-    const syncFocus = () => setContext("dbResultsFocus", !!root.current?.contains(document.activeElement));
+    const syncFocus = () => {
+      const scope = document.activeElement?.closest<HTMLElement>("[data-database-results]");
+      setContext("dbResultsFocus", !!scope);
+      setContext("dbResultsPath", scope?.dataset.databaseResultsPath);
+    };
     document.addEventListener("focusin", syncFocus);
     syncFocus();
     return () => {
       document.removeEventListener("focusin", syncFocus);
-      setContext("dbResultsFocus", false);
+      syncFocus();
     };
-  }, []);
+  }, [path]);
   const tabMenu = (id: string, e: MouseEvent) => {
     e.preventDefault();
     const rect = e.currentTarget.getBoundingClientRect();
-    showContextMenu(e.clientX || e.clientY ? e : { x: rect.left, y: rect.bottom }, resultTabMenu(Number(id)), {
+    showContextMenu(e.clientX || e.clientY ? e : { x: rect.left, y: rect.bottom }, resultTabMenu(Number(id), path), {
       owner: e.currentTarget,
     });
   };
   const executing = execution && <ExecutingBar path={execution[0]} execution={execution[1]} />;
-  if (!results.length && !hasOutput && executing) return <div className={styles.view}>{executing}</div>;
-  if (!results.length && !hasOutput)
+  if (path === undefined && !results.length && !hasOutput && executing)
+    return <div className={styles.view}>{executing}</div>;
+  if (path === undefined && !results.length && !hasOutput)
     return (
       <EmptyState title="No results">
         <T>Execute a statement in a query console with ⌘↩.</T>
@@ -893,60 +909,70 @@ export function ResultsView() {
   const tab = results.find((r) => r.id === active);
   return (
     <div
-      ref={root}
       className={styles.view}
       data-focus-scope=""
+      data-database-results=""
+      data-database-results-path={path}
       onKeyDown={(e) => {
         if (e.key !== "ContextMenu" && !(e.shiftKey && e.key === "F10")) return;
         const tab = (e.target as Element).closest<HTMLElement>('[role="tab"]');
-        if (!tab?.id.startsWith("db-results-tab-")) return;
+        if (!tab?.id.startsWith(`${tabPrefix}-tab-`)) return;
         e.preventDefault();
         const rect = tab.getBoundingClientRect();
         showContextMenu(
           { x: rect.left, y: rect.bottom },
-          resultTabMenu(Number(tab.id.slice("db-results-tab-".length))),
+          resultTabMenu(Number(tab.id.slice(tabPrefix.length + "-tab-".length)), path),
           { owner: tab.parentElement },
         );
       }}
     >
       <ToolWindowContentTabs>
-        <Tabs
-          className={styles.resultTabs}
-          variant="compact"
-          aria-label="Results"
-          activeId={tab ? String(tab.id) : String(OUTPUT_TAB)}
-          panelIdPrefix="db-results"
-          focusContent={focusContent}
-          onSelect={(id) => useDatabase.setState({ activeResult: Number(id) })}
-          onClose={(id) => closeResult(Number(id))}
-          onTogglePin={(id) => {
-            const r = results.find((r) => r.id === Number(id));
-            if (r) pinResult(r.id, !r.pinned);
-          }}
-          onContextMenu={tabMenu}
-          items={[
-            { id: String(OUTPUT_TAB), label: "Output", icon: "db-console", closable: false },
-            ...results.map((r) => ({
-              id: String(r.id),
-              label: r.title,
-              verbatim: true,
-              icon: r.plan ? "db-plan" : "db-table",
-              closable: true,
-              pinned: r.pinned,
-              tooltip: r.outcome.statement.text,
-            })),
-          ]}
-        />
+        <div className={clientSelector ? styles.outputStrip : undefined}>
+          {clientSelector}
+          <Tabs
+            className={styles.resultTabs}
+            variant="compact"
+            aria-label="Results"
+            activeId={tab ? String(tab.id) : String(OUTPUT_TAB)}
+            panelIdPrefix={tabPrefix}
+            focusContent={focusContent}
+            onSelect={(id) => selectResult(Number(id), path)}
+            onClose={(id) => closeResult(Number(id))}
+            onTogglePin={(id) => {
+              const r = results.find((r) => r.id === Number(id));
+              if (r) pinResult(r.id, !r.pinned);
+            }}
+            onContextMenu={tabMenu}
+            items={[
+              { id: String(OUTPUT_TAB), label: "Output", icon: "db-console", closable: false },
+              ...results.map((r) => ({
+                id: String(r.id),
+                label: r.title,
+                verbatim: true,
+                icon: r.plan ? "db-plan" : "db-table",
+                closable: true,
+                pinned: r.pinned,
+                tooltip: r.outcome.statement.text,
+              })),
+            ]}
+          />
+        </div>
       </ToolWindowContentTabs>
       {executing}
       <div
         ref={panel}
         className={styles.fill}
         role="tabpanel"
-        id={`db-results-panel-${tab ? tab.id : OUTPUT_TAB}`}
-        aria-labelledby={`db-results-tab-${tab ? tab.id : OUTPUT_TAB}`}
+        id={`${tabPrefix}-panel-${tab ? tab.id : OUTPUT_TAB}`}
+        aria-labelledby={`${tabPrefix}-tab-${tab ? tab.id : OUTPUT_TAB}`}
       >
-        {!tab ? <Output /> : tab.plan ? <PlanResult key={tab.id} tab={tab} /> : <Result key={tab.id} tab={tab} />}
+        {!tab ? (
+          <Output path={path} />
+        ) : tab.plan ? (
+          <PlanResult key={tab.id} tab={tab} />
+        ) : (
+          <Result key={tab.id} tab={tab} />
+        )}
       </div>
     </div>
   );

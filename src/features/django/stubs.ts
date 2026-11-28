@@ -47,7 +47,7 @@ async function install() {
     line.trim() && upsertTask({ id, title, message: line.trim(), fraction: null, done: false, cancel });
   upsertTask({ id, title, message: null, fraction: null, done: false, cancel });
   try {
-    await call(commands.sdkPythonPip(python, STUBS, false, false, request, channel));
+    await call(commands.sdkPythonPip(python, STUBS, false, false, false, request, channel));
     // The type checker reads installed packages when it starts.
     await Promise.all(["basedpyright", "pyright"].map((n) => call(commands.lspRestartNamed(n)).catch(() => {})));
   } catch (e) {

@@ -5,6 +5,7 @@ import type { HostMetrics, RemoteSession } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { disableRemote, enableRemote, useRemote } from "@/platform/remote";
 import { RemoteResources, RemoteResourcesDashboard } from "./RemoteResources";
+import { RemoteStatus } from "./RemoteStatus";
 import {
   compactResourceText,
   diskUsedBytes,
@@ -234,5 +235,18 @@ describe("remote resources widget and dashboard", () => {
     resolveSlow(JSON.stringify(sampleMetrics));
     await act(async () => inflight);
     expect(useRemoteResources.getState().metrics).toBeNull();
+  });
+
+  it("renders a server icon on the Remote Host status bar label and highlights disconnected text in warning tone", () => {
+    act(() => enableRemote(sshSession("deng@thinkpad")));
+    const { rerender } = render(<RemoteStatus />);
+    const connected = screen.getByRole("button", { name: "SSH: deng@thinkpad" });
+    expect(connected.querySelector("svg")).not.toBeNull();
+    expect(connected.querySelector('[class*="lost"]')).toBeNull();
+
+    act(() => useRemote.setState({ lost: "deng@thinkpad" }));
+    rerender(<RemoteStatus />);
+    const disconnected = screen.getByRole("button", { name: "SSH: deng@thinkpad (disconnected)" });
+    expect(disconnected.querySelector('[class*="lost"]')).not.toBeNull();
   });
 });

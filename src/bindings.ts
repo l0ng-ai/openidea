@@ -370,30 +370,31 @@ export const commands = {
 	dbDropDatabase: (id: string, database: string, statement: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_drop_database", { id, database, statement })),
 	/**  What made the dump at `path` and whether it creates its own database (from its first bytes). */
 	dbDumpInfo: (path: string) => typedError<DbDumpInfo, IdeError>(__TAURI_INVOKE("db_dump_info", { path })),
-	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number, schema: string | null, cellLimit: number | null, console: string | null) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows, schema, cellLimit, console })),
-	dbExecuteStream: (request: RequestId, id: string, statements: SqlStatement[], maxRows: number, schema: string | null, cellLimit: number | null, onProgress: Channel<ExecutionEvent>, console: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_execute_stream", { request, id, statements, maxRows, schema, cellLimit, onProgress, console })),
-	dbExplain: (request: RequestId, id: string, statement: string, schema: string | null, console: string | null) => typedError<DbPlanNode[], IdeError>(__TAURI_INVOKE("db_explain", { request, id, statement, schema, console })),
+	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number, schema: string | null, cellLimit: number | null, console: string | null, consoleManual: boolean | null) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows, schema, cellLimit, console, consoleManual })),
+	dbExecuteStream: (request: RequestId, id: string, statements: SqlStatement[], maxRows: number, schema: string | null, cellLimit: number | null, onProgress: Channel<ExecutionEvent>, console: string | null, consoleManual: boolean | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_execute_stream", { request, id, statements, maxRows, schema, cellLimit, onProgress, console, consoleManual })),
+	dbExplain: (request: RequestId, id: string, statement: string, schema: string | null, console: string | null, consoleManual: boolean | null) => typedError<DbPlanNode[], IdeError>(__TAURI_INVOKE("db_explain", { request, id, statement, schema, console, consoleManual })),
 	/**
 	 *  Writes exported result data (CSV, JSON, SQL…) to `path`. Stays in the
 	 *  desktop shell: the path comes from a local save dialog, and a remote
 	 *  window exports through its local fs commands instead.
 	 */
 	dbExportFile: (path: string, text: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_export_file", { path, text })),
+	dbFinishConsoleTransaction: (id: string, console: string, commit: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_finish_console_transaction", { id, console, commit })),
 	dbFinishTransaction: (id: string, commit: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_finish_transaction", { id, commit })),
 	dbHistory: (id: string) => typedError<DbHistoryEntry[], IdeError>(__TAURI_INVOKE("db_history", { id })),
 	dbJdbcDriverClasses: (jars: string[]) => typedError<string[], IdeError>(__TAURI_INVOKE("db_jdbc_driver_classes", { jars })),
 	dbJdbcDrivers: () => typedError<DbJdbcDriver_Serialize[], IdeError>(__TAURI_INVOKE("db_jdbc_drivers")),
 	dbObjectDdl: (id: string, schema: string, kind: DbObjectKind, name: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_object_ddl", { id, schema, kind, name })),
-	dbReleaseConsole: (console: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_release_console", { console })),
+	dbReleaseConsole: (console: string, id: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_release_console", { console, id })),
 	/**  Closes what the pages of a result keep open on the server (its result tab was closed). */
-	dbReleaseResult: (id: string, statement: string, schema: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_release_result", { id, statement, schema })),
+	dbReleaseResult: (id: string, statement: string, schema: string | null, console: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_release_result", { id, statement, schema, console })),
 	dbRemoveHistory: (id: string, texts: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_remove_history", { id, texts })),
 	dbRemoveJdbcDriver: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_remove_jdbc_driver", { id })),
 	/**
 	 *  Row `row` (from 0) of the result of `statement`, whole: what a page of a run with a
 	 *  `cell_limit` shows cut short.
 	 */
-	dbResultRow: (request: RequestId, id: string, statement: SqlStatement, row: number, schema: string | null, console: string | null) => typedError<DbQueryResult, IdeError>(__TAURI_INVOKE("db_result_row", { request, id, statement, row, schema, console })),
+	dbResultRow: (request: RequestId, id: string, statement: SqlStatement, row: number, schema: string | null, console: string | null, consoleManual: boolean | null) => typedError<DbQueryResult, IdeError>(__TAURI_INVOKE("db_result_row", { request, id, statement, row, schema, console, consoleManual })),
 	dbRetainCatalog: (id: string, databases: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("db_retain_catalog", { id, databases })),
 	/**
 	 *  Runs `job` against target `id` and streams the tool's output; returns its exit code. Stays
@@ -412,6 +413,7 @@ export const commands = {
 	/**  `server_version_num` of the PostgreSQL server of target `id` (connects first). */
 	dbServerVersion: (id: string) => typedError<number, IdeError>(__TAURI_INVOKE("db_server_version", { id })),
 	dbSessionContext: (id: string) => typedError<DbSessionContext, IdeError>(__TAURI_INVOKE("db_session_context", { id })),
+	dbSetConsoleManualCommit: (id: string, console: string, manual: boolean) => typedError<boolean, IdeError>(__TAURI_INVOKE("db_set_console_manual_commit", { id, console, manual })),
 	dbSetManualCommit: (id: string, manual: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_set_manual_commit", { id, manual })),
 	dbSetPassword: (id: string, password: string | null, save: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_set_password", { id, password, save })),
 	dbSetSshSecret: (id: string, secret: string | null, save: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_set_ssh_secret", { id, secret, save })),
@@ -1576,6 +1578,12 @@ export const commands = {
 	latest: string,
 	/**  Releases with files to install, most recently uploaded first; yanked ones left out. */
 	versions: string[],
+	/**  The project's long description (usually its README). */
+	description: string,
+	/**  Whether `description` is Markdown; otherwise reStructuredText or plain text. */
+	markdown: boolean,
+	/**  The project's web links (Homepage, Documentation, Source, …); `http(s)` only. */
+	links: PypiLink[],
 } | null, IdeError>(__TAURI_INVOKE("pypi_package", { name, request })),
 	/**
 	 *  PyPI project names containing `query`, best match first, 51 at most (50 are shown). Answers from a cached copy of
@@ -1918,8 +1926,11 @@ export const commands = {
 	/**  A package index other than PyPI that installing from `python` uses; `None` for PyPI. */
 	sdkPythonPackageIndex: (python: string, request: RequestId) => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_package_index", { python, request })),
 	sdkPythonPackages: (python: string, outdated: boolean, request: RequestId) => typedError<PythonPackage[], IdeError>(__TAURI_INVOKE("sdk_python_packages", { python, outdated, request })),
-	/**  Installs (`uninstall = false`) or removes a package; output streams through `on_output`. */
-	sdkPythonPip: (python: string, requirement: string, uninstall: boolean, upgrade: boolean, request: RequestId, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("sdk_python_pip", { python, requirement, uninstall, upgrade, request, onOutput })),
+	/**
+	 *  Installs (`uninstall = false`, in editable mode with `editable`) or removes a package; output
+	 *  streams through `on_output`.
+	 */
+	sdkPythonPip: (python: string, requirement: string, uninstall: boolean, upgrade: boolean, editable: boolean, request: RequestId, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("sdk_python_pip", { python, requirement, uninstall, upgrade, editable, request, onOutput })),
 	/**  The Python interpreters of the recently opened projects, each with its project. */
 	sdkPythonProjectInterpreters: () => typedError<ProjectInterpreter[], IdeError>(__TAURI_INVOKE("sdk_python_project_interpreters")),
 	/**  `sys.path` of the interpreter `python`, for All Interpreters › Show Paths. */
@@ -2439,7 +2450,7 @@ export const commands = {
 	windowGroupClose: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_close", { label })),
 	/**  Closes several project tabs one by one (each asks about its own unsaved changes), then selects `keep`. */
 	windowGroupCloseTabs: (keep: string, labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_close_tabs", { keep, labels })),
-	windowGroupCurrent: () => typedError<WindowTab[], IdeError>(__TAURI_INVOKE("window_group_current")),
+	windowGroupCurrent: () => typedError<WindowTab_Serialize[], IdeError>(__TAURI_INVOKE("window_group_current")),
 	windowGroupDetach: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_detach", { label })),
 	/**
 	 *  Adds window `label` to this window's group as a new project tab and selects it. Unlike
@@ -2739,6 +2750,13 @@ export type AgentCommand = {
 	/**  What to type after the command, when it takes input. */
 	hint: string | null,
 	source?: AgentCommandSource,
+	/**  Fixed subcommand/argument choices advertised by the agent (e.g. `list`, `info` for `/skills`). */
+	choices?: AgentCommandChoice[],
+};
+
+export type AgentCommandChoice = {
+	name: string,
+	description?: string,
 };
 
 /**  Why the executable cannot be changed in built-in agent settings. */
@@ -2804,6 +2822,8 @@ export type AgentContextCategory = {
 	name: string,
 	tokens: number,
 	kind: string | null,
+	/**  Visual section group (e.g. `"System"`, `"User Context"`). */
+	group?: string | null,
 };
 
 export type AgentContextUsage = {
@@ -2813,11 +2833,13 @@ export type AgentContextUsage = {
 	model: string,
 	isAutoCompactEnabled: boolean | null,
 	autoCompactThreshold: number | null,
+	/**  Tokens reserved for model response / output buffer, when the agent reports it. */
+	reservedTokens?: number | null,
 };
 
 export type AgentCost = {
 	amount: number | null,
-	/**  ISO 4217 code, e.g. `USD`. */
+	/**  ISO 4217 code (e.g. `USD`), or `"credits"` for AI-credit billing. */
 	currency: string,
 };
 
@@ -3730,6 +3752,8 @@ export type AppearanceSettings_Deserialize = {
 	smoothScrolling?: boolean,
 	fullPathInTitle?: boolean,
 	projectColorsInToolbar?: boolean,
+	/**  Strength of the project colour tint in the window header, in percent (10–70). */
+	projectColorStrength?: number,
 	dndWithAltOnly?: boolean,
 	menuIcons?: boolean,
 	/**  `hamburger` | `merged` | `toolbar` (a separate row): main menu presentation in the frameless title bar. */
@@ -3807,6 +3831,8 @@ export type AppearanceSettings_Serialize = {
 	smoothScrolling: boolean,
 	fullPathInTitle: boolean,
 	projectColorsInToolbar: boolean,
+	/**  Strength of the project colour tint in the window header, in percent (10–70). */
+	projectColorStrength: number,
 	dndWithAltOnly: boolean,
 	menuIcons: boolean,
 	/**  `hamburger` | `merged` | `toolbar` (a separate row): main menu presentation in the frameless title bar. */
@@ -5362,13 +5388,18 @@ export type DataSource_Serialize = {
 	pluginSourceId?: string | null,
 };
 
+/**  Database › Query Output: where SQL results open. */
+export type DatabaseOutputDestination = "databaseOutput" | "services";
+
 /**  Database settings: Query Execution and SQL Resolution Scopes. */
 export type DatabaseSettings = {
 	/**
 	 *  A console's result sets show under the statements that produced them, in the editor,
-	 *  instead of in the Services view's result tabs.
+	 *  instead of in the output window's result tabs.
 	 */
 	inEditorResults?: boolean,
+	/**  The tool window that receives SQL query output and plans. */
+	outputDestination?: DatabaseOutputDestination,
 	/**
 	 *  Languages & Frameworks › SQL Resolution Scopes: the data source SQL in a file or folder
 	 *  resolves against (completion, inspections, navigation), most specific path first.
@@ -12235,6 +12266,11 @@ export type PushTargetChoices = {
 
 export type PushTargetState = "ready" | "diverged" | "fetchRequired";
 
+export type PypiLink = {
+	label: string,
+	url: string,
+};
+
 export type PypiPackage = {
 	/**  The name as PyPI spells it. */
 	name: string,
@@ -12243,6 +12279,12 @@ export type PypiPackage = {
 	latest: string,
 	/**  Releases with files to install, most recently uploaded first; yanked ones left out. */
 	versions: string[],
+	/**  The project's long description (usually its README). */
+	description: string,
+	/**  Whether `description` is Markdown; otherwise reStructuredText or plain text. */
+	markdown: boolean,
+	/**  The project's web links (Homepage, Documentation, Source, …); `http(s)` only. */
+	links: PypiLink[],
 };
 
 export type PytestFixtureAt = {
@@ -15152,11 +15194,22 @@ export type WindowRequest_Serialize =
 /**  Open and acknowledge validation by the shared content editor. */
 ({ kind: "contentTab"; tab: ContentTab }) & { args?: never; config?: never; cwd?: never; debug?: never; env?: never; id?: never; key?: never; operation?: never; program?: never; title?: never } | ({ kind: "run"; operation: string; config: RunConfig_Serialize; debug: boolean }) & { args?: never; cwd?: never; env?: never; id?: never; key?: never; program?: never; tab?: never; title?: never } | ({ kind: "terminal"; operation: string; key: string; title: string; program: IpcPath; args: string[]; env: { [key in string]: string }; cwd: IpcPath }) & { config?: never; debug?: never; id?: never; tab?: never };
 
-export type WindowTab = {
+export type WindowTab = WindowTab_Serialize | WindowTab_Deserialize;
+
+export type WindowTab_Deserialize = {
 	label: string,
 	name: string,
 	root: IpcPath | null,
 	current: boolean,
+	remoteHost?: string | null,
+};
+
+export type WindowTab_Serialize = {
+	label: string,
+	name: string,
+	root: IpcPath | null,
+	current: boolean,
+	remoteHost?: string | null,
 };
 
 /**  A workbench event delivered to plugins. */

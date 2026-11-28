@@ -82,14 +82,16 @@ async fn attached_projects_keep_their_own_excluded_folders() {
     host.open_project("lib", &lib).unwrap();
     ops::project::set_settings(&host, "lib", SettingsScope::Project, "projectStructure.excluded", "[]").unwrap();
     let project = host.project("main").unwrap();
+    let expected_dist = expect(&["app/dist/dist.txt", "lib/dist/dist.txt"]);
+    // The exclusion can update before the index rescan has been queued.
     for _ in 0..100 {
-        if project.exclude_globs_in(&lib).iter().all(|g| g != "/dist") {
+        if project.index.files_named("dist.txt") == expected_dist {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(excluded(&host, &lib).await.is_empty());
-    assert_eq!(indexed(&host, "dist.txt"), expect(&["app/dist/dist.txt", "lib/dist/dist.txt"]));
+    assert_eq!(indexed(&host, "dist.txt"), expected_dist);
     ops::project::set_settings(&host, "lib", SettingsScope::Project, "projectStructure.excluded", r#"["dist"]"#)
         .unwrap();
     host.shutdown().await;

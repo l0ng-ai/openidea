@@ -50,6 +50,9 @@ test("project switcher keeps names and metadata on separate lines and highlights
   );
 
   const remote = popup.getByRole("option", { name: /Payment Ledger/ });
+  await expect(remote.locator("[data-remote-badge]")).toHaveCount(1);
+  await expect(remote.locator('[data-remote-kind="ssh"]')).toBeVisible();
+  await expect(local.locator("[data-remote-badge]")).toHaveCount(0);
   await expectBelow(remote, "Payment Ledger", HOST);
   await expectBelow(remote, HOST, REMOTE_PATH);
 

@@ -530,6 +530,10 @@
   flex: none;
   color: var(--fg-strong);
 }
+.itemCommandPrefix {
+  color: var(--accent);
+  font-weight: 500;
+}
 .itemHint {
   flex: none;
   color: var(--fg-muted);
