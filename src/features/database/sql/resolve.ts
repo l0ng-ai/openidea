@@ -5,9 +5,9 @@
  * as lexical and forgiving as completion; names it cannot judge (unknown
  * tables' columns, dialect pseudo-columns) are left alone.
  */
-import type { DbCompletion, DbCompletionColumn, DbCompletionTable, DbDriver } from "@/platform/ipc";
+import type { DbCompletion, DbCompletionColumn, DbCompletionTable } from "@/platform/ipc";
 import { analyze, type TableRef } from "./analyze";
-import { CLAUSE_WORDS, DATA_TYPES, functions, isReserved, nameMatcher } from "./dialect";
+import { CLAUSE_WORDS, DATA_TYPES, functions, identifierKey, isReserved, nameMatcher, type SqlDriver } from "./dialect";
 import { identName, lex, type Lexed, type Token } from "./lexer";
 
 export type SqlSymbol =
@@ -25,6 +25,7 @@ export interface Span {
 
 export interface Resolved extends Span {
   symbol: SqlSymbol | null;
+  catalogTable?: { catalog: string; schema: string; table: string };
   /** Set when the name should resolve but doesn't. */
   problem?: string;
 }
@@ -61,7 +62,7 @@ export function findTable(
   model: DbCompletion | null,
   schema: string | null,
   name: string,
-  driver: DbDriver = "sqlite",
+  driver: SqlDriver = "sqlite",
 ): DbCompletionTable | undefined {
   const eq = nameMatcher(driver);
   const tables = model?.tables ?? [];
@@ -84,7 +85,7 @@ export class SqlResolver {
 
   constructor(
     readonly text: string,
-    readonly driver: DbDriver,
+    readonly driver: SqlDriver,
     readonly model: DbCompletion | null,
   ) {
     this.lexed = lex(text, driver);
@@ -143,7 +144,7 @@ export class SqlResolver {
     const name = identName(t);
     const span = { from: t.from, to: t.to };
     const a = analyze(this.text, t.from, this.driver, this.lexedFor(i));
-    const checked = CHECKED.has(a.verb);
+    const checked = CHECKED.has(a.verb) || (this.driver === "duckdb" && a.verb === "FROM");
     const loaded = !!this.model?.tables.length;
     const ctx = a.context;
     const qualifier = a.qualifier;
@@ -157,8 +158,13 @@ export class SqlResolver {
       if (cte) return { ...span, symbol: { kind: "cte", name: cte.name, def: { from: cte.from, to: cte.to } } };
       if (this.model?.tables.some((x) => eq(x.schema, name))) return this.schema(name, span);
       if (!checked || PSEUDO_TABLES.has(name.toUpperCase()) || ctx.kind === "none") return { ...span, symbol: null };
-      // Snowflake `database.schema.table.column`: other databases are not in the model.
-      if (this.driver === "snowflake" && isP(toks[i + 3], ".") && isP(toks[i + 5], ".") && isName(toks[i + 6]))
+      // A fully qualified column may live in a catalog the model does not hold.
+      if (
+        (this.driver === "snowflake" || this.driver === "duckdb") &&
+        isP(toks[i + 3], ".") &&
+        isP(toks[i + 5], ".") &&
+        isName(toks[i + 6])
+      )
         return { ...span, symbol: null };
       return { ...span, symbol: null, problem: `Unable to resolve symbol '${name}'` };
     }
@@ -175,6 +181,11 @@ export class SqlResolver {
         // Table functions (`generate_series(1, 3)`), `DROP TABLE IF EXISTS`.
         if (isP(next, "(") && !isIntoTarget(toks, i)) return null;
         if (t.kind === "word" && (t.upper === "IF" || t.upper === "ONLY" || t.upper === "LATERAL")) return null;
+        if (this.driver === "duckdb" && qualifier && qualifier.length > 1) {
+          const catalogTable =
+            qualifier.length === 2 ? { catalog: qualifier[0]!, schema: qualifier[1]!, table: name } : undefined;
+          return { ...span, symbol: null, catalogTable };
+        }
         const schema = qualifier?.at(-1) ?? null;
         const cte = schema ? undefined : a.ctes.find((c) => eq(c.name, name));
         if (cte) return { ...span, symbol: { kind: "cte", name: cte.name, def: { from: cte.from, to: cte.to } } };
@@ -198,11 +209,13 @@ export class SqlResolver {
       case "afterInsertColumns":
         return null;
       case "column":
+      case "exclude":
       case "joinCondition":
         break;
     }
 
     if (qualifier) {
+      if (this.driver === "duckdb" && qualifier.length > 2) return { ...span, symbol: null };
       const ref =
         qualifier.length === 1
           ? this.findRef(a.refs, null, qualifier[0]!)
@@ -223,6 +236,7 @@ export class SqlResolver {
       (isReserved(t.text, this.driver) ||
         NOT_COLUMNS.has(t.upper) ||
         this.words.has(t.upper) ||
+        (this.driver === "duckdb" && t.upper === "EXCLUDE" && isP(prev, "*")) ||
         (this.driver === "snowflake" && (SNOWFLAKE_NOT_COLUMNS.has(t.upper) || t.upper.startsWith("METADATA$"))))
     )
       return null;
@@ -233,7 +247,9 @@ export class SqlResolver {
         prev.kind === "number" ||
         prev.kind === "string" ||
         isP(prev, ")") ||
-        (prev.kind === "word" && !CLAUSE_WORDS.has(prev.upper)))
+        (prev.kind === "word" &&
+          !CLAUSE_WORDS.has(prev.upper) &&
+          !(this.driver === "duckdb" && prev.upper === "QUALIFY")))
     )
       return null;
     for (const ref of a.refs) {
@@ -251,7 +267,7 @@ export class SqlResolver {
       clause !== "other" &&
       clause !== "values" &&
       clause !== "limit" &&
-      !this.outputAliases(i).has(this.driver === "clickhouse" ? name : name.toLowerCase());
+      !this.outputAliases(i).has(identifierKey(name, this.driver));
     return judged
       ? { ...span, symbol: null, problem: `Unable to resolve column '${name}'` }
       : { ...span, symbol: null };
@@ -279,8 +295,13 @@ export class SqlResolver {
     return refs.find((r) => (r.alias ? eq(r.alias, name) : eq(r.name, name) && (!schema || eq(r.schema, schema))));
   }
 
+  private refTable(ref: TableRef): DbCompletionTable | undefined {
+    if (ref.kind !== "table" || (this.driver === "duckdb" && ref.database !== undefined)) return undefined;
+    return findTable(this.model, ref.schema, ref.name, this.driver);
+  }
+
   private refSymbol(ref: TableRef): SqlSymbol {
-    const table = ref.kind === "table" ? findTable(this.model, ref.schema, ref.name, this.driver) : undefined;
+    const table = this.refTable(ref);
     if (ref.alias && ref.aliasAt) return { kind: "alias", name: ref.alias, def: ref.aliasAt, table };
     if (table) return { kind: "table", table };
     return { kind: "cte", name: ref.name, def: { from: ref.from, to: ref.to } };
@@ -289,13 +310,13 @@ export class SqlResolver {
   /** Columns of a FROM item; `null` when unknown (not in the model, `select *` subqueries). */
   private columnsOf(ref: TableRef): Array<{ name: string; column?: DbCompletionColumn }> | null {
     if (ref.columns) return ref.columns.length ? ref.columns.map((name) => ({ name })) : null;
-    const table = findTable(this.model, ref.schema, ref.name, this.driver);
+    const table = this.refTable(ref);
     // A table listed without columns is one whose columns were not read (a large Snowflake database).
     return table?.columns.length ? table.columns.map((c) => ({ name: c.name, column: c })) : null;
   }
 
   private columnSymbol(ref: TableRef, col: { name: string; column?: DbCompletionColumn }): SqlSymbol {
-    const table = ref.kind === "table" ? findTable(this.model, ref.schema, ref.name, this.driver) : undefined;
+    const table = this.refTable(ref);
     return { kind: "column", name: col.name, column: col.column, table, owner: ref.alias ?? ref.name };
   }
 
@@ -313,7 +334,7 @@ export class SqlResolver {
         prev.kind === "number" ||
         prev.kind === "string"
       )
-        out.add(this.driver === "clickhouse" ? identName(t) : identName(t).toLowerCase());
+        out.add(identifierKey(identName(t), this.driver));
     }
     return out;
   }

@@ -426,6 +426,8 @@ impl JdbcPool {
         self.request(&["page", sql, &offset.to_string(), &limit.min(i32::MAX as u64).to_string()], sql, cancel).await
     }
 
+    /// Introspection on this connection. `catalogs` lists live catalogs with the current one marked.
+    /// `schemas`, `tables`, `schemaColumns`, and `columns` accept a final catalog argument.
     pub(crate) async fn metadata(&self, fields: &[&str]) -> IdeResult<Vec<Vec<Option<String>>>> {
         Ok(self.request(fields, "", &CancellationToken::new()).await?.rows)
     }
@@ -704,6 +706,86 @@ mod tests {
         assert_eq!(by_table["items"][0].comment, None);
         assert_eq!(by_table["items"].len(), 1);
         assert_eq!(by_table.len(), 2);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DUCKDB_JDBC_JAR and a local Java 17+ runtime"]
+    async fn duckdb_live_catalog_metadata_is_scoped_to_the_requested_namespace() -> IdeResult<()> {
+        let tmp = tempfile::tempdir()?;
+        let source = DataSource { url: "jdbc:duckdb:".into(), ..Default::default() };
+        let driver = DbJdbcDriver {
+            id: "duckdb".into(),
+            name: "DuckDB".into(),
+            vendor: None,
+            jars: vec![std::env::var("DUCKDB_JDBC_JAR").expect("DUCKDB_JDBC_JAR")],
+            class_name: "org.duckdb.DuckDBDriver".into(),
+            url_template: String::new(),
+        };
+        let pool = JdbcPool::connect(&source, None, driver, tmp.path().join("jdbc")).await?;
+        let stop = CancellationToken::new();
+        let path = |file| tmp.path().join(file).to_string_lossy().replace('\'', "''");
+        let archive = "archive.db:1";
+        for sql in [
+            "SET threads = 1".into(),
+            "CREATE TABLE memory.main.dupe (root_only INT)".into(),
+            format!("ATTACH '{}' AS first", path("first.duckdb")),
+            format!(r#"ATTACH '{}' AS "archive.db:1""#, path("archive.duckdb")),
+            "CREATE TABLE first.main.dupe (first_only INT PRIMARY KEY)".into(),
+            r#"CREATE TABLE "archive.db:1".main.dupe (archive_only INT)"#.into(),
+            r#"CREATE SCHEMA "archive.db:1"."qa_%""#.into(),
+            r#"CREATE SCHEMA "archive.db:1".qaSimilar"#.into(),
+            r#"CREATE TABLE "archive.db:1"."qa_%"."t_%""q" (quoted_only INT PRIMARY KEY)"#.into(),
+            r#"COMMENT ON TABLE "archive.db:1"."qa_%"."t_%""q" IS 'Archive table'"#.into(),
+            r#"COMMENT ON COLUMN "archive.db:1"."qa_%"."t_%""q".quoted_only IS 'In the archive'"#.into(),
+            r#"CREATE TABLE "archive.db:1".qaSimilar."t_%""q" (wrong_schema INT)"#.into(),
+            r#"COMMENT ON TABLE "archive.db:1".qaSimilar."t_%""q" IS 'Wrong schema table'"#.into(),
+            r#"COMMENT ON COLUMN "archive.db:1".qaSimilar."t_%""q".wrong_schema IS 'Outside the schema'"#.into(),
+        ] {
+            pool.query(&sql, 0, 1, &stop).await?;
+        }
+
+        let catalogs = pool.metadata(&["catalogs"]).await?;
+        assert!(catalogs.contains(&vec![Some("memory".into()), Some("1".into())]));
+        assert!(catalogs.contains(&vec![Some("first".into()), Some("0".into())]));
+        assert!(catalogs.contains(&vec![Some(archive.into()), Some("0".into())]));
+        let schemas = pool.metadata(&["schemas", archive]).await?;
+        assert_eq!(schemas, ["main", "qaSimilar", "qa_%"].map(|schema| vec![Some(schema.into())]));
+        let tables = pool.metadata(&["tables", "qa_%", archive]).await?;
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0][0].as_deref(), Some(r#"t_%"q"#));
+        assert_eq!(tables[0][2].as_deref(), Some("Archive table"));
+
+        for (catalog, column, primary) in
+            [("memory", "root_only", "0"), ("first", "first_only", "1"), (archive, "archive_only", "0")]
+        {
+            let columns = pool.metadata(&["columns", "main", "dupe", catalog]).await?;
+            assert_eq!(columns.len(), 1);
+            assert_eq!(columns[0][0].as_deref(), Some(column));
+            assert_eq!(columns[0][4].as_deref(), Some(primary));
+        }
+        let quoted = pool.metadata(&["columns", "qa_%", r#"t_%"q"#, archive]).await?;
+        assert_eq!(quoted.len(), 1);
+        assert_eq!(quoted[0][0].as_deref(), Some("quoted_only"));
+        assert_eq!(quoted[0][4].as_deref(), Some("1"));
+        let all = schema_columns(pool.metadata(&["schemaColumns", "qa_%", archive]).await?);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[r#"t_%"q"#][0].name, "quoted_only");
+        assert_eq!(all[r#"t_%"q"#][0].comment.as_deref(), Some("In the archive"));
+
+        pool.query("USE first", 0, 1, &stop).await?;
+        let catalogs = pool.metadata(&["catalogs"]).await?;
+        assert!(catalogs.contains(&vec![Some("first".into()), Some("1".into())]));
+        let legacy = pool.metadata(&["columns", "main", "dupe"]).await?;
+        assert_eq!(legacy[0][0].as_deref(), Some("first_only"));
+        pool.query("USE memory", 0, 1, &stop).await?;
+        pool.query("DETACH first", 0, 1, &stop).await?;
+        let catalogs = pool.metadata(&["catalogs"]).await?;
+        assert!(!catalogs.iter().any(|r| r[0].as_deref() == Some("first")));
+        assert!(pool.metadata(&["schemas", "first"]).await?.is_empty());
+        assert!(pool.metadata(&["tables", "main", "first"]).await?.is_empty());
+        assert!(pool.metadata(&["columns", "main", "dupe", "first"]).await?.is_empty());
+        pool.close().await;
+        Ok(())
     }
 
     #[test]

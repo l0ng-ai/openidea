@@ -122,9 +122,12 @@ async fn duckdb_custom_driver_through_database_manager() -> IdeResult<()> {
     let db = manager(tmp.path());
     let c = CancellationToken::new();
     db.execute("test", "create table items(id int primary key, label varchar)", 1, &c).await?;
+    db.execute("test", "comment on table items is 'Local items'", 1, &c).await?;
     db.execute("test", "insert into items values (1, NULL), (2, 'row')", 1, &c).await?;
     assert!(db.schemas("test").await?.iter().any(|v| v == "main"));
-    assert!(db.tables("test", "main").await?.iter().any(|v| v.name == "items"));
+    let tables = db.tables("test", "main").await?;
+    let items = tables.iter().find(|table| table.name == "items").expect("items");
+    assert_eq!(items.comment.as_deref(), Some("Local items"));
     let details = db.table_details("test", "main", "items").await?;
     assert_eq!(details.columns.len(), 2);
     let result = db.execute("test", "select id, label from items order by id", 1, &c).await?;
@@ -154,6 +157,40 @@ async fn duckdb_custom_driver_through_database_manager() -> IdeResult<()> {
     assert!(!last.has_more);
     let past = db.table_page("test", "main", "items", None, &sort, 2, 1, &c).await?.result;
     assert!(past.rows.is_empty() && !past.has_more);
+    let path = tmp.path().join("attachment.duckdb");
+    let path = ide_db::sql::quote_literal(DbDriver::Jdbc, &path.to_string_lossy());
+    let catalog = "archive.db:'1";
+    let quoted = ide_db::sql::quote_ident(DbDriver::Jdbc, catalog);
+    for statement in [
+        format!("ATTACH {path} AS {quoted}"),
+        format!("CREATE SCHEMA {quoted}.empty"),
+        format!("CREATE TABLE {quoted}.main.items(remote_only INTEGER)"),
+        format!("COMMENT ON TABLE {quoted}.main.items IS 'Archived items'"),
+        format!("CREATE VIEW {quoted}.main.remote_view AS SELECT * FROM {quoted}.main.items"),
+        format!("COMMENT ON VIEW {quoted}.main.remote_view IS 'Archived view'"),
+    ] {
+        db.execute("test", &statement, 1, &c).await?;
+    }
+    let databases = db.databases("test").await?;
+    assert_eq!(databases.current, "local");
+    assert!(databases.names.iter().any(|name| name == catalog));
+    let schemas = db.database_catalog("test", catalog).await?;
+    assert!(schemas.iter().any(|schema| schema.name == "empty" && schema.tables.is_empty()));
+    let main = schemas.iter().find(|schema| schema.name == "main").expect("main");
+    assert_eq!(
+        main.tables.iter().map(|table| (table.name.as_str(), table.kind, table.comment.as_deref())).collect::<Vec<_>>(),
+        [
+            ("items", ide_db::DbTableKind::Table, Some("Archived items")),
+            ("remote_view", ide_db::DbTableKind::View, Some("Archived view")),
+        ]
+    );
+    assert!(db.saved_catalog("test").await?.is_none());
+    db.execute("test", &format!("USE {quoted}"), 1, &c).await?;
+    assert_eq!(db.databases("test").await?.current, catalog);
+    db.execute("test", "USE local", 1, &c).await?;
+    db.execute("test", &format!("DETACH {quoted}"), 1, &c).await?;
+    assert!(!db.databases("test").await?.names.iter().any(|name| name == catalog));
+    assert!(db.database_catalog("test", catalog).await?.is_empty());
     db.disconnect("test").await;
     let reopened = manager(tmp.path());
     assert_eq!(reopened.execute("test", "select count(*) from items", 1, &c).await?.rows, [vec![Some("2".into())]]);
@@ -273,6 +310,78 @@ async fn duckdb_named_memory_lives_until_disconnect() -> IdeResult<()> {
         let err = db.test(&source, None, None).await.unwrap_err();
         assert!(err.message.contains("existing database file"), "{}", err.message);
     }
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires DUCKDB_JDBC_JAR and a local Java 17+ runtime"]
+async fn duckdb_named_catalog_page_uses_the_source_session_and_exact_names() -> IdeResult<()> {
+    let tmp = tempfile::tempdir()?;
+    let db = manager(tmp.path());
+    register_duckdb(&db, Some("duckdb"))?;
+    db.save_sources(vec![DataSource {
+        id: "test".into(),
+        name: "DuckDB".into(),
+        driver: DbDriver::Jdbc,
+        vendor: "duckdb".into(),
+        global: true,
+        jdbc_driver: "duck".into(),
+        url: "jdbc:duckdb:".into(),
+        ..Default::default()
+    }])
+    .await?;
+
+    let stop = CancellationToken::new();
+    let file = tmp.path().join("attachment.duckdb");
+    let file = ide_db::sql::quote_literal(DbDriver::Jdbc, &file.to_string_lossy());
+    let catalog = r#"archive.db:with/"quote"#;
+    let schema = "some.schema_%";
+    let table = r#"same."table"#;
+    let quote = |name: &str| ide_db::sql::quote_ident(DbDriver::Jdbc, name);
+    let base_table = format!("memory.{}.{}", quote(schema), quote(table));
+    let attached_table = format!("{}.{}.{}", quote(catalog), quote(schema), quote(table));
+    db.execute_in_console(
+        "test",
+        &format!("ATTACH {file} AS {}", quote(catalog)),
+        0,
+        1,
+        &stop,
+        None,
+        Some(ConsoleId::new("window", "/attach.sql")),
+    )
+    .await?;
+    for statement in [
+        "SET threads = 1".into(),
+        format!("CREATE SCHEMA memory.{}", quote(schema)),
+        format!("CREATE SCHEMA {}.{}", quote(catalog), quote(schema)),
+        format!("CREATE TABLE {base_table} (base_only INTEGER PRIMARY KEY)"),
+        format!("CREATE TABLE {attached_table} (attached_only INTEGER PRIMARY KEY)"),
+        format!("INSERT INTO {base_table} VALUES (3)"),
+        format!("INSERT INTO {attached_table} VALUES (42), (41)"),
+    ] {
+        db.execute("test", &statement, 1, &stop).await?;
+    }
+
+    let details = db.catalog_table_details("test", catalog, schema, table).await?;
+    assert_eq!(details.columns.len(), 1);
+    assert_eq!(details.columns[0].name, "attached_only");
+    assert!(details.columns[0].primary_key);
+    let sort = [SortKey { column: "attached_only".into(), descending: true }];
+    let attached = db.catalog_table_page("test", catalog, schema, table, None, &sort, 0, 1, &stop).await?;
+    assert_eq!(attached.result.rows, [vec![Some("42".into())]]);
+    assert!(attached.result.has_more);
+    assert_eq!(db.connected(), ["test"]);
+
+    db.execute("test", &format!("USE {}.{}", quote(catalog), quote(schema)), 1, &stop).await?;
+    let initial = db.catalog_table_page("test", "memory", schema, table, None, &[], 0, 1, &stop).await?;
+    assert_eq!(initial.result.rows, [vec![Some("3".into())]]);
+    assert_eq!(initial.details.columns[0].name, "base_only");
+    assert_eq!(db.databases("test").await?.current, catalog);
+    db.execute("test", "USE memory", 1, &stop).await?;
+    db.execute("test", &format!("DETACH {}", quote(catalog)), 1, &stop).await?;
+    assert!(db.catalog_table_page("test", catalog, schema, table, None, &[], 0, 1, &stop).await.is_err());
+    assert_eq!(db.connected(), ["test"]);
+    db.disconnect("test").await;
     Ok(())
 }
 
