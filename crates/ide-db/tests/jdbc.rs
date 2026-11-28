@@ -73,6 +73,7 @@ async fn duck_lake_settings_are_validated_and_covered_by_project_approval() -> I
             ..source.clone()
         },
     ] {
+        assert!(invalid.resolved().is_err());
         assert!(db.save_sources(vec![invalid.clone()]).await.is_err());
         assert!(db.approve_ducklake_source(&invalid).is_err());
     }
@@ -119,6 +120,8 @@ async fn duck_lake_creates_only_explicitly_and_reopens_read_only() -> IdeResult<
     assert!(err.message.contains("already exists"), "{}", err.message);
     assert!(db.test(&source, None, None).await?.contains("DuckDB"));
 
+    let db = manager(tmp.path());
+    assert_eq!(db.source("lake")?, source);
     let cancel = CancellationToken::new();
     let console = ConsoleId::new("window", "/lake.sql");
     for scope in [None, Some(console)] {
@@ -150,6 +153,12 @@ async fn duck_lake_creates_only_explicitly_and_reopens_read_only() -> IdeResult<
     assert!(catalog.iter().any(|schema| schema.name == "main" && schema.tables.is_empty()));
     db.release_target_console(console, Some("lake")).await?;
     db.disconnect("lake").await;
+
+    let global = DataSource { id: "global-lake".into(), global: true, ..source };
+    db.approve_ducklake_source(&global)?;
+    db.save_sources(vec![global]).await?;
+    assert!(db.schemas("global-lake").await?.contains(&"main".into()));
+    db.disconnect("global-lake").await;
     Ok(())
 }
 

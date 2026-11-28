@@ -256,6 +256,37 @@ describe("DuckDB data sources", () => {
     expect(backend.saveSource).not.toHaveBeenCalled();
   });
 
+  it("browses DuckLake paths on the database host in a remote window", async () => {
+    const choose = vi
+      .fn()
+      .mockResolvedValueOnce(["/srv/project/catalog.ducklake"])
+      .mockResolvedValueOnce(["/srv/project/data"])
+      .mockResolvedValueOnce(["/srv/project/new-lake"]);
+    const unregister = registerHostPathChooser(choose);
+    useRemote.setState({ session: { root: "/srv/project", os: "linux", commands: [] } as never });
+    useProject.setState({ project: { root: "/srv/project" } as ProjectInfo });
+    try {
+      backend.call.mockImplementation(async ([op]) => (op === "list" ? [duckdb] : "OK"));
+      startDuckDb();
+      fireEvent.click(screen.getByRole("button", { name: "DuckLake" }));
+      fireEvent.click(screen.getByRole("button", { name: "Browse for DuckLake catalog" }));
+      await waitFor(() => expect(screen.getByLabelText("Catalog file:")).toHaveValue("/srv/project/catalog.ducklake"));
+      fireEvent.click(screen.getByRole("button", { name: "Browse for DuckLake data directory" }));
+      await waitFor(() => expect(screen.getByLabelText("Data directory:")).toHaveValue("/srv/project/data"));
+      fireEvent.click(screen.getByRole("button", { name: "Create New DuckLake…" }));
+      await waitFor(() => expect(backend.confirm).toHaveBeenCalled());
+      expect(choose).toHaveBeenNthCalledWith(1, expect.objectContaining({ directory: false }));
+      expect(choose).toHaveBeenNthCalledWith(2, expect.objectContaining({ directory: true }));
+      expect(choose).toHaveBeenNthCalledWith(3, expect.objectContaining({ save: true }));
+      expect(backend.pick).not.toHaveBeenCalled();
+      expect(backend.pickNew).not.toHaveBeenCalled();
+      expect(backend.call.mock.calls.map(([request]) => request[0])).not.toContain("createLake");
+    } finally {
+      unregister();
+      useRemote.setState({ session: null });
+    }
+  });
+
   it("offers DuckDB in the new data source menu", () => {
     const dataSource = newMenu().find((item) => "label" in item && item.label === "Data Source");
     expect(dataSource && "submenu" in dataSource && dataSource.submenu).toEqual(
@@ -498,37 +529,6 @@ describe("DuckDB data sources", () => {
       expect(choose).toHaveBeenCalledWith(expect.objectContaining({ save: true }));
       expect(backend.pick).not.toHaveBeenCalled();
       expect(backend.pickNew).not.toHaveBeenCalled();
-    } finally {
-      unregister();
-      useRemote.setState({ session: null });
-    }
-  });
-
-  it("browses DuckLake paths on the database host in a remote window", async () => {
-    const choose = vi
-      .fn()
-      .mockResolvedValueOnce(["/srv/project/catalog.ducklake"])
-      .mockResolvedValueOnce(["/srv/project/data"])
-      .mockResolvedValueOnce(["/srv/project/new-lake"]);
-    const unregister = registerHostPathChooser(choose);
-    useRemote.setState({ session: { root: "/srv/project", os: "linux", commands: [] } as never });
-    useProject.setState({ project: { root: "/srv/project" } as ProjectInfo });
-    try {
-      backend.call.mockImplementation(async ([op]) => (op === "list" ? [duckdb] : "OK"));
-      startDuckDb();
-      fireEvent.click(screen.getByRole("button", { name: "DuckLake" }));
-      fireEvent.click(screen.getByRole("button", { name: "Browse for DuckLake catalog" }));
-      await waitFor(() => expect(screen.getByLabelText("Catalog file:")).toHaveValue("/srv/project/catalog.ducklake"));
-      fireEvent.click(screen.getByRole("button", { name: "Browse for DuckLake data directory" }));
-      await waitFor(() => expect(screen.getByLabelText("Data directory:")).toHaveValue("/srv/project/data"));
-      fireEvent.click(screen.getByRole("button", { name: "Create New DuckLake…" }));
-      await waitFor(() => expect(backend.confirm).toHaveBeenCalled());
-      expect(choose).toHaveBeenNthCalledWith(1, expect.objectContaining({ directory: false }));
-      expect(choose).toHaveBeenNthCalledWith(2, expect.objectContaining({ directory: true }));
-      expect(choose).toHaveBeenNthCalledWith(3, expect.objectContaining({ save: true }));
-      expect(backend.pick).not.toHaveBeenCalled();
-      expect(backend.pickNew).not.toHaveBeenCalled();
-      expect(backend.call.mock.calls.map(([request]) => request[0])).not.toContain("createLake");
     } finally {
       unregister();
       useRemote.setState({ session: null });
