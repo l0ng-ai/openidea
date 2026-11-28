@@ -9441,5 +9441,8 @@
   "Sub-agents": "子代理",
   "Last turn": "上一輪",
   "Compact Conversation": "壓縮對話",
-  "Premium requests": "進階請求"
+  "Premium requests": "進階請求",
+  "Find in Documentation": "在文件中查詢",
+  "Previous Match": "上一個相符項目",
+  "Next Match": "下一個相符項目"
 }
