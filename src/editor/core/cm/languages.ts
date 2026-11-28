@@ -275,6 +275,19 @@ const OWN_MODES = [
     extensions: ["astro"],
     load: () => import("./astro").then((m) => m.astro()),
   }),
+  // Overrides the language-data HTML mode so versioned `<script>` types highlight as JavaScript.
+  LanguageDescription.of({
+    name: "HTML",
+    alias: ["xhtml"],
+    extensions: ["html", "htm", "handlebars", "hbs"],
+    load: async () => {
+      const [{ html }, { VERSIONED_SCRIPT_TYPES }] = await Promise.all([
+        import("@codemirror/lang-html"),
+        import("./htmlScripts"),
+      ]);
+      return html({ nestedLanguages: VERSIONED_SCRIPT_TYPES });
+    },
+  }),
   // Overrides the language-data Vue mode so `<style lang="scss">` highlights.
   LanguageDescription.of({
     name: "Vue",

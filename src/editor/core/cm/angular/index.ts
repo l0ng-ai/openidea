@@ -10,6 +10,7 @@ import { LRLanguage, LanguageSupport, foldService, matchBrackets, syntaxTree } f
 import { EditorSelection } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { html } from "@codemirror/lang-html";
+import { VERSIONED_SCRIPT_TYPES } from "../htmlScripts";
 import { javascriptLanguage } from "@codemirror/lang-javascript";
 import { styleTags, tags as t } from "@lezer/highlight";
 import {
@@ -195,7 +196,7 @@ function entityRuns(node: SyntaxNode, input: Input): { from: number; to: number 
   return runs.length ? runs : null;
 }
 
-const baseHTML = html({ selfClosingTags: true });
+const baseHTML = html({ selfClosingTags: true, nestedLanguages: VERSIONED_SCRIPT_TYPES });
 
 function mixAngular(node: SyntaxNodeRef, input: Input): NestedParse | null {
   switch (node.name) {
