@@ -17,6 +17,18 @@ pub struct PytestModule {
     pub slots: Vec<PytestFixtureSlot>,
     /// Modules named by a module-level `pytest_plugins`, as written (`pkg.fixtures`).
     pub plugins: Vec<String>,
+    /// Module-level `from … import …`: pytest takes an imported fixture as the module's own.
+    pub imports: Vec<PytestImport>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PytestImport {
+    /// As written, leading dots of a relative import included (`.fixtures`).
+    pub module: String,
+    /// The imported name, `*` for a star import.
+    pub name: String,
+    /// The name it is bound to here (`as …`, else the name).
+    pub alias: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,6 +39,10 @@ pub struct PytestFixture {
     pub selection: Range,
     /// The class whose method it is; only that class's tests see it.
     pub class: Option<String>,
+    /// Named by `name="…"`: renaming it leaves the function alone.
+    pub by_argument: bool,
+    /// The function's name, which an import names it by.
+    pub function: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +63,9 @@ pub struct PytestFixtureUse {
     /// For a parameter: the names in the function's body that read it (attribute names and
     /// keyword argument names left out), which a rename of the fixture renames too.
     pub body: Vec<Range>,
+    /// For a parameter: the names its function already uses (its parameters, the names in its
+    /// body), which a renamed fixture must not take.
+    pub taken: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,6 +80,15 @@ impl PytestModule {
     /// The use whose name covers `pos` (its end included, where a caret after the name sits).
     pub fn use_at(&self, pos: Pos) -> Option<&PytestFixtureUse> {
         self.uses.iter().find(|u| u.range.start <= pos && pos <= u.range.end)
+    }
+
+    /// The use at `pos`, or the use whose parameter is read in a function body at `pos`; with
+    /// the range of the name there.
+    pub fn use_or_read_at(&self, pos: Pos) -> Option<(&PytestFixtureUse, Range)> {
+        let covers = |r: &Range| r.start <= pos && pos <= r.end;
+        self.use_at(pos)
+            .map(|u| (u, u.range))
+            .or_else(|| self.uses.iter().find_map(|u| u.body.iter().find(|r| covers(r)).map(|r| (u, *r))))
     }
 
     /// The fixture whose name (function name or `name=` string) covers `pos`.
@@ -177,6 +205,7 @@ fn statement(node: Node, class: Option<&str>, text: &str, idx: &LineIndex, out: 
             }
         }
         "expression_statement" if class.is_none() => plugins(definition, text, idx, &mut out.plugins),
+        "import_from_statement" if class.is_none() => imports(definition, text, &mut out.imports),
         _ => {}
     }
 }
@@ -203,7 +232,13 @@ fn function(
             Some((_, string)) => *string,
             None => idx.range(name_node.start_byte(), name_node.end_byte()),
         };
-        out.fixtures.push(PytestFixture { name: fixture_name.clone(), selection, class: class.map(str::to_owned) });
+        out.fixtures.push(PytestFixture {
+            name: fixture_name.clone(),
+            selection,
+            class: class.map(str::to_owned),
+            by_argument: f.is_some(),
+            function: name.clone(),
+        });
     }
     let Some(params) = def.child_by_field_name("parameters") else { return };
     out.slots.push(PytestFixtureSlot {
@@ -213,6 +248,11 @@ fn function(
     // Arguments `parametrize` supplies are no fixtures (unless indirect).
     let mut skip: Vec<String> = parametrized(decorators, text, idx);
     skip.extend_from_slice(class_args);
+    let mut c = params.walk();
+    let mut taken: Vec<String> = params.named_children(&mut c).filter_map(|p| parameter_name(p, text)).collect();
+    if let Some(body) = def.child_by_field_name("body") {
+        names_in(body, text, &mut taken);
+    }
     let mut c = params.walk();
     for (i, param) in params.named_children(&mut c).enumerate() {
         let ident = match param.kind() {
@@ -236,29 +276,138 @@ fn function(
             class: class.map(str::to_owned),
             in_fixture: fixture.is_some().then(|| fixture_name.clone()),
             body,
+            taken: taken.clone(),
         });
     }
 }
 
-/// The identifiers `name` in `body`, except attribute names (`x.name`) and keyword argument
-/// names (`f(name=…)`). A nested function that rebinds the name is not told apart.
+/// The name a parameter node binds (`x`, `x: int`, `x=1`, `*x`, `**x`).
+fn parameter_name(param: Node, text: &str) -> Option<String> {
+    let ident = match param.kind() {
+        "identifier" => param,
+        "typed_parameter" | "list_splat_pattern" | "dictionary_splat_pattern" => {
+            let mut c = param.walk();
+            param.named_children(&mut c).find(|n| n.kind() == "identifier")?
+        }
+        "default_parameter" | "typed_default_parameter" => param.child_by_field_name("name")?,
+        _ => return None,
+    };
+    Some(text_of(ident, text))
+}
+
+/// Whether `node` (a nested function, lambda or comprehension) binds `name` itself, so its
+/// `name` is another variable.
+fn rebinds(node: Node, name: &str, text: &str) -> bool {
+    match node.kind() {
+        "function_definition" | "lambda" => node.child_by_field_name("parameters").is_some_and(|params| {
+            let mut c = params.walk();
+            params.named_children(&mut c).any(|p| parameter_name(p, text).as_deref() == Some(name))
+        }),
+        "list_comprehension" | "set_comprehension" | "dictionary_comprehension" | "generator_expression" => {
+            let mut c = node.walk();
+            node.named_children(&mut c).filter(|n| n.kind() == "for_in_clause").any(|clause| {
+                let mut found = false;
+                if let Some(left) = clause.child_by_field_name("left") {
+                    let mut cursor = left.walk();
+                    visit(&mut cursor, &mut |n| found |= n.kind() == "identifier" && text_of(n, text) == name);
+                }
+                found
+            })
+        }
+        _ => false,
+    }
+}
+
+/// The identifiers `name` in `body` that read the parameter: not attribute names (`x.name`),
+/// keyword argument names (`f(name=…)`), nor names inside a nested function, lambda or
+/// comprehension that binds `name` itself.
 fn reads_of(body: Node, name: &str, text: &str, idx: &LineIndex) -> Vec<Range> {
+    fn walk(n: Node, name: &str, text: &str, idx: &LineIndex, out: &mut Vec<Range>) {
+        if rebinds(n, name, text) {
+            // Still the outer name: parameter defaults and annotations, a comprehension's first iterable.
+            for outer in evaluated_outside(n) {
+                walk(outer, name, text, idx, out);
+            }
+            return;
+        }
+        if n.kind() == "identifier" && text.get(n.byte_range()) == Some(name) {
+            let field_of =
+                |parent: Node, field: &str| parent.child_by_field_name(field).is_some_and(|c| c.id() == n.id());
+            let excluded = n.parent().is_some_and(|parent| {
+                (parent.kind() == "attribute" && field_of(parent, "attribute"))
+                    || (parent.kind() == "keyword_argument" && field_of(parent, "name"))
+            });
+            if !excluded {
+                out.push(idx.range(n.start_byte(), n.end_byte()));
+            }
+            return;
+        }
+        let mut c = n.walk();
+        for child in n.children(&mut c) {
+            walk(child, name, text, idx, out);
+        }
+    }
     let mut out = Vec::new();
+    walk(body, name, text, idx, &mut out);
+    out
+}
+
+/// The parts of a nested function, lambda or comprehension that run in the enclosing scope.
+fn evaluated_outside(n: Node) -> Vec<Node> {
+    let mut out = Vec::new();
+    if let Some(params) = n.child_by_field_name("parameters") {
+        let mut c = params.walk();
+        for p in params.named_children(&mut c) {
+            out.extend(["value", "type"].iter().filter_map(|f| p.child_by_field_name(f)));
+        }
+        out.extend(n.child_by_field_name("return_type"));
+    } else {
+        let mut c = n.walk();
+        let first = n.named_children(&mut c).find(|c| c.kind() == "for_in_clause");
+        out.extend(first.and_then(|clause| clause.child_by_field_name("right")));
+    }
+    out
+}
+
+/// Every name `body` uses (attribute and keyword argument names left out), nested scopes included.
+fn names_in(body: Node, text: &str, out: &mut Vec<String>) {
     let mut cursor = body.walk();
     visit(&mut cursor, &mut |n| {
-        if n.kind() != "identifier" || text.get(n.byte_range()) != Some(name) {
+        if n.kind() != "identifier" {
             return;
         }
         let field_of = |parent: Node, field: &str| parent.child_by_field_name(field).is_some_and(|c| c.id() == n.id());
-        if let Some(parent) = n.parent()
-            && ((parent.kind() == "attribute" && field_of(parent, "attribute"))
-                || (parent.kind() == "keyword_argument" && field_of(parent, "name")))
-        {
-            return;
+        let excluded = n.parent().is_some_and(|parent| {
+            (parent.kind() == "attribute" && field_of(parent, "attribute"))
+                || (parent.kind() == "keyword_argument" && field_of(parent, "name"))
+        });
+        let name = text_of(n, text);
+        if !excluded && !out.contains(&name) {
+            out.push(name);
         }
-        out.push(idx.range(n.start_byte(), n.end_byte()));
     });
-    out
+}
+
+/// `from a.b import x, y as z` / `from . import *`.
+fn imports(statement: Node, text: &str, out: &mut Vec<PytestImport>) {
+    let Some(module) = statement.child_by_field_name("module_name").map(|m| text_of(m, text)) else { return };
+    let mut c = statement.walk();
+    for child in statement.named_children(&mut c) {
+        let (name, alias) = match child.kind() {
+            "wildcard_import" => ("*".to_owned(), "*".to_owned()),
+            "aliased_import" => match (child.child_by_field_name("name"), child.child_by_field_name("alias")) {
+                (Some(n), Some(a)) => (text_of(n, text), text_of(a, text)),
+                _ => continue,
+            },
+            "dotted_name"
+                if child.start_byte() > statement.child_by_field_name("module_name").map_or(0, |m| m.end_byte()) =>
+            {
+                (text_of(child, text), text_of(child, text))
+            }
+            _ => continue,
+        };
+        out.push(PytestImport { module: module.clone(), name, alias });
+    }
 }
 
 /// `Some(None)` for `@pytest.fixture` / `@fixture(...)`, `Some(Some((name, range)))` with a
@@ -352,6 +501,7 @@ fn fixture_call(call: Node, text: &str, idx: &LineIndex, out: &mut PytestModule)
                 class: class.clone(),
                 in_fixture: None,
                 body: Vec::new(),
+                taken: Vec::new(),
             });
         }
     }
@@ -544,6 +694,49 @@ class TestTasks:
         let reads: Vec<(u32, u32)> = u.body.iter().map(|r| (r.start.line, r.start.col)).collect();
         assert_eq!(reads, [(1, 4), (1, 20), (2, 22)]);
         assert_eq!(m.definition_at(Pos::new(0, 6)), None);
+    }
+
+    #[test]
+    fn a_nested_scope_that_rebinds_the_name_keeps_its_own() {
+        let m = module(concat!(
+            "def test_a(tasks, other=1):\n",
+            "    done = [tasks for tasks in range(3)]\n",
+            "    f = lambda tasks: tasks\n",
+            "    def inner(tasks):\n",
+            "        return tasks\n",
+            "    def uses():\n",
+            "        return tasks\n",
+            "    return tasks\n",
+        ));
+        let u = &m.uses[0];
+        let reads: Vec<u32> = u.body.iter().map(|r| r.start.line).collect();
+        assert_eq!(reads, [6, 7]);
+        assert_eq!(u.taken[..2], ["tasks", "other"]);
+        // Rename from a read in the body finds its parameter.
+        let (found, range) = m.use_or_read_at(Pos::new(7, 12)).unwrap();
+        assert_eq!((found.name.as_str(), range.start.line), ("tasks", 7));
+        assert!(m.use_or_read_at(Pos::new(4, 16)).is_none(), "the nested function's own `tasks`");
+    }
+
+    #[test]
+    fn defaults_and_the_first_iterable_of_a_nested_scope_read_the_outer_name() {
+        let m = module(concat!(
+            "def test_a(tasks):\n",
+            "    def inner(tasks=tasks):\n",
+            "        return tasks\n",
+            "    f = lambda tasks=tasks: tasks\n",
+            "    return [tasks for tasks in tasks]\n",
+        ));
+        let reads: Vec<(u32, u32)> = m.uses[0].body.iter().map(|r| (r.start.line, r.start.col)).collect();
+        assert_eq!(reads, [(1, 20), (3, 21), (4, 31)]);
+        assert!(m.uses[0].taken.iter().any(|n| n == "inner") && m.uses[0].taken.iter().any(|n| n == "f"));
+    }
+
+    #[test]
+    fn reads_imported_names() {
+        let m = module("from tests.shared import item, other as alias\nfrom .local import *\nimport os\n");
+        let imports: Vec<String> = m.imports.iter().map(|i| format!("{} {} {}", i.module, i.name, i.alias)).collect();
+        assert_eq!(imports, ["tests.shared item item", "tests.shared other alias", ".local * *"]);
     }
 
     #[test]

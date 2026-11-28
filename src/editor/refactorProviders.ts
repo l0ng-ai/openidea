@@ -21,8 +21,8 @@ export interface ContributedRename {
   to: number;
   /** Why it can't be renamed (defined outside the project, …); the rename stops with this hint. */
   refused?: string;
-  /** The edit renaming it to `newName`. */
-  edit: (newName: string, request: RequestId) => Promise<WorkspaceEdit>;
+  /** The edit renaming it to `newName`, and a warning to show with it (in the preview). */
+  edit: (newName: string, request: RequestId) => Promise<{ edit: WorkspaceEdit; note?: string | null }>;
 }
 
 type RenameProvider = (view: EditorView, offset: number) => Promise<ContributedRename | null>;

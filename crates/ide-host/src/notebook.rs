@@ -45,11 +45,12 @@ fn parse_variables(reply: &serde_json::Value) -> IdeResult<Vec<NotebookVariable>
     let rows = &reply["rows"];
     if rows["status"] != "ok" {
         let reason = rows["evalue"].as_str().unwrap_or("no result");
-        return Err(IdeError::unavailable(format!("could not read the kernel's variables: {reason}")));
+        return Err(IdeError::new(ErrorKind::Protocol, format!("could not read the kernel's variables: {reason}")));
     }
     // The value is a base64 str, so its text/plain is that text in quotes.
     let text = rows["data"]["text/plain"].as_str().unwrap_or_default().trim_matches(['\'', '"']);
-    let bad = |error: String| IdeError::unavailable(format!("could not read the kernel's variables: {error}"));
+    let bad =
+        |error: String| IdeError::new(ErrorKind::Protocol, format!("could not read the kernel's variables: {error}"));
     let json = base64::engine::general_purpose::STANDARD.decode(text).map_err(|e| bad(e.to_string()))?;
     serde_json::from_slice(&json).map_err(|e| bad(e.to_string()))
 }
@@ -355,7 +356,7 @@ impl NotebookService {
         if document.state.lock().active.is_some() {
             return Err(IdeError::unavailable("notebook is running"));
         }
-        let expressions = HashMap::from([("rows".to_owned(), "_openidea_variables()".to_owned())]);
+        let expressions = HashMap::from([("rows".to_owned(), r#"globals().pop("_openidea_variables")()"#.to_owned())]);
         match self.kernels.inspect(&document.path, VARIABLES, expressions).await? {
             Some(reply) => parse_variables(&reply).map(Some),
             None => Ok(None),

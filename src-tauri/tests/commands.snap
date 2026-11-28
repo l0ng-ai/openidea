@@ -453,6 +453,7 @@ menu_set_remote_recent                       always             desktop      bin
 nav_index_definitions                        always             project_host bindings async
 nav_inheritance                              always             project_host bindings async
 nav_pytest_fixture_rename                    always             project_host bindings async
+nav_pytest_fixture_target                    always             project_host bindings async
 nav_pytest_fixture_usages                    always             project_host bindings async
 nav_pytest_fixtures                          always             project_host bindings async
 nav_python_stubs                             always             project_host bindings async
@@ -472,6 +473,7 @@ notebook_undo                                always             project_host bin
 notebook_variables                           trusted            project_host bindings async
 open_project                                 always             project_host bindings async
 path_completions                             always             project_host bindings async
+plots_delete                                 always             project_host bindings async
 plugin_activation_event                      trusted            desktop      bindings async
 plugin_answer_clipboard                      trusted            project_host bindings sync
 plugin_answer_command                        trusted            project_host bindings sync

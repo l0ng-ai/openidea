@@ -140,6 +140,14 @@ Run with Coverage uses coverage.py in the project interpreter, and Profile uses 
 
 Jupyter notebooks (`.ipynb`) run on a Python interpreter; see [Notebooks](/en/guide/notebook).
 
+### Plots
+
+matplotlib figures from runs, debug sessions and the Python Console go to the **Plots** tool window (right) instead of matplotlib's own window: `plt.show()` adds every open figure, and `Figure.show()` adds that figure. The window keeps the newest 100 plots; you can save one as PNG, copy it to the clipboard or delete it.
+
+- A run that sets `MPLBACKEND` itself keeps its backend, including one inherited from the login shell or the project's `.envrc`. A `backend:` line in `matplotlibrc` is overridden.
+- The IDE's backend is found through `PYTHONPATH`. A child process that drops `PYTHONPATH` but keeps `MPLBACKEND` (`python -I`, or `subprocess` with a replaced `env`) cannot import it; unset `MPLBACKEND` for that process.
+- Turn it off with **Show plots in tool window** on **Settings › Languages & Frameworks › Python Interpreter**.
+
 ## Debugging
 
 Python debugging uses debugpy. If it is missing when you start a debug session, OpenIDEA offers to install it. The IDE keeps a private copy of debugpy in its tools folder and loads it into whichever interpreter runs your program, so you do not need debugpy in the project environment.

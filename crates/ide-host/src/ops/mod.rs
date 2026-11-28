@@ -28,7 +28,7 @@ pub mod lsp;
 pub mod maven_placeholder;
 pub mod nav;
 pub mod notebook;
-mod plots;
+pub mod plots;
 pub mod project;
 pub mod pytest_fixtures;
 mod python;
@@ -107,6 +107,7 @@ ide_command::domains!(
     mcp_reports: crate::mcp::reports,
     nav: crate::ops::nav,
     notebook: crate::ops::notebook,
+    plots: crate::ops::plots,
     plugins_commands: crate::plugins::commands,
     plugins_commit: crate::plugins::commit,
     plugins_index_ops: crate::plugins::index_ops,
