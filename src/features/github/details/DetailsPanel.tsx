@@ -8,13 +8,14 @@
  * Provides the `submitReview` and `toggleViewed` handlers while it is shown.
  */
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type RefObject } from "react";
+import { useWidgetBranch } from "@/features/vcs/activeRepository";
 import { useVcs } from "@/features/vcs/store";
 import { useTx } from "@/platform/i18n";
 import { Spinner, T, showContextMenu, tooltipAttrs, type MenuItem } from "@/ui";
 import { hasPermission, reviewersStates } from "../data/model";
 import { openInBrowser } from "../data/local";
 import { reloadPullRequestData, usePullRequestData } from "../data/pullRequest";
-import { NO_REMOTES, useGhRepository } from "../data/repository";
+import { NO_REMOTES, reviewRoot, useGhRepository } from "../data/repository";
 import { provideGithubHandler } from "../toolwindow/handlers";
 import { openTimeline } from "../toolwindow/timelineInput";
 import { StateTag } from "../ui/chips";
@@ -86,7 +87,8 @@ function Details({ number, submitRef }: { number: number; submitRef: RefObject<H
   const threads = usePullRequestData(number, "threads").value;
   const permission = useGhRepository((s) => s.connection?.repository.viewerPermission);
   const remotes = useGhRepository((s) => s.connection?.remotes ?? NO_REMOTES);
-  const branch = useVcs((s) => s.branch);
+  const connection = useGhRepository((s) => s.connection);
+  const branch = useWidgetBranch(useVcs((s) => reviewRoot(s, connection)));
   const busy = useFlowBusy((s) => s.busy[number] !== undefined);
 
   const [selected, setSelected] = useState(-1);

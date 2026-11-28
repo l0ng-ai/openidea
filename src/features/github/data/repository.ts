@@ -15,6 +15,7 @@ import { useEffect } from "react";
 import { create } from "zustand";
 import type { GhAvailability, Remote } from "@/platform/ipc";
 import { call, commands, isTauri } from "@/platform/ipc";
+import { useVcs, type VcsState } from "@/features/vcs/store";
 import { useProject } from "@/platform/project";
 import { errorMessage, setCurrentRepository } from "../api/client";
 import * as api from "../api/requests";
@@ -128,6 +129,21 @@ export const connectedRemotes = (): readonly GHRemote[] => useGhRepository.getSt
 
 /** The local repository of the connection, for gh and git commands (null: the primary one). */
 export const connectedRoot = (): string | null => useGhRepository.getState().connection?.root ?? null;
+
+/**
+ * The local repository the connected pull requests are reviewed in, which their paths are
+ * relative to: the one selected in the VCS widgets when it has the connected GitHub repository
+ * as a remote too (another clone or worktree of it), else the connection's.
+ */
+export function reviewRoot(
+  vcs: Pick<VcsState, "repo" | "roots" | "root"> = useVcs.getState(),
+  connection: GHConnection | null = useGhRepository.getState().connection,
+): string | null {
+  const selected = vcs.repo ?? vcs.roots[0] ?? vcs.root;
+  if (!connection) return selected;
+  const own = localRemotes.some((r) => r.root === selected && sameRepository(r, connection.coordinates));
+  return own ? selected : (connection.root ?? vcs.roots[0] ?? vcs.root);
+}
 
 function parseNameWithOwner(s: string | null | undefined): GHRepositoryCoordinates | null {
   const m = s ? /^([^/\s]+)\/([^/\s]+)$/.exec(s) : null;
@@ -261,6 +277,7 @@ export function disconnect({ forget }: { forget: boolean }) {
 /** Another project: start over (the next `refreshConnection` checks again). */
 export function resetConnection() {
   checkSeq++;
+  localRemotes = [];
   disconnect({ forget: false });
   useGhRepository.setState({ availability: null, remotes: [], defaultRemote: null, connectionError: null });
 }

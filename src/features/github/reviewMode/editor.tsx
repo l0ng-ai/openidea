@@ -29,7 +29,6 @@ import {
   type ReviewGutterState,
   type ReviewOutline,
 } from "@/features/vcs/reviewGutter";
-import { currentRepoRoot } from "@/features/vcs/store";
 import { setContext } from "@/platform/context";
 import { call, commands } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
@@ -42,7 +41,7 @@ import {
   reloadPullRequestData,
   subscribePullRequestData,
 } from "../data/pullRequest";
-import { currentUserHasPermission, useGhRepository } from "../data/repository";
+import { reviewRoot, currentUserHasPermission, useGhRepository } from "../data/repository";
 import { discardNewComment, NewCommentInlay, ThreadInlay } from "../diff/Inlays";
 import { adjacentThread, newCommentLocation, parsePatch, threadOrder, type PatchHunk } from "../diff/model";
 import { newCommentsOf, requestNewComment, updateNewComment, useNewComments } from "../diff/newComments";
@@ -78,9 +77,9 @@ function hunksOf(patch: string | null | undefined): PatchHunk[] {
   return h;
 }
 
-/** Path relative to the repository root; null outside it. */
+/** Path relative to the review repository's root (`reviewRoot`); null outside it. */
 function repositoryPath(path: string): string | null {
-  const root = currentRepoRoot();
+  const root = reviewRoot();
   return root && path.startsWith(`${root}/`) ? path.slice(root.length + 1) : null;
 }
 
@@ -540,7 +539,7 @@ export class ReviewEditor {
     } else {
       // Another file's local changes are not known here: its head line is the best guess.
       navigated = { number: n, id: target.id, path: target.path, line: target.line };
-      const root = currentRepoRoot();
+      const root = reviewRoot();
       if (root)
         await maybeEditorService()?.openFile(`${root}/${target.path}`, {
           selection: { line: target.line, col: 0 },
