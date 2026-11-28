@@ -297,6 +297,8 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "pyproject.toml",
       "ruff.toml",
       "format on save",
+      "fix on save",
+      "safe lint fixes",
     ],
     component: RuffPage,
   },

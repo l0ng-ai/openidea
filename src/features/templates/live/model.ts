@@ -247,6 +247,37 @@ export function evaluateExpression(src: string, fns: TemplateFunctions, values: 
   return ev(e);
 }
 
+/** Functions bound to the editor by `templateFunctions` rather than the pure evaluator. */
+const EDITOR_FUNCTIONS = new Set([
+  "className",
+  "methodName",
+  "functionName",
+  "fileName",
+  "fileNameWithoutExtension",
+  "filePath",
+  "user",
+  "clipboard",
+  "suggestVariableName",
+  "expressionText",
+  "commentStart",
+  "commentEnd",
+  "lineCommentStart",
+]);
+
+/** Calls the evaluator cannot run without an editor binding; an invalid expression is returned verbatim. */
+export function unsupportedExpressionFunctions(src: string): string[] {
+  const expression = parseExpression(src.trim());
+  if (!expression) return [src];
+  const unsupported: string[] = [];
+  const walk = (e: Expr) => {
+    if (e.k !== "call") return;
+    if (!(e.fn in PURE_FUNCTIONS) && !EDITOR_FUNCTIONS.has(e.fn)) unsupported.push(e.fn);
+    e.args.forEach(walk);
+  };
+  walk(expression);
+  return [...new Set(unsupported)];
+}
+
 /** Function names an expression calls (to fetch e.g. the clipboard only when needed). */
 export function calledFunctions(src: string): string[] {
   const out: string[] = [];

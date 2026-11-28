@@ -4,10 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerActions } from "@/platform/actions";
 import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
-import { findPathCandidates } from "./links";
+import { useRemote } from "@/platform/remote";
+import { _resetTerminalHomeForTests } from "./home";
+import { findPathCandidates, findTerminalLinks } from "./links";
 import {
   PATH_HOVER_CLASS,
-  _resetPathLinksHomeForTests,
   installModifierPathLinks,
   isPathLinkModifier,
   openPathTarget,
@@ -21,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   openFile: vi.fn(async (_path: string, _opts?: unknown) => undefined),
   revealInFileManager: vi.fn(async (_path: string) => true),
   homeDir: "/Users/alice",
+  systemEnv: vi.fn<() => Promise<Record<string, string>>>(async () => ({})),
 }));
 
 vi.mock("@/platform/ipc", () => ({
@@ -33,6 +35,7 @@ vi.mock("@/platform/ipc", () => ({
       return kind;
     }),
     findFiles: (q: string, limit: number) => mocks.findFiles(q, limit),
+    runSystemEnv: () => mocks.systemEnv(),
   },
 }));
 vi.mock("@tauri-apps/api/path", () => ({
@@ -94,7 +97,7 @@ describe("resolvePathTarget — existence & project-scope matrix", () => {
   beforeEach(() => {
     mocks.entryKinds.clear();
     mocks.findFiles.mockReset().mockResolvedValue([]);
-    _resetPathLinksHomeForTests();
+    _resetTerminalHomeForTests();
     useProject.setState({ project: { root: "/repo" } as never });
   });
   afterEach(() => {
@@ -152,6 +155,127 @@ describe("resolvePathTarget — existence & project-scope matrix", () => {
     expect(await resolvePathTarget("TerminalView.tsx", "/repo")).toEqual({
       kind: "file",
       path: "/repo/src/features/terminal/TerminalView.tsx",
+    });
+  });
+});
+
+// The reporter's list from #6246: a WSL window on Windows, project `/home/linux/projects/odin_learning`.
+describe("resolvePathTarget — #6246 paths", () => {
+  const root = "/home/linux/projects/odin_learning";
+  const files = [
+    "README.md",
+    ".gitignore",
+    "docs/wsl2_tooling.md",
+    "scripts/check_python.py",
+    "python_how_to/050_for_while_and_loop_else.py",
+    ".agents/scripts/scope_guard.py",
+    ".scratch/python-how-to-v2/spec.md",
+  ];
+  const dirs = ["docs", ".agents", ".agents/scripts", "how_to_blueprint", "python_how_to"];
+  const wsl = { target: { kind: "wsl", distro: "Ubuntu" }, root, host: "Ubuntu", os: "linux", commands: [] };
+
+  beforeEach(() => {
+    mocks.entryKinds.clear();
+    mocks.findFiles.mockReset().mockResolvedValue([]);
+    mocks.systemEnv.mockReset().mockResolvedValue({ HOME: "/home/linux", PATH: "/usr/bin" });
+    _resetTerminalHomeForTests();
+    for (const f of files) mocks.entryKinds.set(`${root}/${f}`, "file");
+    for (const d of dirs) mocks.entryKinds.set(`${root}/${d}`, "dir");
+    mocks.entryKinds.set("/home/linux/projects/Pseudocode/skills/pseudocode/SKILL.md", "file");
+    mocks.entryKinds.set("/home/linux/.agents/skills/pseudocode/SKILL.md", "file");
+    useProject.setState({ project: { root } as never });
+    useRemote.setState({ session: wsl as never });
+  });
+  afterEach(() => {
+    useProject.setState({ project: null, settings: null });
+    useRemote.setState({ session: null });
+    vi.clearAllMocks();
+  });
+
+  it.each([
+    [".agents/scripts/scope_guard.py", ".scratch/python-how-to-v2/spec.md"],
+    ["'.agents/scripts/scope_guard.py'", "'.scratch/python-how-to-v2/spec.md'"],
+    ["./.agents/scripts/scope_guard.py", "./.scratch/python-how-to-v2/spec.md"],
+    ["Check .agents/scripts/scope_guard.py, and x.", "Check .scratch/python-how-to-v2/spec.md, and x."],
+  ])("detects %s exactly like its .scratch twin", (agents, scratch) => {
+    const paths = (line: string) => findPathCandidates(line).map((c) => c.path);
+    expect(paths(agents)).toContain(agents.match(/[./\w-]*scope_guard\.py/)![0]);
+    expect(paths(scratch)).toContain(scratch.match(/[./\w-]*spec\.md/)![0]);
+    expect(paths(agents).length).toBe(paths(scratch).length);
+  });
+
+  it("links `.agents/…:24` and `.agents/…:24:9` like any other location", () => {
+    expect(findTerminalLinks(".agents/scripts/scope_guard.py:24")).toMatchObject([
+      { kind: "file", path: ".agents/scripts/scope_guard.py", line: 24 },
+    ]);
+    expect(findTerminalLinks(".agents/scripts/scope_guard.py:24:9")).toMatchObject([
+      { kind: "file", path: ".agents/scripts/scope_guard.py", line: 24, col: 9 },
+    ]);
+  });
+
+  it.each([
+    // Workspace-relative, dot files and dot folders alike.
+    ["README.md", `${root}/README.md`],
+    [".gitignore", `${root}/.gitignore`],
+    [".agents/scripts/scope_guard.py", `${root}/.agents/scripts/scope_guard.py`],
+    [".scratch/python-how-to-v2/spec.md", `${root}/.scratch/python-how-to-v2/spec.md`],
+    ["./docs/wsl2_tooling.md", `${root}/docs/wsl2_tooling.md`],
+    ["./.agents/scripts/scope_guard.py", `${root}/.agents/scripts/scope_guard.py`],
+    ["../odin_learning/docs/wsl2_tooling.md", `${root}/docs/wsl2_tooling.md`],
+    ["../Pseudocode/skills/pseudocode/SKILL.md", "/home/linux/projects/Pseudocode/skills/pseudocode/SKILL.md"],
+    [`${root}/.agents/scripts/scope_guard.py`, `${root}/.agents/scripts/scope_guard.py`],
+    // `~` is the WSL user's home, not the Windows desktop's.
+    ["~/projects/odin_learning/docs/wsl2_tooling.md", `${root}/docs/wsl2_tooling.md`],
+    ["~/projects/odin_learning/.agents/scripts/scope_guard.py", `${root}/.agents/scripts/scope_guard.py`],
+    ["~/projects/Pseudocode/skills/pseudocode/SKILL.md", "/home/linux/projects/Pseudocode/skills/pseudocode/SKILL.md"],
+    ["~/.agents/skills/pseudocode/SKILL.md", "/home/linux/.agents/skills/pseudocode/SKILL.md"],
+  ])("resolves the file %s from the project root in a WSL window", async (raw, path) => {
+    expect(await resolvePathTarget(raw, root)).toEqual({ kind: "file", path });
+    expect(mocks.findFiles).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["docs/", `${root}/docs`],
+    ["./docs/", `${root}/docs`],
+    [".agents/scripts/", `${root}/.agents/scripts`],
+    ["~/projects/odin_learning/how_to_blueprint/", `${root}/how_to_blueprint`],
+  ])("resolves the folder %s in a WSL window", async (raw, path) => {
+    expect(await resolvePathTarget(raw, root)).toEqual({ kind: "dir", path });
+  });
+
+  it("never expands `~` to this desktop's home in a remote window, and asks again once the host answers", async () => {
+    mocks.entryKinds.set("/Users/alice/projects/odin_learning/docs/wsl2_tooling.md", "file");
+    mocks.systemEnv.mockRejectedValueOnce(new Error("disconnected"));
+    expect(await resolvePathTarget("~/projects/odin_learning/docs/wsl2_tooling.md", root)).toBeNull();
+    expect(await resolvePathTarget("~/projects/odin_learning/docs/wsl2_tooling.md", root)).toEqual({
+      kind: "file",
+      path: `${root}/docs/wsl2_tooling.md`,
+    });
+  });
+
+  it("keeps the local and the remote home apart when the window switches", async () => {
+    mocks.entryKinds.set("/Users/alice/notes.md", "file");
+    mocks.entryKinds.set("/home/linux/notes.md", "file");
+    useRemote.setState({ session: null });
+    expect(await resolvePathTarget("~/notes.md", "/")).toEqual({ kind: "file", path: "/Users/alice/notes.md" });
+    useRemote.setState({ session: wsl as never });
+    expect(await resolvePathTarget("~/notes.md", "/")).toEqual({ kind: "file", path: "/home/linux/notes.md" });
+    expect(mocks.systemEnv).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses %USERPROFILE% for `~` on a Windows SSH host", async () => {
+    useRemote.setState({
+      session: { ...wsl, target: { kind: "ssh", config: "win" }, host: "win", os: "windows" } as never,
+    });
+    mocks.systemEnv.mockResolvedValue({ USERPROFILE: "C:\\Users\\me" });
+    mocks.entryKinds.set("C:/Users/me/projects/a.txt", "file");
+    expect(await resolvePathTarget("~\\projects\\a.txt", "C:\\p")).toEqual({
+      kind: "file",
+      path: "C:/Users/me/projects/a.txt",
+    });
+    expect(await resolvePathTarget("~/projects/a.txt", "C:\\p")).toEqual({
+      kind: "file",
+      path: "C:/Users/me/projects/a.txt",
     });
   });
 });

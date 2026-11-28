@@ -180,6 +180,10 @@ export function fileSourceName(file: string): string {
   return base.replace(/\.[^.]+$/, "") || base;
 }
 
+export function supportsExplain(source?: Pick<DataSource, "vendor" | "driver"> | null): boolean {
+  return source?.driver !== "jdbc" || source.vendor === "duckdb";
+}
+
 /** The tree / menu icon of a data source (IDEA shows the vendor's mark). */
 export function sourceIcon(s: Pick<DataSource, "vendor" | "driver">): string {
   return vendorOf(s).icon;
@@ -364,7 +368,14 @@ export function targetOf(id: string, database: string | null, current: string | 
 }
 
 /** Key of the Database tree node of database `name` of data source `id`. */
-export const databaseKey = (id: string, name: string) => `${id}/@${name}`;
+export const databaseKey = (id: string, name: string, catalog = false) =>
+  `${id}/@${catalog ? encodeURIComponent(name) : name}`;
+
+export const treeIdentifier = (name: string, catalog?: string) =>
+  catalog === undefined ? name : encodeURIComponent(name);
+
+export const schemaNodeKey = (id: string, schema: string, catalog?: string) =>
+  catalog === undefined ? `${id}/${schema}` : `${databaseKey(id, catalog, true)}/${treeIdentifier(schema, catalog)}`;
 
 /**
  * `expanded` without the Database tree nodes that show what target `id` loaded (a data source

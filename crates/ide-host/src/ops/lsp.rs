@@ -846,7 +846,7 @@ pub async fn lsp_library_sources(
 
 #[command(trust = trusted)]
 pub async fn lsp_resolve_class_file(host: &Host, window: &str, path: std::path::PathBuf) -> IdeResult<String> {
-    // Opens compiled classes through JDT, with project source taking priority on disk.
+    // Opens compiled classes through JDT as decompiled class documents.
     let archive = ide_vfs::split_archive_path(&path);
     host.project(window)?.lsp.java_class_file(&path, archive).await
 }
@@ -1834,6 +1834,23 @@ pub async fn lsp_format_text(
     options: FormatOptions,
 ) -> IdeResult<Vec<TextEdit>> {
     crate::formatter::format_text(host, window, path, text, options).await
+}
+
+/// Apply Ruff's safe lint fixes (`ruff check --fix-only`) to the current unsaved Python document.
+#[command(trust = trusted)]
+pub async fn ruff_fix(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<TextEdit>> {
+    crate::formatter::ruff_fix(host, window, doc).await
+}
+
+/// Apply Ruff's safe lint fixes to a Python text snapshot without writing the file.
+#[command(trust = trusted)]
+pub async fn ruff_fix_text(
+    host: &Host,
+    window: &str,
+    path: std::path::PathBuf,
+    text: String,
+) -> IdeResult<Vec<TextEdit>> {
+    crate::formatter::ruff_fix_text(host, window, path, text).await
 }
 
 #[command(trust = trusted)]
@@ -3259,6 +3276,8 @@ ide_command::domain!(
     lsp_extract_interface_info,
     lsp_format,
     lsp_format_text,
+    ruff_fix,
+    ruff_fix_text,
     lsp_snapshot_completion,
     lsp_snapshot_diagnostics,
     lsp_source_action_text,

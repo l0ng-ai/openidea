@@ -3,7 +3,7 @@
 
 export type ConsoleVariable = { name: string; type: string; value: string };
 export type ConsoleMessage =
-  | { ready: { version: string; ipython: string | null } }
+  | { ready: { version: string; ipython: string | null; django?: string } }
   | { done: { variables: ConsoleVariable[] } };
 
 const RS = "\x1e";

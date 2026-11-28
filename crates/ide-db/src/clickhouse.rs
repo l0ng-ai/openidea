@@ -1,11 +1,13 @@
+use crate::ConsoleId;
 use crate::conn::{QueryResult, ResultColumn, Setup};
 use crate::source::{DataSource, DbSslMode, DbTxMode};
 use ide_core::{CancellationToken, IdeError, IdeResult, error::ErrorKind};
 use parking_lot::RwLock;
 use reqwest::{Client, RequestBuilder, StatusCode, Url};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, MutexGuard};
 
 #[derive(Clone)]
 pub struct ClickhousePool(Arc<State>);
@@ -18,11 +20,17 @@ struct State {
     database: String,
     settings: Vec<(String, String)>,
     read_only: bool,
-    session: Mutex<Session>,
+    connect_timeout: Duration,
+    startup_statements: Vec<String>,
+    use_http_session: bool,
+    session: SessionSlot,
+    console_sessions: parking_lot::Mutex<HashMap<(String, String), Arc<SessionSlot>>>,
     closed: CancellationToken,
 }
 
-#[derive(Default)]
+type SessionSlot = Mutex<Option<Session>>;
+
+#[derive(Clone, Default)]
 struct Session {
     id: Option<String>,
     initialized: bool,
@@ -32,6 +40,7 @@ struct Session {
 /// The response format: a names line, a types line, then one JSON array per row, so rows past
 /// the grid's limit are skipped without being parsed.
 const FORMAT: &str = "JSONCompactEachRowWithNamesAndTypes";
+const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(600);
 const SESSION_LOST: &str = "ClickHouse HTTP session expired or is missing on this node (code 372). Reconnect to start a new session. Behind a load balancer, use one node or session affinity, or set use_http_session=false in Advanced for independent queries.";
 
 pub(crate) fn transaction_error() -> IdeError {
@@ -44,6 +53,7 @@ impl ClickhousePool {
             return Err(transaction_error());
         }
         let mut use_http_session = None;
+        let mut read_timeout = None;
         let mut settings = Vec::with_capacity(setup.params.len());
         for (name, value) in setup.params {
             if name.eq_ignore_ascii_case("use_http_session") {
@@ -57,6 +67,14 @@ impl ClickhousePool {
                 } else {
                     return Err(IdeError::invalid("ClickHouse use_http_session must be true or false"));
                 });
+            } else if name.eq_ignore_ascii_case("http_read_timeout") {
+                if read_timeout.is_some() {
+                    return Err(IdeError::invalid("ClickHouse http_read_timeout must be specified only once"));
+                }
+                let seconds = value.parse::<std::num::NonZeroU32>().map_err(|_| {
+                    IdeError::invalid("ClickHouse http_read_timeout must be a positive whole number of seconds")
+                })?;
+                read_timeout = Some(Duration::from_secs(u64::from(seconds.get())));
             } else if reserved_setting(&name) {
                 return Err(IdeError::invalid(format!("ClickHouse HTTP manages the {name} setting")));
             } else {
@@ -89,6 +107,7 @@ impl ClickhousePool {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let mut builder = Client::builder()
             .connect_timeout(timeout)
+            .read_timeout(read_timeout.unwrap_or(DEFAULT_READ_TIMEOUT))
             .pool_max_idle_per_host(4)
             .redirect(reqwest::redirect::Policy::none())
             .user_agent(concat!("OpenIDEA/", env!("CARGO_PKG_VERSION")));
@@ -136,79 +155,126 @@ impl ClickhousePool {
             database: database.into(),
             settings,
             read_only: source.read_only,
-            session: Mutex::new(Session {
-                id: use_http_session.then(|| uuid::Uuid::new_v4().to_string()),
-                ..Session::default()
-            }),
+            connect_timeout: timeout,
+            startup_statements: setup.statements,
+            use_http_session,
+            session: Mutex::new(None),
+            console_sessions: parking_lot::Mutex::new(HashMap::new()),
             closed: CancellationToken::new(),
         }));
         let cancel = CancellationToken::new();
-        let initialize = async {
-            if let Err(error) = pool.execute("SELECT 1", 1, &cancel).await {
-                let Some(setting) = rejected_driver_setting(&error) else {
-                    return Err(error);
-                };
-                if !use_http_session {
-                    if setting == "readonly" {
-                        return Err(error);
-                    }
-                    if !source.read_only {
-                        return Err(IdeError::new(
-                            error.kind,
-                            format!(
-                                "{}; enable Read-only for independent queries on a strict read-only server",
-                                error.message
-                            ),
-                        ));
-                    }
-                    // Every request still sends readonly=1, regardless of which node answers.
-                    pool.0.session.lock().await.strict_read_only = true;
-                    pool.execute("SELECT 1", 1, &cancel).await?;
-                } else {
-                    // Only rely on the server's write protection after proving strict read-only
-                    // in this same named session.
-                    {
-                        let mut session = pool.0.session.lock().await;
-                        // The rejected probe may have opened a session on a different node.
-                        session.id = Some(uuid::Uuid::new_v4().to_string());
-                        session.strict_read_only = true;
-                    }
-                    let result = pool.execute("SELECT getSetting('readonly')", 1, &cancel).await?;
-                    if result.rows.first().and_then(|row| row.first()).and_then(Option::as_deref) != Some("1") {
-                        return Err(error);
-                    }
-                }
-            }
-            // The HTTP database parameter applies to one request. A named session needs
-            // USE once so later queries inherit the selection (and may change it).
-            if use_http_session && !database.is_empty() {
-                let name = crate::sql::quote_ident(crate::DbDriver::Clickhouse, database);
-                pool.execute(&format!("USE {name}"), 0, &cancel).await?;
-            }
-            for sql in setup.statements {
-                pool.execute(&sql, 0, &cancel).await?;
-            }
-            Ok(pool.clone())
+        if let Err(error) = pool.session(&pool.0.session, &cancel).await {
+            pool.close();
+            return Err(error);
+        }
+        Ok(pool)
+    }
+
+    async fn session<'a>(
+        &self,
+        slot: &'a SessionSlot,
+        cancel: &CancellationToken,
+    ) -> IdeResult<MutexGuard<'a, Option<Session>>> {
+        let mut slot = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(IdeError::cancelled()),
+            () = self.0.closed.cancelled() => return Err(IdeError::new(ErrorKind::Io, "ClickHouse connection is closed")),
+            session = slot.lock() => session,
         };
-        tokio::pin!(initialize);
-        tokio::select! {
-            result = &mut initialize => {
-                if result.is_err() {
-                    pool.close();
+        if slot.is_none() {
+            let mut session =
+                Session { id: self.0.use_http_session.then(|| uuid::Uuid::new_v4().to_string()), ..Session::default() };
+            {
+                let cancel = cancel.child_token();
+                let initialize = self.initialize(&mut session, &cancel);
+                tokio::pin!(initialize);
+                tokio::select! {
+                    result = &mut initialize => result?,
+                    () = tokio::time::sleep(self.0.connect_timeout) => {
+                        cancel.cancel();
+                        let _ = initialize.await;
+                        return Err(IdeError::new(ErrorKind::TimedOut, "timed out connecting to ClickHouse HTTP"));
+                    }
                 }
-                result
-            },
-            () = tokio::time::sleep(timeout) => {
-                cancel.cancel();
-                let _ = initialize.await;
-                pool.close();
-                Err(IdeError::new(ErrorKind::TimedOut, "timed out connecting to ClickHouse HTTP"))
+            }
+            *slot = Some(session);
+        }
+        Ok(slot)
+    }
+
+    async fn initialize(&self, session: &mut Session, cancel: &CancellationToken) -> IdeResult<()> {
+        if let Err(error) = self.execute_request("SELECT 1", 0, 1, cancel, session).await {
+            let Some(setting) = rejected_driver_setting(&error) else {
+                return Err(error);
+            };
+            if session.id.is_none() {
+                if setting == "readonly" {
+                    return Err(error);
+                }
+                if !self.0.read_only {
+                    return Err(IdeError::new(
+                        error.kind,
+                        format!(
+                            "{}; enable Read-only for independent queries on a strict read-only server",
+                            error.message
+                        ),
+                    ));
+                }
+                // Every request still sends readonly=1, regardless of which node answers.
+                session.strict_read_only = true;
+                self.execute_request("SELECT 1", 0, 1, cancel, session).await?;
+            } else {
+                // Only rely on the server's write protection after proving strict read-only
+                // in this same named session. The rejected probe may have used a different node.
+                session.id = Some(uuid::Uuid::new_v4().to_string());
+                session.strict_read_only = true;
+                let result = self.execute_request("SELECT getSetting('readonly')", 0, 1, cancel, session).await?;
+                if result.rows.first().and_then(|row| row.first()).and_then(Option::as_deref) != Some("1") {
+                    return Err(error);
+                }
             }
         }
+        // A named session needs USE once so later queries inherit the database and may change it.
+        if session.id.is_some() && !self.0.database.is_empty() {
+            let name = crate::sql::quote_ident(crate::DbDriver::Clickhouse, &self.0.database);
+            self.execute_request(&format!("USE {name}"), 0, 0, cancel, session).await?;
+        }
+        for sql in &self.0.startup_statements {
+            if transaction_statement(sql) {
+                return Err(transaction_error());
+            }
+            self.execute_request(sql, 0, 0, cancel, session).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn ping(&self) -> IdeResult<()> {
+        let cancel = CancellationToken::new();
+        if !self.0.use_http_session {
+            return self.execute("SELECT 1", 1, &cancel).await.map(|_| ());
+        }
+        let mut result = Ok(());
+        let consoles = self.0.console_sessions.lock().values().cloned().collect::<Vec<_>>();
+        let sessions = std::iter::once(&self.0.session).chain(consoles.iter().map(Arc::as_ref));
+        for slot in sessions {
+            // A running query already keeps its session active.
+            if let Ok(mut slot) = slot.try_lock()
+                && let Some(session) = slot.as_mut()
+                && let Err(error) = self.execute_request("SELECT 1", 0, 1, &cancel, session).await
+            {
+                result = result.and(Err(error));
+            }
+        }
+        result
+    }
+
+    pub fn release_console(&self, console: ConsoleId<'_>) {
+        self.0.console_sessions.lock().remove(&(console.window.into(), console.path.into()));
     }
 
     pub fn close(&self) {
         self.0.closed.cancel();
+        self.0.console_sessions.lock().clear();
         self.0.client.write().take();
     }
 
@@ -262,21 +328,68 @@ impl ClickhousePool {
         max_rows: usize,
         cancel: &CancellationToken,
     ) -> IdeResult<QueryResult> {
+        self.execute_in_console(sql, skip, max_rows, cancel, None).await
+    }
+
+    pub async fn execute_in_console(
+        &self,
+        sql: &str,
+        skip: usize,
+        max_rows: usize,
+        cancel: &CancellationToken,
+        console: Option<ConsoleId<'_>>,
+    ) -> IdeResult<QueryResult> {
         if transaction_statement(sql) {
             return Err(transaction_error());
         }
-        let mut session = tokio::select! {
-            biased;
-            () = cancel.cancelled() => return Err(IdeError::cancelled()),
-            () = self.0.closed.cancelled() => return Err(IdeError::new(ErrorKind::Io, "ClickHouse connection is closed")),
-            session = self.0.session.lock() => session,
-        };
+        let console_slot = console.filter(|_| self.0.use_http_session).map(|console| {
+            self.0.console_sessions.lock().entry((console.window.into(), console.path.into())).or_default().clone()
+        });
+        let slot = console_slot.as_deref().unwrap_or(&self.0.session);
+        let mut session = self.session(slot, cancel).await?;
+        let state = session.as_mut().expect("session was initialized");
+        if self.0.use_http_session {
+            self.execute_request(sql, skip, max_rows, cancel, state).await
+        } else {
+            // Stateless requests use the setup's read-only flags, and have no server session to lock.
+            let mut request = state.clone();
+            drop(session);
+            self.execute_request(sql, skip, max_rows, cancel, &mut request).await
+        }
+    }
+
+    async fn execute_request(
+        &self,
+        sql: &str,
+        skip: usize,
+        max_rows: usize,
+        cancel: &CancellationToken,
+        session: &mut Session,
+    ) -> IdeResult<QueryResult> {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
         let client = self.client()?;
+        if session.id.is_none() && session_set_statement(sql) {
+            return Err(IdeError::invalid(
+                "Standalone SET needs a ClickHouse HTTP session. Set use_http_session=true in Advanced or use query-level SETTINGS where applicable.",
+            ));
+        }
         let query_id = uuid::Uuid::new_v4().to_string();
-        let request = self.request(&client, &query_id, skip.saturating_add(max_rows), &session).body(sql.to_owned());
+        let request = self.request(&client, &query_id, skip.saturating_add(max_rows), session).body(sql.to_owned());
         let started = Instant::now();
+        let request_error = |error: reqwest::Error| {
+            if error.is_timeout() && !error.is_connect() {
+                IdeError::new(
+                    ErrorKind::TimedOut,
+                    format!("ClickHouse HTTP response timed out. The query outcome is unknown (query_id={query_id})."),
+                )
+            } else {
+                http_error(error)
+            }
+        };
         let fetch = async {
-            let mut response = request.send().await.map_err(http_error)?;
+            let mut response = request.send().await.map_err(request_error)?;
             let execution_ms = started.elapsed().as_secs_f64() * 1000.0;
             let status = response.status();
             let header = |name: &str| response.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned);
@@ -289,11 +402,11 @@ impl ClickhousePool {
                         .and_then(|n| n.as_str().and_then(|n| n.parse::<u64>().ok()).or_else(|| n.as_u64()))
                 });
             if !status.is_success() || exception_code.as_deref().is_some_and(|code| code != "0") {
-                let body = response.bytes().await.map_err(http_error)?;
+                let body = response.bytes().await.map_err(request_error)?;
                 return Err(self.server_error(status, exception_code.as_deref(), &body));
             }
             let (columns, rows, has_more) = if format.as_deref().is_some_and(|f| f != FORMAT) {
-                let body = response.bytes().await.map_err(http_error)?;
+                let body = response.bytes().await.map_err(request_error)?;
                 if !body.iter().all(u8::is_ascii_whitespace) {
                     return Err(IdeError::invalid(
                         "ClickHouse result grids need the default output format; remove the query's FORMAT clause",
@@ -302,7 +415,7 @@ impl ClickhousePool {
                 (Vec::new(), Vec::new(), false)
             } else {
                 let mut reader = RowReader::new(skip, max_rows);
-                while let Some(chunk) = response.chunk().await.map_err(http_error)? {
+                while let Some(chunk) = response.chunk().await.map_err(request_error)? {
                     reader.push(&chunk)?;
                 }
                 reader.finish().map_err(|error| self.redact_error(error))?
@@ -333,7 +446,7 @@ impl ClickhousePool {
                 result
             }
             None => {
-                let killed = self.kill(&client, &query_id, &session).await;
+                let killed = self.kill(&client, &query_id, session).await;
                 match killed {
                     Ok(()) => Err(IdeError::cancelled()),
                     Err(error) => Err(IdeError::new(
@@ -596,6 +709,13 @@ fn reserved_setting(name: &str) -> bool {
         )
 }
 
+fn session_set_statement(mut sql: &str) -> bool {
+    let mut next_is =
+        |word: &str| crate::split::clickhouse_keyword(&mut sql).is_some_and(|part| part.eq_ignore_ascii_case(word));
+    // SET DEFAULT ROLE persists a user's default roles outside the current session.
+    next_is("SET") && !(next_is("DEFAULT") && next_is("ROLE"))
+}
+
 fn transaction_statement(sql: &str) -> bool {
     let mut sql = sql.trim_start();
     loop {
@@ -833,6 +953,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stateless_session_settings_are_refused_before_sending() {
+        let (port, requests) = server(vec![("200 OK", "", ONE), ("200 OK", "", ONE), ("200 OK", "", "")]).await;
+        let source = DataSource { properties: vec![property("use_http_session", "false")], ..source(port) };
+        let pool = Pool::connect(&source, None, None).await.unwrap();
+        let cancel = CancellationToken::new();
+        for statement in [
+            "SET log_comment='openidea-test'",
+            "-- leading\n/* outer /* nested */ tail */ SeT `log_comment`='a;b', max_threads=1",
+            "# leading\nSET ROLE NONE",
+            "SET profile='test'",
+            "SET TIME ZONE 'UTC'",
+        ] {
+            let error = pool.execute(statement, 1, &cancel).await.expect_err("stateless SET must fail locally");
+            assert_eq!(error.kind, ErrorKind::InvalidInput);
+            assert!(error.message.contains("use_http_session=true"), "{error}");
+            assert!(error.message.contains("query-level SETTINGS"), "{error}");
+        }
+        let stopped = CancellationToken::new();
+        stopped.cancel();
+        assert_eq!(
+            pool.execute("SET log_comment='not sent'", 1, &stopped).await.unwrap_err().kind,
+            ErrorKind::Cancelled
+        );
+
+        // A query-level setting and a persistent role change both still reach the server.
+        let select = "SELECT 'SET;' LIMIT 1 SETTINGS log_comment='local' FORMAT JSONCompactEachRowWithNamesAndTypes";
+        pool.execute(select, 1, &cancel).await.unwrap();
+        let default_role = "SET /* persistent */ DEFAULT # on login\n ROLE NONE TO fixture_user";
+        pool.execute(default_role, 0, &cancel).await.unwrap();
+        let requests = requests.await.unwrap();
+        assert!(requests[0].ends_with("SELECT 1"));
+        assert!(requests[1].ends_with(select));
+        assert!(requests[2].ends_with(default_role));
+        assert!(requests.iter().all(|request| query_value(&request_url(request), "session_id").is_none()));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the disposable ClickHouse fixture on loopback"]
+    async fn clickhouse_live_http_session_settings() -> IdeResult<()> {
+        let port = std::env::var("OPENIDEA_CLICKHOUSE_SET_PORT").unwrap().parse().unwrap();
+        let cancel = CancellationToken::new();
+        let read = "SELECT concat('[', getSetting('log_comment'), ']') LIMIT 1";
+        for (session, expected) in [("false", "[]"), ("true", "[openidea-test]")] {
+            let source = DataSource {
+                user: "set_fixture".into(),
+                properties: vec![property("use_http_session", session)],
+                ..source(port)
+            };
+            let pool = Pool::connect(&source, None, None).await?;
+            let result = pool.execute("SET log_comment='openidea-test'", 1, &cancel).await;
+            if session == "true" {
+                result?;
+            } else {
+                let error = result.unwrap_err();
+                assert_eq!(error.kind, ErrorKind::InvalidInput);
+                assert!(error.message.contains("use_http_session=true"), "{error}");
+                let local = format!("{read} SETTINGS log_comment='one-query'");
+                assert_eq!(pool.execute(&local, 1, &cancel).await?.rows, [vec![Some("[one-query]".into())]]);
+            }
+            assert_eq!(pool.execute(read, 1, &cancel).await?.rows, [vec![Some(expected.into())]]);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn stateless_requests_keep_database_settings_readonly_and_limits() {
         let (port, requests) = server(vec![("200 OK", "", ONE); 3]).await;
         let source = DataSource {
@@ -895,6 +1080,90 @@ mod tests {
                 assert_eq!(query_value(&url, "session_check").as_deref(), Some("1"));
                 assert_eq!(query_value(&url, "database"), None);
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn stalled_http_response_reports_unknown_outcome_with_query_id() {
+        for prefix in [
+            "",
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n",
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 128\r\nConnection: close\r\n\r\nCode:",
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let fixture = tokio::spawn(async move {
+                let (mut probe, _) = listener.accept().await.unwrap();
+                read_request(&mut probe).await;
+                reply(&mut probe, "200 OK", "", ONE).await;
+                drop(probe);
+
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = read_request(&mut stream).await;
+                let id = query_value(&request_url(&request), "query_id").unwrap();
+                stream.write_all(prefix.as_bytes()).await.unwrap();
+                assert_eq!(
+                    tokio::time::timeout(Duration::from_secs(4), stream.read(&mut [0])).await.unwrap().unwrap(),
+                    0
+                );
+                assert_eq!(query_value(&request_url(&request), "http_read_timeout"), None);
+                id
+            });
+            let source = DataSource { properties: vec![property("http_read_timeout", "1")], ..source(port) };
+            let pool = Pool::connect(&source, None, None).await.unwrap();
+            let error = tokio::time::timeout(
+                Duration::from_secs(3),
+                pool.execute("DELETE FROM fixture WHERE id = 1", 0, &CancellationToken::new()),
+            )
+            .await
+            .expect("ClickHouse must stop waiting for a stalled response")
+            .unwrap_err();
+            assert_eq!(error.kind, ErrorKind::TimedOut);
+            assert!(error.message.contains("outcome is unknown"), "{error}");
+            let id = fixture.await.unwrap();
+            assert!(error.message.contains(&format!("query_id={id}")), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn read_timeout_resets_while_response_keeps_arriving() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let fixture = tokio::spawn(async move {
+            let (mut probe, _) = listener.accept().await.unwrap();
+            read_request(&mut probe).await;
+            reply(&mut probe, "200 OK", "", ONE).await;
+            drop(probe);
+
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_request(&mut stream).await;
+            let (first, rest) = ONE.split_at(6);
+            let headers = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", ONE.len());
+            stream.write_all(headers.as_bytes()).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(1100)).await;
+            stream.write_all(first.as_bytes()).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(1100)).await;
+            stream.write_all(rest.as_bytes()).await.unwrap();
+        });
+        let source = DataSource { properties: vec![property("http_read_timeout", "2")], ..source(port) };
+        let pool = Pool::connect(&source, None, None).await.unwrap();
+        let result = pool.execute("SELECT 1", 1, &CancellationToken::new()).await.unwrap();
+        assert_eq!(result.rows, vec![vec![Some("1".into())]]);
+        fixture.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn http_read_timeout_rejects_invalid_or_duplicate_values() {
+        for properties in [
+            vec![property("http_read_timeout", "0")],
+            vec![property("http_read_timeout", "1.5")],
+            vec![property("http_read_timeout", "4294967296")],
+            vec![property("http_read_timeout", "1"), property("HTTP-READ-TIMEOUT", "2")],
+        ] {
+            let source = DataSource { properties, ..source(0) };
+            let error = Pool::connect(&source, None, None).await.err().unwrap();
+            assert_eq!(error.kind, ErrorKind::InvalidInput);
+            assert!(error.message.contains("http_read_timeout"), "{error}");
         }
     }
 
@@ -1149,6 +1418,69 @@ mod tests {
         };
         assert_eq!(error.message, "ClickHouse HTTP 500: Code: 395. DB::Exception: thrown");
         requests.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn console_sessions_have_distinct_http_ids() {
+        let (port, requests) = server(vec![("200 OK", "", ONE); 8]).await;
+        let Pool::Clickhouse(pool) = Pool::connect(&source(port), None, None).await.unwrap() else { unreachable!() };
+        let first = ConsoleId::new("main", "console.sql");
+        let second = ConsoleId::new("main", "console_1.sql");
+        let cancel = CancellationToken::new();
+        for console in [first, second, first] {
+            pool.execute_in_console("SELECT 2", 0, 1, &cancel, Some(console)).await.unwrap();
+        }
+        pool.release_console(second);
+        pool.ping().await.unwrap();
+        let requests = requests.await.unwrap();
+        let ids = requests
+            .iter()
+            .map(|request| query_value(&request_url(request), "session_id").unwrap())
+            .collect::<Vec<_>>();
+        assert_ne!(ids[0], ids[1]);
+        assert_ne!(ids[1], ids[3]);
+        assert_eq!(ids[1], ids[2]);
+        assert_eq!(ids[3], ids[4]);
+        assert_eq!(ids[1], ids[5]);
+        assert_eq!(ids[0], ids[6]);
+        assert_eq!(ids[1], ids[7]);
+    }
+
+    #[tokio::test]
+    async fn stateless_queries_do_not_wait_for_a_shared_session() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (started, received) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut probe, _) = listener.accept().await.unwrap();
+            read_request(&mut probe).await;
+            reply(&mut probe, "200 OK", "", ONE).await;
+            let (mut first, _) = listener.accept().await.unwrap();
+            let first_request = read_request(&mut first).await;
+            started.send(()).unwrap();
+            let (mut second, _) = listener.accept().await.unwrap();
+            let second_request = read_request(&mut second).await;
+            reply(&mut second, "200 OK", "", ONE).await;
+            reply(&mut first, "200 OK", "", ONE).await;
+            (first_request, second_request)
+        });
+        let source = DataSource { properties: vec![property("use_http_session", "false")], ..source(port) };
+        let pool = Pool::connect(&source, None, None).await.unwrap();
+        let cancel = CancellationToken::new();
+        let first = pool.execute("SELECT 1", 1, &cancel);
+        let second = async {
+            received.await.unwrap();
+            pool.execute("SELECT 2", 1, &cancel).await
+        };
+        let (first, second) = tokio::time::timeout(Duration::from_secs(5), async { tokio::join!(first, second) })
+            .await
+            .expect("both requests should reach the server");
+        first.unwrap();
+        second.unwrap();
+        let (first, second) = server.await.unwrap();
+        for request in [first, second] {
+            assert_eq!(query_value(&request_url(&request), "session_id"), None);
+        }
     }
 
     #[tokio::test]

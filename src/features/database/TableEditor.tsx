@@ -108,7 +108,7 @@ export function TableEditor({ input }: { input: EditorInput }) {
   const [loadedPage, setLoadedPage] = useState<{ key: string; page: DbTablePage | null; error: string | null } | null>(
     null,
   );
-  const key = JSON.stringify([ref.id, ref.schema, ref.table, filter, sort, offset, limit, nonce]);
+  const key = JSON.stringify([ref.id, ref.catalog, ref.schema, ref.table, filter, sort, offset, limit, nonce]);
   const loading = loadedPage?.key !== key;
   const page = loadedPage?.page ?? null;
   const error = loadedPage?.error ?? null;
@@ -120,7 +120,21 @@ export function TableEditor({ input }: { input: EditorInput }) {
     void (async () => {
       try {
         const p = await withConnection(ref.id, () =>
-          call(commands.dbTablePage(id, ref.id, ref.schema, ref.table, filter || null, sort, offset, limit)),
+          call(
+            ref.catalog === undefined
+              ? commands.dbTablePage(id, ref.id, ref.schema, ref.table, filter || null, sort, offset, limit)
+              : commands.dbCatalogTablePage(
+                  id,
+                  ref.id,
+                  ref.catalog,
+                  ref.schema,
+                  ref.table,
+                  filter || null,
+                  sort,
+                  offset,
+                  limit,
+                ),
+          ),
         );
         setLoadedPage({ key, page: p, error: null });
         setEdits(emptyEdits());
@@ -138,14 +152,15 @@ export function TableEditor({ input }: { input: EditorInput }) {
     return () => {
       if (!done) void commands.cancelRequest(id);
     };
-  }, [key, ref.id, ref.schema, ref.table, filter, sort, offset, limit]);
+  }, [key, ref.id, ref.catalog, ref.schema, ref.table, filter, sort, offset, limit]);
 
   const columns = page?.result.columns ?? [];
   const names = columns.map((c) => c.name);
   const pk = page?.details.columns.filter((c) => c.primaryKey).map((c) => c.name) ?? [];
   const fkColumns = new Set(page?.details.foreignKeys.flatMap((k) => k.columns) ?? []);
   const source = sourceById(ref.id);
-  const editable = pk.length > 0 && !source?.readOnly && canModifyTable(source?.driver ?? "sqlite");
+  const editable =
+    ref.catalog === undefined && pk.length > 0 && !source?.readOnly && canModifyTable(source?.driver ?? "sqlite");
   const loaded = page?.result.rows.length ?? 0;
   const rowCount = loaded + edits.inserts.length;
   const gridColumns = useMemo(

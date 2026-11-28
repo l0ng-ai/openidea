@@ -68,13 +68,52 @@ export function ProjectBadge({
   missing?: boolean;
 }) {
   useSyncExternalStore(subscribeTabColors, tabColorsVersion);
+  const remote = Boolean(parseRemoteLocation(path));
   return (
     <span
-      className={clsx(styles.tile, missing && styles.tileMissing, className)}
+      className={clsx(styles.tile, remote && styles.tileRemote, missing && styles.tileMissing, className)}
       style={tabColorVars(name, tabColorOverride(path))}
+      data-remote-badge={remote ? "" : undefined}
       aria-hidden
     >
       <ProjectAvatar name={name} root={path} />
+      {remote && (
+        <i className={styles.remoteCorner} aria-hidden="true">
+          <Icon name="remote" size={8} />
+        </i>
+      )}
+    </span>
+  );
+}
+
+/** Splits `pathMatch` of a remote `host:path` display string into host and path highlight indices. */
+export function splitRemoteMatch(m: Pick<RecentMatch, "remote" | "pathMatch" | "displayPath">) {
+  const { remote, pathMatch } = m;
+  if (!remote) return { hostMatch: null, locationMatch: pathMatch, locationText: m.displayPath };
+  const pathStart = remote.host.length + 1;
+  return {
+    hostMatch: pathMatch ? pathMatch.filter((i) => i < remote.host.length) : null,
+    locationMatch: pathMatch ? pathMatch.filter((i) => i >= pathStart).map((i) => i - pathStart) : null,
+    locationText: remote.path,
+  };
+}
+
+/** SSH / WSL / Dev Container host label shown on remote project rows. */
+export function RemoteHostPill({
+  remote,
+  hostMatch,
+}: {
+  remote: NonNullable<RecentMatch["remote"]>;
+  hostMatch: number[] | null;
+}) {
+  return (
+    <span className={styles.remoteHostPill} data-remote-kind={remote.kind}>
+      <Icon name="remote" size={11} />
+      <strong className={styles.remoteKind}>{remote.kindLabel}</strong>
+      <span className={styles.remoteDot} aria-hidden="true">
+        ·
+      </span>
+      <HighlightedText className={styles.remoteHostText} text={remote.host} indices={hostMatch} />
     </span>
   );
 }
@@ -245,6 +284,7 @@ function RecentRow({
 }) {
   const opening = useRecent((s) => s.opening === m.project.path);
   const when = relativeTime(m.project.openedAtMs);
+  const { hostMatch, locationMatch, locationText } = splitRemoteMatch(m);
   return (
     <div className={styles.recent} title={unavailableTitle(m.project)}>
       <ProjectBadge name={m.project.name} path={m.project.path} missing={!!m.project.missing} />
@@ -263,7 +303,8 @@ function RecentRow({
             </span>
           )}
         </span>
-        <HighlightedText className={styles.recentPath} text={m.displayPath} indices={m.pathMatch} />
+        {m.remote && <RemoteHostPill remote={m.remote} hostMatch={hostMatch} />}
+        <HighlightedText className={styles.recentPath} text={locationText} indices={locationMatch} />
       </span>
       {opening ? (
         <Spinner size={14} />

@@ -70,6 +70,8 @@ export interface CommitSettingsValid {
   reformat: boolean;
   optimizeImports: boolean;
   cleanup: boolean;
+  /** Apply Ruff's safe lint fixes before composing the commit, independently of formatting. */
+  fixOnCommit: boolean;
   blankLineAfterSubject: boolean;
   limitSubject: boolean;
   subjectLimit: number;
@@ -345,6 +347,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       reformat: false,
       optimizeImports: false,
       cleanup: false,
+      fixOnCommit: false,
       blankLineAfterSubject: true,
       limitSubject: true,
       subjectLimit: 72,
@@ -536,6 +539,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       reformat: bool(c.reformat, d.commit.reformat),
       optimizeImports: bool(c.optimizeImports, d.commit.optimizeImports),
       cleanup: bool(c.cleanup, d.commit.cleanup),
+      fixOnCommit: bool(c.fixOnCommit, d.commit.fixOnCommit),
       blankLineAfterSubject: bool(c.blankLineAfterSubject, d.commit.blankLineAfterSubject),
       limitSubject: bool(c.limitSubject, d.commit.limitSubject),
       subjectLimit: num(c.subjectLimit, d.commit.subjectLimit, L.messageLimit, true),

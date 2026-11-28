@@ -56,6 +56,7 @@ import { editorBaseKeymap } from "./baseKeymap";
 import { occurrenceSearch } from "./editing";
 import { gutterLineDrag } from "./gutterDrag";
 import { overwriteField } from "./overwrite";
+import { imeSyllableSpaces } from "./imeCommit";
 import { stickySelectionField } from "./stickySelection";
 import { relativeLineNumbers } from "./relativeLineNumbers";
 import { clipboardDocumentPath, clipboardFilesExtension } from "./clipboard";
@@ -401,6 +402,7 @@ export function baseExtensions(o: SetupOptions): Extension {
     visibleGoalColumns,
     occurrenceSearch,
     overwriteField,
+    imeSyllableSpaces,
     stickySelectionField,
     gutterLineDrag,
     clipboardHistoryExtension,

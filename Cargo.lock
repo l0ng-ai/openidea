@@ -4154,7 +4154,7 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 
 [[package]]
 name = "ide-agent"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -4182,7 +4182,7 @@ dependencies = [
 
 [[package]]
 name = "ide-analysis"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "ast-grep-core",
  "ide-core",
@@ -4194,7 +4194,7 @@ dependencies = [
 
 [[package]]
 name = "ide-android"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "ide-core",
  "serde",
@@ -4205,7 +4205,7 @@ dependencies = [
 
 [[package]]
 name = "ide-build"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "blake3",
  "chardetng",
@@ -4223,7 +4223,7 @@ dependencies = [
 
 [[package]]
 name = "ide-cli"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "dirs 6.0.0",
  "serde",
@@ -4237,7 +4237,7 @@ dependencies = [
 
 [[package]]
 name = "ide-clipboard"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "gtk",
  "objc2 0.6.5",
@@ -4248,7 +4248,7 @@ dependencies = [
 
 [[package]]
 name = "ide-command"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -4259,7 +4259,7 @@ dependencies = [
 
 [[package]]
 name = "ide-core"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "base64 0.22.1",
  "dirs 6.0.0",
@@ -4281,7 +4281,7 @@ dependencies = [
 
 [[package]]
 name = "ide-coverage"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "ide-core",
  "ide-run",
@@ -4294,7 +4294,7 @@ dependencies = [
 
 [[package]]
 name = "ide-dap"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -4323,7 +4323,7 @@ dependencies = [
 
 [[package]]
 name = "ide-db"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "base64 0.22.1",
  "bb8",
@@ -4362,7 +4362,7 @@ dependencies = [
 
 [[package]]
 name = "ide-docker"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "ide-core",
  "serde",
@@ -4375,7 +4375,7 @@ dependencies = [
 
 [[package]]
 name = "ide-drag-out"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "gtk",
  "objc2 0.6.5",
@@ -4389,7 +4389,7 @@ dependencies = [
 
 [[package]]
 name = "ide-extension"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -4409,7 +4409,7 @@ dependencies = [
 
 [[package]]
 name = "ide-flutter"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "ide-android",
  "ide-core",
@@ -4420,7 +4420,7 @@ dependencies = [
 
 [[package]]
 name = "ide-fonts"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "objc2-core-foundation",
  "objc2-core-text",
@@ -4432,7 +4432,7 @@ dependencies = [
 
 [[package]]
 name = "ide-github"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "ide-core",
  "ide-vcs",
@@ -4444,7 +4444,7 @@ dependencies = [
 
 [[package]]
 name = "ide-heap"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "criterion",
  "ide-core",
@@ -4463,7 +4463,7 @@ dependencies = [
 
 [[package]]
 name = "ide-host"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -4545,7 +4545,7 @@ dependencies = [
 
 [[package]]
 name = "ide-http"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "hyper-util",
  "ide-core",
@@ -4564,7 +4564,7 @@ dependencies = [
 
 [[package]]
 name = "ide-index"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "blake3",
  "criterion",
@@ -4587,7 +4587,7 @@ dependencies = [
 
 [[package]]
 name = "ide-jdwp"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "ide-jvm-inspect",
  "proptest",
@@ -4599,7 +4599,7 @@ dependencies = [
 
 [[package]]
 name = "ide-jsonrpc"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "encoding_rs",
  "ide-core",
@@ -4615,7 +4615,7 @@ dependencies = [
 
 [[package]]
 name = "ide-jvm-attach"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "libc",
  "tempfile",
@@ -4624,7 +4624,7 @@ dependencies = [
 
 [[package]]
 name = "ide-jvm-inspect"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "futures",
  "serde",
@@ -4635,7 +4635,7 @@ dependencies = [
 
 [[package]]
 name = "ide-language"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "blake3",
  "criterion",
@@ -4694,7 +4694,7 @@ dependencies = [
 
 [[package]]
 name = "ide-lsp"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "criterion",
  "dunce",
@@ -4724,7 +4724,7 @@ dependencies = [
 
 [[package]]
 name = "ide-mcp"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "bytes",
  "dunce",
@@ -4743,7 +4743,7 @@ dependencies = [
 
 [[package]]
 name = "ide-notebook"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "ide-core",
  "ide-vfs",
@@ -4764,7 +4764,7 @@ dependencies = [
 
 [[package]]
 name = "ide-plugin"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "blake3",
  "dunce",
@@ -4786,7 +4786,7 @@ dependencies = [
 
 [[package]]
 name = "ide-profiler"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "ide-core",
  "ide-jvm-attach",
@@ -4800,7 +4800,7 @@ dependencies = [
 
 [[package]]
 name = "ide-remote"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "dunce",
  "futures",
@@ -4820,7 +4820,7 @@ dependencies = [
 
 [[package]]
 name = "ide-run"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "dunce",
  "encoding_rs",
@@ -4845,7 +4845,7 @@ dependencies = [
 
 [[package]]
 name = "ide-scaffold"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "ide-core",
  "ide-tools",
@@ -4861,7 +4861,7 @@ dependencies = [
 
 [[package]]
 name = "ide-sdk"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "base64 0.22.1",
  "dirs 6.0.0",
@@ -4887,7 +4887,7 @@ dependencies = [
 
 [[package]]
 name = "ide-search"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "criterion",
  "encoding_rs",
@@ -4908,7 +4908,7 @@ dependencies = [
 
 [[package]]
 name = "ide-spell"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "ide-core",
  "parking_lot 0.12.5",
@@ -4921,7 +4921,7 @@ dependencies = [
 
 [[package]]
 name = "ide-ssh"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "dirs 6.0.0",
  "flate2",
@@ -4946,7 +4946,7 @@ dependencies = [
 
 [[package]]
 name = "ide-streams"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "ide-core",
  "ide-language",
@@ -4959,7 +4959,7 @@ dependencies = [
 
 [[package]]
 name = "ide-syntax"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "ide-core",
  "ide-language",
@@ -4974,7 +4974,7 @@ dependencies = [
 
 [[package]]
 name = "ide-terminal"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "ide-core",
  "libc",
@@ -4988,7 +4988,7 @@ dependencies = [
 
 [[package]]
 name = "ide-text"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "criterion",
  "ide-core",
@@ -5001,8 +5001,9 @@ dependencies = [
 
 [[package]]
 name = "ide-tools"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
+ "blake3",
  "flate2",
  "hex",
  "http",
@@ -5024,7 +5025,7 @@ dependencies = [
 
 [[package]]
 name = "ide-vcs"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "blake3",
  "dunce",
@@ -5046,7 +5047,7 @@ dependencies = [
 
 [[package]]
 name = "ide-vfs"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "chardetng",
  "dunce",
@@ -5073,7 +5074,7 @@ dependencies = [
 
 [[package]]
 name = "ide-web"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "dirs 6.0.0",
  "ide-core",
@@ -5089,7 +5090,7 @@ dependencies = [
 
 [[package]]
 name = "ide-workspace"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "blake3",
  "dunce",
@@ -6728,7 +6729,7 @@ dependencies = [
 
 [[package]]
 name = "openidea"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "base64 0.22.1",
  "blake3",

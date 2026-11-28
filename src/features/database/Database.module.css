@@ -158,6 +158,21 @@
 .resultTabs {
   padding-inline: var(--space-2);
 }
+.outputStrip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding-inline-start: var(--space-2);
+  min-width: 0;
+}
+.outputStrip .resultTabs {
+  flex: 1;
+  min-width: 0;
+}
+.outputClient {
+  max-width: 40%;
+  flex: none;
+}
 .toolbar {
   display: flex;
   align-items: center;
@@ -1873,4 +1888,11 @@
 .csvTabs {
   flex: none;
   border-top: 1px solid var(--border);
+}
+.modifyKeyColumns {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-height: 160px;
+  overflow: auto;
 }

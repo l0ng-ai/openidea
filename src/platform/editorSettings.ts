@@ -147,6 +147,9 @@ export const EDITOR_EXTRA_DEFAULTS = {
     keepTrailingOnCaretLine: true,
     removeTrailingBlankLines: false,
     richTextCopy: true,
+    /** Gutter › Highlight modified lines in the gutter / in error stripe on the scrollbar. */
+    highlightModifiedLines: true,
+    highlightModifiedLinesInScrollbar: true,
   },
   appearance: {
     caretBlinking: true,

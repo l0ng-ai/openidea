@@ -11,6 +11,7 @@ import type { HunkKind, LineHunk } from "@/bindings";
 import { call, commands, isTauri } from "@/platform/ipc";
 import {
   LaneMarker,
+  changeMarkerDisplay,
   gutterLaneMarkers,
   lineChanges,
   scrollbarMarks,
@@ -389,7 +390,13 @@ class HunkFetcher implements PluginValue {
   }
 }
 
-function scrollMarks(state: EditorState): ScrollbarMark[] {
+/** The lane markers, unless Settings › Editor › General › Gutter turns them off. */
+export function laneMarkers(state: EditorState): RangeSet<GutterMarker> {
+  return state.facet(changeMarkerDisplay).gutter ? visibleMarkers(state) : RangeSet.empty;
+}
+
+export function scrollMarks(state: EditorState): ScrollbarMark[] {
+  if (!state.facet(changeMarkerDisplay).scrollbar) return [];
   return editorHunks(state).map((h) => ({
     from: h.from,
     to: h.to > h.from ? h.to - 1 : h.from,
@@ -466,8 +473,8 @@ export function changeMarkers(ctx: EditorDocContext): Extension {
   const path = ctx.path;
   return [
     hunkField,
-    gutterLaneMarkers.compute([hunkField, foldState], visibleMarkers),
-    scrollbarMarks.compute([hunkField], scrollMarks),
+    gutterLaneMarkers.compute([hunkField, foldState, changeMarkerDisplay], laneMarkers),
+    scrollbarMarks.compute([hunkField, changeMarkerDisplay], scrollMarks),
     laneClicks(path),
     laneTheme,
     ViewPlugin.define((view) => new HunkFetcher(view, path)),

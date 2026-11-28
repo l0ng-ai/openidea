@@ -267,6 +267,7 @@ const COLOR_NAMES: Record<string, [string, "foreground" | "background"]> = {
   METHOD_SEPARATORS_COLOR: ["methodSeparator", "foreground"],
   CONSOLE_BACKGROUND_KEY: ["consoleBackground", "background"],
   DIFF_SEPARATOR_WAVE: ["diffSeparatorWave", "foreground"],
+  ANNOTATIONS_LAST_COMMIT_COLOR: ["gitAnnotationsLastCommit", "foreground"],
 };
 
 Object.assign(ATTRIBUTE_NAMES, {

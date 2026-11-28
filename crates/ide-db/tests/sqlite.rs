@@ -2,8 +2,8 @@
 
 use ide_core::{CancellationToken, IdeResult};
 use ide_db::{
-    CellValue, DataSource, DbDriver, DbManager, DbOptions, DbProperty, DbRowEdit, DbSchemaSelection, DbTableKind,
-    DbVisibilityChange, QueryResult, SortKey,
+    CellValue, DataSource, DbDriver, DbKeyKind, DbManager, DbOptions, DbProperty, DbRowEdit, DbSchemaSelection,
+    DbTableKind, DbVisibilityChange, QueryResult, SortKey,
 };
 
 async fn setup() -> (tempfile::TempDir, DbManager) {
@@ -47,6 +47,7 @@ async fn introspects_schemas_tables_columns_and_indexes() -> IdeResult<()> {
     assert_eq!(d.indexes[0].name, "users_name");
     assert!(d.indexes[0].unique);
     assert_eq!(d.indexes[0].columns, vec!["name"]);
+    assert_eq!(d.indexes[0].key, None, "a unique index is not a constraint");
     let completion = db.completion("s1").await?;
     assert_eq!(completion.default_schema, "main");
     let users = completion.tables.iter().find(|t| t.name == "users").unwrap();
@@ -61,6 +62,32 @@ async fn introspects_schemas_tables_columns_and_indexes() -> IdeResult<()> {
     assert_eq!(defaults, vec![true, false, false, false]);
     let named = completion.tables.iter().find(|t| t.name == "named").unwrap();
     assert_eq!(named.kind, DbTableKind::View);
+    Ok(())
+}
+
+/// The indexes SQLite makes for a non-rowid primary key and a UNIQUE constraint say which
+/// key they enforce: Modify Table cannot drop those with `drop index`.
+#[tokio::test]
+async fn tells_key_indexes_from_plain_ones() -> IdeResult<()> {
+    let (_tmp, db) = setup().await;
+    let c = CancellationToken::new();
+    for stmt in [
+        "CREATE TABLE codes (region TEXT, code TEXT, label TEXT, PRIMARY KEY (region, code), UNIQUE (label))",
+        "CREATE INDEX codes_label ON codes (label, code)",
+    ] {
+        db.execute("s1", stmt, 1, &c).await?;
+    }
+    let d = db.table_details("s1", "main", "codes").await?;
+    let mut keys: Vec<_> = d.indexes.iter().map(|i| (i.columns.join(","), i.unique, i.key)).collect();
+    keys.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        keys,
+        vec![
+            ("label".into(), true, Some(DbKeyKind::Unique)),
+            ("label,code".into(), false, None),
+            ("region,code".into(), true, Some(DbKeyKind::Primary)),
+        ]
+    );
     Ok(())
 }
 

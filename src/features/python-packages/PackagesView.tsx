@@ -3,14 +3,19 @@
  * looked up by exact name, and install / upgrade / uninstall through pip or uv.
  */
 import { Channel } from "@tauri-apps/api/core";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type MouseEvent } from "react";
+import { useMarkupHtml } from "@/editor/lsp/markdown";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
 import { call, commands, isCancelled, nextRequestId, type PypiPackage, type PythonPackage } from "@/platform/ipc";
+import { choosePath } from "@/platform/choosePath";
+import { openExternalUrl } from "@/platform/openUrl";
 import { dirname, useProject } from "@/platform/project";
 import { usePythonPackages } from "@/platform/pythonPackages";
 import {
   Button,
+  Checkbox,
+  Dialog,
   EmptyState,
   Icon,
   IconButton,
@@ -21,10 +26,22 @@ import {
   SplitGroup,
   SplitHandle,
   SplitPanel,
+  showContextMenu,
   T,
 } from "@/ui";
 import { editorService } from "@/workbench/contributions";
-import { isPackageName, listRows, normalize, requirementOf, rowKey, type Row } from "./model";
+import {
+  diskRequirement,
+  isArchive,
+  isPackageName,
+  isVcsUrl,
+  listRows,
+  normalize,
+  requirementOf,
+  rowKey,
+  vcsRequirement,
+  type Row,
+} from "./model";
 import styles from "./PythonPackages.module.css";
 
 type Op = "install" | "upgrade" | "uninstall";
@@ -225,6 +242,7 @@ export function PackagesView() {
   const [job, setJob] = useState<Job | null>(null);
   const [log, setLog] = useState<string[]>([]);
   const [jobError, setJobError] = useState<string | null>(null);
+  const [installFrom, setInstallFrom] = useState<Source | null>(null);
 
   const name = query.trim();
   const searchable = !container && isPackageName(name);
@@ -247,7 +265,7 @@ export function PackagesView() {
   const details = usePypi(picked && !container && !fromSearch && wanted ? picked.name : null, 200);
   const info = fromSearch ? search : details;
 
-  const run = (op: Op, requirement: string) => {
+  const run = (op: Op, requirement: string, editable = false) => {
     if (!python || job) return;
     const request = nextRequestId();
     const channel = new Channel<string>();
@@ -255,7 +273,7 @@ export function PackagesView() {
     setLog([]);
     setJobError(null);
     setJob({ op, target: requirement, cancel: () => void commands.cancelRequest(request) });
-    call(commands.sdkPythonPip(python, requirement, op === "uninstall", op === "upgrade", request, channel))
+    call(commands.sdkPythonPip(python, requirement, op === "uninstall", op === "upgrade", editable, request, channel))
       .catch((e: unknown) => setJobError(isCancelled(e) ? null : message(e)))
       .finally(() => {
         setJob(null);
@@ -304,6 +322,21 @@ export function PackagesView() {
             disabled={loading || !!job}
             onClick={container ? retry : local.reload}
           />
+          {!container && (
+            <IconButton
+              icon="plus"
+              size="small"
+              title="Install from Version Control or Disk"
+              disabled={!python || !!job}
+              onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect();
+                showContextMenu({ x: r.left, y: r.bottom + 2 }, [
+                  { label: "Install from Version Control…", run: () => setInstallFrom("vcs") },
+                  { label: "Install from Disk…", run: () => setInstallFrom("disk") },
+                ]);
+              }}
+            />
+          )}
           {python && (
             <span className={styles.interpreter} title={python}>
               {relativeTo(root, python)}
@@ -454,7 +487,90 @@ export function PackagesView() {
           </pre>
         )}
       </SplitPanel>
+      {installFrom && (
+        <InstallFromDialog
+          source={installFrom}
+          onClose={() => setInstallFrom(null)}
+          onInstall={(requirement, editable) => {
+            setInstallFrom(null);
+            run("install", requirement, editable);
+          }}
+        />
+      )}
     </SplitGroup>
+  );
+}
+
+type Source = "vcs" | "disk";
+
+/**
+ * A repository URL or a local directory or archive to install, as PyCharm's Advanced Package
+ * Install. Only a local directory can be editable: an editable clone of a repository would go
+ * where pip runs, a temporary folder, unless the interpreter is a virtualenv, and uv can't do it.
+ */
+function InstallFromDialog({
+  source,
+  onClose,
+  onInstall,
+}: {
+  source: Source;
+  onClose: () => void;
+  onInstall: (requirement: string, editable: boolean) => void;
+}) {
+  const tx = useTx();
+  const [value, setValue] = useState("");
+  const [editable, setEditable] = useState(false);
+  const text = value.trim();
+  const requirement = source === "vcs" ? vcsRequirement(text) : diskRequirement(text);
+  // pip would read a leading `-` as one of its options.
+  const valid = !!text && !text.startsWith("-") && (source === "disk" || isVcsUrl(requirement));
+  const canEdit = source === "disk" && !isArchive(text);
+  const install = () => valid && onInstall(requirement, canEdit && editable);
+  return (
+    <Dialog
+      open
+      title={source === "vcs" ? "Install from Version Control" : "Install from Disk"}
+      onClose={onClose}
+      width={520}
+      buttons={[
+        { label: tx("Cancel"), role: "cancel" },
+        { label: tx("Install"), role: "default", onClick: install, disabled: !valid },
+      ]}
+    >
+      <div className={styles.installFrom}>
+        <div className={styles.field}>
+          <Input
+            autoFocus
+            value={value}
+            placeholder={
+              source === "vcs" ? "git+https://github.com/owner/project.git" : tx("Project directory or archive")
+            }
+            aria-label={source === "vcs" ? "Repository URL" : "Path"}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && install()}
+          />
+          {source === "disk" && (
+            <Button
+              onClick={() =>
+                void choosePath({ directory: true, title: tx("Project Directory") }).then(
+                  (path) => path && setValue(path),
+                )
+              }
+            >
+              <T>Browse</T>
+            </Button>
+          )}
+        </div>
+        {source === "disk" && (
+          <Checkbox
+            checked={canEdit && editable}
+            onChange={setEditable}
+            disabled={!canEdit}
+            label="Install as editable (-e)"
+          />
+        )}
+      </div>
+    </Dialog>
   );
 }
 
@@ -576,6 +692,47 @@ function Details({
           )}
         </div>
       )}
+      {asked && info.found && <Docs found={info.found} />}
     </div>
+  );
+}
+
+/** Links open in the browser; a relative one has nothing to open and must not navigate the app. */
+function openLink(e: MouseEvent) {
+  const a = (e.target as HTMLElement).closest("a");
+  if (!a) return;
+  e.preventDefault();
+  void openExternalUrl(a.getAttribute("href") ?? "");
+}
+
+/** The project's links and its description from PyPI: rendered when Markdown, else as text. */
+function Docs({ found }: { found: PypiPackage }) {
+  const tx = useTx();
+  const html = useMarkupHtml({ kind: "markdown", value: found.markdown ? found.description : "" });
+  const links = [{ label: "PyPI", url: `https://pypi.org/project/${found.name}/` }, ...found.links];
+  return (
+    <>
+      <nav className={styles.links} aria-label={tx("Project links")} onClick={openLink}>
+        {links.map((l) => (
+          <a key={l.url} href={l.url} title={l.url}>
+            {l.label}
+          </a>
+        ))}
+      </nav>
+      {found.description.trim() &&
+        (found.markdown ? (
+          <div
+            className={styles.doc}
+            role="document"
+            aria-label={tx("Package description")}
+            onClick={openLink}
+            dangerouslySetInnerHTML={{ __html: html }}
+          />
+        ) : (
+          <pre className={styles.plainDoc} aria-label={tx("Package description")}>
+            {found.description}
+          </pre>
+        ))}
+    </>
   );
 }

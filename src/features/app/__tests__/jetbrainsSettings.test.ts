@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { LanguageInfo } from "@/bindings";
 import { planJetBrainsImport } from "../jetbrainsSettings";
 
 const icls = (name: string) =>
@@ -315,5 +316,54 @@ describe("planJetBrainsImport", () => {
     const plan = await planJetBrainsImport({ entries: [], files: { "colors/broken.icls": "<nope" } }, settings);
     expect(plan.invalid).toEqual(["broken.icls"]);
     expect(plan.writes).toEqual([]);
+  });
+
+  it("plans live templates separately and reports imported, skipped and unsupported items", async () => {
+    const python: LanguageInfo = {
+      id: "python",
+      name: "Python",
+      extensions: ["py"],
+      uiMode: "Python",
+      lineComment: "#",
+      blockComment: null,
+      indent: null,
+    };
+    const xml =
+      '<templateSet name="Python">' +
+      '<template name="iter" value="for $ITEM$ in $ITEMS$: $END$" description="Iterate">' +
+      '<variable name="ITEM" expression="suggestVariableName()" defaultValue="&quot;item&quot;" alwaysStopAt="false" />' +
+      '<variable name="UNKNOWN" expression="groovyScript(&quot;1&quot;)" defaultValue="&quot;fallback&quot;" />' +
+      '<context><option name="Python" value="true" /></context></template>' +
+      '<template name="brain" value="$END$"><context><option name="Brainfuck" value="true" /></context></template>' +
+      "</templateSet>";
+    const plan = await planJetBrainsImport(
+      {
+        entries: ["templates/Python.xml", "templates/broken.xml"],
+        files: { "templates/Python.xml": xml, "templates/broken.xml": "<templateSet>" },
+      },
+      settings,
+      fontHeight,
+      [python],
+    );
+    expect(plan.writes).toEqual([]);
+    expect(plan.skipped).toEqual([]);
+    expect(plan.invalid).toEqual(["templates/broken.xml"]);
+    expect(plan.rows).toEqual([{ label: "Live templates", value: "1 imported, 2 skipped" }]);
+    expect(plan.liveTemplates?.templates).toEqual([
+      {
+        id: "jetbrains.Python.iter",
+        group: "Python",
+        abbrev: "iter",
+        description: "Iterate",
+        body: "for $ITEM$ in $ITEMS$: $END$",
+        contexts: ["python"],
+        variables: [
+          { name: "ITEM", expression: "suggestVariableName()", defaultValue: '"item"', skipIfDefined: true },
+          { name: "UNKNOWN", expression: 'groovyScript("1")', defaultValue: '"fallback"' },
+        ],
+      },
+    ]);
+    expect(plan.liveTemplates?.skipped).toEqual(["templates/Python.xml › Python › brain (Brainfuck)"]);
+    expect(plan.liveTemplates?.unsupported).toEqual(["templates/Python.xml › Python › iter › UNKNOWN: groovyScript"]);
   });
 });

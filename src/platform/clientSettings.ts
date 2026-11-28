@@ -54,6 +54,8 @@ export const CLIENT_SETTINGS_KEYS = [
   "editor.general.softWrapIndent",
   "editor.general.scrollPastEnd",
   "editor.general.richTextCopy",
+  "editor.general.highlightModifiedLines",
+  "editor.general.highlightModifiedLinesInScrollbar",
   "editor.codeStyle.visualGuides",
   "terminal.tabName",
   "terminal.appTitleAsTabName",

@@ -30,6 +30,7 @@ on:
       - "src/ui/**"
       - "src/editor/api.ts"
       - "src/editor/navigationProviders.ts"
+      - "src/editor/refactorProviders.ts"
       - "src/editor/relatedProviders.ts"
       - "src/editor/core/cm/cornerInset.ts"
       - "src/editor/core/cm/iconArea.ts"
@@ -107,7 +108,7 @@ jobs:
           # ide-lsp/dap/run/sdk/tools.
           unused='^crates/(ide-agent|ide-analysis|ide-android|ide-cli|ide-clipboard|ide-coverage|ide-db|ide-docker|ide-fonts|ide-github|ide-http|ide-mcp|ide-notebook|ide-profiler|ide-scaffold|ide-spell|ide-ssh|ide-vcs|ide-web)/'
           # The workflow's paths, less those handled per language below.
-          smoke='^(crates/|Cargo\.(toml|lock)$|src/features/(run|debugger|build|build-tools)/|src/platform/|src/workbench/|src/ui/|src/editor/(api|navigationProviders|relatedProviders|core/cm/(cornerInset|iconArea)|lsp/(availability|diagnostics|files|hint|lsp|positions|snippet))\.ts$|src/bindings\.ts$|src/styles/tokens\.css$|src/test/setup\.ts$|src-tauri/icons/128x128\.png$|smoke/|vite\.config\.ts$|tsconfig\.json$|package\.json$|pnpm-(lock|workspace)\.yaml$|patches/|\.github/workflows/language-smoke\.yml$|\.github/tool-versions\.env$)'
+          smoke='^(crates/|Cargo\.(toml|lock)$|src/features/(run|debugger|build|build-tools)/|src/platform/|src/workbench/|src/ui/|src/editor/(api|navigationProviders|refactorProviders|relatedProviders|core/cm/(cornerInset|iconArea)|lsp/(availability|diagnostics|files|hint|lsp|positions|snippet))\.ts$|src/bindings\.ts$|src/styles/tokens\.css$|src/test/setup\.ts$|src-tauri/icons/128x128\.png$|smoke/|vite\.config\.ts$|tsconfig\.json$|package\.json$|pnpm-(lock|workspace)\.yaml$|patches/|\.github/workflows/language-smoke\.yml$|\.github/tool-versions\.env$)'
           langs=""
           while read -r f; do
             case "$f" in

@@ -250,6 +250,8 @@ pub struct CommitSettings {
     pub reformat: bool,
     pub optimize_imports: bool,
     pub cleanup: bool,
+    /// Apply Ruff's safe lint fixes before composing the commit, independently of formatting.
+    pub fix_on_commit: bool,
     pub blank_line_after_subject: bool,
     pub limit_subject: bool,
     pub subject_limit: u32,
@@ -291,6 +293,7 @@ impl Default for CommitSettings {
             reformat: false,
             optimize_imports: false,
             cleanup: false,
+            fix_on_commit: false,
             blank_line_after_subject: true,
             limit_subject: true,
             subject_limit: 72,
@@ -402,11 +405,22 @@ impl Default for LogLevelColors {
 #[serde(default, rename_all = "camelCase")]
 pub struct DatabaseSettings {
     /// A console's result sets show under the statements that produced them, in the editor,
-    /// instead of in the Services view's result tabs.
+    /// instead of in the output window's result tabs.
     pub in_editor_results: bool,
+    /// The tool window that receives SQL query output and plans.
+    pub output_destination: DatabaseOutputDestination,
     /// Languages & Frameworks › SQL Resolution Scopes: the data source SQL in a file or folder
     /// resolves against (completion, inspections, navigation), most specific path first.
     pub resolution_scopes: Vec<SqlResolutionScope>,
+}
+
+/// Database › Query Output: where SQL results open.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DatabaseOutputDestination {
+    #[default]
+    DatabaseOutput,
+    Services,
 }
 
 /// One row of SQL Resolution Scopes.
@@ -727,6 +741,16 @@ impl Default for AgentSecuritySettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ruff_safe_fixes_on_commit_default_off_and_round_trip() {
+        let old: CommitSettings = serde_json::from_str(r#"{"reformat":true}"#).unwrap();
+        assert!(old.reformat);
+        assert!(!old.fix_on_commit);
+        let on: CommitSettings = serde_json::from_str(r#"{"fixOnCommit":true}"#).unwrap();
+        assert!(on.fix_on_commit);
+        assert_eq!(serde_json::to_value(&on).unwrap()["fixOnCommit"], true);
+    }
 
     #[test]
     fn clone_submodules_defaults_on_and_can_be_disabled() {

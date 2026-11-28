@@ -426,7 +426,7 @@ pub(crate) fn neutral_dir() -> Option<tempfile::TempDir> {
 }
 
 /// How packages of an interpreter are managed.
-enum Installer {
+pub(crate) enum Installer {
     Pip,
     /// `uv pip … --python <interpreter>`.
     Uv(PathBuf),
@@ -453,7 +453,7 @@ fn installer(python: &Path) -> IdeResult<Installer> {
 }
 
 /// `(program, args)` for a pip sub-command.
-fn pip_command(python: &Path, installer: &Installer, sub: &[&str]) -> (PathBuf, Vec<String>) {
+pub(crate) fn pip_command(python: &Path, installer: &Installer, sub: &[&str]) -> (PathBuf, Vec<String>) {
     match installer {
         Installer::Pip => {
             let mut args = vec!["-m".into(), "pip".into()];
@@ -570,8 +570,13 @@ pub(crate) fn parse_pip_list(out: &str) -> IdeResult<Vec<PythonPackage>> {
 }
 
 /// A requirement naming a local path (`.`, `./pkg`, `../lib[dev]`) made absolute
-/// against `base` (the project root): pip runs in [`neutral_dir`], not the project.
+/// against `base` (the project root), and `~/lib` against the home folder: pip runs in
+/// [`neutral_dir`], not the project.
 pub(crate) fn resolve_requirement(requirement: &str, base: Option<&Path>) -> IdeResult<String> {
+    if let Some(rest) = requirement.strip_prefix("~/").or_else(|| requirement.strip_prefix("~\\")) {
+        let home = dirs::home_dir().ok_or_else(|| IdeError::invalid("no home folder"))?;
+        return Ok(home.join(rest).to_string_lossy().into_owned());
+    }
     if !requirement.starts_with('.') {
         return Ok(requirement.to_owned());
     }
@@ -608,12 +613,14 @@ fn environment_key(python: &Path) -> PathBuf {
     venv_of(python).unwrap_or_else(|| python.to_path_buf())
 }
 
-/// Installs (or upgrades, with `upgrade`) a requirement such as `requests` or `django==5.0`;
-/// relative paths (`./pkg`) are resolved against `project_root`.
+/// Installs (or upgrades, with `upgrade`) a requirement such as `requests` or `django==5.0`,
+/// a VCS URL or a local path, in editable mode (`-e`) with `editable`; relative paths
+/// (`./pkg`) are resolved against `project_root`.
 pub fn install_package(
     python: &Path,
     requirement: &str,
     upgrade: bool,
+    editable: bool,
     project_root: Option<&Path>,
     cancel: &CancellationToken,
     on_line: &dyn Fn(String),
@@ -623,16 +630,28 @@ pub fn install_package(
         return Err(IdeError::invalid("enter a package name or requirement"));
     }
     let requirement = resolve_requirement(requirement, project_root)?;
+    // An editable clone of a repository would go where pip runs, a temporary folder.
+    if editable && !Path::new(&requirement).is_absolute() {
+        return Err(IdeError::invalid("only a local directory can be installed in editable mode"));
+    }
     let installer = installer(python)?;
     let _busy = Busy::take(python)?;
+    let (program, args) = pip_command(python, &installer, &install_args(&requirement, upgrade, editable));
+    let dir = neutral_dir();
+    stream(&program, &args, dir.as_ref().map(|d| d.path()), &pip_env(python), cancel, on_line).map(|_| ())
+}
+
+/// The `install` sub-command for [`pip_command`].
+pub(crate) fn install_args(requirement: &str, upgrade: bool, editable: bool) -> Vec<&str> {
     let mut sub = vec!["install"];
     if upgrade {
         sub.push("--upgrade");
     }
-    sub.push(&requirement);
-    let (program, args) = pip_command(python, &installer, &sub);
-    let dir = neutral_dir();
-    stream(&program, &args, dir.as_ref().map(|d| d.path()), &pip_env(python), cancel, on_line).map(|_| ())
+    if editable {
+        sub.push("-e");
+    }
+    sub.push(requirement);
+    sub
 }
 
 /// Run by the interpreter itself, so markers and PEP 440 specifiers are judged as pip would:

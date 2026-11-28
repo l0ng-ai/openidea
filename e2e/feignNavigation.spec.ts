@@ -215,3 +215,25 @@ test("one possible client requires a choice and a changed workspace invalidates 
   });
   await expect(page.locator(".cm-content").last()).toContainText("interface UserClient");
 });
+
+test("Go to Declaration on a RestTemplate URL opens the endpoint of the named service", async ({ workbench: page }) => {
+  await page.evaluate(async () => {
+    const backend = "/src/editor/core/backend.ts";
+    const api = "/src/editor/api.ts";
+    const contributions = "/src/workbench/contributions.ts";
+    const path = "/dev/acme-api/client/src/main/java/UserCalls.java";
+    const text = `package shop;
+import org.springframework.web.client.RestTemplate;
+class UserCalls {
+    RestTemplate rest;
+    String find(long id) { return rest.getForObject("http://admin/users/{id}", String.class, id); }
+}`;
+    (await import(backend)).docBackend().files.set(path, text);
+    await (await import(contributions)).editorService().openFile(path);
+    const editor = (await import(api)).activeEditor();
+    editor.view.dispatch({ selection: { anchor: text.indexOf("/users/{id}") + 2 } });
+    editor.view.focus();
+  });
+  await page.keyboard.press("Meta+b");
+  await expect(page.locator(".cm-content").last()).toContainText('return "admin"');
+});
