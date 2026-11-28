@@ -691,6 +691,14 @@ pub fn spec(os: Os) -> Vec<Entry> {
             SEP,
             act("vcs.newWorktree", "New Worktree…"),
             act("vcs.worktrees", "Worktrees…"),
+            sub(
+                "gitSubmodules",
+                "Submodules",
+                vec![
+                    act("vcs.initSubmodules", "Initialize Submodules"),
+                    act("vcs.syncSubmodules", "Sync Submodule URLs"),
+                ],
+            ),
             SEP,
             act("vcs.showLog", "Show Git Log"),
             sub(

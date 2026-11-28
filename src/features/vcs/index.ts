@@ -74,12 +74,14 @@ import {
   installVcsStore,
   onConflictsChanged,
   onConflictsCleared,
+  repoName,
   repoOf,
   selectRepo,
   useVcs,
 } from "./store";
 import { installRootSync } from "./rootSync";
 import { tx } from "@/platform/i18n";
+import { useProject } from "@/platform/project";
 import { openOnRemoteActions, registerOpenOnRemote } from "./openOnRemote";
 import { copyBranchNameActions } from "./copyBranchName";
 import { copyRepositoryPathActions, registerCopyRepositoryPath } from "./copyRepositoryPath";
@@ -189,6 +191,30 @@ function conflictsBody(names: string[]): string {
     : tx`${names.length} files have conflicts: ${list}`;
 }
 
+/** Offers to initialize the submodules a repository records but never checked out, once per session. */
+function installSubmoduleNotice(): () => void {
+  const offered = new Set<string>();
+  return useVcs.subscribe(({ heads }) => {
+    if (!useProject.getState().project?.trusted) return;
+    for (const [root, head] of Object.entries(heads)) {
+      const missing = head.uninitializedSubmodules ?? [];
+      const key = `vcs.submodules:${root}`;
+      if (!missing.length) notifications().expire?.(key);
+      if (!missing.length || offered.has(root)) continue;
+      offered.add(root);
+      const name = repoName(root);
+      notifications().notify({
+        group: "vcs",
+        level: "info",
+        key,
+        title: tx`Submodules of ${name} are not initialized`,
+        body: missing.join("\n"),
+        actions: [{ label: "Initialize", run: () => void executeAction("vcs.initSubmodules", { repo: root }) }],
+      });
+    }
+  });
+}
+
 export function activate(): () => void {
   let resolvedNoticeRepo: string | null = null;
   onConflictsChanged((files) => {
@@ -232,6 +258,7 @@ export function activate(): () => void {
   useCommit.setState({ signOff: workflowSettings().vcs.git.signOff });
   const disposers = [
     installVcsStore(),
+    installSubmoduleNotice(),
     clearUnstashConflictNotices,
     installOperationNoticeExpiry(() => resolvedNoticeRepo),
     installRootSync(),

@@ -22,6 +22,8 @@ export interface RepoHead {
   headCommit: string | null;
   shallow?: boolean;
   interactiveRebase?: boolean;
+  /** Submodules (repository-relative) whose checkout was never initialized. */
+  uninitializedSubmodules?: string[];
 }
 
 export interface VcsState {
@@ -283,6 +285,7 @@ export function refreshNow(): Promise<void> {
         useVcs.setState({ ...initial, root: s.root, version: s.version });
         setContext("vcsAvailable", false);
         setContext("vcsShallowRepositories", "");
+        setContext("vcsUninitializedSubmodules", false);
         setFileDecorations("vcs", new Map());
         return;
       }
@@ -308,7 +311,13 @@ export function refreshNow(): Promise<void> {
       const heads = Object.fromEntries(
         vcsRoots.map((r) => [
           r.root,
-          { head: r.head, headCommit: r.headCommit, shallow: !!r.shallow, interactiveRebase: r.interactiveRebase },
+          {
+            head: r.head,
+            headCommit: r.headCommit,
+            shallow: !!r.shallow,
+            interactiveRebase: r.interactiveRebase,
+            uninitializedSubmodules: r.uninitializedSubmodules,
+          },
         ]),
       );
       const resolvedConflicts = new Set(vcsRoots.flatMap((r) => r.resolvedConflicts ?? []));
@@ -322,6 +331,10 @@ export function refreshNow(): Promise<void> {
         branchRoots: sameBranchRoots ? s.branchRoots : branchRoots,
       });
       if (repo !== s.repo || !sameRoots) useVcs.setState({ roots: sameRoots ? s.roots : roots, repo });
+      setContext(
+        "vcsUninitializedSubmodules",
+        vcsRoots.some((r) => r.uninitializedSubmodules?.length),
+      );
       setContext(
         "vcsShallowRepositories",
         vcsRoots
@@ -511,6 +524,7 @@ export function installVcsStore(): () => void {
     useVcs.setState({ ...initial, available, root, version: useVcs.getState().version + 1 });
     setContext("vcsAvailable", available);
     setContext("vcsShallowRepositories", "");
+    setContext("vcsUninitializedSubmodules", false);
     setFileDecorations("vcs", new Map());
     if (available && isTauri()) void refreshNow();
     else if (project) void discoverRoots();
@@ -550,6 +564,7 @@ export function installVcsStore(): () => void {
     setContext("vcsAvailable", false);
     setContext("vcsFetchDisabled", false);
     setContext("vcsShallowRepositories", "");
+    setContext("vcsUninitializedSubmodules", false);
     setFileDecorations("vcs", new Map());
   };
 }

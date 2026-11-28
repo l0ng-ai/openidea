@@ -310,6 +310,13 @@ function focusedPaths(arg: unknown, ctx: { projectViewFocus?: unknown }): string
  * action's file, else the Project view's selection while it has focus, else the active editor's
  * file, else the selected repository.
  */
+/** The chosen repository, or every repository (only those with uninitialized submodules when `missing`). */
+function submoduleRepos(arg: unknown, missing: boolean): string[] {
+  const chosen = arg && typeof arg === "object" && "repo" in arg ? operationRepo(arg) : null;
+  const { heads, roots } = useVcs.getState();
+  return (chosen ? [chosen] : roots).filter((root) => !missing || !!heads[root]?.uninitializedSubmodules?.length);
+}
+
 export function operationRepo(arg: unknown): string | null {
   const roots = useVcs.getState().roots;
   if (arg && typeof arg === "object" && "repo" in arg) return (arg as { repo: string | null }).repo;
@@ -622,6 +629,23 @@ export function registerVcsActions(): () => void {
         const repo = operationRepo(arg) ?? currentRepoRoot();
         if (repo) await runRemote({ op: "unshallow" }, repoName(repo), [repo]);
       },
+    },
+    {
+      id: "vcs.initSubmodules",
+      title: "Initialize Submodules",
+      category: "Git",
+      when: "vcsAvailable && vcsUninitializedSubmodules",
+      keywords: ["submodule update --init", "recurse submodules"],
+      enabled: ({ arg }) => submoduleRepos(arg, true).length > 0,
+      run: ({ arg }) => void runRemote({ op: "initSubmodules" }, undefined, submoduleRepos(arg, true)),
+    },
+    {
+      id: "vcs.syncSubmodules",
+      title: "Sync Submodule URLs",
+      category: "Git",
+      when: VCS,
+      keywords: ["submodule sync", "gitmodules"],
+      run: ({ arg }) => void runRemote({ op: "syncSubmodules" }, undefined, submoduleRepos(arg, false)),
     },
     {
       id: "vcs.refresh",
