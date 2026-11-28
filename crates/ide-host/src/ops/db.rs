@@ -352,6 +352,20 @@ pub async fn db_table_details(
 }
 
 #[command(trust = trusted)]
+pub async fn db_catalog_table_details(
+    host: &Host,
+    window: &str,
+    id: String,
+    catalog: String,
+    schema: String,
+    table: String,
+) -> IdeResult<TableDetails> {
+    // Columns and keys in an attached DuckDB catalog on the source session.
+    let db = host.project(window)?.db.clone();
+    db.catalog_table_details(&id, &catalog, &schema, &table).await
+}
+
+#[command(trust = trusted)]
 pub async fn db_table_grants(
     host: &Host,
     window: &str,
@@ -679,6 +693,41 @@ pub async fn db_table_page(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
+#[command(trust = trusted)]
+pub async fn db_catalog_table_page(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    id: String,
+    catalog: String,
+    schema: String,
+    table: String,
+    filter: Option<String>,
+    sort: Vec<SortKey>,
+    offset: u32,
+    limit: u32,
+) -> IdeResult<TablePage> {
+    // One read-only page from the explicit DuckDB catalog on the source session.
+    let db = host.project(window)?.db.clone();
+    let cancel = host.begin_request(request);
+    let result = db
+        .catalog_table_page(
+            &id,
+            &catalog,
+            &schema,
+            &table,
+            filter.as_deref(),
+            &sort,
+            offset.into(),
+            limit.max(1).into(),
+            &cancel,
+        )
+        .await;
+    host.end_request(request);
+    result
+}
+
 #[command(trust = trusted)]
 pub async fn db_apply_edits(
     host: &Host,
@@ -811,6 +860,8 @@ ide_command::domain!(
     db_consoles,
     db_create_database,
     db_database_catalog,
+    db_catalog_table_details,
+    db_catalog_table_page,
     db_databases,
     db_ddl,
     db_disconnect,

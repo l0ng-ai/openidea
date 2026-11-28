@@ -5,7 +5,7 @@
  * PostgreSQL dollar quoting / nested comments, Snowflake `$$` strings / `//` comments / stages /
  * variant paths). Offsets are UTF-16, like the editor's.
  */
-import type { DbDriver } from "@/platform/ipc";
+import { sqlWordUpper, type SqlDriver } from "./dialect";
 
 export type TokenKind = "word" | "quoted" | "string" | "number" | "param" | "punct";
 
@@ -52,10 +52,11 @@ function blockCommentEnd(text: string, from: number, nested: boolean): number {
   return -1;
 }
 
-export function lex(text: string, driver: DbDriver = "sqlite"): Lexed {
+export function lex(text: string, driver: SqlDriver = "sqlite"): Lexed {
   const mysql = driver === "mysql";
   const clickhouse = driver === "clickhouse";
   const snowflake = driver === "snowflake";
+  const duckdb = driver === "duckdb";
   const tokens: Token[] = [];
   const comments: Lexed["comments"] = [];
   const n = text.length;
@@ -67,7 +68,7 @@ export function lex(text: string, driver: DbDriver = "sqlite"): Lexed {
       text: t,
       from,
       to,
-      upper: kind === "word" ? t.toUpperCase() : t,
+      upper: kind === "word" ? sqlWordUpper(t, driver) : t,
       ...(kind === "quoted" && clickhouse
         ? { value: t.slice(1, t.endsWith(t[0]!) ? -1 : undefined).replace(/\\([\\'"`])/g, "$1") }
         : {}),
@@ -97,9 +98,13 @@ export function lex(text: string, driver: DbDriver = "sqlite"): Lexed {
       comments.push({ from: i, to, open: true });
       i = to;
     } else if (c === "/" && next === "*") {
-      const end = blockCommentEnd(text, i + 2, driver === "postgres");
+      const end = blockCommentEnd(text, i + 2, driver === "postgres" || duckdb);
       const to = end < 0 ? n : end + 2;
       comments.push({ from: i, to, open: end < 0 });
+      i = to;
+    } else if (duckdb && (c === "E" || c === "e") && next === "'") {
+      const to = quoted(i + 1, "'", true);
+      push("string", i, to);
       i = to;
     } else if (c === "'") {
       const to = quoted(i, "'", mysql || clickhouse || snowflake);
@@ -113,7 +118,7 @@ export function lex(text: string, driver: DbDriver = "sqlite"): Lexed {
       const to = quoted(i, "`", clickhouse);
       push("quoted", i, to);
       i = to;
-    } else if (c === "$" && driver === "postgres") {
+    } else if (c === "$" && (driver === "postgres" || duckdb)) {
       const m = /^\$([\p{L}_][\p{L}\p{N}_]*)?\$/u.exec(text.slice(i, i + 64));
       if (m) {
         const tag = m[0];
@@ -174,7 +179,7 @@ export function lex(text: string, driver: DbDriver = "sqlite"): Lexed {
       i = j;
     } else {
       const two = text.slice(i, i + 2);
-      const len = two === "->" && text[i + 2] === ">" ? 3 : TWO_CHAR.has(two) ? 2 : 1;
+      const len = two === "->" && text[i + 2] === ">" ? 3 : TWO_CHAR.has(two) || (duckdb && two === "//") ? 2 : 1;
       push("punct", i, i + len);
       i += len;
     }
@@ -196,6 +201,7 @@ export function inLiteral(lexed: Lexed, pos: number): "string" | "quoted" | "com
 function closed(t: Token): boolean {
   if (t.text.length < 2) return false;
   const open = t.text[0]!;
+  if ((open === "E" || open === "e") && t.text[1] === "'") return t.text.length > 2 && t.text.endsWith("'");
   if (open === "$") {
     const tag = /^\$[\p{L}\p{N}_]*\$/u.exec(t.text)?.[0] ?? "$";
     return t.text.length >= tag.length * 2 && t.text.endsWith(tag);

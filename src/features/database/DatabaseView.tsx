@@ -24,7 +24,16 @@ import {
   type TreeHandle,
   T,
 } from "@/ui";
-import { databaseKey, passesObjectFilter, shownNames, sourceIcon, splitTarget, targetOf } from "./model";
+import {
+  databaseKey,
+  passesObjectFilter,
+  schemaNodeKey,
+  shownNames,
+  sourceIcon,
+  splitTarget,
+  targetOf,
+  treeIdentifier,
+} from "./model";
 import { IntrospectionPicker } from "./IntrospectionPicker";
 import {
   nodeTarget,
@@ -40,7 +49,8 @@ import {
 import {
   connect,
   detailsKey,
-  listsDatabases,
+  duckdbCatalogTree,
+  listsTreeDatabases,
   loadDatabases,
   loadDetails,
   loadSchemas,
@@ -51,6 +61,7 @@ import {
   openConsole,
   openObjectDdl,
   saveSourceVisibility,
+  schemasKey,
   tablesKey,
   useDatabase,
   type Loaded,
@@ -205,8 +216,8 @@ export function DatabaseView() {
     const filter = sourceOf(id)?.introspection?.objectFilter;
     return (o: { name: string }) => passesObjectFilter(o.name, filter);
   };
-  const tablesOf = (id: string, schema: string) => {
-    const t = st.tables[tablesKey(id, schema)];
+  const tablesOf = (id: string, schema: string, catalog?: string) => {
+    const t = st.tables[tablesKey(id, schema, catalog)];
     return t?.status === "ok" ? t.value.filter(shown(id)) : null;
   };
   const routinesOf = (id: string, schema: string) =>
@@ -218,7 +229,9 @@ export function DatabaseView() {
   const othersOf = (id: string, schema: string, folder: Folder) =>
     (st.objects[tablesKey(id, schema)]?.others ?? []).filter((o) => otherFolder(o.kind) === folder).filter(shown(id));
   /** Members of a schema folder, after object filtering. */
-  const folderSize = (id: string, schema: string, folder: Folder): number => {
+  const folderSize = (id: string, schema: string, folder: Folder, catalog?: string): number => {
+    if (catalog !== undefined)
+      return (tablesOf(id, schema, catalog) ?? []).filter((t) => tableFolder(t.kind) === folder).length;
     if (isOtherFolder(folder)) return othersOf(id, schema, folder).length;
     if (folder === "routines" || folder === "procedures" || folder === "functions")
       return routinesOf(id, schema).filter(
@@ -228,8 +241,8 @@ export function DatabaseView() {
     if (folder === "sequences") return sequencesOf(id, schema).length;
     return (tablesOf(id, schema) ?? []).filter((t) => tableFolder(t.kind) === folder).length;
   };
-  const detailsOf = (id: string, schema: string, table: string) => {
-    const d = st.details[detailsKey(id, schema, table)];
+  const detailsOf = (id: string, schema: string, table: string, catalog?: string) => {
+    const d = st.details[detailsKey(id, schema, table, catalog)];
     return d?.status === "ok" ? d.value : null;
   };
 
@@ -256,9 +269,15 @@ export function DatabaseView() {
     return shownNames(v.names, i?.allDatabases, i?.databases, v.current);
   };
 
-  const schemasOf = (key: string, id: string, database: string | null) =>
-    status(key, st.schemas[id], (v) =>
-      shownSchemas(id, v, database).map((schema) => ({ kind: "schema", key: `${id}/${schema}`, id, schema }) as Node),
+  const schemasOf = (key: string, id: string, database: string | null, catalog?: string) =>
+    status(key, st.schemas[schemasKey(id, catalog)], (v) =>
+      shownSchemas(id, v, database).map((schema): Node => ({
+        kind: "schema",
+        key: schemaNodeKey(id, schema, catalog),
+        id,
+        schema,
+        catalog,
+      })),
     );
 
   const children = (n: Node): readonly Node[] | undefined => {
@@ -270,34 +289,38 @@ export function DatabaseView() {
         });
       case "source": {
         const id = n.source.id ?? "";
-        if (listsDatabases(n.source))
+        if (listsTreeDatabases(n.source)) {
+          const duckdb = duckdbCatalogTree(n.source);
           return status(n.key, st.databases[id], (v) =>
             shownDatabases(id, v).map((name) => ({
               kind: "database",
-              key: databaseKey(id, name),
-              id: targetOf(id, name, v.current),
+              key: databaseKey(id, name, duckdb),
+              id: duckdb ? id : targetOf(id, name, v.current),
               name,
               current: name === v.current,
+              catalog: duckdb ? name : undefined,
             })),
           );
+        }
         return schemasOf(n.key, id, null);
       }
       case "database":
-        return schemasOf(n.key, n.id, n.name);
+        return schemasOf(n.key, n.id, n.name, n.catalog);
       case "schema":
-        return status(n.key, st.tables[tablesKey(n.id, n.schema)], () =>
+        return status(n.key, st.tables[tablesKey(n.id, n.schema, n.catalog)], () =>
           folders
-            .filter((f) => folderSize(n.id, n.schema, f) > 0)
+            .filter((f) => folderSize(n.id, n.schema, f, n.catalog) > 0)
             .map((folder): Node => ({
               kind: "folder",
               key: `${n.key}/${folder}`,
               id: n.id,
               schema: n.schema,
+              catalog: n.catalog,
               folder,
             })),
         );
       case "folder": {
-        const at = { id: n.id, schema: n.schema };
+        const at = { id: n.id, schema: n.schema, catalog: n.catalog };
         if (n.folder === "routines" || n.folder === "procedures" || n.folder === "functions")
           // Overloads share a name: the key tells them apart by their arguments.
           return routinesOf(n.id, n.schema)
@@ -329,12 +352,12 @@ export function DatabaseView() {
             sequence,
             ...at,
           }));
-        return (tablesOf(n.id, n.schema) ?? [])
+        return (tablesOf(n.id, n.schema, n.catalog) ?? [])
           .filter((t) => tableFolder(t.kind) === n.folder)
-          .map((table) => ({ kind: "table", key: `${n.key}/${table.name}`, table, ...at }));
+          .map((table) => ({ kind: "table", key: `${n.key}/${treeIdentifier(table.name, n.catalog)}`, table, ...at }));
       }
       case "table": {
-        const d = st.details[detailsKey(n.id, n.schema, n.table.name)];
+        const d = st.details[detailsKey(n.id, n.schema, n.table.name, n.catalog)];
         if (!d || d.status === "loading") return undefined;
         if (d.status === "error") return [{ kind: "message", key: `${n.key}/err`, text: d.message, error: true }];
         return groupsOf(d.value).map((group) => ({
@@ -343,19 +366,20 @@ export function DatabaseView() {
           id: n.id,
           schema: n.schema,
           table: n.table.name,
+          catalog: n.catalog,
           group,
         }));
       }
       case "group": {
-        const d = detailsOf(n.id, n.schema, n.table);
+        const d = detailsOf(n.id, n.schema, n.table, n.catalog);
         if (!d) return undefined;
         const fkCols = new Set(d.foreignKeys.flatMap((k) => k.columns));
-        const at = { id: n.id, schema: n.schema, table: n.table };
+        const at = { id: n.id, schema: n.schema, table: n.table, catalog: n.catalog };
         switch (n.group) {
           case "columns":
             return d.columns.map((column) => ({
               kind: "column",
-              key: `${n.key}/${column.name}`,
+              key: `${n.key}/${treeIdentifier(column.name, n.catalog)}`,
               column,
               foreignKey: fkCols.has(column.name),
               ...at,
@@ -384,11 +408,11 @@ export function DatabaseView() {
       if (!current()) return;
       if (!connected) {
         const err = { status: "error" as const, message: tx("Cannot connect") };
-        if (listsDatabases(n.source)) useDatabase.setState((s) => ({ databases: { ...s.databases, [id]: err } }));
+        if (listsTreeDatabases(n.source)) useDatabase.setState((s) => ({ databases: { ...s.databases, [id]: err } }));
         else useDatabase.setState((s) => ({ schemas: { ...s.schemas, [id]: err } }));
         return;
       }
-      if (listsDatabases(n.source)) await loadDatabases(id);
+      if (listsTreeDatabases(n.source)) await loadDatabases(id);
       else await loadSchemas(id);
     } else if (n.kind === "database") {
       const current = databaseRequest(n.id);
@@ -396,13 +420,13 @@ export function DatabaseView() {
       if (!current()) return;
       if (!connected) {
         useDatabase.setState((s) => ({
-          schemas: { ...s.schemas, [n.id]: { status: "error", message: tx("Cannot connect") } },
+          schemas: { ...s.schemas, [schemasKey(n.id, n.catalog)]: { status: "error", message: tx("Cannot connect") } },
         }));
         return;
       }
-      await loadSchemas(n.id);
-    } else if (n.kind === "schema") await loadTables(n.id, n.schema);
-    else if (n.kind === "table") await loadDetails(n.id, n.schema, n.table.name);
+      await loadSchemas(n.id, n.catalog);
+    } else if (n.kind === "schema") await loadTables(n.id, n.schema, n.catalog);
+    else if (n.kind === "table") await loadDetails(n.id, n.schema, n.table.name, n.catalog);
   };
 
   const picker = (n: Node, lead: boolean) => {
@@ -412,9 +436,11 @@ export function DatabaseView() {
     const sourceId = source.id;
     const database = n.kind === "database" ? n.name : null;
     const target = n.kind === "database" ? n.id : sourceId;
-    const listDatabases = database === null && listsDatabases(source);
+    const listDatabases = database === null && listsTreeDatabases(source);
     const databases = listDatabases ? st.databases[sourceId] : undefined;
-    const schemas = listDatabases ? undefined : st.schemas[target];
+    const schemas = listDatabases
+      ? undefined
+      : st.schemas[schemasKey(target, n.kind === "database" ? n.catalog : undefined)];
     const intro = source.introspection;
     const name = label(n);
     const kind =
@@ -577,7 +603,7 @@ export function DatabaseView() {
       case "sourceFolder":
         return String(n.folder.sources.length);
       case "folder":
-        return String(folderSize(n.id, n.schema, n.folder));
+        return String(folderSize(n.id, n.schema, n.folder, n.catalog));
       case "routine":
         return `(${n.routine.arguments})${n.routine.returns ? `: ${n.routine.returns}` : ""}`;
       case "sequence":
@@ -587,7 +613,7 @@ export function DatabaseView() {
       case "trigger":
         return `${n.trigger.timing} ${n.trigger.events}`.trim();
       case "group": {
-        const d = detailsOf(n.id, n.schema, n.table);
+        const d = detailsOf(n.id, n.schema, n.table, n.catalog);
         return d ? String(groupSize(d, n.group)) : undefined;
       }
       case "column":
@@ -752,9 +778,9 @@ export function DatabaseView() {
           }
           onActivate={(n) => {
             if (n.kind === "workspace") void executeAction("db.queryWorkspace");
-            else if (n.kind === "table") openTableData(n.id, n.schema, n.table.name);
+            else if (n.kind === "table") openTableData(n.id, n.schema, n.table.name, n.catalog);
             else if (n.kind === "source") void openConsole(n.source.id ?? "");
-            else if (n.kind === "database") void openConsole(n.id);
+            else if (n.kind === "database" && n.catalog === undefined) void openConsole(n.id);
             else {
               const o = schemaObjectOf(n);
               if (o) void openObjectDdl(o.id, o.schema, o.kind, o.name);

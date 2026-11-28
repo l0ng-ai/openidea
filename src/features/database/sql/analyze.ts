@@ -5,8 +5,7 @@
  * the caret (a statement, a table, a column expression, a join condition…).
  * Purely lexical: works on half-typed statements a parser would reject.
  */
-import type { DbDriver } from "@/platform/ipc";
-import { CLAUSE_WORDS, isReserved } from "./dialect";
+import { CLAUSE_WORDS, isReserved, nameMatcher, type SqlDriver } from "./dialect";
 import { identName, inLiteral, lex, type Lexed, type Token } from "./lexer";
 
 export interface TableRef {
@@ -38,6 +37,7 @@ export type Clause =
   | "group"
   | "order"
   | "having"
+  | "qualify"
   | "limit"
   | "set"
   | "values"
@@ -52,6 +52,7 @@ export type SqlContext =
   /** Right after a FROM / JOIN item (alias, JOIN, WHERE…). */
   | { kind: "afterTable"; ref: TableRef }
   | { kind: "column"; clause: Clause }
+  | { kind: "exclude"; owner: string | null }
   | { kind: "joinCondition"; ref: TableRef }
   | { kind: "insertColumns"; target: TableRef }
   | { kind: "afterInsertColumns" };
@@ -74,6 +75,12 @@ export interface Analysis {
   lowerKeywords: boolean;
   /** The token before the caret word (and its qualifier), upper-cased: `(`, `UNION`… */
   previous: string | null;
+  /** DuckDB: whether FROM precedes the projection in this block. */
+  fromFirst?: boolean;
+  /** DuckDB: a projection star may take EXCLUDE, REPLACE or RENAME here. */
+  projectionStar?: boolean;
+  /** DuckDB: projection names available in QUALIFY. */
+  selectColumns?: string[];
 }
 
 const WORD_BEFORE = /[\p{L}\p{N}_$]*$/u;
@@ -100,8 +107,13 @@ const SET_OPS = new Set(["UNION", "INTERSECT", "EXCEPT"]);
 const QUERY_START = new Set(["SELECT", "WITH", "VALUES", "TABLE"]);
 
 /** The clause a keyword starts (Snowflake's QUALIFY filters like HAVING). */
-const clauseOf = (t: Token, driver: DbDriver): Clause | undefined =>
-  CLAUSES[t.upper] ?? (driver === "snowflake" && t.upper === "QUALIFY" ? "having" : undefined);
+const clauseOf = (t: Token, driver: SqlDriver): Clause | undefined => {
+  if (t.upper === "QUALIFY") {
+    if (driver === "duckdb") return "qualify";
+    if (driver === "snowflake") return "having";
+  }
+  return CLAUSES[t.upper];
+};
 
 const isIdent = (t: Token | undefined): t is Token =>
   !!t && (t.kind === "quoted" || (t.kind === "word" && !CLAUSE_WORDS.has(t.upper)));
@@ -146,7 +158,7 @@ export function statementTokenRange(tokens: readonly Token[], pos: number) {
   return { start, end: tokens.length };
 }
 
-export function analyze(text: string, pos: number, driver: DbDriver, lexed: Lexed = lex(text, driver)): Analysis {
+export function analyze(text: string, pos: number, driver: SqlDriver, lexed: Lexed = lex(text, driver)): Analysis {
   const word = WORD_BEFORE.exec(text.slice(Math.max(0, pos - 256), pos))![0];
   const prefix = { from: pos - word.length, text: word };
   const all = lexed.tokens;
@@ -172,15 +184,19 @@ export function analyze(text: string, pos: number, driver: DbDriver, lexed: Lexe
     if (isP(st[i], "(")) open.push(i);
     else if (isP(st[i], ")")) open.pop();
   }
-  const isQuery = (p: number) => p === -1 || (st[p + 1]?.kind === "word" && QUERY_START.has(st[p + 1]!.upper));
+  const duckdb = driver === "duckdb";
+  const isQuery = (p: number) =>
+    st[p + 1]?.kind === "word" && (QUERY_START.has(st[p + 1]!.upper) || (duckdb && isW(st[p + 1], "FROM")));
   const blocks = [...open.filter(isQuery).reverse(), -1];
+  const block = blocks[0]!;
+  const range = blockRange(st, parens, block, nb);
 
-  const ctes = parseCtes(st, parens);
+  const { ctes, bodyStart } = parseCtes(st, parens, driver);
   const refs: TableRef[] = [];
   const refEnds = new Map<number, TableRef>();
   blocks.forEach((g, depth) => {
     // Within an enclosing block, the "caret" is the paren of the block nested in it.
-    const [ra, rb] = blockRange(st, parens, g, depth === 0 ? nb : blocks[depth - 1]!);
+    const [ra, rb] = depth === 0 ? range : blockRange(st, parens, g, blocks[depth - 1]!);
     for (const r of parseRefs(st, parens, g, ra, rb, ctes, depth, driver)) {
       refs.push(r.ref);
       if (depth === 0) refEnds.set(r.end, r.ref);
@@ -200,15 +216,21 @@ export function analyze(text: string, pos: number, driver: DbDriver, lexed: Lexe
   }
   const p = before[k];
   const pi = k;
-  const block = blocks[0]!;
-  const clause = clauseAt(st, parens, block, open.length ? open.at(-1)! : -1, nb, driver);
+  const innermost = open.at(-1) ?? -1;
+  const clause = clauseAt(st, parens, block, innermost, nb, driver);
+  const starAt = (i: number) => duckdb && clause === "select" && parens.parent[i] === block && isProjectionStar(st, i);
+  const projectionStar = starAt(pi);
+  const excludedStar = isW(p, "EXCLUDE") ? pi - 1 : isW(st[innermost - 1], "EXCLUDE") ? innermost - 2 : -1;
   // Snowflake `col:path`: the keys of a VARIANT are not in the model.
   const variantPath =
     driver === "snowflake" && isP(p, ":") && p!.to === (pi + 1 < before.length ? before[pi + 1]!.from : prefix.from);
 
   let context: SqlContext;
   if (literal) context = { kind: "none" };
-  else if (!p) context = qualifier.length ? { kind: "column", clause: "other" } : { kind: "statement" };
+  else if (starAt(excludedStar)) {
+    const owner = st[excludedStar - 2];
+    context = { kind: "exclude", owner: isP(st[excludedStar - 1], ".") && owner ? identName(owner) : null };
+  } else if (!p) context = qualifier.length ? { kind: "column", clause: "other" } : { kind: "statement" };
   else if (
     p.kind === "word" &&
     TABLE_INTRO.has(p.upper) &&
@@ -233,6 +255,11 @@ export function analyze(text: string, pos: number, driver: DbDriver, lexed: Lexe
     else context = { kind: "column", clause };
   }
 
+  const queryStart = block === -1 ? Math.max(range[0], bodyStart) : range[0];
+  const firstProjectionClause =
+    duckdb && !isW(st[queryStart], "DELETE", "UPDATE")
+      ? parens.level(block, queryStart, Math.min(nb, range[1])).find((i) => isW(st[i], "SELECT", "FROM"))
+      : undefined;
   return {
     context,
     qualifier: qualifier.length ? qualifier : null,
@@ -244,7 +271,20 @@ export function analyze(text: string, pos: number, driver: DbDriver, lexed: Lexe
     fromInsert: fromInsertPos(st, parens, block, pos),
     lowerKeywords,
     previous: p ? p.upper : null,
+    ...(duckdb && {
+      projectionStar,
+      fromFirst: firstProjectionClause !== undefined && isW(st[firstProjectionClause], "FROM"),
+      selectColumns: clause === "qualify" ? outputColumns(st, parens, block, ...range, driver) : undefined,
+    }),
   };
+}
+
+/** A bare or qualified projection star. A multiplication operator is part of an expression. */
+function isProjectionStar(st: Token[], i: number): boolean {
+  if (!isP(st[i], "*")) return false;
+  let prev = i - 1;
+  while (isP(st[prev], ".") && isIdent(st[prev - 1])) prev -= 2;
+  return isW(st[prev], "SELECT", "DISTINCT", "ALL") || isP(st[prev], ",");
 }
 
 /** Token range of block `g`, cut to the UNION / INTERSECT / EXCEPT branch containing `caret` (a token index). */
@@ -269,7 +309,7 @@ function clauseAt(
   block: number,
   innermost: number,
   caret: number,
-  driver: DbDriver,
+  driver: SqlDriver,
 ): Clause {
   // Inside a non-query paren (function call, IN list), the clause is the one around that paren.
   const limit = innermost > block ? innermost : caret;
@@ -284,9 +324,10 @@ function clauseAt(
   return clause;
 }
 
-function parseCtes(st: Token[], parens: Parens): TableRef[] {
-  const out: TableRef[] = [];
-  if (!isW(st[0], "WITH")) return out;
+function parseCtes(st: Token[], parens: Parens, driver: SqlDriver): { ctes: TableRef[]; bodyStart: number } {
+  const ctes: TableRef[] = [];
+  let bodyStart = 0;
+  if (!isW(st[0], "WITH")) return { ctes, bodyStart };
   let i = 1;
   if (isW(st[i], "RECURSIVE")) i++;
   while (i < st.length && isIdent(st[i])) {
@@ -306,8 +347,8 @@ function parseCtes(st: Token[], parens: Parens): TableRef[] {
     while (isW(st[i], "NOT", "MATERIALIZED")) i++;
     if (!isP(st[i], "(")) break;
     const c = parens.close.get(i)!;
-    columns ??= outputColumns(st, parens, i, i + 1, c);
-    out.push({
+    columns ??= outputColumns(st, parens, i, i + 1, c, driver);
+    ctes.push({
       schema: null,
       name: identName(nameTok),
       alias: null,
@@ -319,15 +360,22 @@ function parseCtes(st: Token[], parens: Parens): TableRef[] {
       depth: 0,
       viaJoin: false,
     });
-    i = c + 1;
+    i = bodyStart = c + 1;
     if (!isP(st[i], ",")) break;
     i++;
   }
-  return out;
+  return { ctes, bodyStart };
 }
 
 /** Output column names of the query in group `g` (`a..b`): aliases and plain column references. */
-export function outputColumns(st: Token[], parens: Parens, g: number, a: number, b: number): string[] {
+export function outputColumns(
+  st: Token[],
+  parens: Parens,
+  g: number,
+  a: number,
+  b: number,
+  driver: SqlDriver,
+): string[] {
   const level = parens.level(g, a, b);
   const sel = level.find((i) => isW(st[i], "SELECT"));
   if (sel === undefined) return [];
@@ -359,6 +407,7 @@ export function outputColumns(st: Token[], parens: Parens, g: number, a: number,
         t.upper === "GROUP" ||
         t.upper === "ORDER" ||
         t.upper === "LIMIT" ||
+        (driver === "duckdb" && isW(t, "HAVING", "WINDOW", "QUALIFY", "OFFSET")) ||
         SET_OPS.has(t.upper))
     )
       break;
@@ -379,10 +428,11 @@ function parseRefs(
   b: number,
   ctes: TableRef[],
   depth: number,
-  driver: DbDriver,
+  driver: SqlDriver,
 ): Array<{ ref: TableRef; end: number }> {
   const out: Array<{ ref: TableRef; end: number }> = [];
   const level = parens.level(g, a, b);
+  const eq = nameMatcher(driver);
   let clause: Clause = "other";
   const item = (j: number, viaJoin = false, into = false) => {
     while (isW(st[j], "LATERAL", "ONLY")) j++;
@@ -390,7 +440,7 @@ function parseRefs(
     if (!t || j >= b) return;
     if (isP(t, "(")) {
       const c = parens.close.get(j)!;
-      const columns = outputColumns(st, parens, j, j + 1, c);
+      const columns = outputColumns(st, parens, j, j + 1, c, driver);
       const al = alias(st, c + 1, b, driver);
       if (al)
         out.push({
@@ -427,10 +477,7 @@ function parseRefs(
     const name = identName(last);
     const schema = parts.length > 1 ? identName(parts.at(-2)!) : null;
     const al = alias(st, k, b, driver);
-    const cte =
-      schema === null
-        ? ctes.find((c) => (driver === "clickhouse" ? c.name === name : c.name.toLowerCase() === name.toLowerCase()))
-        : undefined;
+    const cte = schema === null ? ctes.find((c) => eq(c.name, name)) : undefined;
     out.push({
       ref: {
         ...(parts.length > 2 ? { database: identName(parts.at(-3)!) } : {}),
@@ -465,13 +512,16 @@ function parseRefs(
 }
 
 /** An alias at `k` (`AS x`, or a bare non-keyword identifier). */
-function alias(st: Token[], k: number, b: number, driver: DbDriver): { name: string; tok: Token; end: number } | null {
+function alias(st: Token[], k: number, b: number, driver: SqlDriver): { name: string; tok: Token; end: number } | null {
   let j = k;
   const as = isW(st[j], "AS");
   if (as) j++;
   const t = st[j];
   if (j >= b || !t) return null;
-  if (t.kind === "quoted" || (t.kind === "word" && !CLAUSE_WORDS.has(t.upper) && (as || !isReserved(t.text, driver)))) {
+  if (
+    t.kind === "quoted" ||
+    (t.kind === "word" && !CLAUSE_WORDS.has(t.upper) && ((as && driver !== "duckdb") || !isReserved(t.text, driver)))
+  ) {
     return { name: identName(t), tok: t, end: j };
   }
   return null;
@@ -530,7 +580,7 @@ export interface ValuesSlot {
   index: number;
 }
 
-export function valuesSlot(text: string, pos: number, driver: DbDriver): ValuesSlot | null {
+export function valuesSlot(text: string, pos: number, driver: SqlDriver): ValuesSlot | null {
   const a = analyze(text, pos, driver);
   if (a.verb !== "INSERT" && a.verb !== "REPLACE") return null;
   const target = a.refs.find((r) => r.depth === 0 && r.kind === "table");

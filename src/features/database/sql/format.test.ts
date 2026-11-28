@@ -71,6 +71,15 @@ describe("formatSql", () => {
     expect(edits).toEqual([{ from: sql.lastIndexOf("select"), to: sql.length, insert: "select 1;" }]);
   });
 
+  it("keeps DuckDB integer division, escaped strings and non-ASCII identifier letters", () => {
+    expect(
+      formatted(String.raw`from sales select Äscii // 2, E'it\'s ok' qualify row_number() over ()=1;`, "duckdb", {
+        keywords: "upper",
+        identifiers: "lower",
+      }),
+    ).toBe("FROM sales\nSELECT Äscii // 2,\n       E'it\\'s ok'\nQUALIFY row_number() OVER() = 1;");
+  });
+
   it("keeps Snowflake dollar strings, comments, casts, variant paths and stages", () => {
     const sf = (sql: string) => formatted(sql, "snowflake");
     expect(sf("select src:customer.name::string,src['k'].v[0] from t where x=$$ a  b $$ // why\n;")).toBe(

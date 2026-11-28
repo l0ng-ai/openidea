@@ -50,6 +50,8 @@ import {
   colorVar,
   connectRemedy,
   databaseKey,
+  schemaNodeKey,
+  treeIdentifier,
   effectiveSsh,
   idleTargets,
   newSourceId,
@@ -64,9 +66,12 @@ import { TABLE_KIND, type TableRef } from "./tableInput";
 import type { DiagramData } from "./erDiagram";
 import type { ExportData, ExportFormat } from "./export";
 import type { DbObjectRef } from "./objects";
+import type { SqlCatalog } from "./sql/complete";
+import { nameMatcher, sqlDriverOf } from "./sql/dialect";
 import { formatted } from "./sql/format";
-import { unsafeStatement, type UnsafeStatement } from "./sql/unsafe";
+import { lex } from "./sql/lexer";
 import { bindParams, findParams, unbindRange } from "./sql/params";
+import { unsafeStatement, type UnsafeStatement } from "./sql/unsafe";
 import { isReadOnlyQuery } from "./sql/readOnly";
 import { pageFetch } from "./resultView";
 import type { TableSnapshot } from "./schemaCompare";
@@ -402,8 +407,11 @@ function saveViewOptions() {
   }
 }
 
-export const tablesKey = (id: string, schema: string) => `${id}\u0000${schema}`;
-export const detailsKey = (id: string, schema: string, table: string) => `${id}\u0000${schema}\u0000${table}`;
+const catalogKey = (key: string, catalog?: string) => (catalog === undefined ? key : `${key}\u0000${catalog}`);
+export const schemasKey = catalogKey;
+export const tablesKey = (id: string, schema: string, catalog?: string) => catalogKey(`${id}\u0000${schema}`, catalog);
+export const detailsKey = (id: string, schema: string, table: string, catalog?: string) =>
+  catalogKey(`${id}\u0000${schema}\u0000${table}`, catalog);
 
 function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -659,6 +667,7 @@ function expandSourceFolder(id: string) {
 /** Drops cached metadata of target `id` (refresh, disconnect); a data source id drops all its databases. */
 function forget(id: string) {
   invalidateDatabaseRequests(id);
+  duckdbCatalogLoads.delete(id);
   const whole = !splitTarget(id).database;
   const ofTarget = (t: string) => t === id || (whole && splitTarget(t).id === id);
   const dropKeys = <T>(m: Record<string, T>) =>
@@ -1028,6 +1037,14 @@ export function listsDatabases(source: DataSource | undefined): boolean {
   );
 }
 
+export function duckdbCatalogTree(source: DataSource | undefined): boolean {
+  return source?.driver === "jdbc" && source.vendor === "duckdb";
+}
+
+export function listsTreeDatabases(source: DataSource | undefined): boolean {
+  return listsDatabases(source) || duckdbCatalogTree(source);
+}
+
 /** New › Database and Drop on database nodes: PostgreSQL and SQL Server data sources that show their databases. */
 export function createsDatabases(source: DataSource | undefined): boolean {
   return listsDatabases(source) && source?.driver !== "snowflake";
@@ -1043,9 +1060,9 @@ export function newSchemaTarget(n: DbNode): string | null {
 }
 
 interface LoadedLevels {
-  schemas: string[];
-  tables: [string, string][];
-  details: [string, string, string][];
+  schemas: [id: string, catalog?: string][];
+  tables: [id: string, schema: string, catalog?: string][];
+  details: [id: string, schema: string, table: string, catalog?: string][];
 }
 
 /** The metadata of target `id` (a data source id: all its databases) the tree has loaded. */
@@ -1059,9 +1076,9 @@ function loadedLevels(id: string): LoadedLevels {
   const loaded = (m: Record<string, Loaded<unknown>>) =>
     Object.keys(m).filter((k) => ofTarget(k) && m[k]!.status === "ok");
   return {
-    schemas: loaded(st.schemas),
-    tables: loaded(st.tables).map((k) => k.split("\u0000") as [string, string]),
-    details: loaded(st.details).map((k) => k.split("\u0000") as [string, string, string]),
+    schemas: loaded(st.schemas).map((k) => k.split("\u0000") as LoadedLevels["schemas"][number]),
+    tables: loaded(st.tables).map((k) => k.split("\u0000") as LoadedLevels["tables"][number]),
+    details: loaded(st.details).map((k) => k.split("\u0000") as LoadedLevels["details"][number]),
   };
 }
 
@@ -1076,26 +1093,30 @@ export async function refresh(id: string, levels = loadedLevels(id)): Promise<vo
   forget(id);
   const current = databaseRequest(id);
   const targets = new Map(
-    [...new Set([...schemas, ...tables.map(([t]) => t), ...details.map(([t]) => t)])].map((target) => [
+    [...new Set([...schemas, ...tables, ...details].map(([target]) => target))].map((target) => [
       target,
       databaseRequest(target),
     ]),
   );
   const valid = (target: string) => targets.get(target)?.() ?? current();
-  if (whole && listsDatabases(sourceById(id))) await loadDatabases(id);
-  else if (!schemas.includes(id)) schemas.push(id);
+  if (whole && listsTreeDatabases(sourceById(id))) await loadDatabases(id);
+  else if (!schemas.some(([t, catalog]) => t === id && catalog === undefined)) schemas.push([id]);
   if (!current()) return;
-  await Promise.all(schemas.filter(valid).map((t) => loadSchemas(t)));
+  const listed = useDatabase.getState().databases[id];
+  const present = (catalog?: string) =>
+    catalog === undefined || (listed?.status === "ok" && listed.value.names.includes(catalog));
+  await Promise.all(schemas.filter(([t, catalog]) => valid(t) && present(catalog)).map(([t, c]) => loadSchemas(t, c)));
   if (!current()) return;
-  await Promise.all(tables.filter(([t]) => valid(t)).map(([t, schema]) => loadTables(t, schema)));
+  // Loading a DuckDB catalog already loaded its tables along with its schemas.
+  await Promise.all(
+    tables.filter(([t, , catalog]) => valid(t) && catalog === undefined).map(([t, schema]) => loadTables(t, schema)),
+  );
   if (!current()) return;
-  const exists = (t: string, schema: string, table: string) => {
-    const l = useDatabase.getState().tables[tablesKey(t, schema)];
+  const exists = (t: string, schema: string, table: string, catalog?: string) => {
+    const l = useDatabase.getState().tables[tablesKey(t, schema, catalog)];
     return l?.status === "ok" && l.value.some((x) => x.name === table);
   };
-  await Promise.all(
-    details.filter((d) => valid(d[0]) && exists(...d)).map(([t, schema, table]) => loadDetails(t, schema, table)),
-  );
+  await Promise.all(details.filter((d) => valid(d[0]) && exists(...d)).map((d) => loadDetails(...d)));
 }
 
 function metadataRequest(id: string, cache: "databases" | "schemas" | "tables" | "details", key = id) {
@@ -1117,19 +1138,35 @@ export async function loadDatabases(id: string): Promise<void> {
   }
 }
 
-export async function loadSchemas(id: string): Promise<void> {
-  const current = metadataRequest(id, "schemas");
+export async function loadSchemas(id: string, catalog?: string): Promise<void> {
+  const key = schemasKey(id, catalog);
+  const current = metadataRequest(id, "schemas", key);
   try {
+    if (catalog !== undefined) {
+      const catalogSchemas = await withConnection(id, () => call(commands.dbDatabaseCatalog(id, catalog)));
+      if (!current()) return;
+      useDatabase.setState((s) => {
+        const tables = { ...s.tables };
+        for (const schema of catalogSchemas)
+          tables[tablesKey(id, schema.name, catalog)] = { status: "ok", value: schema.tables };
+        return {
+          schemas: { ...s.schemas, [key]: { status: "ok", value: catalogSchemas.map((schema) => schema.name) } },
+          tables,
+        };
+      });
+      return;
+    }
     const value = await withConnection(id, () => call(commands.dbSchemas(id)));
     if (!current()) return;
     useDatabase.setState((s) => ({ schemas: { ...s.schemas, [id]: { status: "ok", value } } }));
   } catch (e) {
     if (!current()) return;
-    useDatabase.setState((s) => ({ schemas: { ...s.schemas, [id]: { status: "error", message: message(e) } } }));
+    useDatabase.setState((s) => ({ schemas: { ...s.schemas, [key]: { status: "error", message: message(e) } } }));
   }
 }
 
-export async function loadTables(id: string, schema: string): Promise<void> {
+export async function loadTables(id: string, schema: string, catalog?: string): Promise<void> {
+  if (catalog !== undefined) return loadSchemas(id, catalog);
   const key = tablesKey(id, schema);
   const current = metadataRequest(id, "tables", key);
   try {
@@ -1168,11 +1205,17 @@ export async function schemaSnapshot(id: string, schema: string, signal?: AbortS
   return out;
 }
 
-export async function loadDetails(id: string, schema: string, table: string): Promise<void> {
-  const key = detailsKey(id, schema, table);
+export async function loadDetails(id: string, schema: string, table: string, catalog?: string): Promise<void> {
+  const key = detailsKey(id, schema, table, catalog);
   const current = metadataRequest(id, "details", key);
   try {
-    const value = await withConnection(id, () => call(commands.dbTableDetails(id, schema, table)));
+    const value = await withConnection(id, () =>
+      call(
+        catalog === undefined
+          ? commands.dbTableDetails(id, schema, table)
+          : commands.dbCatalogTableDetails(id, catalog, schema, table),
+      ),
+    );
     if (!current()) return;
     useDatabase.setState((s) => ({ details: { ...s.details, [key]: { status: "ok", value } } }));
   } catch (e) {
@@ -1197,12 +1240,16 @@ export async function revealInTree(
   table: string,
   kind: DbTableKind | undefined,
   column?: string,
+  catalog?: string,
 ): Promise<void> {
   const current = databaseRequest(id);
   const loaded = (l: Loaded<unknown> | undefined) => l?.status === "ok";
   const { id: sourceId, database } = splitTarget(id);
+  const source = sourceById(id);
+  const duck = duckdbCatalogTree(source) || catalog !== undefined;
+  const eq = nameMatcher("duckdb");
   let databaseNode: string[] = [];
-  if (listsDatabases(sourceById(id))) {
+  if (listsTreeDatabases(source) || duck) {
     if (!loaded(useDatabase.getState().databases[sourceId])) {
       if (!(await connect(sourceId))) return;
       if (!current()) return;
@@ -1210,27 +1257,42 @@ export async function revealInTree(
       if (!current()) return;
     }
     const dbs = useDatabase.getState().databases[sourceId];
-    const name = database ?? (dbs?.status === "ok" ? dbs.value.current : null);
-    if (name) databaseNode = [databaseKey(sourceId, name)];
+    if (duck) {
+      if (dbs?.status !== "ok") return selectInTree([], sourceId);
+      catalog = catalog === undefined ? dbs.value.current : dbs.value.names.find((name) => eq(name, catalog));
+      if (!catalog) return selectInTree([], sourceId);
+    }
+    const name = catalog ?? database ?? (dbs?.status === "ok" ? dbs.value.current : null);
+    if (name) databaseNode = [databaseKey(sourceId, name, duck)];
   }
-  if (!loaded(useDatabase.getState().schemas[id])) {
+  const schemaKey = schemasKey(id, catalog);
+  if (!loaded(useDatabase.getState().schemas[schemaKey])) {
     if (!(await connect(id))) return;
     if (!current()) return;
-    await loadSchemas(id);
+    await loadSchemas(id, catalog);
     if (!current()) return;
   }
-  if (!loaded(useDatabase.getState().tables[tablesKey(id, schema)])) await loadTables(id, schema);
+  if (duck) {
+    const schemas = useDatabase.getState().schemas[schemaKey];
+    if (schemas?.status === "ok") schema = schemas.value.find((name) => eq(name, schema)) ?? schema;
+  }
+  const key = tablesKey(id, schema, catalog);
+  if (!loaded(useDatabase.getState().tables[key])) await loadTables(id, schema, catalog);
   if (!current()) return;
-  if (column && !loaded(useDatabase.getState().details[detailsKey(id, schema, table)]))
-    await loadDetails(id, schema, table);
+  const tables = useDatabase.getState().tables[key];
+  const match =
+    tables?.status === "ok" ? tables.value.find((t) => (duck ? eq(t.name, table) : t.name === table)) : undefined;
+  if (match) table = match.name;
+  if (column && !loaded(useDatabase.getState().details[detailsKey(id, schema, table, catalog)]))
+    await loadDetails(id, schema, table, catalog);
   if (!current()) return;
-  const tables = useDatabase.getState().tables[tablesKey(id, schema)];
-  kind ??= (tables?.status === "ok" ? tables.value.find((t) => t.name === table)?.kind : undefined) ?? "table";
-  const folder = `${id}/${schema}/${tableFolder(kind)}`;
-  const tableKey = `${folder}/${table}`;
+  kind ??= match?.kind ?? "table";
+  const schemaNode = schemaNodeKey(id, schema, catalog);
+  const folder = `${schemaNode}/${tableFolder(kind)}`;
+  const tableKey = `${folder}/${treeIdentifier(table, catalog)}`;
   selectInTree(
-    [sourceId, ...databaseNode, `${id}/${schema}`, folder, ...(column ? [tableKey, `${tableKey}/columns`] : [])],
-    column ? `${tableKey}/columns/${column}` : tableKey,
+    [sourceId, ...databaseNode, schemaNode, folder, ...(column ? [tableKey, `${tableKey}/columns`] : [])],
+    column ? `${tableKey}/columns/${treeIdentifier(column, catalog)}` : tableKey,
   );
 }
 
@@ -1255,8 +1317,8 @@ function selectInTree(open: string[], key: string) {
 export async function revealOpened(): Promise<void> {
   const input = maybeEditorService()?.activeInput?.();
   if (input?.kind === TABLE_KIND) {
-    const { id, schema, table } = input.data as TableRef;
-    return revealInTree(id, schema, table, undefined);
+    const { id, schema, table, catalog } = input.data as TableRef;
+    return revealInTree(id, schema, table, undefined, undefined, catalog);
   }
   const editor = activeEditor();
   if (editor?.ctx.language !== SQL_LANGUAGE || (input && input.path !== editor.ctx.path)) return;
@@ -1267,24 +1329,31 @@ export async function revealOpened(): Promise<void> {
   const open: string[] = [];
   let key = sourceId;
   let nodeTarget = target;
-  if (listsDatabases(sourceById(sourceId))) {
+  const source = sourceById(sourceId);
+  let catalog: string | undefined;
+  if (listsTreeDatabases(source)) {
     const dbs = s.databases[sourceId];
     const name = database ?? (dbs?.status === "ok" ? dbs.value.current : null);
     if (dbs?.status !== "ok" || !name) return selectInTree(open, key);
     open.push(key);
-    key = databaseKey(sourceId, name);
-    nodeTarget = targetOf(sourceId, name, dbs.value.current);
+    if (duckdbCatalogTree(source)) catalog = name;
+    key = databaseKey(sourceId, name, catalog !== undefined);
+    nodeTarget = catalog === undefined ? targetOf(sourceId, name, dbs.value.current) : sourceId;
   }
   const schema = consoleSchema(editor.ctx.path);
-  const schemas = s.schemas[nodeTarget];
+  const schemas = s.schemas[schemasKey(nodeTarget, catalog)];
   if (schema && schemas?.status === "ok" && schemas.value.includes(schema)) {
     open.push(key);
-    key = `${nodeTarget}/${schema}`;
+    key = schemaNodeKey(nodeTarget, schema, catalog);
   }
   selectInTree(open, key);
 }
 
 const completionLoads = new Map<string, { current: () => boolean; promise: Promise<DbCompletion | null> }>();
+const duckdbCatalogLoads = new Map<
+  string,
+  { names: Promise<DbDatabases>; catalog?: { name: string; schemas: Promise<DbCatalogSchema[]> } }
+>();
 const preparingConsoles = new Map<string, RequestId>();
 interface ConsoleScope {
   id: string;
@@ -1323,6 +1392,51 @@ export function loadCompletion(id: string): Promise<DbCompletion | null> {
   return pending.promise;
 }
 
+/** DuckDB attachments belong to this JDBC session. The catalog name is never a connection target. */
+export async function loadDuckdbCatalog(id: string, wanted?: string): Promise<SqlCatalog | undefined> {
+  const sourceId = splitTarget(id).id;
+  if (!allowsPassiveConsoleMetadata(sourceId)) return undefined;
+  let live = duckdbCatalogLoads.get(sourceId);
+  if (!live) {
+    const names = call(commands.dbDatabases(sourceId)).catch((error) => {
+      if (duckdbCatalogLoads.get(sourceId)?.names === names) duckdbCatalogLoads.delete(sourceId);
+      throw error;
+    });
+    live = { names };
+    duckdbCatalogLoads.set(sourceId, live);
+  }
+  const { names } = await live.names;
+  if (duckdbCatalogLoads.get(sourceId) !== live) return undefined;
+  const eq = nameMatcher("duckdb");
+  const database = wanted === undefined ? undefined : names.find((name) => eq(name, wanted));
+  let schemas: DbCatalogSchema[] = [];
+  if (database !== undefined) {
+    if (live.catalog?.name !== database) {
+      const entry = live;
+      const schemas = call(commands.dbDatabaseCatalog(sourceId, database)).catch((error) => {
+        if (entry.catalog?.schemas === schemas) delete entry.catalog;
+        throw error;
+      });
+      live.catalog = { name: database, schemas };
+    }
+    schemas = await live.catalog.schemas;
+  }
+  if (duckdbCatalogLoads.get(sourceId) !== live) return undefined;
+  return {
+    databases: names,
+    schemas: (name) => (name === database ? schemas.map((schema) => schema.name) : null),
+    tables: (name, schema) =>
+      name === database
+        ? (schemas
+            .find((s) => eq(s.name, schema))
+            ?.tables.map((table) => ({
+              name: table.name,
+              view: table.kind !== "table",
+            })) ?? null)
+        : null,
+  };
+}
+
 useProject.subscribe((state, previous) => {
   if (state.project?.root === previous.project?.root) return;
   sourcesRequest++;
@@ -1330,6 +1444,7 @@ useProject.subscribe((state, previous) => {
   sourceConnectionIntents.clear();
   sourceMutations.clear();
   completionLoads.clear();
+  duckdbCatalogLoads.clear();
   preparingConsoles.clear();
   for (const scope of consoleScopes.values()) scope.retired = true;
   consoleScopes.clear();
@@ -1518,8 +1633,14 @@ function promptOf(id: string): string {
   return useDatabase.getState().completion[id]?.defaultSchema || sourceById(id)?.name || id;
 }
 
-function changesSchema(outcome: DbStatementOutcome): boolean {
-  return !outcome.error && /^\s*(create|drop|alter|rename)\b/i.test(outcome.statement.text);
+function changesSchema(id: string, outcome: DbStatementOutcome): boolean {
+  if (outcome.error) return false;
+  const { text } = outcome.statement;
+  if (sqlDriverOf(sourceById(id)) === "duckdb") {
+    const first = /^\s*([a-z_][\w$]*)/i.exec(text)?.[1]?.toUpperCase() ?? lex(text, "duckdb").tokens[0]?.upper;
+    return /^(ATTACH|DETACH|USE|CREATE|DROP|ALTER|RENAME)$/.test(first ?? "");
+  }
+  return /^\s*(create|drop|alter|rename)\b/i.test(text);
 }
 
 function outcomeUpdates(
@@ -1563,6 +1684,7 @@ async function syncDropped(id: string, path?: string) {
   const current = databaseRequest(id);
   const server = await call(commands.dbConnected()).catch(() => null);
   if (!current() || !server || server.includes(id) || !useDatabase.getState().connected.has(id)) return;
+  duckdbCatalogLoads.delete(id);
   useDatabase.setState((s) => {
     const connected = new Set(s.connected);
     connected.delete(id);
@@ -1793,7 +1915,7 @@ async function run(
   // Consoles publish the same outcome updates alongside their progress and grids.
   if (progress) return outcomes;
   useDatabase.setState((s) => outcomeUpdates(s, id, schema, outcomes, !wasConnected, path));
-  if (outcomes.some(changesSchema)) void refresh(id);
+  if (outcomes.some((outcome) => changesSchema(id, outcome))) void refresh(id);
   return outcomes;
 }
 
@@ -2036,7 +2158,7 @@ export async function executeConsole(
         if (!inline) streamingResultTabs.add(tab.id);
         tabs.push(tab);
       }
-      schemaChanged ||= completed.some(changesSchema);
+      schemaChanged ||= completed.some((outcome) => changesSchema(id, outcome));
       useDatabase.setState((s) => {
         const executions = { ...s.executions, [path]: { ...execution, active } };
         const state = completed.length

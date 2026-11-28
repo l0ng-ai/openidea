@@ -7,9 +7,15 @@
  * take the case of Code Style › SQL › Case; each statement is replaced on its
  * own, so text between statements is left alone.
  */
-import type { DbDriver } from "@/platform/ipc";
 import type { SqlCaseStyle, SqlWordCase } from "@/platform/editorSettings";
-import { CLAUSE_WORDS, isReserved, joinKeywords, predicateKeywords, statementStarters } from "./dialect";
+import {
+  CLAUSE_WORDS,
+  isReserved,
+  joinKeywords,
+  predicateKeywords,
+  statementStarters,
+  type SqlDriver,
+} from "./dialect";
 import { lex, type Token } from "./lexer";
 
 export interface SqlEdit {
@@ -29,7 +35,7 @@ interface Item {
 /** Edits formatting every statement (or those overlapping `range`). */
 export function formatSql(
   text: string,
-  driver: DbDriver,
+  driver: SqlDriver,
   range: { from: number; to: number } | null = null,
   wordCase: SqlCaseStyle = KEEP_CASE,
 ): SqlEdit[] {
@@ -122,10 +128,10 @@ const MORE_KEYWORDS =
   "IF IGNORE INDEX KEY LIMIT MERGE NOTHING NULLS OFFSET OVER PARTITION RECURSIVE RENAME REPLACE RESTRICT " +
   "RETURNING ROLLBACK SCHEMA TEMPORARY TRUNCATE VIEW";
 
-const keywordSets = new Map<DbDriver, Set<string>>();
+const keywordSets = new Map<SqlDriver, Set<string>>();
 
 /** The words Reformat Code treats as keywords for `driver`. */
-function keywordsOf(driver: DbDriver): Set<string> {
+function keywordsOf(driver: SqlDriver): Set<string> {
   let set = keywordSets.get(driver);
   if (!set) {
     const phrases = [...statementStarters(driver), ...joinKeywords(driver), ...predicateKeywords(driver)];
@@ -148,17 +154,19 @@ function applyCase(text: string, wordCase: SqlWordCase): string {
  * the keyword case, any other unquoted name the identifier case — except on ClickHouse, whose names
  * are case-sensitive, and for bind parameters (`:name`, `@name`) and Snowflake paths (`col:Key`).
  */
-function casedWord(it: Item, prev: Item | null, next: Item | undefined, driver: DbDriver, wordCase: SqlCaseStyle) {
+function casedWord(it: Item, prev: Item | null, next: Item | undefined, driver: SqlDriver, wordCase: SqlCaseStyle) {
   if (it.kind !== "word" || (wordCase.keywords === "keep" && wordCase.identifiers === "keep")) return it.text;
   if (isP(prev, ":") || isP(prev, "@") || isP(prev, "$")) return it.text;
   const qualified = isP(prev, ".") || isP(next, ".") || isP(prev, "::");
   const keyword = !qualified && (isReserved(it.text, driver) || keywordsOf(driver).has(it.upper));
   if (keyword) return applyCase(it.text, wordCase.keywords);
   if (!/^[\p{L}_][\p{L}\p{N}_$]*$/u.test(it.text)) return it.text;
-  return driver === "clickhouse" ? it.text : applyCase(it.text, wordCase.identifiers);
+  if (driver === "clickhouse") return it.text;
+  if (driver === "duckdb") return it.text.replace(/[A-Za-z]+/g, (part) => applyCase(part, wordCase.identifiers));
+  return applyCase(it.text, wordCase.identifiers);
 }
 
-function formatStatement(items: Item[], base: string, driver: DbDriver, wordCase: SqlCaseStyle): string {
+function formatStatement(items: Item[], base: string, driver: SqlDriver, wordCase: SqlCaseStyle): string {
   const lines: string[] = [];
   let line = "";
   const newline = (column: number) => {
@@ -170,8 +178,8 @@ function formatStatement(items: Item[], base: string, driver: DbDriver, wordCase
   const frames: Frame[] = [{ kind: "query", indent: 0, clause: "", count: 0, between: false }];
   let prev: Item | null = null;
   let unary = false;
-  // Snowflake's QUALIFY is a clause of its own, like HAVING.
-  const isClause = (word: string) => NEWLINE_CLAUSES.has(word) || (driver === "snowflake" && word === "QUALIFY");
+  const isClause = (word: string) =>
+    NEWLINE_CLAUSES.has(word) || ((driver === "snowflake" || driver === "duckdb") && word === "QUALIFY");
 
   items.forEach((it, i) => {
     const frame = frames.at(-1)!;
@@ -232,7 +240,10 @@ function formatStatement(items: Item[], base: string, driver: DbDriver, wordCase
         line += "(";
         frames.push({ kind: "create", indent: frame.indent + 4, clause: "", count: 0, between: false });
         newline(frame.indent + 4);
-      } else if (next?.kind === "word" && (next.upper === "SELECT" || next.upper === "WITH")) {
+      } else if (
+        next?.kind === "word" &&
+        (next.upper === "SELECT" || next.upper === "WITH" || (driver === "duckdb" && next.upper === "FROM"))
+      ) {
         frames.push({ kind: "query", indent: line.length, clause: "", count: 0, between: false });
       } else {
         frames.push({ kind: "plain", indent: frame.indent, clause: "", count: 0, between: false });
@@ -308,7 +319,7 @@ function isCreateBodyParen(items: Item[], i: number): boolean {
 }
 
 /** `text` with every statement formatted. */
-export function formatted(text: string, driver: DbDriver, wordCase: SqlCaseStyle = KEEP_CASE): string {
+export function formatted(text: string, driver: SqlDriver, wordCase: SqlCaseStyle = KEEP_CASE): string {
   let out = text;
   for (const e of formatSql(text, driver, null, wordCase).reverse())
     out = out.slice(0, e.from) + e.insert + out.slice(e.to);
