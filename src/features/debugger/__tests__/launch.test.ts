@@ -220,6 +220,19 @@ describe("run config → launch config", () => {
     expect(mod.args).toEqual(["-v"]);
     expect(extra(mod)).toMatchObject({ module: "app", python: "python3" });
 
+    // A Celery worker runs as the `celery` module; its pool processes are followed as subprocesses.
+    const celery = launchConfigFor(
+      rc({
+        kind: "celery",
+        command: "python3",
+        args: ["-m", "celery", "-A", "proj", "worker"],
+        debugAdapter: "debugpy",
+      }),
+      "/p",
+    )!;
+    expect(celery.args).toEqual(["-A", "proj", "worker"]);
+    expect(extra(celery)).toMatchObject({ module: "celery", subProcess: true });
+
     const pytest = launchConfigFor(
       rc({ kind: "pytest", command: ".venv/bin/pytest", args: ["-x"], debugAdapter: "debugpy" }),
       "/p",

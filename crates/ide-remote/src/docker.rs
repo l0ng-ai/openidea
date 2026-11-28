@@ -94,7 +94,7 @@ pub fn container_config(config: &RunConfig, run: &ContainerRun) -> IdeResult<Run
     // Variables go by name (`-e NAME`) so their values stay out of the command line
     // echoed in the console; the docker CLI reads them from its own environment.
     let mut env: BTreeMap<String, String> = run.file_env.clone();
-    if matches!(config.kind.as_str(), "python" | "pytest" | "unittest" | "doctest" | "django-test")
+    if matches!(config.kind.as_str(), "python" | "pytest" | "unittest" | "doctest" | "django-test" | "celery")
         && !command.env.contains_key("PYTHONUNBUFFERED")
     {
         env.insert("PYTHONUNBUFFERED".into(), "1".into());

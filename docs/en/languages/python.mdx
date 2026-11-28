@@ -177,6 +177,14 @@ With **Django Template LSP** (`djlsp`, installed from **Settings › Languages &
 
 An HTML file elsewhere with Django tags shows a banner that switches it to Django Template or keeps it as HTML; either choice is the file's **Override File Type**.
 
+### Celery
+
+The **Celery** configuration type (**Run › Edit Configurations…**) runs a worker, `python -m celery -A <app> worker`, with the Celery Beat scheduler when **Run Beat scheduler** is on (`-B`). In **Enqueue task** mode it sends one task to the broker with `celery call`: the task's module and name, its arguments as a JSON list and keyword arguments as a JSON object. **Parameters** go after the command (`--loglevel INFO`, `-P solo`). Both run on the project interpreter and can be debugged; breakpoints in tasks stop in the worker's pool processes when **Attach to subprocess automatically while debugging** is on.
+
+- When **Celery app** is empty, a task is sent with its own module as the app (`-A proj.tasks`). Tasks declared with `@shared_task` in a module that doesn't import the app need **Celery app** set (`proj`).
+- On Windows the default prefork pool doesn't work: add `-P solo` to **Parameters**. Celery also refuses `-B` there, so run Beat as its own process (`celery -A proj beat`) instead of **Run Beat scheduler**.
+- Each pool process the debugger attaches to shows up as its own debug session. With `-P solo` tasks run in the worker process itself, so there is only one.
+
 ## Limitations
 
 - Only one type checker runs at a time. Ruff runs only in projects with a Ruff configuration.

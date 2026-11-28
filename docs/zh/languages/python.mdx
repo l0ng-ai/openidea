@@ -177,6 +177,14 @@ Django 项目（上层目录有 `manage.py`）中 `templates` 目录里的 HTML 
 
 其他位置含有 Django 标签的 HTML 文件会显示一个横幅，可以切换为 Django Template 或保留为 HTML；两种选择都会成为该文件的 **覆盖文件类型**。
 
+### Celery
+
+**Celery** 配置类型（**运行 › 编辑配置…**）用来运行 worker：`python -m celery -A <应用> worker`，勾选 **运行 Beat 调度器** 时同时运行 Celery Beat（`-B`）。切到 **发送任务到队列** 模式时，它用 `celery call` 向 broker 发送一个任务：填写任务所在的模块和任务名，位置参数写成 JSON 列表，关键字参数写成 JSON 对象。**参数** 加在命令末尾（`--loglevel INFO`、`-P solo`）。两种模式都用项目解释器运行，也都可以调试；开启 **调试时自动附加到子进程** 后，任务里的断点会在 worker 的子进程中命中。
+
+- **Celery 应用** 留空时，发送任务会把任务所在的模块当作应用（`-A proj.tasks`）。如果任务用 `@shared_task` 声明，而所在模块没有导入应用，就需要填写 **Celery 应用**（`proj`）。
+- Windows 上默认的 prefork 进程池不能用，请在 **参数** 里加上 `-P solo`。Celery 在 Windows 上也不接受 `-B`，所以不要勾选 **运行 Beat 调度器**，改为单独运行 Beat（`celery -A proj beat`）。
+- 调试器附加到的每个进程池子进程都会显示为一个单独的调试会话。用 `-P solo` 时任务直接在 worker 进程里运行，只有一个会话。
+
 ## 限制
 
 - 同一时间只运行一个类型检查器。Ruff 只在有 Ruff 配置的项目中运行。

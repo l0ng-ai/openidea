@@ -372,6 +372,12 @@ describe("catalogs", () => {
     // Unreal Engine projects: the product name and the .uproject path placeholder.
     "Unreal Engine",
     "…/Game.uproject",
+    // Celery run configuration: the product and its worker, and the module / task placeholders.
+    "Celery",
+    "Worker",
+    "proj",
+    "proj.tasks",
+    "add",
   ]);
   const translated = SUPPORTED_LOCALES.filter((locale) => locale !== "en").sort();
 

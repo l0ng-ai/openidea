@@ -1993,7 +1993,7 @@ pub fn run_target<'a>(config: &RunConfig, settings: &'a Settings) -> Option<&'a 
 }
 
 fn is_python_config(config: &RunConfig, program: &str) -> bool {
-    matches!(config.kind.as_str(), "python" | "pytest" | "unittest" | "doctest" | "django-test")
+    matches!(config.kind.as_str(), "python" | "pytest" | "unittest" | "doctest" | "django-test" | "celery")
         || is_python_command(program)
 }
 
@@ -2107,7 +2107,7 @@ pub fn apply_to_run_configs_in(configs: &mut [RunConfig], root: &Path, fallback:
         resolve_run_command(c, root, s);
         let mut path_dirs: Vec<PathBuf> = Vec::new();
         match c.kind.as_str() {
-            "python" | "pytest" | "unittest" | "doctest" | "django-test" => {
+            "python" | "pytest" | "unittest" | "doctest" | "django-test" | "celery" => {
                 let command = Path::new(&c.command);
                 let own = !c.detected && command.components().count() > 1 && is_python_command(&c.command);
                 let python = if own {
@@ -2125,7 +2125,7 @@ pub fn apply_to_run_configs_in(configs: &mut [RunConfig], root: &Path, fallback:
                     let runner_options = runner
                         && c.args.first().map(String::as_str) == Some("run")
                         && c.args.get(1).is_some_and(|a| a.starts_with('-'));
-                    if matches!(c.kind.as_str(), "python" | "unittest" | "doctest" | "django-test")
+                    if matches!(c.kind.as_str(), "python" | "unittest" | "doctest" | "django-test" | "celery")
                         && !runner_options
                         && (runner || is_python_command(&c.command))
                     {

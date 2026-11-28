@@ -607,7 +607,8 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
               .map((f) => (
                 <Field
                   key={f.key}
-                  label={f.label}
+                  // A checkbox carries its own label; a second one on the left would repeat it.
+                  label={f.control === "checkbox" ? "" : f.label}
                   error={errors[f.key]}
                   hint={f.hint}
                   top={f.control === "textarea" || f.control === "output"}

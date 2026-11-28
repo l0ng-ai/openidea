@@ -56,7 +56,7 @@ export function withTarget(config: RunConfig, target: string): RunConfig {
   return target || workflowSettings().run.defaultTarget ? { ...rest, target } : rest;
 }
 
-const PYTHON_KINDS = new Set(["python", "pytest", "unittest", "doctest", "django-test"]);
+const PYTHON_KINDS = new Set(["python", "pytest", "unittest", "doctest", "django-test", "celery"]);
 
 /**
  * The id of the Docker / Compose run target `config` runs in: its own target, else, for a Python

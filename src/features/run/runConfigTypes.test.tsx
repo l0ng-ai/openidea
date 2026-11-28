@@ -222,6 +222,16 @@ describe("configuration types", () => {
     expect(changed).toHaveBeenCalledWith(expect.objectContaining({ buildPolicy: "rebuild" }));
   });
 
+  it("labels a checkbox field once, on the checkbox", () => {
+    const type = typeFor("celery")!;
+    const config = newConfigOfType(type, []);
+    const changed = vi.fn();
+    render(<ConfigForm config={config} all={[config]} type={type} errors={{}} onChange={changed} modifyRequest={0} />);
+    expect(screen.getAllByText("Run Beat scheduler")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Run Beat scheduler" }));
+    expect(changed).toHaveBeenCalledWith(expect.objectContaining({ args: expect.arrayContaining(["-B"]) }));
+  });
+
   it.each(["spring-boot", "tomcat"])("edits shared update policies in the %s form", async (kind) => {
     const type = typeFor(kind)!;
     const original = newConfigOfType(type, []);
