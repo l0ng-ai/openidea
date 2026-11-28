@@ -162,7 +162,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ${{ runner.temp }}/jbuild-maven-repository
-          key: jbuild-maven-${{ runner.os }}-${{ hashFiles('crates/ide-build/tests/fixtures/jbuild-maven/**/pom.xml') }}
+          key: jbuild-maven-v2-${{ runner.os }}-${{ hashFiles('crates/ide-build/tests/fixtures/jbuild-maven/**/pom.xml') }}
       - name: Prepare Maven artifacts for Java build tests
         id: jbuild-maven
         if: runner.environment == 'github-hosted'
@@ -179,10 +179,13 @@ jobs:
           if [[ "$CACHE_HIT" == true ]]; then
             exit 0
           fi
-          # The IDE also reads the compiler plugin descriptor when it builds the Maven model.
+          # The Java tests read the compiler descriptor and run Maven launch and rebuild.
           for delay in 0 10 30; do
             sleep "$delay"
-            if mvn -B -ntp -U -N -f crates/ide-build/tests/fixtures/jbuild-maven/pom.xml resources:resources compiler:compile; then
+            if mvn -B -ntp -U -N -f crates/ide-build/tests/fixtures/jbuild-maven/pom.xml \
+              clean resources:resources compiler:compile \
+              org.apache.maven.plugins:maven-dependency-plugin:3.8.1:get \
+              -Dartifact=org.slf4j:slf4j-api:1.7.36; then
               echo "prepared=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
