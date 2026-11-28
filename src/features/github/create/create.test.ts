@@ -10,6 +10,7 @@ import {
   defaultBaseBranch,
   defaultDirection,
   generateTitle,
+  headRepositories,
   headRefName,
   headText,
   needsPush,
@@ -48,6 +49,23 @@ const branches = [
 ];
 
 describe("merge direction", () => {
+  it("offers heads only on the base repository's host", () => {
+    const ghe: GHRemote = { owner: "acme", name: "app", host: "ghe.example.com", remote: "origin", url: "" };
+    const gheFork: GHRemote = { owner: "al", name: "app", host: "ghe.example.com", remote: "fork", url: "" };
+    const dotcom: GHRemote = { owner: "acme", name: "app", host: "github.com", remote: "public", url: "" };
+    expect(headRepositories([ghe, dotcom, gheFork], ghe)).toEqual([ghe, gheFork]);
+    // The current branch tracks the github.com remote: the head stays on the Enterprise base.
+    const tracking = [branch("feature", { current: true, upstream: "public/feature" }), remote("public/feature")];
+    const d = defaultDirection({
+      baseRepo: ghe,
+      remotes: [ghe, dotcom, gheFork],
+      branches: tracking,
+      currentBranch: "feature",
+      defaultBranch: "main",
+    });
+    expect(d.headRepo).toBe(ghe);
+  });
+
   it("splits remote branches by the longest remote name", () => {
     expect(splitRemoteBranch("origin/feat/x", ["origin"])).toEqual({ remote: "origin", name: "feat/x" });
     expect(splitRemoteBranch("my/fork/x", ["my", "my/fork"])).toEqual({ remote: "my/fork", name: "x" });
