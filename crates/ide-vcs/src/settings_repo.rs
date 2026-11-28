@@ -2,7 +2,7 @@
 //! written with plumbing commands only, so no working tree or hook of the repository runs.
 //! Only the files Settings Sync owns are read or written; the rest of the tree is kept as is.
 
-use crate::cli::{Output, run, run_cancellable_raw, run_env, run_raw};
+use crate::cli::{Output, run, run_cancellable_raw, run_env, run_raw, run_with_saved_credentials_raw};
 use ide_core::error::ErrorKind;
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use std::collections::BTreeMap;
@@ -24,6 +24,8 @@ const NETWORK_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub struct SettingsRepo {
     dir: PathBuf,
+    /// Whether fetch and push may ask for credentials; otherwise only saved ones are used.
+    prompts: bool,
 }
 
 /// The remote branch settings are read from and pushed to.
@@ -38,8 +40,9 @@ fn text(out: Output) -> String {
     out.stdout_str().trim().to_owned()
 }
 
-/// Runs a network command, stopped after [`NETWORK_TIMEOUT`].
-fn network(dir: &Path, args: &[&str]) -> IdeResult<Output> {
+/// Runs a network command, stopped after [`NETWORK_TIMEOUT`]. Without `prompts` git uses saved
+/// credentials only and fails instead of asking.
+fn network(dir: &Path, args: &[&str], prompts: bool) -> IdeResult<Output> {
     let cancel = CancellationToken::new();
     let (done, wait) = std::sync::mpsc::channel::<()>();
     let timer = std::thread::spawn({
@@ -50,7 +53,11 @@ fn network(dir: &Path, args: &[&str]) -> IdeResult<Output> {
             }
         }
     });
-    let out = run_cancellable_raw(dir, args, &cancel);
+    let out = if prompts {
+        run_cancellable_raw(dir, args, &cancel)
+    } else {
+        run_with_saved_credentials_raw(dir, args, &cancel)
+    };
     drop(done);
     let _ = timer.join();
     if cancel.is_cancelled() {
@@ -61,8 +68,9 @@ fn network(dir: &Path, args: &[&str]) -> IdeResult<Output> {
 
 impl SettingsRepo {
     /// The clone of `url` in `dir`, created on first use and started over for another URL.
-    pub fn open(dir: &Path, url: &str) -> IdeResult<Self> {
-        let repo = Self { dir: dir.to_path_buf() };
+    /// `prompts`: whether fetch and push may ask for credentials.
+    pub fn open(dir: &Path, url: &str, prompts: bool) -> IdeResult<Self> {
+        let repo = Self { dir: dir.to_path_buf(), prompts };
         if dir.join("HEAD").is_file() {
             let current = run_raw(dir, &["config", "--get", "remote.origin.url"], None)?;
             if text(current) == url {
@@ -80,7 +88,7 @@ impl SettingsRepo {
     /// first there is (an empty repository gets `main`).
     pub fn fetch(&self) -> IdeResult<SettingsBranch> {
         let args = ["fetch", "--prune", "--no-tags", "origin", "+refs/heads/*:refs/remotes/origin/*"];
-        let out = network(&self.dir, &args)?;
+        let out = network(&self.dir, &args, self.prompts)?;
         if out.code != Some(0) {
             return Err(crate::cli::failure(&args, &out.stderr, &out.stdout, out.code));
         }
@@ -155,7 +163,7 @@ impl SettingsRepo {
         let identity: Vec<(&str, &OsStr)> = IDENTITY.iter().map(|(k, v)| (*k, OsStr::new(*v))).collect();
         let commit = text(run_env(&self.dir, &args, None, &identity)?);
         let refspec = format!("{commit}:refs/heads/{}", branch.name);
-        let out = network(&self.dir, &["push", "--porcelain", "origin", &refspec])?;
+        let out = network(&self.dir, &["push", "--porcelain", "origin", &refspec], self.prompts)?;
         if out.code != Some(0) {
             let stdout = out.stdout_str();
             if stdout.contains("[rejected]") || stdout.contains("(fetch first)") || stdout.contains("non-fast-forward")
@@ -182,8 +190,8 @@ mod tests {
     fn publishes_reads_back_and_detects_a_moved_branch() {
         let tmp = tempfile::tempdir().unwrap();
         let url = bare(&tmp.path().join("remote.git"));
-        let a = SettingsRepo::open(&tmp.path().join("a"), &url).unwrap();
-        let b = SettingsRepo::open(&tmp.path().join("b"), &url).unwrap();
+        let a = SettingsRepo::open(&tmp.path().join("a"), &url, false).unwrap();
+        let b = SettingsRepo::open(&tmp.path().join("b"), &url, false).unwrap();
 
         let empty = a.fetch().unwrap();
         assert_eq!(empty, SettingsBranch { name: "main".into(), commit: None });
@@ -205,7 +213,7 @@ mod tests {
 
         // Another URL starts the clone over.
         let other = bare(&tmp.path().join("other.git"));
-        let a = SettingsRepo::open(&tmp.path().join("a"), &other).unwrap();
+        let a = SettingsRepo::open(&tmp.path().join("a"), &other, false).unwrap();
         assert_eq!(a.synced(), None);
     }
 
@@ -231,7 +239,7 @@ mod tests {
         run(&work, &["fetch", "-q", &url, "main"], None).unwrap();
         let before = tree("FETCH_HEAD");
 
-        let repo = SettingsRepo::open(&tmp.path().join("clone"), &url).unwrap();
+        let repo = SettingsRepo::open(&tmp.path().join("clone"), &url, false).unwrap();
         let branch = repo.fetch().unwrap();
         let files = BTreeMap::from([("editor.json".to_owned(), "{\"fontSize\": 14}\n".to_owned())]);
         repo.publish(&branch, &files, "Sync settings").unwrap();

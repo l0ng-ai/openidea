@@ -26,13 +26,25 @@ export function syncedStorage(storage: Record<string, string> = exportedStorage(
   return out;
 }
 
-/** Replaces the entries of the categories the sync changed. */
-export function writeSyncedStorage(changed: Partial<Record<string, Record<string, string>>>, storage: Storage) {
+type Entries = Partial<Record<string, Record<string, string>>>;
+
+/**
+ * Replaces the entries of the categories the sync changed, except those changed here since
+ * `sent` was read for the sync: the next sync takes those.
+ */
+export function writeSyncedStorage(changed: Entries, sent: Entries, storage: Storage) {
+  const untouched = (key: string) => storage.getItem(key) === (sent[storageCategory(key)]?.[key] ?? null);
   for (const key of Object.keys(exportedStorage(storage)))
-    if (!key.includes(":") && changed[storageCategory(key)]) storage.removeItem(key);
+    if (
+      !key.includes(":") &&
+      changed[storageCategory(key)] &&
+      !(key in changed[storageCategory(key)]!) &&
+      untouched(key)
+    )
+      storage.removeItem(key);
   for (const entries of Object.values(changed))
     for (const [key, value] of Object.entries(entries ?? {}))
-      if (isExported(key) && !key.includes(":"))
+      if (isExported(key) && !key.includes(":") && untouched(key))
         try {
           storage.setItem(key, value);
         } catch {
@@ -54,6 +66,8 @@ async function chooseMode(): Promise<SettingsSyncMode | null> {
 }
 
 let running = false;
+/** A change came in while a sync ran: sync again after it. */
+let changedWhileRunning = false;
 
 const syncNowAction = () => ({ label: tx("Sync Now"), run: () => void executeAction("file.syncSettings") });
 
@@ -63,7 +77,9 @@ async function syncSettings({ auto }: { auto: boolean }) {
   running = true;
   try {
     let mode: SettingsSyncMode | null = null;
-    let outcome = await call(commands.settingsSyncNow(syncedStorage(), mode));
+    let sent = syncedStorage();
+    // Only Sync Now may ask for credentials; automatic syncs use saved ones.
+    let outcome = await call(commands.settingsSyncNow(sent, mode, !auto));
     if (outcome.result.needsChoice) {
       if (auto) {
         notifications().notify({
@@ -78,12 +94,13 @@ async function syncSettings({ auto }: { auto: boolean }) {
       }
       mode = await chooseMode();
       if (!mode) return;
-      outcome = await call(commands.settingsSyncNow(syncedStorage(), mode));
+      sent = syncedStorage();
+      outcome = await call(commands.settingsSyncNow(sent, mode, true));
     }
     const { result, settings } = outcome;
     if (settings) useProject.setState({ settings });
     const storageChanged = Object.keys(result.storage).length > 0;
-    if (storageChanged) writeSyncedStorage(result.storage, localStorage);
+    if (storageChanged) writeSyncedStorage(result.storage, sent, localStorage);
     if (auto && !settings && !storageChanged && !result.overwritten.length) return;
     const settingsList = result.overwritten.join(", ");
     const notes = [
@@ -108,6 +125,10 @@ async function syncSettings({ auto }: { auto: boolean }) {
     });
   } finally {
     running = false;
+    if (changedWhileRunning) {
+      changedWhileRunning = false;
+      void autoSync(CHANGE_WINDOW, true);
+    }
   }
 }
 
@@ -120,7 +141,9 @@ const CHANGE_DELAY = 30_000;
 
 /** Whether this window runs the automatic sync, claiming it from the other windows if so. */
 export function claimAutoSync(within: number, now = Date.now(), storage: Storage = localStorage): boolean {
-  if (now - Number(storage.getItem(LAST_AUTO_SYNC) ?? 0) < within) return false;
+  const last = Number(storage.getItem(LAST_AUTO_SYNC) ?? 0);
+  // A time ahead of now (the clock went back) has expired too.
+  if (last <= now && now - last < within) return false;
   storage.setItem(LAST_AUTO_SYNC, String(now));
   return true;
 }
@@ -130,24 +153,39 @@ const autoSyncOn = () => {
   return !!sync?.auto && !!sync.repository?.trim();
 };
 
+/**
+ * An automatic sync, unless another window just ran one. After a change (`changedOnly`) it
+ * first asks, without the network, whether anything that syncs changed.
+ */
+async function autoSync(within: number, changedOnly: boolean) {
+  if (!autoSyncOn()) return;
+  if (running) {
+    changedWhileRunning ||= changedOnly;
+    return;
+  }
+  if (changedOnly && !(await call(commands.settingsSyncHasLocalChanges(syncedStorage())).catch(() => true))) return;
+  if (running) {
+    changedWhileRunning ||= changedOnly;
+    return;
+  }
+  if (claimAutoSync(within)) await syncSettings({ auto: true });
+}
+
 /** Syncs on startup and after the settings change, while Sync automatically is on. */
 export function installAutoSync(): () => void {
   if (!isTauri()) return () => {};
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const run = (within: number) => {
-    if (autoSyncOn() && claimAutoSync(within)) void syncSettings({ auto: true });
-  };
   let started = false;
   const startup = () => {
     if (started || !useProject.getState().settings) return;
     started = true;
-    run(STARTUP_WINDOW);
+    void autoSync(STARTUP_WINDOW, false);
   };
   const unsubscribe = useProject.subscribe(startup);
   startup();
   const off = onIdeEvent("settingsChanged", () => {
     clearTimeout(timer);
-    timer = setTimeout(() => run(CHANGE_WINDOW), CHANGE_DELAY);
+    timer = setTimeout(() => void autoSync(CHANGE_WINDOW, true), CHANGE_DELAY);
   });
   return () => {
     unsubscribe();

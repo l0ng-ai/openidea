@@ -35,23 +35,59 @@ pub struct SettingsSyncResult {
     pub storage: BTreeMap<String, BTreeMap<String, String>>,
 }
 
-/// `storage`: the frontend's syncable entries by category (`templates`, `macros`, `ui`).
-/// `mode`: `None` unless the user answered [`SettingsSyncResult::needs_choice`].
-pub fn sync_now(
-    host: &Host,
-    storage: &BTreeMap<String, BTreeMap<String, String>>,
-    mode: Option<SettingsSyncMode>,
-) -> IdeResult<SettingsSyncResult> {
+type Storage = BTreeMap<String, BTreeMap<String, String>>;
+
+/// One sync at a time, whichever window asks: they share the clone and the settings file.
+static RUNNING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The repository of the settings, and the categories that sync.
+fn repository(host: &Host, prompts: bool) -> IdeResult<Option<(SettingsRepo, Vec<&'static str>)>> {
     let config = host.global_settings.effective().settings_sync;
     let url = config.repository.trim();
     if url.is_empty() {
-        return Err(IdeError::invalid("choose a settings repository first"));
+        return Ok(None);
     }
-    // One sync at a time, whichever window asks: they share the clone and the settings file.
-    static RUNNING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let repo = SettingsRepo::open(&host.data_dir.join("settings-sync"), url, prompts)?;
+    Ok(Some((repo, CATEGORIES.into_iter().filter(|c| sync::enabled(&config, c)).collect())))
+}
+
+/// What `category` syncs of this computer's settings `layer` and frontend `storage`.
+fn local_value(category: &str, layer: &Json, storage: &Storage) -> Json {
+    if STORAGE_CATEGORIES.contains(&category) {
+        let entries = storage.get(category).into_iter().flatten();
+        sync::clean(category, &Json::Object(entries.map(|(k, v)| (k.clone(), Json::String(v.clone()))).collect()))
+    } else {
+        sync::clean(category, layer)
+    }
+}
+
+/// Whether this computer's settings differ from what it last synced. Reads only the local
+/// clone, so an automatic sync after a change that does not sync (a project setting) stays off
+/// the network.
+pub fn has_local_changes(host: &Host, storage: &Storage) -> IdeResult<bool> {
     let _running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
-    let repo = SettingsRepo::open(&host.data_dir.join("settings-sync"), url)?;
-    let enabled: Vec<&str> = CATEGORIES.into_iter().filter(|c| sync::enabled(&config, c)).collect();
+    let Some((repo, enabled)) = repository(host, false)? else { return Ok(false) };
+    let Some(synced) = repo.synced() else { return Ok(true) };
+    let names: Vec<String> = enabled.iter().map(|c| sync::file_name(c)).collect();
+    let files = repo.files(&synced, &names)?;
+    let layer = host.global_settings.global_layer()?;
+    let empty = Json::Object(Default::default());
+    Ok(enabled.iter().any(|c| local_value(c, &layer, storage) != sync::from_files(&files, c).unwrap_or(empty.clone())))
+}
+
+/// `storage`: the frontend's syncable entries by category (`templates`, `macros`, `ui`).
+/// `mode`: `None` unless the user answered [`SettingsSyncResult::needs_choice`].
+/// `interactive`: whether git may ask for credentials (Sync Now) or must use saved ones.
+pub fn sync_now(
+    host: &Host,
+    storage: &Storage,
+    mode: Option<SettingsSyncMode>,
+    interactive: bool,
+) -> IdeResult<SettingsSyncResult> {
+    let _running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+    let Some((repo, enabled)) = repository(host, interactive)? else {
+        return Err(IdeError::invalid("choose a settings repository first"));
+    };
     match sync_once(host, &repo, &enabled, storage, mode) {
         // Another machine pushed in between: merge with its settings too.
         Err(e) if e.kind == ErrorKind::OutOfSync => sync_once(host, &repo, &enabled, storage, mode),
@@ -63,7 +99,7 @@ fn sync_once(
     host: &Host,
     repo: &SettingsRepo,
     enabled: &[&str],
-    storage: &BTreeMap<String, BTreeMap<String, String>>,
+    storage: &Storage,
     mode: Option<SettingsSyncMode>,
 ) -> IdeResult<SettingsSyncResult> {
     let names: Vec<String> = CATEGORIES.iter().map(|c| sync::file_name(c)).collect();
@@ -82,12 +118,7 @@ fn sync_once(
     let mut files = remote_files.clone();
     let mut layer_changes = Vec::new();
     for &category in enabled {
-        let local = if STORAGE_CATEGORIES.contains(&category) {
-            let entries = storage.get(category).into_iter().flatten();
-            sync::clean(category, &Json::Object(entries.map(|(k, v)| (k.clone(), Json::String(v.clone()))).collect()))
-        } else {
-            sync::clean(category, &layer)
-        };
+        let local = local_value(category, &layer, storage);
         let remote = sync::from_files(&remote_files, category);
         let merged = match mode {
             Some(SettingsSyncMode::ReplaceLocal) => remote.unwrap_or_else(|| local.clone()),

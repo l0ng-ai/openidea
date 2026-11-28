@@ -326,23 +326,39 @@ pub struct SettingsSyncOutcome {
     pub settings: Option<Settings>,
 }
 
-/// Settings › Settings Sync › Sync Now. `storage`: the frontend's syncable entries by category.
+type SyncStorage = std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>;
+
+/// Settings › Settings Sync › Sync Now, or an automatic sync. `storage`: the frontend's syncable
+/// entries by category. `interactive`: whether git may ask for credentials.
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn settings_sync_now(
     window: Window,
     state: State<'_, AppState>,
-    storage: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    storage: SyncStorage,
     mode: Option<ide_host::ops::settings_sync::SettingsSyncMode>,
+    interactive: bool,
 ) -> IdeResult<SettingsSyncOutcome> {
     let host = state.host.clone();
-    let result =
-        tauri::async_runtime::spawn_blocking(move || ide_host::ops::settings_sync::sync_now(&host, &storage, mode))
-            .await
-            .map_err(|e| IdeError::internal(e.to_string()))??;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        ide_host::ops::settings_sync::sync_now(&host, &storage, mode, interactive)
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))??;
     let settings = result.settings_changed.then(|| global_settings_replaced(&window, &state));
     Ok(SettingsSyncOutcome { result, settings })
+}
+
+/// Whether the settings differ from what this computer last synced (no network).
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub async fn settings_sync_has_local_changes(state: State<'_, AppState>, storage: SyncStorage) -> IdeResult<bool> {
+    let host = state.host.clone();
+    tauri::async_runtime::spawn_blocking(move || ide_host::ops::settings_sync::has_local_changes(&host, &storage))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
 /// Import Settings… with a JetBrains `settings.zip` or an IDE's settings folder: reads it; the
@@ -450,6 +466,7 @@ ide_command::desktop_domain!(
     settings_export,
     settings_import,
     settings_sync_now,
+    settings_sync_has_local_changes,
     settings_list_jetbrains_ides,
     settings_read_jetbrains,
 );
