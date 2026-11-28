@@ -444,6 +444,7 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
         <BranchFilterPopup
           anchor={branchAnchor}
           branches={branches}
+          repos={filters.repositories?.length ? filters.repositories : repositories}
           selected={filters.branches}
           onClose={() => setBranchAnchor(null)}
           onSelect={(branch) => {
