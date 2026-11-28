@@ -44,6 +44,9 @@ async function seedResults(page: Page, edge = false) {
     async ({ edge, edgeTitle, bindings }) => {
       const storePath = "/src/features/database/store.ts";
       const contributionsPath = "/src/workbench/contributions.ts";
+      const projectPath = "/src/platform/project.ts";
+      const { useProject } = await import(projectPath);
+      useProject.setState({ settings: { database: { outputDestination: "services" } } });
       const { useDatabase, RESULTS_VIEW } = await import(storePath);
       const { showServiceView } = await import(contributionsPath);
       useDatabase.setState({

@@ -513,17 +513,20 @@ async function executeRange(view: EditorView, path: string, from: number, to: nu
 
 /** Runs the statement at the caret (or the selected ones) of `view`. */
 export async function executeInView(view: EditorView, path: string) {
+  view.focus();
   const sel = view.state.selection.main;
   await executeRange(view, path, sel.from, sel.to);
 }
 
 /** Runs every statement of `view`, in order (stops at the first that fails). */
 export async function executeScriptInView(view: EditorView, path: string) {
+  view.focus();
   await executeRange(view, path, 0, view.state.doc.length);
 }
 
 /** Explain Plan of the statement at the caret (or the first selected one) of `view`. */
 export async function explainInView(view: EditorView, path: string) {
+  view.focus();
   const sel = view.state.selection.main;
   await explainConsole(path, view.state.doc.toString(), sel.from, sel.to);
 }

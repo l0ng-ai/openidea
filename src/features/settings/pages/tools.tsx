@@ -758,6 +758,28 @@ function ExternalToolsEditor() {
 
 export const TOOLS_PAGES: PageSpec[] = [
   {
+    id: "tools.database",
+    title: "Database",
+    group: TOOLS_GROUP,
+    order: 603,
+    sections: [
+      {
+        title: "Query Output",
+        options: [
+          {
+            kind: "select",
+            key: "database.outputDestination",
+            label: "Show query results in",
+            options: [
+              { value: "databaseOutput", label: "Database Output" },
+              { value: "services", label: "Services" },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+  {
     id: "tools.terminal",
     title: "Terminal",
     group: TOOLS_GROUP,
