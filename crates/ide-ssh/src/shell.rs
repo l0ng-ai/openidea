@@ -89,6 +89,8 @@ pub fn tilde_quote(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use std::process::{Command, Stdio};
 
     #[test]
     fn quotes_only_when_needed() {
@@ -105,12 +107,23 @@ mod tests {
         {
             let command = posix_command(script);
             assert_eq!(posix_script(&command).as_deref(), Some(script), "{command}");
-            // What `sh` passes on to the inner `sh -c` is the script itself.
-            let out = std::process::Command::new("sh")
-                .args(["-c", &format!("printf %s {}", login_shell_quote(script))])
-                .output()
+            // Send the POSIX syntax verbatim through stdin on every platform.
+            let mut sh = Command::new("sh")
+                .arg("-s")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
                 .unwrap();
-            assert_eq!(String::from_utf8_lossy(&out.stdout), script);
+            writeln!(sh.stdin.take().unwrap(), "printf %s {}", login_shell_quote(script)).unwrap();
+            let out = sh.wait_with_output().unwrap();
+            assert!(
+                out.status.success(),
+                "sh failed for {command} with {}\n{}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert_eq!(out.stdout.as_slice(), script.as_bytes(), "{command}");
         }
         assert_eq!(posix_command("it's"), r"sh -c 'it'\''s'");
         assert_eq!(posix_command(r"a\b"), r"sh -c 'a'\\'b'");
