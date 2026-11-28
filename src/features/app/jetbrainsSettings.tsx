@@ -1,12 +1,13 @@
 /**
  * Import Settings… with a JetBrains `settings.zip`: maps the archive's colour
- * schemes, keymaps, fonts, tabs and indents, live templates, and the editor /
+ * schemes, keymaps, fonts, tabs and indents, live templates, inspection profiles, plugins, and the editor /
  * general options OpenIDEA has to settings writes, after a confirmation listing
  * them. Only keys present in the archive are written (JetBrains leaves defaults
  * out). The rest is listed as not imported.
  */
-import { Fragment } from "react";
+import { Fragment, useEffect, useState } from "react";
 import type { CustomKeymap, JetBrainsSettings, LanguageCodeStyle, LanguageInfo } from "@/bindings";
+import { actionToggled, executeAction, getAction } from "@/platform/actions";
 import { customSchemes } from "@/platform/colorScheme";
 import { createFontProbeCanvas, fontsLoaded, monoFontFamily } from "@/platform/fonts";
 import { tx } from "@/platform/i18n";
@@ -20,6 +21,13 @@ import { ask } from "@/workbench/messages";
 import { parseJetBrainsTemplates, type JetBrainsTemplateImport } from "@/features/templates/live/jetbrains";
 import { saveImportedTemplates } from "@/features/templates/live/store";
 import styles from "./app.module.css";
+import { parseJetBrainsInspections } from "./jetbrainsInspections";
+import {
+  planJetBrainsPlugins,
+  suggestPlugins,
+  type JetBrainsPluginsImport,
+  type PluginSuggestions,
+} from "./jetbrainsPlugins";
 import {
   CODE_INSIGHT_FLAGS,
   CODE_INSIGHT_NUMBERS,
@@ -41,6 +49,12 @@ export interface JetBrainsImportPlan {
   invalid: string[];
   /** IDEA action ids the imported keymaps bind that have no counterpart here. */
   unknownActions: string[];
+  /** Inspections of the imported profiles that have no counterpart here. */
+  unmappedInspections: string[];
+  /** Imported named inspection profiles, offered for the open project after the import. */
+  inspectionProfiles?: { id: string; name: string }[];
+  /** Installed plugins: offered for install after the import, or turned into settings. */
+  plugins?: JetBrainsPluginsImport;
   /** Custom live templates are committed once after confirmation, not through settings writes. */
   liveTemplates?: JetBrainsTemplateImport;
 }
@@ -55,6 +69,7 @@ interface CurrentSettings {
     codeStyle?: { languages?: Record<string, LanguageCodeStyle> };
   };
   customKeymaps?: Record<string, CustomKeymap>;
+  inspections?: unknown;
 }
 
 const USER_PREFIX = "_@user_";
@@ -148,7 +163,14 @@ export async function planJetBrainsImport(
   languages?: readonly LanguageInfo[],
 ): Promise<JetBrainsImportPlan> {
   const { editor } = current;
-  const plan: JetBrainsImportPlan = { writes: [], rows: [], skipped: [], invalid: [], unknownActions: [] };
+  const plan: JetBrainsImportPlan = {
+    writes: [],
+    rows: [],
+    skipped: [],
+    invalid: [],
+    unknownActions: [],
+    unmappedInspections: [],
+  };
   const add = (key: string, value: string | number | boolean | undefined, label: string, shown?: string) => {
     if (value === undefined) return;
     plan.writes.push([key, value]);
@@ -369,17 +391,56 @@ export async function planJetBrainsImport(
     }
   }
 
+  const inspectionFiles = Object.fromEntries(
+    Object.entries(bundle.files).filter(([file]) => /^inspection\/[^/]+\.xml$/.test(file)),
+  );
+  if (Object.keys(inspectionFiles).length) {
+    const parsed = parseJetBrainsInspections(inspectionFiles, current.inspections);
+    plan.writes.push(...parsed.writes);
+    for (const p of parsed.profiles)
+      plan.rows.push({
+        label: tx("Inspection profile"),
+        value: p.replaces
+          ? tx`${p.name} (inspections: ${p.count}, replaces the existing profile)`
+          : tx`${p.name} (inspections: ${p.count})`,
+      });
+    plan.inspectionProfiles = parsed.profiles.flatMap((p) => (p.id ? [{ id: p.id, name: p.name }] : []));
+    plan.unmappedInspections = parsed.unmapped;
+    plan.invalid.push(...parsed.invalid);
+  }
+
   const has = (prefix: string) => bundle.entries.some((e) => e.startsWith(prefix));
   if (has("codestyles/")) plan.skipped.push(tx("Code Style options other than Tabs and Indents"));
-  if (has("inspection/")) plan.skipped.push(tx("Inspections"));
-  if (has("installed.txt")) plan.skipped.push(tx("Plugins"));
+  if (bundle.files["installed.txt"]) {
+    const plugins = planJetBrainsPlugins(bundle.files["installed.txt"], bundle.files["disabled_plugins.txt"]);
+    plan.plugins = plugins;
+    if (plugins.vim) plan.rows.push({ label: tx("Enable Vim emulation"), value: onOff(true) });
+    if (plugins.builtIn.length) plan.rows.push({ label: tx("Built into OpenIDEA"), value: plugins.builtIn.join(", ") });
+    for (const name of plugins.disabled) plan.skipped.push(tx`${name} (disabled)`);
+  }
   return plan;
 }
 
-function Summary({ plan }: { plan: JetBrainsImportPlan }) {
+/** The marketplace's answer for the plugin candidates: undefined while it loads, null when unreachable. */
+function useSuggestions(pending: Promise<PluginSuggestions | null> | undefined) {
+  const [suggestions, setSuggestions] = useState<PluginSuggestions | null | undefined>(undefined);
+  useEffect(() => {
+    let live = true;
+    void pending?.then((s) => live && setSuggestions(s));
+    return () => {
+      live = false;
+    };
+  }, [pending]);
+  return suggestions;
+}
+
+function Summary({ plan, pending }: { plan: JetBrainsImportPlan; pending?: Promise<PluginSuggestions | null> }) {
   const left = [...plan.skipped, ...(plan.liveTemplates?.skipped ?? []), ...plan.invalid];
   const unknown = plan.unknownActions;
   const unsupported = plan.liveTemplates?.unsupported.join(", ") ?? "";
+  const unmapped = plan.unmappedInspections;
+  const suggestions = useSuggestions(pending);
+  const plugins = [...(plan.plugins?.unmapped ?? []), ...(suggestions?.unavailable ?? [])];
   return (
     <div className={styles.importSummary}>
       <div>{tx("These settings will be imported:")}</div>
@@ -397,7 +458,24 @@ function Summary({ plan }: { plan: JetBrainsImportPlan }) {
         </div>
       )}
       {unknown.length > 0 && <div>{tx`Not available in OpenIDEA (${unknown.length}): ${unknown.join(", ")}.`}</div>}
+      {unmapped.length > 0 && (
+        <div>{tx`Inspections without an equivalent in OpenIDEA (${unmapped.length}): ${unmapped.join(", ")}.`}</div>
+      )}
+      {plugins.length > 0 && (
+        <div>{tx`Plugins without a counterpart in OpenIDEA (${plugins.length}): ${plugins.join(", ")}.`}</div>
+      )}
       {unsupported && <div>{tx`Unsupported template expressions (kept as text, not evaluated): ${unsupported}.`}</div>}
+      {pending && (
+        <div>
+          {suggestions === undefined
+            ? tx("Checking the plugin marketplace for counterparts of your JetBrains plugins…")
+            : suggestions === null
+              ? tx("Could not reach the plugin marketplace, so no plugins are suggested.")
+              : suggestions.install.length > 0
+                ? tx`Suggested plugins, offered for install after the import: ${suggestions.install.map((p) => p.name).join(", ")}.`
+                : tx("The marketplace counterparts of your JetBrains plugins are installed already.")}
+        </div>
+      )}
     </div>
   );
 }
@@ -406,7 +484,14 @@ function Summary({ plan }: { plan: JetBrainsImportPlan }) {
 export async function importJetBrainsSettings(path: string) {
   const bundle = await call(commands.settingsReadJetbrains(path));
   const plan = await planJetBrainsImport(bundle, await commands.settingsGetGlobal());
-  if (!plan.writes.length && !plan.liveTemplates?.templates.length) {
+  const plugins = plan.plugins;
+  // Looked up while the confirmation is open; it shows the answer when it comes.
+  const pending = plugins?.candidates.length
+    ? call(commands.pluginMarket(false))
+        .then((market) => suggestPlugins(plugins.candidates, market))
+        .catch(() => null)
+    : undefined;
+  if (!plan.writes.length && !plan.liveTemplates?.templates.length && !pending && !plugins?.vim) {
     const details = [...plan.invalid, ...(plan.liveTemplates?.skipped ?? [])].join(", ");
     notifications().notify({
       level: "warning",
@@ -418,7 +503,7 @@ export async function importJetBrainsSettings(path: string) {
   }
   const { button } = await ask({
     title: tx("Import JetBrains Settings"),
-    body: <Summary plan={plan} />,
+    body: <Summary plan={plan} pending={pending} />,
     buttons: [{ id: "import", label: tx("Import"), primary: true }],
     width: 520,
   });
@@ -429,5 +514,46 @@ export async function importJetBrainsSettings(path: string) {
     settings = await call(commands.settingsSet("global", key, JSON.stringify(value)));
   if (plan.liveTemplates?.templates.length) saveImportedTemplates(plan.liveTemplates.templates);
   useProject.setState({ settings });
+  if (plugins?.vim && !actionToggled(getAction("vim.toggle"))) void executeAction("vim.toggle");
   notifications().notify({ level: "info", title: "Settings imported", body: path, key: "app.settingsImport" });
+  if (useProject.getState().project && plan.inspectionProfiles?.length)
+    offerInspectionProfiles(plan.inspectionProfiles);
+  void pending?.then((s) => s?.install.length && offerPlugins(s.install));
+}
+
+/** JetBrains keeps the profile in use per project, so the import only offers it for the open one. */
+function offerInspectionProfiles(profiles: { id: string; name: string }[]) {
+  notifications().notify({
+    level: "info",
+    sticky: true,
+    key: "app.settingsImport.inspections",
+    title: tx("Use an imported inspection profile in this project?"),
+    actions: profiles.slice(0, 3).map(({ id, name: displayName }) => ({
+      label: tx`Use ${displayName}`,
+      run: async () => {
+        const settings = await call(commands.settingsSet("project", "inspections.profile", JSON.stringify(id)));
+        useProject.setState({ settings });
+      },
+    })),
+  });
+}
+
+/** Each plugin shows its own install page (permissions) in turn. */
+function offerPlugins(install: PluginSuggestions["install"]) {
+  notifications().notify({
+    level: "info",
+    sticky: true,
+    key: "app.settingsImport.plugins",
+    title: tx("Install the plugins that replace your JetBrains plugins?"),
+    body: install.map((p) => p.name).join(", "),
+    actions: [
+      {
+        label: tx("Install"),
+        run: async () => {
+          // oxlint-disable-next-line no-await-in-loop -- one install page at a time
+          for (const { id } of install) await executeAction("plugins.installFromMarket", id);
+        },
+      },
+    ],
+  });
 }

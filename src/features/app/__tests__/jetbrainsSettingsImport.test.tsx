@@ -4,6 +4,12 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 const read = vi.fn();
 const set = vi.fn();
 const notify = vi.fn();
+const execute = vi.fn();
+const marketCall = vi.fn();
+const market = [
+  { id: "ruyimg.codeglance-pro", name: "CodeGlance Pro", installed: null, compatible: true },
+  { id: "solhovoy.grep-console", name: "Grep Console", installed: null, compatible: true },
+];
 const editor = { fontFamily: "JetBrains Mono", fontSize: 13, customSchemes: {}, colorOverrides: {} };
 
 vi.mock("@/platform/ipc", async (original) => {
@@ -15,9 +21,14 @@ vi.mock("@/platform/ipc", async (original) => {
       settingsReadJetbrains: (path: string) => read(path),
       settingsGetGlobal: async () => ({ editor }),
       settingsSet: (scope: string, key: string, value: string) => set(scope, key, value),
+      pluginMarket: () => marketCall(),
     },
   };
 });
+vi.mock("@/platform/actions", async (original) => ({
+  ...(await original<typeof import("@/platform/actions")>()),
+  executeAction: (id: string, arg?: unknown) => execute(id, arg),
+}));
 vi.mock("@/workbench/contributions", async (original) => ({
   ...(await original<typeof import("@/workbench/contributions")>()),
   notifications: () => ({ notify }),
@@ -37,6 +48,8 @@ beforeEach(() => {
           '<application><component name="DefaultFont"><option name="FONT_FAMILY" value="Monaco" />' +
           '<option name="FONT_SIZE" value="17" /></component></application>',
         "colors/custom.icls": '<scheme name="Custom" version="142" parent_scheme="Darcula"><attributes /></scheme>',
+        "installed.txt": "IdeaVIM\ncom.nasller.CodeGlancePro\nGrepConsole\nsome.unknown.plugin\n",
+        "disabled_plugins.txt": "GrepConsole\n",
         "options/colors.scheme.xml":
           '<application><component name="EditorColorsManagerImpl"><global_color_scheme name="Custom" />' +
           "</component></application>",
@@ -44,6 +57,7 @@ beforeEach(() => {
     },
   });
   set.mockResolvedValue({ status: "ok", data: { editor } });
+  marketCall.mockResolvedValue({ status: "ok", data: market });
   // jsdom has no canvas: the import falls back to the font size for the line height.
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
 });
@@ -58,7 +72,10 @@ it.each(["Cancel", "Import"])("confirms folder settings before applying them: %s
   expect(screen.getByText("Monaco")).toBeInTheDocument();
   expect(screen.getByText("17")).toBeInTheDocument();
   expect(screen.getAllByText("Custom")).toHaveLength(2);
-  expect(screen.getByText(/Not imported:/)).toHaveTextContent("Plugins");
+  expect(await screen.findByText(/Suggested plugins/)).toHaveTextContent("CodeGlance Pro");
+  expect(screen.getByText("Enable Vim emulation")).toBeInTheDocument();
+  expect(screen.getByText(/Not imported:/)).toHaveTextContent("GrepConsole (disabled)");
+  expect(screen.getByText(/Plugins without a counterpart/)).toHaveTextContent("some.unknown.plugin");
   expect(set).not.toHaveBeenCalled();
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: button }));
@@ -67,6 +84,7 @@ it.each(["Cancel", "Import"])("confirms folder settings before applying them: %s
   if (button === "Cancel") {
     expect(set).not.toHaveBeenCalled();
     expect(notify).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
   } else {
     const writes = Object.fromEntries(
       set.mock.calls.map(([scope, key, value]) => {
@@ -83,5 +101,52 @@ it.each(["Cancel", "Import"])("confirms folder settings before applying them: %s
       "editor.lineHeight": 25,
     });
     expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: "Settings imported" }));
+    expect(execute).toHaveBeenCalledExactlyOnceWith("vim.toggle", undefined);
+    const offer = notify.mock.calls.map(([n]) => n).find((n) => n.key === "app.settingsImport.plugins");
+    expect(offer.body).toBe("CodeGlance Pro");
+    await act(async () => offer.actions[0].run());
+    expect(execute).toHaveBeenLastCalledWith("plugins.installFromMarket", "ruyimg.codeglance-pro");
   }
+});
+
+it("offers an imported inspection profile for the open project", async () => {
+  const { useProject } = await import("@/platform/project");
+  useProject.setState({ project: { root: "/p", name: "p" } as never });
+  read.mockResolvedValue({
+    status: "ok",
+    data: {
+      entries: ["inspection/Strict.xml"],
+      files: {
+        "inspection/Strict.xml":
+          '<profile version="1.0"><option name="myName" value="Strict" />' +
+          '<inspection_tool class="SpellCheckingInspection" enabled="false" level="TYPO" enabled_by_default="false" />' +
+          "</profile>",
+      },
+    },
+  });
+  render(<MessagesHost />);
+  let done!: Promise<void>;
+  await act(async () => {
+    done = importJetBrainsSettings("/settings.zip");
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Import" }));
+    await done;
+  });
+  const offer = notify.mock.calls.map(([n]) => n).find((n) => n.key === "app.settingsImport.inspections");
+  expect(offer.actions.map((a: { label: string }) => a.label)).toEqual(["Use Strict"]);
+  await act(async () => offer.actions[0].run());
+  expect(set).toHaveBeenLastCalledWith("project", "inspections.profile", '"ide:strict"');
+  useProject.setState({ project: null });
+});
+
+it("says so when the plugin marketplace cannot be reached, without blaming the plugins", async () => {
+  marketCall.mockRejectedValue(new Error("offline"));
+  render(<MessagesHost />);
+  await act(async () => {
+    void importJetBrainsSettings("/settings/PyCharm2026.1");
+  });
+  expect(await screen.findByText(/Could not reach the plugin marketplace/)).toBeInTheDocument();
+  expect(screen.getByText(/Plugins without a counterpart/)).not.toHaveTextContent("CodeGlancePro");
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Cancel" })));
 });

@@ -32,7 +32,15 @@ import { startOneDarkNotice } from "./oneDarkNotice";
 import { startIndexedMarkers } from "./indexedMarkers";
 import { startPluginNavigation } from "./navigation";
 import { IntellijThemesDialogHost, registerPluginsPage } from "./settingsPages";
-import { installFromDisk, refreshPlugins, reloadPlugin, SETTINGS_PAGE_ID, updateAllPlugins, usePlugins } from "./store";
+import {
+  installFromDisk,
+  installFromMarket,
+  refreshPlugins,
+  reloadPlugin,
+  SETTINGS_PAGE_ID,
+  updateAllPlugins,
+  usePlugins,
+} from "./store";
 
 export function activate(): () => void {
   const disposers = [
@@ -58,6 +66,16 @@ export function activate(): () => void {
         keywords: ["extension", "wasm", "plugin.toml"],
         run: async ({ arg }) => {
           await installFromDisk(typeof arg === "string" ? arg : undefined);
+        },
+      },
+      {
+        // Arg: a marketplace plugin id. Used by Import Settings for the plugins it maps.
+        id: "plugins.installFromMarket",
+        title: "Install Plugin from Marketplace",
+        category: "Plugins",
+        hidden: true,
+        run: async ({ arg }) => {
+          if (typeof arg === "string") await installFromMarket(arg);
         },
       },
       {

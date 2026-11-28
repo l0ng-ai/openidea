@@ -522,7 +522,8 @@ impl SettingsStore {
 pub struct JetBrainsSettings {
     pub entries: Vec<String>,
     /// Entry name → text, for the files OpenIDEA reads: `colors/*.icls`, `keymaps/*.xml`,
-    /// `codestyles/*.xml`, `templates/*.xml` and some of `options/`.
+    /// `codestyles/*.xml`, `templates/*.xml`, `inspection/*.xml`, some of `options/`, and the plugin lists
+    /// `installed.txt` and `disabled_plugins.txt` (plugin ids, one per line).
     pub files: BTreeMap<String, String>,
 }
 
@@ -540,8 +541,13 @@ const JETBRAINS_OPTIONS: [&str; 9] = [
     "options/linux/keymap.xml",
 ];
 /// Folders whose files are all read: (folder, extension).
-const JETBRAINS_READ_DIRS: [(&str, &str); 4] =
-    [("colors/", ".icls"), ("keymaps/", ".xml"), ("codestyles/", ".xml"), ("templates/", ".xml")];
+const JETBRAINS_READ_DIRS: [(&str, &str); 5] = [
+    ("colors/", ".icls"),
+    ("keymaps/", ".xml"),
+    ("codestyles/", ".xml"),
+    ("templates/", ".xml"),
+    ("inspection/", ".xml"),
+];
 const JETBRAINS_MAX_TEXT: u64 = 4 << 20;
 
 /// The settings of a JetBrains IDE: an exported `settings.zip`, or the IDE's own settings folder
@@ -550,8 +556,14 @@ pub fn read_jetbrains_settings(path: &Path) -> IdeResult<JetBrainsSettings> {
     if path.is_dir() { read_jetbrains_folder(path) } else { read_jetbrains_archive(path) }
 }
 
+/// Plugin ids, one per line: installed from the marketplace (an export writes it), and disabled.
+const JETBRAINS_PLUGIN_LISTS: [&str; 2] = ["installed.txt", "disabled_plugins.txt"];
+/// Plugin folders scanned for ids in a settings folder.
+const JETBRAINS_MAX_PLUGINS: usize = 500;
+
 fn is_mapped_jetbrains_file(name: &str) -> bool {
     JETBRAINS_OPTIONS.contains(&name)
+        || JETBRAINS_PLUGIN_LISTS.contains(&name)
         || JETBRAINS_READ_DIRS
             .iter()
             .any(|(dir, ext)| name.strip_prefix(dir).is_some_and(|n| !n.contains('/') && n.ends_with(ext)))
@@ -603,11 +615,101 @@ fn read_jetbrains_folder(dir: &Path) -> IdeResult<JetBrainsSettings> {
             entries.push(name);
         }
     }
-    // An exported archive lists `installed.txt` when plugins came along; here they sit in `plugins/`.
-    if real_dir(&dir.join("plugins")) && std::fs::read_dir(dir.join("plugins")).is_ok_and(|mut d| d.next().is_some()) {
-        entries.push("installed.txt".into());
+    let disabled = dir.join("disabled_plugins.txt");
+    if disabled.symlink_metadata().is_ok_and(|m| m.is_file()) {
+        let mut text = String::new();
+        std::fs::File::open(&disabled)?.take(JETBRAINS_MAX_TEXT).read_to_string(&mut text).ok();
+        files.insert("disabled_plugins.txt".into(), text);
+        entries.push("disabled_plugins.txt".into());
+    }
+    // An exported archive lists the plugins in `installed.txt`; here they sit in a folder.
+    let plugins = jetbrains_plugins_dir(dir, cfg!(not(any(target_os = "macos", windows))), |key| std::env::var_os(key));
+    if real_dir(&plugins) {
+        let ids = installed_plugin_ids(&plugins);
+        if !ids.is_empty() {
+            files.insert("installed.txt".into(), ids.join("\n"));
+            entries.push("installed.txt".into());
+        }
     }
     Ok(JetBrainsSettings { entries, files })
+}
+
+/// Where the IDE of settings folder `config` keeps its plugins: its `plugins/`, except under the XDG
+/// layout (Linux), where `$XDG_CONFIG_HOME/<vendor>/<IDE>` keeps them in `$XDG_DATA_HOME/<vendor>/<IDE>`.
+fn jetbrains_plugins_dir(config: &Path, xdg: bool, env: impl Fn(&str) -> Option<std::ffi::OsString>) -> PathBuf {
+    let own = config.join("plugins");
+    if !xdg || own.is_dir() {
+        return own;
+    }
+    let var = |key: &str| env(key).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let home = var("HOME");
+    let config_root = var("XDG_CONFIG_HOME").or_else(|| home.as_ref().map(|h| h.join(".config")));
+    let data_root = var("XDG_DATA_HOME").or_else(|| home.as_ref().map(|h| h.join(".local").join("share")));
+    let (Some(vendor), Some(name), Some(config_root), Some(data_root)) =
+        (config.parent(), config.file_name(), config_root, data_root)
+    else {
+        return own;
+    };
+    match vendor.file_name() {
+        Some(vendor_name) if vendor.parent() == Some(config_root.as_path()) => data_root.join(vendor_name).join(name),
+        _ => own,
+    }
+}
+
+/// Ids of the plugins in a plugins folder: each is a jar there, or a folder whose `lib/*.jar`
+/// holds `META-INF/plugin.xml`. Links are not followed.
+fn installed_plugin_ids(plugins: &Path) -> Vec<String> {
+    let files = |dir: &Path| -> Vec<std::path::PathBuf> {
+        let mut jars: Vec<_> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "jar"))
+            .collect();
+        jars.sort();
+        jars
+    };
+    let mut ids: Vec<String> = std::fs::read_dir(plugins)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .take(JETBRAINS_MAX_PLUGINS)
+        .filter_map(|entry| {
+            let kind = entry.file_type().ok()?;
+            let lib = entry.path().join("lib");
+            let jars = if kind.is_dir() && lib.symlink_metadata().is_ok_and(|m| m.is_dir()) {
+                files(&lib)
+            } else if kind.is_file() && entry.path().extension().is_some_and(|x| x == "jar") {
+                vec![entry.path()]
+            } else {
+                return None;
+            };
+            jars.iter().find_map(|jar| plugin_id(jar))
+        })
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+/// `<id>` of the jar's `META-INF/plugin.xml` (`<name>` when it has none, as IDEA does).
+fn plugin_id(jar: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(jar).ok()?).ok()?;
+    let mut text = String::new();
+    archive.by_name("META-INF/plugin.xml").ok()?.take(JETBRAINS_MAX_TEXT).read_to_string(&mut text).ok()?;
+    while let Some(start) = text.find("<!--") {
+        let end = text[start..].find("-->").map_or(text.len(), |e| start + e + 3);
+        text.replace_range(start..end, "");
+    }
+    let tag = |name: &str| {
+        let start = text.find(&format!("<{name}>"))? + name.len() + 2;
+        let end = text[start..].find(&format!("</{name}>"))? + start;
+        Some(text[start..end].trim().to_owned()).filter(|s| !s.is_empty() && !s.contains('\n'))
+    };
+    tag("id").or_else(|| tag("name"))
 }
 
 fn read_jetbrains_archive(path: &Path) -> IdeResult<JetBrainsSettings> {
@@ -1151,17 +1253,23 @@ mod tests {
                 ("templates/Python.xml", "<templateSet name=\"Python\"/>"),
                 ("templates/nested/ignored.xml", "<templateSet/>"),
                 ("templates/ignored.txt", "not XML"),
+                ("inspection/Strict.xml", "<profile/>"),
+                ("installed.txt", "IdeaVIM\n"),
+                ("disabled_plugins.txt", ""),
                 ("options/mac/keymap.xml", "<application/>"),
                 ("options/terminal-font.xml", "<application/>"),
             ],
         );
         let read = read_jetbrains_settings(&ok).unwrap();
-        assert_eq!(read.entries.len(), 12);
+        assert_eq!(read.entries.len(), 15);
         assert_eq!(
             read.files.keys().collect::<Vec<_>>(),
             [
                 "codestyles/Default.xml",
                 "colors/_@user_Darcula.icls",
+                "disabled_plugins.txt",
+                "inspection/Strict.xml",
+                "installed.txt",
                 "keymaps/macOS.xml",
                 "options/editor-font.xml",
                 "options/mac/keymap.xml",
@@ -1192,7 +1300,26 @@ mod tests {
         put("codestyles/Default.xml", "<code_scheme/>");
         put("templates/Python.xml", "<templateSet name=\"Python\"/>");
         put("templates/nested/ignored.xml", "<templateSet/>");
-        put("plugins/Tools/lib/tools.jar", "jar");
+        put("inspection/Strict.xml", "<profile/>");
+        put("disabled_plugins.txt", "Docker\n");
+        let jar = |name: &str, entries: &[(&str, &str)]| {
+            use std::io::Write;
+            let path = config.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+            for (entry, text) in entries {
+                zip.start_file(*entry, zip::write::SimpleFileOptions::default()).unwrap();
+                zip.write_all(text.as_bytes()).unwrap();
+            }
+            zip.finish().unwrap();
+        };
+        put("plugins/Tools/lib/tools.jar", "not a jar");
+        jar("plugins/IdeaVim/lib/a-deps.jar", &[("a.class", "")]);
+        jar(
+            "plugins/IdeaVim/lib/vim.jar",
+            &[("META-INF/plugin.xml", "<idea-plugin>\n<!-- <id>old</id> --><id> IdeaVIM </id><name>IdeaVim</name>")],
+        );
+        jar("plugins/grep.jar", &[("META-INF/plugin.xml", "<idea-plugin><name>GrepConsole</name></idea-plugin>")]);
 
         let read = read_jetbrains_settings(&config).unwrap();
         assert_eq!(
@@ -1200,12 +1327,17 @@ mod tests {
             [
                 "codestyles/Default.xml",
                 "colors/_@user_Darcula.icls",
+                "disabled_plugins.txt",
+                "inspection/Strict.xml",
+                "installed.txt",
                 "keymaps/macOS.xml",
                 "options/editor-font.xml",
                 "options/mac/keymap.xml",
                 "templates/Python.xml"
             ]
         );
+        assert_eq!(read.files["installed.txt"], "GrepConsole\nIdeaVIM");
+        assert_eq!(read.files["disabled_plugins.txt"], "Docker\n");
         assert_eq!(
             read.entries,
             [
@@ -1216,6 +1348,8 @@ mod tests {
                 "keymaps/macOS.xml",
                 "codestyles/Default.xml",
                 "templates/Python.xml",
+                "inspection/Strict.xml",
+                "disabled_plugins.txt",
                 "installed.txt"
             ]
         );
@@ -1250,6 +1384,41 @@ mod tests {
         let read = read_jetbrains_settings(&config).unwrap();
         assert!(read.entries.is_empty());
         assert!(read.files.is_empty());
+
+        // A plugin folder whose lib/ is a link.
+        std::fs::remove_file(config.join("plugins")).unwrap();
+        std::fs::create_dir_all(config.join("plugins/Linked")).unwrap();
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(outside.join("p.jar")).unwrap());
+        zip.start_file("META-INF/plugin.xml", zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut zip, b"<id>linked</id>").unwrap();
+        zip.finish().unwrap();
+        symlink(&outside, config.join("plugins/Linked/lib")).unwrap();
+        assert!(read_jetbrains_settings(&config).unwrap().files.is_empty());
+    }
+
+    #[test]
+    fn finds_the_plugins_of_a_jetbrains_settings_folder() {
+        let home = Path::new("/home/u");
+        let env = |vars: &'static [(&'static str, &'static str)]| {
+            move |key: &str| vars.iter().find(|(k, _)| *k == key).map(|(_, v)| std::ffi::OsString::from(v))
+        };
+        let config = home.join(".config/JetBrains/IdeaIC2024.1");
+        assert_eq!(
+            jetbrains_plugins_dir(&config, true, env(&[("HOME", "/home/u")])),
+            home.join(".local/share/JetBrains/IdeaIC2024.1")
+        );
+        assert_eq!(
+            jetbrains_plugins_dir(
+                Path::new("/c/Google/AndroidStudio2025.1"),
+                true,
+                env(&[("HOME", "/home/u"), ("XDG_CONFIG_HOME", "/c"), ("XDG_DATA_HOME", "/d")])
+            ),
+            Path::new("/d/Google/AndroidStudio2025.1")
+        );
+        // Elsewhere (an unpacked export, macOS, Windows) the plugins sit in the folder.
+        let other = Path::new("/tmp/PyCharm2025.2");
+        assert_eq!(jetbrains_plugins_dir(other, true, env(&[("HOME", "/home/u")])), other.join("plugins"));
+        assert_eq!(jetbrains_plugins_dir(&config, false, env(&[("HOME", "/home/u")])), config.join("plugins"));
     }
 
     #[test]
