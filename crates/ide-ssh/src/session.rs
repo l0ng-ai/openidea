@@ -235,16 +235,17 @@ impl Session {
     }
 
     /// Starts `command` and returns its stdin / stdout as one byte stream (stderr is dropped).
+    /// Commands are POSIX shell, run by `sh` whatever the login shell ([`crate::shell::posix_command`]).
     pub async fn exec_stream(&self, command: &str) -> Result<ChannelStream<Msg>, russh::Error> {
         let channel = self.handle.channel_open_session().await?;
-        channel.exec(true, command).await?;
+        channel.exec(true, crate::shell::posix_command(command)).await?;
         Ok(channel.into_stream())
     }
 
-    /// Runs `command` through the remote shell and collects its output.
+    /// Runs `command` (POSIX shell, run by `sh` whatever the login shell) and collects its output.
     pub async fn exec(&self, command: &str, stdin: Option<&[u8]>) -> IdeResult<ExecOutput> {
         let mut channel = self.handle.channel_open_session().await.map_err(|e| self.failed(e))?;
-        channel.exec(true, command).await.map_err(|e| self.failed(e))?;
+        channel.exec(true, crate::shell::posix_command(command)).await.map_err(|e| self.failed(e))?;
         if let Some(input) = stdin {
             channel.data(input).await.map_err(|e| self.failed(e))?;
         }
@@ -270,7 +271,8 @@ impl Session {
         Ok(out)
     }
 
-    /// Starts `command` (through the remote shell), streaming its output.
+    /// Starts `command` (POSIX shell, run by `sh` whatever the login shell), streaming its output;
+    /// an empty `command` starts the login shell itself.
     /// With `pty` (columns, rows) stdout and stderr arrive merged, as in a terminal.
     pub async fn spawn(
         &self,
@@ -288,7 +290,7 @@ impl Session {
         if command.is_empty() {
             channel.request_shell(true).await.map_err(|e| self.failed(e))?;
         } else {
-            channel.exec(true, command).await.map_err(|e| self.failed(e))?;
+            channel.exec(true, crate::shell::posix_command(command)).await.map_err(|e| self.failed(e))?;
         }
         let (mut read, write) = channel.split();
         let (tx, rx) = oneshot::channel();
