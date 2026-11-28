@@ -102,10 +102,18 @@ function saveSelection(root: string | null, nameWithOwner: string | null) {
   }
 }
 
+/** Same `owner/name`, and the same host when both say which (`acme/app` on GHE is not the one on github.com). */
 export const sameRepository = (a: GHRepositoryCoordinates | null | undefined, b: GHRepositoryCoordinates | null) =>
-  !!a && !!b && a.owner.toLowerCase() === b.owner.toLowerCase() && a.name.toLowerCase() === b.name.toLowerCase();
+  !!a &&
+  !!b &&
+  a.owner.toLowerCase() === b.owner.toLowerCase() &&
+  a.name.toLowerCase() === b.name.toLowerCase() &&
+  (!a.host || !b.host || a.host.toLowerCase() === b.host.toLowerCase());
 
 export const nameWithOwner = (r: GHRepositoryCoordinates) => `${r.owner}/${r.name}`;
+
+/** `host/owner/name`: one repository among the remotes, and the saved choice. */
+export const repositoryKey = (r: GHRepositoryCoordinates) => `${r.host ?? "github.com"}/${r.owner}/${r.name}`;
 
 /**
  * The GitHub remotes among `remotes` of the repository at `root`, one per GitHub repository;
@@ -151,9 +159,11 @@ export function reviewRoot(
   return own ? selected : (connection.root ?? vcs.roots[0] ?? vcs.root);
 }
 
+/** `owner/name`, or a saved `host/owner/name`. */
 function parseNameWithOwner(s: string | null | undefined): GHRepositoryCoordinates | null {
-  const m = s ? /^([^/\s]+)\/([^/\s]+)$/.exec(s) : null;
-  return m ? { owner: m[1]!, name: m[2]! } : null;
+  const m = s ? /^(?:([^/\s]+)\/)?([^/\s]+)\/([^/\s]+)$/.exec(s) : null;
+  if (!m) return null;
+  return m[1] ? { owner: m[2]!, name: m[3]!, host: m[1].toLowerCase() } : { owner: m[2]!, name: m[3]! };
 }
 
 let checkSeq = 0;
@@ -205,7 +215,8 @@ export async function refreshConnection(): Promise<void> {
       ? [...found.all].flatMap(([root, list]) => githubRemotes(list, root, [host]))
       : found.remotes;
   const remotes = uniqueRepositories(localRemotes);
-  const defaultRemote = availability.kind === "ready" ? parseNameWithOwner(availability.repo.nameWithOwner) : null;
+  const resolved = availability.kind === "ready" ? parseNameWithOwner(availability.repo.nameWithOwner) : null;
+  const defaultRemote = resolved && { ...resolved, host: host ?? "github.com" };
   if (defaultRemote && !remotes.some((r) => sameRepository(r, defaultRemote))) {
     const own = remoteOfRepository(found.all.get(probe) ?? [], defaultRemote);
     const remote = {
@@ -213,7 +224,6 @@ export async function refreshConnection(): Promise<void> {
       remote: own?.name ?? "",
       url: own?.url ?? (availability.kind === "ready" ? availability.repo.url : ""),
       root: probe,
-      host: host ?? undefined,
     };
     remotes.unshift(remote);
     localRemotes = [remote, ...localRemotes];
@@ -243,13 +253,18 @@ export async function connect(
   opts: { remember?: boolean } = {},
 ): Promise<boolean> {
   const seq = ++connectSeq;
-  const coordinates = { owner: repo.owner, name: repo.name };
   const root = repo.root !== undefined ? repo.root : (localRemotes.find((r) => sameRepository(r, repo))?.root ?? null);
+  const host =
+    repo.host ?? localRemotes.find((r) => sameRepository(r, repo) && (r.root ?? null) === root)?.host ?? "github.com";
+  const coordinates = { owner: repo.owner, name: repo.name, host };
   const remotes = localRemotes.filter((r) => (r.root ?? null) === root);
   useGhRepository.setState({ connecting: true, connectionError: null });
-  setApiHost(localRemotes.find((r) => sameRepository(r, repo) && (r.root ?? null) === root)?.host ?? null);
   try {
-    const [repository, currentUser] = await Promise.all([api.findRepository(coordinates), api.currentUser()]);
+    // The current connection's requests keep their host until this one succeeds.
+    const [repository, currentUser] = await Promise.all([
+      api.findRepository(coordinates, root),
+      api.currentUser(host, root),
+    ]);
     if (seq !== connectSeq) return false;
     if (!repository) throw new Error(`Repository ${nameWithOwner(coordinates)} not found`);
     const previous = useGhRepository.getState().connection;
@@ -259,13 +274,14 @@ export async function connect(
       previous?.currentUser.login !== currentUser.login
     )
       resetRepositoryData();
+    setApiHost(host);
     setCurrentRepository({ ...coordinates, id: repository.id, root });
     useGhRepository.setState((s) => ({
       connection: { coordinates, repository, currentUser, root, remotes },
       connecting: false,
       revision: s.revision + 1,
     }));
-    if (opts.remember ?? true) saveSelection(projectRoot(), nameWithOwner(coordinates));
+    if (opts.remember ?? true) saveSelection(projectRoot(), repositoryKey(coordinates));
     return true;
   } catch (e) {
     if (seq !== connectSeq) return false;

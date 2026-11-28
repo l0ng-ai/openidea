@@ -4,7 +4,7 @@
  * repository is passed. Mutations only send; `data/operations.ts` refreshes what they
  * change.
  */
-import { graphql, repoPath, repoVariables, rest } from "./client";
+import { apiHost, graphql, repoPath, repoVariables, rest } from "./client";
 import * as Q from "./queries";
 import type {
   GHCollaborator,
@@ -64,8 +64,13 @@ export async function allPages<T>(page: (cursor: string | null) => Promise<GHCon
 // ---------------------------------------------------------------------------
 // Repository and users
 
-export async function findRepository(repo: GHRepositoryCoordinates): Promise<GHRepository | null> {
-  const data = await graphql<{ repository: GHRepository | null }>(Q.findRepository, repoVariables(repo));
+/** `repo` on its `host`, gh running in `root` (defaults: the connected repository's). */
+export async function findRepository(
+  repo: GHRepositoryCoordinates,
+  root?: string | null,
+): Promise<GHRepository | null> {
+  const host = repo.host === undefined ? undefined : apiHost(repo.host);
+  const data = await graphql<{ repository: GHRepository | null }>(Q.findRepository, repoVariables(repo), root, host);
   return data.repository;
 }
 
@@ -98,9 +103,9 @@ export function restUser(u: RestUser): GHUser {
   };
 }
 
-/** The signed-in user (REST `user`, IntelliJ's `CurrentUser.get`). */
-export async function currentUser(): Promise<GHUser> {
-  return restUser(await rest<RestUser>("GET", "user"));
+/** The signed-in user on `host`, gh running in `root` (defaults: the connected repository's; REST `user`, IntelliJ's `CurrentUser.get`). */
+export async function currentUser(host?: string | null, root?: string | null): Promise<GHUser> {
+  return restUser(await rest<RestUser>("GET", "user", undefined, { host, root }));
 }
 
 /** Page `page` (1-based) of a REST list; `next` is null on the last page. */

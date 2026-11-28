@@ -66,15 +66,15 @@ export async function rest<T>(
   method: GHApiMethod,
   endpoint: string,
   body?: unknown,
-  opts: { paginate?: boolean } = {},
+  opts: { paginate?: boolean; host?: string | null; root?: string | null } = {},
 ): Promise<T> {
   const text = await call(
-    commands.ghApi(current?.root ?? null, {
+    commands.ghApi(opts.root === undefined ? (current?.root ?? null) : opts.root, {
       method,
       endpoint,
       body: body === undefined ? null : JSON.stringify(body),
       paginate: opts.paginate ?? false,
-      host,
+      host: opts.host === undefined ? host : apiHost(opts.host),
     }),
   );
   return parseRest<T>(text, opts.paginate ?? false);
@@ -93,9 +93,13 @@ export function parseRest<T>(text: string, paginated: boolean): T {
 
 let host: string | null = null;
 
+/** `gh api --hostname` for `value`: null for github.com, gh's default. */
+export const apiHost = (value: string | null | undefined): string | null =>
+  value && value.toLowerCase() !== "github.com" ? value : null;
+
 /** The GitHub host requests go to (`ghe.example.com`; null: gh's default, github.com). */
-export function setApiHost(value: string | null) {
-  host = value && value.toLowerCase() !== "github.com" ? value : null;
+export function setApiHost(value: string | null | undefined) {
+  host = apiHost(value);
 }
 
 let current: (GHRepositoryCoordinates & { id: string | null; root?: string | null }) | null = null;

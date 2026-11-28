@@ -29,7 +29,7 @@ OpenIDEA 通过 [GitHub CLI](https://cli.github.com)（`gh`）对接 GitHub：�
 
 ### GitHub Enterprise Server
 
-先用 `gh auth login --hostname ghe.example.com` 登录服务器。gh 把项目仓库解析到该主机后，指向该主机的远程都算作 GitHub 远程，所有 API 调用都发往该主机，使用 gh 在该主机上的活动账户。上面的项目账户选择只对 `github.com` 生效；要切换 Enterprise 账户，请用 `gh auth switch --hostname ghe.example.com`。
+先用 `gh auth login --hostname ghe.example.com` 登录服务器。gh 把项目仓库解析到该主机后，指向该主机的远程都算作 GitHub 远程，所有 API 调用都发往该主机，使用 gh 在该主机上的活动账户。上面的项目账户选择只对 `github.com` 生效；要切换 Enterprise 账户，请用 `gh auth switch --hostname ghe.example.com`。OpenIDEA 本身不处理服务器证书，由 gh 按系统信任库校验；服务器使用自签名或内部 CA 证书时，需要先在系统中信任该证书。
 
 <Note>GitLab 由社区插件 `aritti.gitlab` 提供。不支持 Bitbucket。</Note>
 

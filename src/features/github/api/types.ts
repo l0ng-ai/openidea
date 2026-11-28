@@ -142,10 +142,12 @@ export interface GHRepository {
   sshUrl: string;
 }
 
-/** Where a request goes: `owner/name` on github.com. */
+/** Where a request goes: `owner/name`, on `host` (gh's name for it: `github.com`, `ghe.example.com`). */
 export interface GHRepositoryCoordinates {
   owner: string;
   name: string;
+  /** Absent where it isn't known (a repository named in a URL or a branch's config). */
+  host?: string;
 }
 
 /** REST collaborator (`repos/{o}/{r}/collaborators`) mapped to a user, with its permissions. */

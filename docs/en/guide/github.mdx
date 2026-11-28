@@ -37,7 +37,7 @@ OpenIDEA works with GitHub through the [GitHub CLI](https://cli.github.com) (`gh
 
 ### GitHub Enterprise Server
 
-Sign in to the server with `gh auth login --hostname ghe.example.com`. When gh resolves the project's repository on that host, its remotes there count as GitHub remotes, and every API call goes to that host with gh's active account for it. Choosing a project account (above) applies to `github.com` only; switch the Enterprise account with `gh auth switch --hostname ghe.example.com`.
+Sign in to the server with `gh auth login --hostname ghe.example.com`. When gh resolves the project's repository on that host, its remotes there count as GitHub remotes, and every API call goes to that host with gh's active account for it. Choosing a project account (above) applies to `github.com` only; switch the Enterprise account with `gh auth switch --hostname ghe.example.com`. OpenIDEA doesn't handle the server's certificate itself: gh checks it against the system's trust store, so a server with a self-signed or internal CA certificate needs that certificate trusted there.
 
 <Note>GitLab is covered by the community plugin `aritti.gitlab`. Bitbucket is not supported.</Note>
 

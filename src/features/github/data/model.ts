@@ -415,18 +415,24 @@ export function repositoryDisplayName(
 
 /**
  * `owner/name` and host of a remote URL on github.com or one of `hosts` (GitHub Enterprise
- * Server, `ghe.example.com`), https, ssh or scp-like (SSH also via ssh.github.com), else null.
+ * Server, `ghe.example.com[:port]` as gh names it), https, ssh or scp-like (SSH also via
+ * ssh.github.com), else null. A host matches whatever port the URL uses, and comes back as given.
  */
 export function parseGitHubRemote(
   url: string,
   hosts: readonly string[] = [],
 ): (GHRepositoryCoordinates & { host: string }) | null {
-  const names = ["github\\.com", ...hosts.map((h) => h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))].join("|");
+  const hostname = (h: string) => h.toLowerCase().replace(/:\d+$/, "");
+  const names = ["github\\.com", ...hosts.map((h) => hostname(h).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))].join("|");
   const m = new RegExp(
     `^(?:(?:https?:\\/\\/(?:[^@/]+@)?|git:\\/\\/)(?:www\\.)?|(?:ssh:\\/\\/(?:[^@/]+@)?|(?:[^@/]+@)?)(?:www\\.|ssh\\.)?)(${names})(?::\\d+(?=\\/))?[:/]+([^/]+)\\/([^/]+?)(?:\\.git)?\\/?$`,
     "i",
   ).exec(url.trim());
-  return m ? { owner: m[2]!, name: m[3]!, host: m[1]!.toLowerCase() } : null;
+  if (!m) return null;
+  const matched = m[1]!.toLowerCase();
+  const host =
+    matched === "github.com" ? matched : (hosts.find((h) => hostname(h) === matched)?.toLowerCase() ?? matched);
+  return { owner: m[2]!, name: m[3]!, host };
 }
 
 /** The host of a repository URL from gh (`https://ghe.example.com/o/r` → `ghe.example.com`). */
