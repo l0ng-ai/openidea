@@ -86,3 +86,22 @@ export function diskRequirement(path: string) {
 
 /** A wheel or source archive, which pip can install but not in editable mode. */
 export const isArchive = (path: string) => /\.(whl|zip|tar\.gz|tgz|tar\.bz2|tar\.xz)$/i.test(path.trim());
+
+/**
+ * `html` with its images, videos and audio taken out, so nothing loads from other sites: an image
+ * becomes its alt text. `count` is how many there were.
+ */
+export function withoutMedia(html: string): { html: string; count: number } {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  let count = 0;
+  for (const el of template.content.querySelectorAll("img, video, audio, source, picture")) {
+    if (el.localName === "picture") el.replaceWith(...el.childNodes);
+    else if (el.localName === "source") el.remove();
+    else {
+      count++;
+      el.replaceWith(el.getAttribute("alt") ?? "");
+    }
+  }
+  return { html: template.innerHTML, count };
+}

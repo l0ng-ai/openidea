@@ -9,6 +9,7 @@ import {
   diskRequirement,
   isArchive,
   isVcsUrl,
+  withoutMedia,
 } from "./model";
 
 const INSTALLED = [
@@ -128,5 +129,16 @@ describe("install from version control or disk", () => {
     expect(isArchive("dist/demo-1.0-py3-none-any.whl")).toBe(true);
     expect(isArchive("pkgs/demo")).toBe(false);
     expect(isArchive(" dist/demo-1.0-py3-none-any.whl ")).toBe(true);
+  });
+});
+
+describe("withoutMedia", () => {
+  it("takes out what would load from other sites, keeping an image's alt text", () => {
+    const { html, count } = withoutMedia(
+      '<p><img src="https://img.shields.io/b.svg" alt="build"> ok</p><picture><source srcset="https://x/a.png"><img src="https://x/b.png"></picture><video src="https://x/v.mp4"></video>',
+    );
+    expect(html).toBe("<p>build ok</p>");
+    expect(count).toBe(3);
+    expect(withoutMedia("<p>text</p>")).toEqual({ html: "<p>text</p>", count: 0 });
   });
 });
