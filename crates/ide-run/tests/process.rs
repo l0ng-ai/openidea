@@ -122,6 +122,32 @@ fn output_streams_and_exit_code() {
 }
 
 #[test]
+fn test_reports_belong_to_the_completed_run_and_project() {
+    let h = harness();
+    let dir = h.root.path().join("module/target/surefire-reports");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("TEST-old.xml"), r#"<testcase classname="Old" name="old"/>"#).unwrap();
+    let mut config = cfg(
+        "t:reports",
+        "/bin/sh",
+        &["-c", r#"printf '%s' '<testcase classname="New" name="fresh"/>' > target/surefire-reports/TEST-fresh.xml"#],
+    );
+    config.cwd = Some(PathBuf::from("module").into());
+    let options = StartOptions { capture_junit_reports: true, ..Default::default() };
+    let id = h.pm.start(h.root.path(), &config, &options, h.sink.clone(), Box::new(|_| {})).unwrap().id;
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(10)), Some(0));
+    let since = std::time::SystemTime::UNIX_EPOCH;
+    let reports = h.pm.test_reports(id, h.root.path(), since);
+    assert_eq!(reports.into_iter().map(|r| r.name).collect::<Vec<_>>(), ["fresh"]);
+    assert!(h.pm.test_reports(id, &h.root.path().join("another-project"), since).is_empty());
+
+    let rerun = h.pm.start(h.root.path(), &config, &options, h.sink.clone(), Box::new(|_| {})).unwrap().id;
+    assert_ne!(id, rerun);
+    assert_eq!(wait_exit(&h, rerun, Duration::from_secs(10)), Some(0));
+    assert!(h.pm.test_reports(id, h.root.path(), since).is_empty(), "a replaced run can't read the new run's reports");
+}
+
+#[test]
 fn shell_command_string_and_env_and_cwd() {
     let h = harness();
     std::fs::create_dir(h.root.path().join("sub")).unwrap();

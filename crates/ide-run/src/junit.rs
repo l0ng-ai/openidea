@@ -4,8 +4,9 @@
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -203,26 +204,90 @@ pub fn report_dirs(module_dir: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-/// Test cases from every `TEST-*.xml` in `dirs` written at or after `since`
-/// (reports of earlier runs are ignored).
-pub fn read_reports(dirs: &[PathBuf], since: SystemTime) -> Vec<TestCaseReport> {
-    let mut files: Vec<PathBuf> = Vec::new();
+fn recent_reports(dirs: &[PathBuf], since: SystemTime) -> Vec<(PathBuf, SystemTime)> {
+    let mut files = Vec::new();
     for dir in dirs {
-        let Ok(rd) = std::fs::read_dir(dir) else { continue };
-        for e in rd.flatten() {
-            let path = e.path();
-            let name = e.file_name().to_string_lossy().into_owned();
+        let Ok(entries) = std::fs::read_dir(dir) else { continue };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
             if !(name.starts_with("TEST-") && name.ends_with(".xml")) {
                 continue;
             }
-            let fresh = e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t >= since);
-            if fresh {
-                files.push(path);
+            let path = entry.path();
+            if let Ok(metadata) = std::fs::metadata(&path)
+                && metadata.is_file()
+                && let Ok(modified) = metadata.modified()
+                && modified >= since
+            {
+                files.push((path, modified));
             }
         }
     }
     files.sort();
-    files.iter().filter_map(|f| std::fs::read_to_string(f).ok()).flat_map(|xml| parse_report(&xml)).collect()
+    files
+}
+
+fn read_matching_reports(
+    dirs: &[PathBuf],
+    since: SystemTime,
+    include: impl Fn(&Path, SystemTime, &str) -> bool,
+) -> Vec<TestCaseReport> {
+    recent_reports(dirs, since)
+        .into_iter()
+        .filter_map(|(path, modified)| {
+            let xml = std::fs::read_to_string(&path).ok()?;
+            include(&path, modified, &xml).then_some(xml)
+        })
+        .flat_map(|xml| parse_report(&xml))
+        .collect()
+}
+
+/// Test cases from every `TEST-*.xml` in `dirs` written at or after `since`.
+pub fn read_reports(dirs: &[PathBuf], since: SystemTime) -> Vec<TestCaseReport> {
+    read_matching_reports(dirs, since, |_, _, _| true)
+}
+
+/// Recent reports already present when a build-tool test process starts.
+pub(crate) struct ReportSnapshot {
+    module_dir: PathBuf,
+    since: SystemTime,
+    existing: BTreeMap<PathBuf, (SystemTime, Option<blake3::Hash>)>,
+}
+
+impl ReportSnapshot {
+    pub(crate) fn capture(module_dir: &Path) -> Self {
+        Self::capture_at(module_dir, SystemTime::now())
+    }
+
+    fn capture_at(module_dir: &Path, started: SystemTime) -> Self {
+        // Keep the filesystem tolerance, but distinguish changes to recent files from leftovers.
+        let since = started.checked_sub(Duration::from_secs(2)).unwrap_or(SystemTime::UNIX_EPOCH);
+        let existing = recent_reports(&report_dirs(module_dir), since)
+            .into_iter()
+            .map(|(path, modified)| {
+                let digest = (|| {
+                    let mut hasher = blake3::Hasher::new();
+                    hasher.update_reader(std::fs::File::open(&path)?).map(|h| h.finalize())
+                })()
+                .ok();
+                (path, (modified, digest))
+            })
+            .collect();
+        Self { module_dir: module_dir.to_path_buf(), since, existing }
+    }
+
+    pub(crate) fn read(&self) -> Vec<TestCaseReport> {
+        // Rediscover directories since the run can create a Gradle task's first report directory.
+        read_matching_reports(&report_dirs(&self.module_dir), self.since, |path, modified, xml| {
+            match self.existing.get(path) {
+                Some((before, digest)) if *before == modified => {
+                    digest.is_some_and(|digest| digest != blake3::hash(xml.as_bytes()))
+                }
+                _ => true,
+            }
+        })
+    }
 }
 
 #[cfg(test)]
@@ -287,6 +352,33 @@ mod tests {
         assert_eq!(cases[0].output.as_deref(), Some("trace AB"));
         assert_eq!(cases[1].status, TestCaseStatus::Passed, "passed on rerun");
         assert!(parse_report("not xml").is_empty());
+    }
+
+    #[test]
+    fn reads_only_reports_changed_by_the_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let module = tmp.path();
+        let coarse = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let started = coarse + std::time::Duration::from_millis(500);
+        let write = |rel: &str, name: &str| {
+            let path = module.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let mut file = std::fs::File::create(path).unwrap();
+            use std::io::Write;
+            write!(file, r#"<testcase classname="a.A" name="{name}"/>"#).unwrap();
+            file.set_times(std::fs::FileTimes::new().set_modified(coarse)).unwrap();
+        };
+        let read = |snapshot: &ReportSnapshot| snapshot.read().into_iter().map(|r| r.name).collect::<Vec<_>>();
+        let first = ReportSnapshot::capture_at(module, started);
+        let selected = "target/surefire-reports/TEST-a.A.xml";
+        write(selected, "old");
+        assert_eq!(read(&first), ["old"], "the initial run produced a report");
+        write("target/surefire-reports/TEST-other.xml", "neighbor");
+        let rerun = ReportSnapshot::capture_at(module, started);
+        assert!(read(&rerun).is_empty(), "an early exit without a new report has no results");
+        write(selected, "new");
+        write("build/test-results/test/TEST-added.xml", "added");
+        assert_eq!(read(&rerun), ["added", "new"], "accept a new file and changed XML at the same mtime and size");
     }
 
     #[test]

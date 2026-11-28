@@ -1192,6 +1192,15 @@ async function startRunIn(
         : launch.isTest
           ? await gradleTestLaunch(withTestReporting(launch))
           : await gradleBootLaunch(launch);
+    if (
+      started.isTest &&
+      !started.target &&
+      started.testRunner == null &&
+      started.params?.framework !== "plugin" &&
+      frameworkFor(config) === "jvm"
+    ) {
+      started = { ...started, testRunner: "jvm" };
+    }
     if (launch.isTest && frameworkFor(launch) === "dotnet" && launch.params?.framework !== "plugin") {
       rt.dotnetReports = new DotnetReports();
       started = rt.dotnetReports.launch(started);
@@ -1394,8 +1403,10 @@ function finishSession(sessionId: string, code: number | null) {
 async function jvmReports(session: RunSession): Promise<TestCaseReport[]> {
   if (!isTauri()) return [];
   try {
-    // Report files are written during the run; allow for coarse file-system timestamps.
-    return await call(commands.runTestReports(session.config.cwd ?? null, session.startedAt - 2000));
+    const { target, cwd } = session.config;
+    const run = target ? null : session.runId;
+    // Older hosts and runs without a snapshot use the existing coarse timestamp allowance.
+    return await call(commands.runTestReports(cwd ?? null, session.startedAt - 2000, run));
   } catch {
     return [];
   }
