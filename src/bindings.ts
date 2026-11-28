@@ -7958,6 +7958,11 @@ export type GhApiRequest = {
 	body: string | null,
 	/**  Follow REST `Link` pages; the result is the array of all pages (`--slurp`). */
 	paginate: boolean,
+	/**
+	 *  The repository's GitHub host (`ghe.example.com`); none: gh's default host. `gh api`
+	 *  doesn't take the host from the remote as `gh pr` does.
+	 */
+	host?: string | null,
 };
 
 /**  An authenticated `github.com` account stored in GitHub CLI (`gh`). */

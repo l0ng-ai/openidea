@@ -114,6 +114,7 @@ function fetchGithubMeta(
       endpoint: `repos/${githubRepo}/${segment}/${number}`,
       body: null,
       paginate: false,
+      host: null,
     }),
   )
     .then((text) => parseGhItemResponse(text, kind))

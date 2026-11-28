@@ -101,14 +101,28 @@ fn list_arguments() {
 
 #[test]
 fn api_arguments() {
-    let req =
-        GhApiRequest { method: "post".into(), endpoint: "graphql".into(), body: Some("{}".into()), paginate: false };
+    let req = GhApiRequest {
+        method: "post".into(),
+        endpoint: "graphql".into(),
+        body: Some("{}".into()),
+        paginate: false,
+        host: None,
+    };
     assert_eq!(api_args(&req).unwrap(), ["api", "--method", "POST", "graphql", "--input", "-"]);
+    let ghe = GhApiRequest { host: Some("ghe.example.com:8443".into()), ..req.clone() };
+    assert_eq!(
+        api_args(&ghe).unwrap(),
+        ["api", "--method", "POST", "graphql", "--hostname", "ghe.example.com:8443", "--input", "-"]
+    );
+    for bad in ["--x", "evil.example/x", "a b", ".x", "h:", "h:8x"] {
+        assert!(api_args(&GhApiRequest { host: Some(bad.into()), ..req.clone() }).is_err(), "{bad}");
+    }
     let req = GhApiRequest {
         method: "GET".into(),
         endpoint: "repos/{owner}/{repo}/labels".into(),
         body: None,
         paginate: true,
+        host: Some(" ".into()),
     };
     assert_eq!(
         api_args(&req).unwrap(),
@@ -118,4 +132,12 @@ fn api_arguments() {
         assert!(api_args(&GhApiRequest { endpoint: bad.into(), ..req.clone() }).is_err(), "{bad}");
     }
     assert!(api_args(&GhApiRequest { method: "TRACE".into(), ..req }).is_err());
+}
+
+#[test]
+fn repository_url_hosts() {
+    assert_eq!(url_host("https://ghe.example.com/acme/app"), Some("ghe.example.com"));
+    assert_eq!(url_host("https://github.com/o/r"), Some("github.com"));
+    assert_eq!(url_host("https://user@ghe.example.com:8443/o/r"), Some("ghe.example.com:8443"));
+    assert_eq!(url_host("ghe.example.com/o/r"), None);
 }

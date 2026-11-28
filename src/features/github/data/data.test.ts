@@ -17,6 +17,7 @@ import {
   mergeCommitMessage,
   normalizeSearch,
   parseGitHubRemote,
+  urlHost,
   remoteOfRepository,
   pullRequestPermissions,
   pullRequestStateIcon,
@@ -405,7 +406,7 @@ describe("pull request helpers", () => {
       "ssh://git@ssh.github.com:443/o/r.git",
       "git@ssh.github.com:o/r.git",
     ])
-      expect(parseGitHubRemote(url), url).toEqual({ owner: "o", name: "r" });
+      expect(parseGitHubRemote(url), url).toEqual({ owner: "o", name: "r", host: "github.com" });
     expect(parseGitHubRemote("https://gitlab.com/o/r.git")).toBeNull();
     expect(parseGitHubRemote("/local/repo")).toBeNull();
     expect(parseGitHubRemote("https://ssh.github.com/o/r.git")).toBeNull();
@@ -422,6 +423,30 @@ describe("pull request helpers", () => {
         { name: "other", url: "https://example.com/x/y" },
       ]).map((r) => `${r.remote}=${r.owner}/${r.name}`),
     ).toEqual(["origin=me/r", "fork=dengliu/r", "upstream=org/r"]);
+  });
+
+  it("recognizes remotes on a GitHub Enterprise Server host it is given", () => {
+    const hosts = ["ghe.example.com"];
+    for (const url of [
+      "https://ghe.example.com/acme/app.git",
+      "git@ghe.example.com:acme/app.git",
+      "ssh://git@GHE.example.com:2222/acme/app",
+    ])
+      expect(parseGitHubRemote(url, hosts), url).toEqual({ owner: "acme", name: "app", host: "ghe.example.com" });
+    expect(parseGitHubRemote("https://ghe.example.com/acme/app.git")).toBeNull();
+    expect(parseGitHubRemote("https://gheXexample.com/acme/app.git", hosts)).toBeNull();
+    expect(
+      githubRemotes(
+        [
+          { name: "origin", url: "git@ghe.example.com:acme/app.git" },
+          { name: "public", url: "https://github.com/acme/app-mirror" },
+        ],
+        "/repo",
+        hosts,
+      ).map((r) => `${r.remote}=${r.host}/${r.owner}/${r.name}`),
+    ).toEqual(["origin=ghe.example.com/acme/app", "public=github.com/acme/app-mirror"]);
+    expect(urlHost("https://GHE.example.com:8443/acme/app")).toBe("ghe.example.com:8443");
+    expect(urlHost("not a url")).toBeNull();
   });
 });
 

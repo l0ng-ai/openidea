@@ -17,7 +17,7 @@ import type { GhAvailability, Remote } from "@/platform/ipc";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { useVcs, type VcsState } from "@/features/vcs/store";
 import { useProject } from "@/platform/project";
-import { errorMessage, setCurrentRepository } from "../api/client";
+import { errorMessage, setApiHost, setCurrentRepository } from "../api/client";
 import * as api from "../api/requests";
 import type {
   GHCollaborator,
@@ -30,7 +30,7 @@ import type {
   GHUser,
 } from "../api/types";
 import { createBatchesLoader, mergeBatches, type BatchesLoader, type BatchesState } from "./batches";
-import { hasPermission, parseGitHubRemote, remoteOfRepository } from "./model";
+import { hasPermission, parseGitHubRemote, remoteOfRepository, urlHost } from "./model";
 
 /** A GitHub remote of the project. */
 export interface GHRemote extends GHRepositoryCoordinates {
@@ -39,6 +39,8 @@ export interface GHRemote extends GHRepositoryCoordinates {
   url: string;
   /** Root of the project's git repository the remote belongs to (null or absent: the primary one). */
   root?: string | null;
+  /** `github.com`, or the GitHub Enterprise Server host (absent: github.com). */
+  host?: string;
 }
 
 export interface GHConnection {
@@ -105,14 +107,18 @@ export const sameRepository = (a: GHRepositoryCoordinates | null | undefined, b:
 
 export const nameWithOwner = (r: GHRepositoryCoordinates) => `${r.owner}/${r.name}`;
 
-/** The GitHub remotes among `remotes` of the repository at `root`, one per GitHub repository. */
+/**
+ * The GitHub remotes among `remotes` of the repository at `root`, one per GitHub repository;
+ * `hosts`: GitHub Enterprise Server hosts recognised besides github.com.
+ */
 export function githubRemotes(
   remotes: ReadonlyArray<{ name: string; url: string; resolvedUrl?: string | null }>,
   root: string | null = null,
+  hosts: readonly string[] = [],
 ): GHRemote[] {
   const out: GHRemote[] = [];
   for (const r of remotes) {
-    const c = parseGitHubRemote(r.resolvedUrl ?? r.url);
+    const c = parseGitHubRemote(r.resolvedUrl ?? r.url, hosts);
     if (c && !out.some((o) => sameRepository(o, c))) out.push({ ...c, remote: r.name, url: r.url, root });
   }
   return out;
@@ -192,7 +198,12 @@ export async function refreshConnection(): Promise<void> {
     availability = { kind: "error", message: errorMessage(e) };
   }
   if (seq !== checkSeq) return;
-  localRemotes = found.remotes;
+  // An Enterprise repository gh resolved: its host's remotes are GitHub remotes too.
+  const host = availability.kind === "ready" ? urlHost(availability.repo.url) : null;
+  localRemotes =
+    host && host !== "github.com"
+      ? [...found.all].flatMap(([root, list]) => githubRemotes(list, root, [host]))
+      : found.remotes;
   const remotes = uniqueRepositories(localRemotes);
   const defaultRemote = availability.kind === "ready" ? parseNameWithOwner(availability.repo.nameWithOwner) : null;
   if (defaultRemote && !remotes.some((r) => sameRepository(r, defaultRemote))) {
@@ -202,6 +213,7 @@ export async function refreshConnection(): Promise<void> {
       remote: own?.name ?? "",
       url: own?.url ?? (availability.kind === "ready" ? availability.repo.url : ""),
       root: probe,
+      host: host ?? undefined,
     };
     remotes.unshift(remote);
     localRemotes = [remote, ...localRemotes];
@@ -235,6 +247,7 @@ export async function connect(
   const root = repo.root !== undefined ? repo.root : (localRemotes.find((r) => sameRepository(r, repo))?.root ?? null);
   const remotes = localRemotes.filter((r) => (r.root ?? null) === root);
   useGhRepository.setState({ connecting: true, connectionError: null });
+  setApiHost(localRemotes.find((r) => sameRepository(r, repo) && (r.root ?? null) === root)?.host ?? null);
   try {
     const [repository, currentUser] = await Promise.all([api.findRepository(coordinates), api.currentUser()]);
     if (seq !== connectSeq) return false;

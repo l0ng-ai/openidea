@@ -36,14 +36,20 @@ export function graphqlData<T>(text: string): T {
   return json.data;
 }
 
-/** Runs a document from `queries.ts` with `variables` (undefined values are dropped). */
+/**
+ * Runs a document from `queries.ts` with `variables` (undefined values are dropped), in `root`
+ * on `apiHost` (default: the connected repository's).
+ */
 export async function graphql<T>(
   doc: string,
   variables: Record<string, unknown> = {},
   root: string | null = current?.root ?? null,
+  apiHost: string | null = host,
 ): Promise<T> {
   const body = JSON.stringify({ query: withFragments(doc), variables: definedOnly(variables) });
-  const text = await call(commands.ghApi(root, { method: "POST", endpoint: "graphql", body, paginate: false }));
+  const text = await call(
+    commands.ghApi(root, { method: "POST", endpoint: "graphql", body, paginate: false, host: apiHost }),
+  );
   return graphqlData<T>(text);
 }
 
@@ -68,6 +74,7 @@ export async function rest<T>(
       endpoint,
       body: body === undefined ? null : JSON.stringify(body),
       paginate: opts.paginate ?? false,
+      host,
     }),
   );
   return parseRest<T>(text, opts.paginate ?? false);
@@ -83,6 +90,13 @@ export function parseRest<T>(text: string, paginated: boolean): T {
 
 // ---------------------------------------------------------------------------
 // The connected repository
+
+let host: string | null = null;
+
+/** The GitHub host requests go to (`ghe.example.com`; null: gh's default, github.com). */
+export function setApiHost(value: string | null) {
+  host = value && value.toLowerCase() !== "github.com" ? value : null;
+}
 
 let current: (GHRepositoryCoordinates & { id: string | null; root?: string | null }) | null = null;
 
