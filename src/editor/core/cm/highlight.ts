@@ -53,7 +53,9 @@ export const openideaHighlightStyle = HighlightStyle.define([
   token(t.escape, "escape"),
   token(t.regexp, "regexp"),
   token([t.number, t.integer, t.float], "number"),
-  token([t.typeName, t.className, t.namespace, t.definition(t.typeName)], "type"),
+  token([t.typeName, t.className, t.definition(t.typeName)], "type"),
+  // Package references get their own scheme attribute (IDEA's Package reference), with Class name as fallback.
+  token(t.namespace, "namespace", { color: "type" }),
   token(t.standard(t.variableName), "builtin"),
   token(t.standard(t.typeName), "builtin-type", { color: "builtin" }),
   token(t.standard(t.function(t.variableName)), "builtin-function", { color: "builtin" }),
