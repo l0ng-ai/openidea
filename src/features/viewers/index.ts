@@ -1,7 +1,7 @@
 /**
  * Non-text editors and the Markdown preview: images open in an image viewer,
  * binary and very large files in a read-only hex view (both through file
- * editor providers consulted by `openFile`), and Markdown and SVG files get IDEA's
+ * editor providers consulted by `openFile`), and Markdown, reStructuredText and SVG files get IDEA's
  * Editor / Editor and Preview / Preview layouts around the text editor.
  */
 import { registerActions, type Action } from "@/platform/actions";
@@ -29,6 +29,7 @@ import {
   imageInput,
   isImagePath,
   isMarkdownPath,
+  isRstPath,
   isSvgPath,
   wantsHexView,
 } from "./fileKinds";
@@ -38,6 +39,8 @@ import { registerMarkdownLiveSource } from "./markdown/live";
 import { setMarkdownMode, useMarkdownModes, useMarkdownSourceHidden } from "./markdown/modes";
 import type { LayoutMode } from "./layoutModes";
 import { registerSvgLiveSource } from "./svg/live";
+import { registerRstLiveSource } from "./rst/live";
+import { rstModes, RstLayoutActions } from "./rst/RstLayoutActions";
 import { SvgLayoutActions, svgModes } from "./svg/SvgEditor";
 import { MarkdownLayoutActions } from "./markdown/MarkdownLayoutActions";
 import { canExtractImages, extractImages, EXTRACT_IMAGES, EXTRACT_IMAGES_TITLE } from "./markdown/extractImages";
@@ -71,16 +74,22 @@ function imageActions(): Action[] {
 
 /**
  * The tab whose layout an Editor Only / Editor and Preview / Preview Only action sets: the one its
- * tab button passes, else the focused editor's when it's a Markdown or SVG file.
+ * tab button passes, else the focused editor's when it's a Markdown, reStructuredText or SVG file.
  */
 function layoutTarget(arg: unknown): { tabId: string; set: (tabId: string, mode: LayoutMode) => void } | null {
   if (typeof arg === "string") {
-    return { tabId: arg, set: svgModes.useModes.getState().byTab[arg] ? svgModes.set : setMarkdownMode };
+    const set = svgModes.useModes.getState().byTab[arg]
+      ? svgModes.set
+      : rstModes.useModes.getState().byTab[arg]
+        ? rstModes.set
+        : setMarkdownMode;
+    return { tabId: arg, set };
   }
   const editor = activeEditor();
   const path = editor?.ctx.path ?? "";
   if (!editor?.tabId) return null;
   if (isSvgPath(path)) return { tabId: editor.tabId, set: svgModes.set };
+  if (isRstPath(path)) return { tabId: editor.tabId, set: rstModes.set };
   if (isMarkdownPath(path) || useMarkdownModes.getState().byTab[editor.tabId])
     return { tabId: editor.tabId, set: setMarkdownMode };
   return null;
@@ -172,6 +181,14 @@ export function activate(): () => void {
       useSourceHidden: svgModes.useSourceHidden,
     }),
     registerSvgLiveSource(),
+    registerTextEditorWrapper({
+      id: "viewers.rst",
+      matches: isRstPath,
+      component: lazyComponent(() => import("./rst/RstEditor").then((m) => m.RstEditor)),
+      tabActions: RstLayoutActions,
+      useSourceHidden: rstModes.useSourceHidden,
+    }),
+    registerRstLiveSource(),
     registerMenuGroup({
       id: EXTRACT_IMAGES,
       menus: ["editor"],

@@ -1,0 +1,53 @@
+/* docutils' HTML5 on top of the Markdown preview's styles. */
+.preview > :global(main) > :first-child {
+  margin-top: 0;
+}
+.preview :global(.docutils.literal) {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  padding: 0.1em 0.35em;
+  border-radius: var(--radius-small);
+  background: var(--bg-editor-inline, var(--bg-elev));
+}
+.preview :global(aside.admonition),
+.preview :global(aside.system-message) {
+  margin: 0 0 1em;
+  padding: 0.5em 1em;
+  border-left: 3px solid var(--info);
+  border-radius: var(--radius-control);
+  background: var(--bg-editor-inline, var(--bg-elev));
+}
+.preview :global(aside.admonition:is(.warning, .caution, .attention, .important)),
+.preview :global(aside.system-message) {
+  border-left-color: var(--warning);
+}
+.preview :global(aside.admonition:is(.danger, .error)) {
+  border-left-color: var(--danger);
+}
+.preview :global(:is(.admonition-title, .system-message-title)) {
+  margin: 0 0 0.3em;
+  font-weight: 600;
+}
+.preview :global(aside > :last-child) {
+  margin-bottom: 0;
+}
+.preview :global(.problematic) {
+  color: var(--danger);
+}
+.preview :global(dt) {
+  font-weight: 600;
+}
+.preview :global(dd) {
+  margin: 0 0 0.5em 1.5em;
+}
+.preview :global(math[display="block"]) {
+  margin: 1em 0;
+}
+/* docutils wraps list items and table cells in paragraphs. */
+.preview :global(:is(li, td, th) > p) {
+  margin: 0;
+}
+.preview :global(:is(main, section) > img) {
+  display: block;
+  margin: 0 0 1em;
+}

@@ -249,6 +249,14 @@ const sanitizeWhole = (all: readonly MarkdownBlock[]) =>
   purify().sanitize(all.map((b) => wrap(b.line, b.endLine, b.html)).join(""), SANITIZE);
 
 /**
+ * HTML another renderer made (docutils), sanitized like the Markdown preview's, MathML kept:
+ * nothing loads from other hosts, images keep their source in `data-src`, and ids and names get
+ * {@link ANCHOR_PREFIX} (the preview shares the IDE's document).
+ */
+export const sanitizePreviewHtml = (html: string) =>
+  purify().sanitize(html, { ...SANITIZE, USE_PROFILES: { html: true, mathMl: true }, SANITIZE_NAMED_PROPS: true });
+
+/**
  * 0-based source line of the heading the preview gives the anchor `anchor` (with or without
  * {@link ANCHOR_PREFIX}), or null when no heading has it. Lets a link to another file open at
  * that heading.
@@ -365,18 +373,27 @@ export function joinPath(dir: string, rel: string): string {
   return out.join("/") || "/";
 }
 
+/** `decodeURIComponent`, or `s` as written when it isn't valid percent-encoding (docutils and raw HTML keep `50%off.png`). */
+function decodeLenient(s: string): string {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+}
+
 /** Where a link in the Markdown file `file` points. */
 export function resolveLink(file: string, href: string): LinkTarget | null {
   const h = href.trim();
   if (!h) return null;
   if (/^(https?|mailto):/i.test(h)) return { kind: "external", url: h };
-  if (h.startsWith("#")) return { kind: "anchor", id: decodeURIComponent(h.slice(1)) };
+  if (h.startsWith("#")) return { kind: "anchor", id: decodeLenient(h.slice(1)) };
   let rest = h;
   if (/^file:\/\//i.test(rest)) rest = rest.replace(/^file:\/\//i, "");
   else if (/^[a-z][a-z0-9+.-]*:/i.test(rest)) return null;
   const hash = rest.indexOf("#");
-  const fragment = hash >= 0 ? decodeURIComponent(rest.slice(hash + 1)) : undefined;
-  const pathPart = decodeURIComponent((hash >= 0 ? rest.slice(0, hash) : rest).replace(/\?.*$/, ""));
+  const fragment = hash >= 0 ? decodeLenient(rest.slice(hash + 1)) : undefined;
+  const pathPart = decodeLenient((hash >= 0 ? rest.slice(0, hash) : rest).replace(/\?.*$/, ""));
   const path = pathPart ? joinPath(dirOf(file), pathPart) : file;
   if (pathPart && opensOtherShare(path, pathPart, file)) return null;
   const lineMatch = fragment ? /^L(\d+)/.exec(fragment) : null;

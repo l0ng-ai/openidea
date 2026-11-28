@@ -10962,5 +10962,10 @@
   "Keep Key": "保留键",
   "Drop Index": "删除索引",
   "Keep Index": "保留索引",
-  "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite 无法删除主键或唯一约束的索引。"
+  "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite 无法删除主键或唯一约束的索引。",
+  "reStructuredText editor layout": "reStructuredText 编辑器布局",
+  "Resize reStructuredText preview": "调整 reStructuredText 预览大小",
+  "reStructuredText preview": "reStructuredText 预览",
+  "Cannot preview reStructuredText": "无法预览 reStructuredText",
+  "Remote images are not loaded": "不加载远程图片"
 }

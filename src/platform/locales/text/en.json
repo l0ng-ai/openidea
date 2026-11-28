@@ -4430,5 +4430,10 @@
   "Keep Key": "Keep Key",
   "Drop Index": "Drop Index",
   "Keep Index": "Keep Index",
-  "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite cannot drop the index of a primary key or unique constraint."
+  "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite cannot drop the index of a primary key or unique constraint.",
+  "reStructuredText editor layout": "reStructuredText editor layout",
+  "Resize reStructuredText preview": "Resize reStructuredText preview",
+  "reStructuredText preview": "reStructuredText preview",
+  "Cannot preview reStructuredText": "Cannot preview reStructuredText",
+  "Remote images are not loaded": "Remote images are not loaded"
 }

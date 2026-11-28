@@ -35,6 +35,7 @@ mod python;
 pub mod python_stubs;
 pub mod refactor;
 pub mod routes;
+pub mod rst;
 pub mod run;
 pub mod scaffold;
 pub mod sdk;
@@ -116,6 +117,7 @@ ide_command::domains!(
     plugins_views: crate::plugins::views,
     project: crate::ops::project,
     refactor: crate::ops::refactor,
+    rst: crate::ops::rst,
     run: crate::ops::run,
     run_commands: crate::ops::run::commands,
     scaffold: crate::ops::scaffold,
