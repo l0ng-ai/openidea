@@ -172,6 +172,11 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   /** Line the next search starts from (the top of the viewport when the query changed). */
   const findAnchor = useRef(0);
   const scrolledMatch = useRef<string | null>(null);
+  /** Row whose current match still has to be scrolled into view sideways, once it renders. */
+  const revealRow = useRef<number | null>(null);
+  /** Set while the reveal scrolls sideways, so that scroll is not taken for reaching the end. */
+  const revealing = useRef(false);
+  const lastScrollTop = useRef(0);
 
   const virtualizer = useVirtualizer({
     count: lines?.length ?? 0,
@@ -242,10 +247,13 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   };
   const changeQuery = (value: string) => {
     findAnchor.current = topLine();
+    // Typing on may grow the match from the same start: reveal it again.
+    scrolledMatch.current = null;
     setQuery(value);
   };
   const changeOptions = (next: FindOptions) => {
     findAnchor.current = topLine();
+    scrolledMatch.current = null;
     setFindOptions(next);
   };
   const goToMatch = (direction: 1 | -1) => {
@@ -289,7 +297,18 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
     if (scrolledMatch.current === key) return;
     virtualizer.scrollToIndex(current.line, { align: "center" });
     scrolledMatch.current = key;
+    revealRow.current = current.line;
   }, [findOpen, current, virtualizer]);
+  // A virtualized row may mount a render after the scroll above; then bring the match on a wide line into view.
+  useEffect(() => {
+    if (revealRow.current === null) return;
+    const mark = scroller.current?.querySelector(`[data-index="${revealRow.current}"] [data-find-current]`);
+    if (!mark) return;
+    revealRow.current = null;
+    revealing.current = true;
+    mark.scrollIntoView({ block: "nearest", inline: "nearest" });
+    requestAnimationFrame(() => (revealing.current = false));
+  });
 
   const submit = async () => {
     if (readsProgramInput(session)) {
@@ -469,8 +488,10 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
           className={clsx(styles.consoleOutput, !softWrap && styles.noWrap)}
           style={{ ...fontStyle, lineHeight: `${rowHeight}px` }}
           onScroll={(e) => {
-            if (programmatic.current) return;
             const el = e.currentTarget;
+            const sideways = el.scrollTop === lastScrollTop.current;
+            lastScrollTop.current = el.scrollTop;
+            if (programmatic.current || (revealing.current && sideways)) return;
             const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
             if (atEnd !== stick.current) setFollow(atEnd);
           }}

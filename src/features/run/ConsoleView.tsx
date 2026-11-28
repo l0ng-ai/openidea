@@ -302,6 +302,11 @@ export function ConsoleView({
   /** Line the next search starts from (the top of the viewport when the query changed). */
   const findAnchor = useRef(0);
   const scrolledMatch = useRef<string | null>(null);
+  /** Row whose current match still has to be scrolled into view sideways, once it renders. */
+  const revealRow = useRef<number | null>(null);
+  /** Set while the reveal scrolls sideways, so that scroll is not taken for reaching the end. */
+  const revealing = useRef(false);
+  const lastScrollTop = useRef(0);
   // eslint-disable-next-line react-hooks/exhaustive-deps -- `version` marks in-place appends to `lines`
   const folded = useMemo(() => foldRows(lines, patterns, expanded), [lines, version, patterns, expanded]);
   // Pending input continues the open line (a prompt), or starts a row of its own.
@@ -352,7 +357,10 @@ export function ConsoleView({
 
   const onScroll = () => {
     const el = scrollRef.current;
-    if (!el || programmatic.current) return;
+    if (!el) return;
+    const sideways = el.scrollTop === lastScrollTop.current;
+    lastScrollTop.current = el.scrollTop;
+    if (programmatic.current || (revealing.current && sideways)) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < rowHeight;
     if (atBottom && selecting) return;
     if (atBottom !== follow) onFollowChange(atBottom);
@@ -413,10 +421,13 @@ export function ConsoleView({
   };
   const changeQuery = (value: string) => {
     findAnchor.current = topLine();
+    // Typing on may grow the match from the same start: reveal it again.
+    scrolledMatch.current = null;
     setQuery(value);
   };
   const changeOptions = (next: FindOptions) => {
     findAnchor.current = topLine();
+    scrolledMatch.current = null;
     setFindOptions(next);
   };
   const goToMatch = (direction: 1 | -1) => {
@@ -477,7 +488,18 @@ export function ConsoleView({
     }
     virtualizer.scrollToIndex(rowIndex, { align: "center" });
     scrolledMatch.current = key;
+    revealRow.current = rowIndex;
   }, [findOpen, activeMatch, rowOfLine, rows, virtualizer]);
+  // A virtualized row may mount a render after the scroll above; then bring the match on a wide line into view.
+  useEffect(() => {
+    if (revealRow.current === null) return;
+    const mark = scrollRef.current?.querySelector(`[data-index="${revealRow.current}"] [data-find-current]`);
+    if (!mark) return;
+    revealRow.current = null;
+    revealing.current = true;
+    mark.scrollIntoView({ block: "nearest", inline: "nearest" });
+    requestAnimationFrame(() => (revealing.current = false));
+  });
 
   const [currentLink, setCurrentLink] = useState<LinkPosition | null>(null);
   // Read by key repeat before the next render; the links are found on demand, once per output change.
