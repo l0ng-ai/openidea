@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { isPackageName, listRows, normalize, requirementOf, rowKey, vcsRequirement } from "./model";
+import {
+  isPackageName,
+  listRows,
+  normalize,
+  requirementOf,
+  rowKey,
+  vcsRequirement,
+  diskRequirement,
+  isArchive,
+  isVcsUrl,
+} from "./model";
 
 const INSTALLED = [
   { name: "requests", version: "2.31.0" },
@@ -81,5 +91,26 @@ describe("vcsRequirement", () => {
       "git+https://github.com/psf/requests@v2.32.0#egg=requests",
     );
     expect(vcsRequirement("hg+https://hg.example.org/demo")).toBe("hg+https://hg.example.org/demo");
+  });
+});
+
+describe("install from version control or disk", () => {
+  it("accepts only version control URLs", () => {
+    expect(isVcsUrl(vcsRequirement("https://github.com/psf/requests.git"))).toBe(true);
+    expect(isVcsUrl("hg+https://hg.example.org/demo")).toBe(true);
+    expect(isVcsUrl(vcsRequirement("requests"))).toBe(false);
+    expect(isVcsUrl(vcsRequirement("file:///tmp/pkg"))).toBe(false);
+  });
+
+  it("never lets a typed path read as a PyPI name", () => {
+    expect(diskRequirement(" mylib ")).toBe("./mylib");
+    expect(diskRequirement("pkgs/mylib")).toBe("./pkgs/mylib");
+    expect(diskRequirement("src\\mylib")).toBe("./src\\mylib");
+    for (const path of ["./mylib", "../lib", "/work/lib", "~/lib", "C:\\work\\lib", "\\\\server\\lib"]) {
+      expect(diskRequirement(path)).toBe(path);
+    }
+    expect(isArchive("dist/demo-1.0.tar.gz")).toBe(true);
+    expect(isArchive("dist/demo-1.0-py3-none-any.whl")).toBe(true);
+    expect(isArchive("pkgs/demo")).toBe(false);
   });
 });
