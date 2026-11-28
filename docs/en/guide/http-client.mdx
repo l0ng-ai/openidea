@@ -129,6 +129,17 @@ OpenIDEA indexes Spring Web endpoints (`@RestController` / `@Controller` classes
 - Search Everywhere has an **Endpoints** tab.
 - In a `.http` file, URL completion after the method suggests known endpoints.
 
+### Flask and FastAPI
+
+Flask and FastAPI routes are indexed too, from the Python files that import either framework (virtualenvs and excluded folders are skipped):
+
+- Flask: `@app.route(path, methods=[...])`, `@app.get` / `post` / `put` / `patch` / `delete` and `app.add_url_rule(...)`, on the app and on blueprints, with the blueprint's `url_prefix` or the one `register_blueprint(...)` gives it.
+- FastAPI: `@app.get` / `post` / `put` / `patch` / `delete` / `head` / `options` and `@app.api_route(path, methods=[...])`, on the app and on `APIRouter`s, with the router's `prefix` plus the one `include_router(...)` adds, through nested routers and sub-applications (`app.mount(...)`).
+- Blueprints and routers registered from another module are followed through its imports. A path, prefix or method list may be a module constant or a settings attribute (`settings.API_V1_STR` with `settings = Settings()`); a route whose path or prefix is only known at runtime (an f-string, a computed value) is left out rather than shown under a wrong URL.
+- Only decorators on a known app, blueprint or router count, so `@mock.patch(...)` in a test is not a route.
+- Path parameters are written `{name}` (Flask's `<int:id>` becomes `{id}`). The routes show in the **Endpoints** tab of Search Everywhere, complete in `.http` files, and a request URL navigates to its view function.
+- Each route gets an **Open in HTTP Client** gutter icon, which follows the file as you type; the request goes to `http://127.0.0.1:5000` (Flask) or `http://127.0.0.1:8000` (FastAPI).
+
 Plugins can contribute endpoints of other frameworks; they get an **Open in HTTP Client** gutter icon.
 
 ### Feign navigation

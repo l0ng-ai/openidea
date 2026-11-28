@@ -33,6 +33,7 @@ import {
 } from "./spring/editor";
 import { endpointEditorExtension, OPEN_ENDPOINT, openEndpoint } from "./endpoints";
 import type { EndpointEntry } from "@/workbench/contributions";
+import { registerPythonEndpointProvider } from "./python/routeIndex";
 import { registerSpringEndpointProvider } from "./spring/routeIndex";
 import {
   feignEditorExtension,
@@ -145,6 +146,7 @@ async function newRequest(directory?: string) {
 export function activate(): () => void {
   const disposers = [
     registerSpringEndpointProvider(),
+    registerPythonEndpointProvider(),
     registerFeignNavigation(),
     registerVariableNavigation(),
     registerUrlNavigation(),

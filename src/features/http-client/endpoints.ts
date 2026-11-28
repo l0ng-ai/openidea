@@ -9,6 +9,7 @@ import { gutterIconMarkup, showContextMenu } from "@/ui";
 import { notifications, onEndpointsChanged, searchEndpoints, type EndpointEntry } from "@/workbench/contributions";
 import { appendGeneratedRequests } from "./generatedRequests";
 import { headerCompletion } from "./headers";
+import { pythonEndpointsOf } from "./python/routeIndex";
 import { sourceReader } from "./spring/editor";
 import { findHost } from "./spring/request";
 import { METHODS } from "./language";
@@ -22,10 +23,15 @@ export function renderEndpoint(e: EndpointEntry, host = "http://localhost:8080")
   return `### ${e.handler ?? `${e.method} ${e.url}`}\n${e.method === "*" ? "GET" : e.method} ${host}${endpointUrl(e.url)}\n`;
 }
 
+/** The development servers' default addresses (`flask run`, `uvicorn`). */
+const DEFAULT_HOSTS: Record<string, string> = { Flask: "http://127.0.0.1:5000", FastAPI: "http://127.0.0.1:8000" };
+
 export async function openEndpoint(endpoint: EndpointEntry): Promise<void> {
   try {
     // The server address of the endpoint's module (`server.port`, context path), as for Spring mappings.
-    const host = await findHost(endpoint.path, useProject.getState().project?.root ?? null, sourceReader);
+    const host =
+      (!endpoint.pluginId && DEFAULT_HOSTS[endpoint.framework ?? ""]) ||
+      (await findHost(endpoint.path, useProject.getState().project?.root ?? null, sourceReader));
     await appendGeneratedRequests([renderEndpoint(endpoint, host)]);
   } catch (e) {
     notifications().notify({ level: "error", title: tx("Cannot generate the HTTP request"), body: String(e) });
@@ -132,12 +138,18 @@ export function endpointEditorExtension(ctx: EditorDocContext): Extension {
           clearTimeout(this.timer);
           const seq = ++this.seq;
           const root = useProject.getState().project?.root ?? null;
-          // Only plugin endpoints get icons here; built-in providers (Spring) scan the project.
-          void searchEndpoints(root, isPluginProvider).then((entries) => {
+          // Plugin endpoints, and in a Python file its Flask / FastAPI routes as typed (not as last saved).
+          // Spring draws its own icons, with request bodies.
+          const python =
+            root && ctx.language === "python"
+              ? pythonEndpointsOf(root, ctx.path, this.view.state.doc.toString()).catch(() => [])
+              : Promise.resolve([]);
+          void Promise.all([searchEndpoints(root, isPluginProvider), python]).then(([plugins, routes]) => {
+            const entries = [...plugins.filter((e) => e.pluginId), ...routes];
             if (this.destroyed || seq !== this.seq) return;
             const byLine = new Map<number, EndpointEntry[]>();
             for (const e of entries) {
-              if (!e.pluginId || e.path !== ctx.path || e.line >= this.view.state.doc.lines) continue;
+              if (e.path !== ctx.path || e.line >= this.view.state.doc.lines) continue;
               const pos = this.view.state.doc.line(e.line + 1).from;
               byLine.set(pos, [...(byLine.get(pos) ?? []), e]);
             }

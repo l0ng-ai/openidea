@@ -16,6 +16,17 @@ pub async fn spring_route_sources(
     ide_host::ops::routes::spring_route_sources(&state.host, window.label()).await
 }
 
+/// Flask and FastAPI sources for the request-path index of Search Everywhere.
+#[desktop_command(trust = trusted)]
+#[tauri::command]
+#[specta::specta]
+pub async fn python_route_sources(
+    window: Window,
+    state: State<'_, AppState>,
+) -> IdeResult<Vec<ide_host::ops::routes::RouteSource>> {
+    ide_host::ops::routes::python_route_sources(&state.host, window.label()).await
+}
+
 /// Cucumber feature files and step definition files, for step navigation.
 #[desktop_command(trust = trusted)]
 #[tauri::command]
@@ -31,4 +42,4 @@ pub async fn cucumber_sources(
         .map_err(|e| ide_core::IdeError::internal(e.to_string()))?
 }
 
-ide_command::desktop_domain!(cucumber_sources, spring_route_sources);
+ide_command::desktop_domain!(cucumber_sources, python_route_sources, spring_route_sources);

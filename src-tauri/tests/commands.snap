@@ -571,6 +571,7 @@ proxy_check_connection                       always             desktop      bin
 pypi_package                                 outside_restricted project_host bindings async
 pypi_search                                  outside_restricted project_host bindings async
 python_requirements                          trusted            project_host bindings async
+python_route_sources                         trusted            desktop      bindings async
 recent_files                                 always             project_host bindings sync
 recent_project_groups                        always             desktop      bindings sync
 recent_projects                              always             desktop      bindings async
