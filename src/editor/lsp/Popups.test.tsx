@@ -312,7 +312,7 @@ describe("documentation", () => {
     expect(screen.queryByRole("search")).not.toBeInTheDocument();
 
     fireEvent.keyDown(frame, { key: "f", metaKey: true });
-    const input = screen.getByRole("textbox", { name: "Find in Documentation" });
+    const input = screen.getByRole("textbox", { name: "Find in Documentation" }) as HTMLInputElement;
     expect(input).toHaveFocus();
     fireEvent.change(input, { target: { value: "beta" } });
     expect(screen.getByRole("status")).toHaveTextContent("1/3");
