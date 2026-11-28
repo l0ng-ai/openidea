@@ -85,6 +85,28 @@ describe("console selection retention", () => {
     expect(pause).toHaveBeenCalled();
   });
 
+  it("keeps only the ends of a keyboard selection mounted", () => {
+    const { result, select } = setup();
+    result.current.markKeyboardSelection();
+    select();
+    const indices = result.current.rangeExtractor({ ...viewport, startIndex: 300, endIndex: 310 });
+    expect(indices.slice(0, 2)).toEqual([5, 7]);
+    expect(indices).not.toContain(6);
+    expect(result.current.selecting).toBe(true);
+    expect(result.current.keyboardSelection()).toBe(true);
+  });
+
+  it("keeps the caret's row mounted without counting it as a selection", () => {
+    const { result, rows, pause } = setup();
+    act(() => {
+      window.getSelection()!.collapse(rows[1]!.firstChild!, 2);
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    expect(result.current.rangeExtractor(viewport)[0]).toBe(6);
+    expect(result.current.selecting).toBe(false);
+    expect(pause).not.toHaveBeenCalled();
+  });
+
   it("does not pin rows or pause output for a context click", () => {
     const { result, rows, pause } = setup();
     fireEvent.mouseDown(rows[0]!, { button: 2 });

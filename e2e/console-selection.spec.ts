@@ -104,6 +104,71 @@ test("Select All takes the whole buffer, not just the mounted rows", async ({ pa
   expect(copied).toMatch(/output 499$/);
 });
 
+test("moves a caret with IDEA's console keys instead of scrolling to either end", async ({ page }) => {
+  const log = await consoleOutput(page);
+  await page.evaluate(() => document.getElementById("splash")?.remove());
+  await log.evaluate((el) => {
+    el.scrollTop = 200 * 20;
+  });
+  const row = log.locator('[data-index="205"]');
+  await expect(row).toBeVisible();
+  const box = (await row.boundingBox())!;
+  await page.mouse.click(box.x + 30, box.y + box.height / 2);
+  const caret = () =>
+    page.evaluate(() => {
+      const s = window.getSelection()!;
+      const row = (s.focusNode as Node | null)?.parentElement?.closest("[data-index]");
+      return { row: Number(row?.getAttribute("data-index")), offset: s.focusOffset, text: s.toString() };
+    });
+  const top = await log.evaluate((el) => el.scrollTop);
+  await page.keyboard.press("End");
+  expect(await caret()).toEqual({ row: 205, offset: 10, text: "" });
+  expect(await log.evaluate((el) => el.scrollTop)).toBe(top);
+  // The arrows (also bound in the Git log) and ⌘← / ⌘→ reach the console through the keymap.
+  for (const [key, row, offset] of [
+    ["ArrowLeft", 205, 9],
+    ["ArrowRight", 205, 10],
+    ["ArrowRight", 206, 0],
+    ["ArrowLeft", 205, 10],
+    ["ArrowUp", 204, 10],
+    ["ArrowDown", 205, 10],
+    ["Meta+ArrowLeft", 205, 0],
+    ["Meta+ArrowRight", 205, 10],
+  ] as const) {
+    await page.keyboard.press(key);
+    expect(await caret(), key).toEqual({ row, offset, text: "" });
+  }
+  await page.keyboard.press("Shift+Home");
+  expect(await caret()).toMatchObject({ row: 205, offset: 0, text: "output 205" });
+
+  // ⇧⌘Home selects to the start without mounting the rows in between; copying takes all of them.
+  await page.keyboard.press("End");
+  await page.keyboard.press("Meta+Shift+Home");
+  await expect.poll(() => log.evaluate((el) => el.scrollTop)).toBe(0);
+  expect(await log.locator("[data-index]").count()).toBeLessThan(100);
+  await page.evaluate(() => {
+    (window as unknown as { copied: string[] }).copied = [];
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async (text: string) => (window as unknown as { copied: string[] }).copied.push(text) },
+    });
+  });
+  await page.keyboard.press("Meta+C");
+  const copied = () => page.evaluate(() => (window as unknown as { copied: string[] }).copied[0] ?? "");
+  await expect.poll(copied).toMatch(/^output 0\n[\s\S]*\noutput 205$/);
+  expect((await copied()).split("\n")).toHaveLength(206);
+
+  await page.keyboard.press("Meta+End");
+  await expect.poll(caret).toEqual({ row: 499, offset: 10, text: "" });
+  // PageUp moves the caret a screen up and scrolls the output with it.
+  const bottom = await log.evaluate((el) => el.scrollTop);
+  await page.keyboard.press("PageUp");
+  await expect.poll(async () => (await caret()).row).toBeLessThan(490);
+  const { row: paged } = await caret();
+  expect(paged).toBeGreaterThan(480);
+  await expect.poll(() => log.evaluate((el) => el.scrollTop)).toBe(bottom - (499 - paged) * 20);
+});
+
 /** Mount the real console over the given output, wrapped or not. */
 async function consoleOf(page: Page, text: string, softWrap: boolean) {
   await page.goto("/");

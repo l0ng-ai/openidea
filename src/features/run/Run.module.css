@@ -1282,6 +1282,24 @@
   background: var(--fg);
   animation: caretBlink 1s steps(1) infinite;
 }
+/* The output's caret (IDEA's console is a read-only editor); one caret blinks at a time. */
+.caret {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  width: 1px;
+  pointer-events: none;
+  background: transparent;
+}
+.console:focus .caret {
+  background: var(--caret);
+  animation: caretBlink 1s steps(1) infinite;
+}
+.caret:not([hidden]) ~ * .inputCaret {
+  background: transparent;
+  animation: none;
+}
 @keyframes caretBlink {
   50% {
     background: transparent;

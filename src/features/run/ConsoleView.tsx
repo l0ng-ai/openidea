@@ -26,6 +26,8 @@ import { debugConsoleUrl, openTarget, openUrl } from "./navigate";
 import { segmentLine, type SegmentMark } from "./segments";
 import styles from "./Run.module.css";
 import { useConsoleSelection } from "./useConsoleSelection";
+import { useConsoleCaret } from "./useConsoleCaret";
+import { caretFromDom, type CaretPosition, type CaretRows } from "@/ui/consoleCaret";
 import { hostBinding, formatBinding, hasPrimaryModifier, registerKeyClaim } from "@/platform/keymap";
 import { WidestColumns } from "@/platform/consoleColumns";
 import { tx } from "@/platform/i18n";
@@ -220,6 +222,35 @@ export function foldRows(
   return rows;
 }
 
+/**
+ * The output between two caret positions over `rows`, folded lines included, joined as
+ * `ConsoleModel.text` joins them. A fold row is an empty stop before the lines it hides.
+ */
+export function selectionText(
+  lines: readonly ConsoleLine[],
+  rows: readonly DisplayRow[],
+  a: CaretPosition,
+  b: CaretPosition,
+): string {
+  const [from, to] = a.row < b.row || (a.row === b.row && a.offset <= b.offset) ? [a, b] : [b, a];
+  const at = (p: CaretPosition) => {
+    const row = rows[p.row];
+    if (row?.kind === "line") return { line: row.index, offset: p.offset };
+    if (row) return { line: row.fold.start, offset: 0 };
+    return { line: lines.length - 1, offset: lines[lines.length - 1]?.text.length ?? 0 };
+  };
+  const start = at(from);
+  const end = at(to);
+  let out = "";
+  for (let i = start.line; i <= end.line; i++) {
+    const line = lines[i];
+    if (!line) break;
+    out += line.text.slice(i === start.line ? start.offset : 0, i === end.line ? end.offset : line.text.length);
+    if (i < end.line && !line.continues) out += "\n";
+  }
+  return out;
+}
+
 /** Typed console input (IDEA: type into the console, Enter sends the line). */
 export interface ConsoleInput {
   /** Typed, not yet sent. */
@@ -322,7 +353,9 @@ export function ConsoleView({
     });
   const programmatic = useRef(false);
 
-  const { rangeExtractor, selecting } = useConsoleSelection(scrollRef, () => onFollowChange(false));
+  const { rangeExtractor, selecting, markKeyboardSelection, keyboardSelection } = useConsoleSelection(scrollRef, () =>
+    onFollowChange(false),
+  );
   const virtualizer = useVirtualizer({
     rangeExtractor,
     count,
@@ -357,6 +390,39 @@ export function ConsoleView({
     if (atBottom && selecting) return;
     if (atBottom !== follow) onFollowChange(atBottom);
   };
+
+  const caretRows: CaretRows = {
+    count: rows.length,
+    text: (i) => {
+      const row = rows[i];
+      return row?.kind === "line" ? (lines[row.index]?.text ?? "") : "";
+    },
+  };
+  const caret = useConsoleCaret({
+    host: scrollRef,
+    inner: innerRef,
+    rows: caretRows,
+    follow,
+    onFollowChange,
+    pageRows: () => {
+      const page = Math.floor((scrollRef.current?.clientHeight ?? 0) / rowHeight);
+      return Number.isFinite(page) && page > 0 ? page : 1;
+    },
+    topRow: () => {
+      const offset = scrollRef.current?.scrollTop ?? 0;
+      const first = virtualizer.getVirtualItems().find((item) => item.start + item.size > offset);
+      return Math.min(first?.index ?? 0, Math.max(0, rows.length - 1));
+    },
+    reveal: (row, page) => {
+      programmatic.current = true;
+      // PageUp / PageDown scroll a screen with the caret, as IDEA does; other moves just show it.
+      const el = scrollRef.current;
+      if (page && el) virtualizer.scrollToOffset(Math.max(0, el.scrollTop + page * rowHeight));
+      else virtualizer.scrollToIndex(row, { align: "auto" });
+      requestAnimationFrame(() => (programmatic.current = false));
+    },
+    markKeyboardSelection,
+  });
 
   // Find (⌘F): search the whole buffer, not just the rendered rows.
   const found = useMemo(
@@ -518,8 +584,18 @@ export function ConsoleView({
       s.focusOffset === inner.childNodes.length
     );
   };
+  /** A keyboard selection keeps only its ends mounted: its text comes from the lines. */
+  const keyboardSelectionText = () => {
+    const el = scrollRef.current;
+    const s = window.getSelection();
+    if (!keyboardSelection() || !el || !s || s.isCollapsed) return null;
+    const anchor = caretFromDom(el, s.anchorNode, s.anchorOffset);
+    const focus = caretFromDom(el, s.focusNode, s.focusOffset);
+    return anchor && focus ? selectionText(lines, rows, anchor, focus) : null;
+  };
   /** The selected text; after Select All the whole buffer, including rows that are not mounted. */
-  const selectedOutput = () => (allSelected() ? model.text() : (window.getSelection()?.toString() ?? ""));
+  const selectedOutput = () =>
+    allSelected() ? model.text() : (keyboardSelectionText() ?? window.getSelection()?.toString() ?? "");
 
   /** The output line a context menu opened on; folds and the input row have none. */
   const lineAt = (target: EventTarget) => {
@@ -590,19 +666,24 @@ export function ConsoleView({
       return;
     }
     if (copySelectionOnKeyDown(e, selectedOutput)) return;
-    if (!input || e.target instanceof HTMLButtonElement) return;
+    if (e.target instanceof HTMLButtonElement) return;
+    if (caret.onKeyDown(e)) return;
+    if (!input) return;
     if (e.key === "d" && e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
       input.onEof();
     } else if (e.key === "Enter" && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
+      caret.leaveOutput();
       input.onSubmit(input.pending);
       input.onChange("");
     } else if (e.key === "Backspace" && !e.ctrlKey && !e.metaKey) {
       e.preventDefault();
+      caret.leaveOutput();
       input.onChange(e.altKey ? input.pending.replace(/\S*\s*$/, "") : [...input.pending].slice(0, -1).join(""));
     } else if (e.key.length === 1 && [...e.key].length === 1 && !e.ctrlKey && !e.metaKey) {
       e.preventDefault();
+      caret.leaveOutput();
       input.onChange(input.pending + e.key);
     }
   };
@@ -619,7 +700,7 @@ export function ConsoleView({
   };
 
   const pendingInput = input && (
-    <span className={styles.userInput}>
+    <span className={styles.userInput} data-caret-skip="">
       {input.pending}
       <span className={styles.inputCaret} aria-hidden />
     </span>
@@ -702,9 +783,10 @@ export function ConsoleView({
         onKeyDown={onKeyDown}
         onCopy={(e) => {
           // Native copy (menu, macOS) would take only the mounted rows.
-          if (!allSelected()) return;
+          const text = allSelected() ? model.text() : keyboardSelectionText();
+          if (text === null) return;
           e.preventDefault();
-          e.clipboardData.setData("text/plain", model.text());
+          e.clipboardData.setData("text/plain", text);
         }}
         onPaste={onPaste}
         data-autofocus=""
@@ -718,6 +800,7 @@ export function ConsoleView({
             minWidth: softWrap ? undefined : `calc(${columns}ch + 24px)`,
           }}
         >
+          <div ref={caret.caretRef} className={styles.caret} hidden aria-hidden />
           {items.map((item) => {
             const row = rows[item.index];
             if (!row) {
