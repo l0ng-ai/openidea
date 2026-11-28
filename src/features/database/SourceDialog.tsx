@@ -126,8 +126,8 @@ const PROPERTIES: Record<string, { names: string[]; hint: string }> = {
     hint: "Passed to the JDBC driver as connection properties. Configure TLS and other driver-specific settings here or in the JDBC URL. Use the User and Password fields for credentials.",
   },
   clickhouse: {
-    names: ["max_execution_time", "max_threads", "connect_timeout"],
-    hint: "ClickHouse settings sent with each HTTP request. connect_timeout is in seconds.",
+    names: ["max_execution_time", "max_threads", "connect_timeout", "http_read_timeout"],
+    hint: "Query settings are sent with each request. connect_timeout and http_read_timeout are in seconds. The default wait for response data is 600 seconds.",
   },
   postgres: {
     names: [

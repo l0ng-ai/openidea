@@ -21,7 +21,15 @@ import {
   showContextMenu,
   T,
 } from "@/ui";
-import { askRemoveRecent, groupMenu, ProjectBadge, recentMenu, unavailableTitle } from "./RecentList";
+import {
+  askRemoveRecent,
+  groupMenu,
+  ProjectBadge,
+  recentMenu,
+  RemoteHostPill,
+  splitRemoteMatch,
+  unavailableTitle,
+} from "./RecentList";
 import { openRecent, recentRows, setGroupExpanded, useRecent, type RecentMatch, type RecentRow } from "./recent";
 import { projectWindowOverride } from "@/workbench/projectWindow";
 import type { RecentProjectGroup } from "@/platform/ipc";
@@ -263,6 +271,7 @@ function ProjectRow({
   const stage = progress
     ? tx(stageLabel(progress.stage)) + (progress.fraction == null ? "" : ` ${Math.round(progress.fraction * 100)}%`)
     : null;
+  const { hostMatch, locationMatch, locationText } = splitRemoteMatch(m);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (selected) ref.current?.scrollIntoView?.({ block: "nearest" });
@@ -304,7 +313,10 @@ function ProjectRow({
             {stage}
           </span>
         ) : (
-          <HighlightedText className={styles.projectPath} text={m.displayPath} indices={m.pathMatch} />
+          <>
+            {m.remote && <RemoteHostPill remote={m.remote} hostMatch={hostMatch} />}
+            <HighlightedText className={styles.projectPath} text={locationText} indices={locationMatch} />
+          </>
         )}
         {m.project.branch && (
           <span className={styles.projectBranch}>

@@ -608,12 +608,14 @@ fn environment_key(python: &Path) -> PathBuf {
     venv_of(python).unwrap_or_else(|| python.to_path_buf())
 }
 
-/// Installs (or upgrades, with `upgrade`) a requirement such as `requests` or `django==5.0`;
-/// relative paths (`./pkg`) are resolved against `project_root`.
+/// Installs (or upgrades, with `upgrade`) a requirement such as `requests` or `django==5.0`,
+/// a VCS URL or a local path, in editable mode (`-e`) with `editable`; relative paths
+/// (`./pkg`) are resolved against `project_root`.
 pub fn install_package(
     python: &Path,
     requirement: &str,
     upgrade: bool,
+    editable: bool,
     project_root: Option<&Path>,
     cancel: &CancellationToken,
     on_line: &dyn Fn(String),
@@ -628,6 +630,9 @@ pub fn install_package(
     let mut sub = vec!["install"];
     if upgrade {
         sub.push("--upgrade");
+    }
+    if editable {
+        sub.push("-e");
     }
     sub.push(&requirement);
     let (program, args) = pip_command(python, &installer, &sub);

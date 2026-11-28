@@ -1204,35 +1204,18 @@ impl LspManager {
         .map_err(|e| IdeError::internal(e.to_string()))?
     }
 
-    /// Resolve a disk/archive class to project source or the server's binary document.
+    /// Resolve a disk/archive class to the server's class document, opened decompiled.
     /// Archive URIs must come from JDT's Java model: fabricated handles cannot map debug lines.
+    /// A class in an output directory opens as itself even when its project source exists:
+    /// the user asked for the compiled class, not the file it was built from.
     pub async fn java_class_file(&self, path: &Path, archive: Option<(PathBuf, String)>) -> IdeResult<String> {
         if let Some((jar, entry)) = archive {
             return self.archive_class(jar, entry, false).await;
         }
         let cancel = CancellationToken::new();
         self.jdtls(&self.project_root, &cancel).await?;
-        let uri = crate::uri::path_to_uri_string(path);
-        // classFileContents accepts file URIs, but java-debug's line mapping only accepts JDT handles.
-        let doc = self.virtual_document(&uri).await?;
-        let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").split('$').next().unwrap_or("");
-        let package = doc
-            .text
-            .lines()
-            .find_map(|l| l.trim().strip_prefix("package ").and_then(|p| p.strip_suffix(';')))
-            .unwrap_or("");
-        let relative = PathBuf::from(package.replace('.', "/")).join(format!("{name}.java"));
-        let key = "org.eclipse.jdt.ls.core.sourcePaths";
-        let settings = self
-            .jdtls_project_command(path, "java.project.getSettings", vec![json!(uri), json!([key])], &cancel)
-            .await?;
-        let roots: Vec<PathBuf> =
-            settings[key].as_array().into_iter().flatten().filter_map(Value::as_str).map(PathBuf::from).collect();
-        let source =
-            tokio::task::spawn_blocking(move || roots.into_iter().map(|r| r.join(&relative)).find(|p| p.is_file()))
-                .await
-                .map_err(|e| IdeError::internal(e.to_string()))?;
-        Ok(source.map(|s| s.to_string_lossy().into_owned()).unwrap_or(uri))
+        // classFileContents accepts file URIs for classes outside the Java model.
+        Ok(crate::uri::path_to_uri_string(path))
     }
 
     /// Starts (or reuses) java-debug's DAP server inside jdtls and returns its port.

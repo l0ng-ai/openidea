@@ -49,14 +49,7 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { createRoot } from "react-dom/client";
 import { problemProviders, type ContributedProblem, type EditorDocContext } from "@/editor/api";
 import { iconNode, spinnerNode } from "@/ui/iconNode";
-import {
-  call,
-  commands,
-  type DbDriver,
-  type DbSessionContext,
-  type DbStatementOutcome,
-  type SqlStatement,
-} from "@/platform/ipc";
+import { call, commands, type DbSessionContext, type DbStatementOutcome, type SqlStatement } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
 import { Icon, IconButton, Select, Toolbar, lazyComponent } from "@/ui";
 import { useProject } from "@/platform/project";
@@ -67,6 +60,7 @@ import {
   schemaTreeRows,
   schemaTreeValue,
   sourceIcon,
+  supportsExplain,
   sourceLabel,
   splitTarget,
   targetOf,
@@ -80,12 +74,16 @@ import {
   type SqlCandidate,
   type SqlCatalog,
 } from "./sql/complete";
+import { sqlDriverOf, type SqlDriver } from "./sql/dialect";
+import { duckdbLanguage } from "./sql/duckdbHighlight";
 import { unsafeMessage } from "./sql/unsafe";
 import { WHOLE_FILE, sqlSupport, type SqlText } from "./sqlSupport";
 import { snowflakeLanguage } from "./sql/snowflakeHighlight";
 import {
   allowsPassiveConsoleMetadata,
-  bindConsole,
+  consoleHasPending,
+  consoleUsesManualCommit,
+  rebindConsole,
   cancelConsole,
   closeInlineResults,
   inEditorResults,
@@ -100,6 +98,7 @@ import {
   runSql,
   listsDatabases,
   loadDatabases,
+  loadDuckdbCatalog,
   loadSchemas,
   loadSources,
   loadTables,
@@ -510,17 +509,20 @@ async function executeRange(view: EditorView, path: string, from: number, to: nu
 
 /** Runs the statement at the caret (or the selected ones) of `view`. */
 export async function executeInView(view: EditorView, path: string) {
+  view.focus();
   const sel = view.state.selection.main;
   await executeRange(view, path, sel.from, sel.to);
 }
 
 /** Runs every statement of `view`, in order (stops at the first that fails). */
 export async function executeScriptInView(view: EditorView, path: string) {
+  view.focus();
   await executeRange(view, path, 0, view.state.doc.length);
 }
 
 /** Explain Plan of the statement at the caret (or the first selected one) of `view`. */
 export async function explainInView(view: EditorView, path: string) {
+  view.focus();
   const sel = view.state.selection.main;
   await explainConsole(path, view.state.doc.toString(), sel.from, sel.to);
 }
@@ -872,13 +874,15 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
   const bound = useDatabase(() => consoleSource(path));
   const running = useDatabase((s) => !!s.running[path]);
   const maxRows = useDatabase((s) => s.maxRows);
-  const manual = useDatabase((s) => !!bound && s.manualCommit.has(bound));
-  const pending = useDatabase((s) => !!bound && s.pendingTx.has(bound));
+  const manual = useDatabase((s) => !!bound && consoleUsesManualCommit(s, bound, path));
+  const pending = useDatabase((s) => !!bound && consoleHasPending(s, bound, path));
   const inEditor = useProject((s) => inEditorResults(s.settings));
   // SQL resolution scopes in the settings can move the console to another data source.
   useProject((s) => s.settings);
   const boundId = bound ? splitTarget(bound).id : null;
-  const driver = sources.find((s) => s.id === boundId)?.driver;
+  const source = sources.find((s) => s.id === boundId);
+  const canExplain = supportsExplain(source);
+  const driver = source?.driver;
   const jdbc = driver === "jdbc";
   const supportsTransactions = driver !== "clickhouse" && !jdbc;
   const switchable = schemaSwitchable(driver);
@@ -948,7 +952,7 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
       />
       <span className={styles.toolbarSeparator} />
       <IconButton icon="history" title="Browse Query History" disabled={!bound} onClick={() => openHistory(path)} />
-      {!jdbc && (
+      {canExplain && (
         <IconButton
           icon="db-plan"
           title="Explain Plan"
@@ -972,8 +976,8 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
             { value: "auto", label: "Tx: Auto" },
             { value: "manual", label: "Tx: Manual" },
           ]}
-          onChange={(v) => bound && void setManualCommit(bound, v === "manual")}
-          disabled={!bound}
+          onChange={(v) => bound && void setManualCommit(bound, v === "manual", path)}
+          disabled={!bound || running}
         />
       )}
       {supportsTransactions && manual && (
@@ -982,13 +986,13 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
             icon="commit"
             title="Commit"
             disabled={!pending || running}
-            onClick={() => bound && void finishTransaction(bound, true)}
+            onClick={() => bound && void finishTransaction(bound, true, path)}
           />
           <IconButton
             icon="revert"
             title="Roll Back"
             disabled={!pending || running}
-            onClick={() => bound && void finishTransaction(bound, false)}
+            onClick={() => bound && void finishTransaction(bound, false, path)}
           />
         </>
       )}
@@ -1015,8 +1019,10 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
         placeholder={sources.length ? "<data source>" : "None configured"}
         options={sourceOptions}
         searchable
-        onChange={(id) => id !== boundId && bindConsole(path, id)}
-        disabled={!sources.length}
+        onChange={(id) => {
+          if (id !== boundId) void rebindConsole(path, id);
+        }}
+        disabled={!sources.length || running}
       />
       {bound && boundId && switchable && listsDatabases(sourceById(boundId)) ? (
         <DatabaseSchemaSwitcher path={path} bound={bound} sourceId={boundId} schema={schema} />
@@ -1129,8 +1135,11 @@ function DatabaseSchemaSwitcher({
           return;
         }
         const target = targetFor(pick.database);
-        if (target !== bound) bindConsole(path, target);
-        setConsoleSchema(path, pick.schema);
+        if (target === bound) setConsoleSchema(path, pick.schema);
+        else
+          void rebindConsole(path, target).then((rebound) => {
+            if (rebound) setConsoleSchema(path, pick.schema);
+          });
       }}
     />
   );
@@ -1235,7 +1244,7 @@ function docNode(text: string): Node {
   return pre;
 }
 
-function applyCandidate(c: SqlCandidate, driver: DbDriver, sql: SqlText) {
+function applyCandidate(c: SqlCandidate, driver: SqlDriver, sql: SqlText) {
   return (view: EditorView, completion: Completion, from: number, to: number) => {
     // A selected template placeholder is replaced, as CodeMirror's own string completions do.
     const sel = view.state.selection.main;
@@ -1368,7 +1377,7 @@ export function completionSource(path: string, sql: SqlText = WHOLE_FILE): Compl
     const id = consoleSource(path);
     const current = id ? databaseRequest(id) : projectRequest();
     const source = sourceById(id);
-    const driver: DbDriver = source?.driver ?? "sqlite";
+    const driver = sqlDriverOf(source);
     // A custom JDBC source (`driver: "jdbc"`) says nothing about how its server folds
     // identifiers; its URL does (`jdbc:oracle:thin:@…`). Quoting follows that dialect.
     const dialect = driver === "jdbc" ? jdbcDialect(source?.url) : null;
@@ -1385,18 +1394,26 @@ export function completionSource(path: string, sql: SqlText = WHOLE_FILE): Compl
       ? analyze(doc.slice(0, sel.from) + doc.slice(sel.to), sel.from, driver)
       : analyze(doc, ctx.pos, driver);
     if (!ctx.explicit && !shouldAutoCompleteSql(analysis)) return null;
-    const cataloged = driver === "snowflake" && !!id;
-    if (cataloged && analysis.qualifier?.length) {
-      await loadQualified(id, analysis.qualifier).catch(() => {});
-      if (ctx.aborted || !current()) return null;
+    let catalog: SqlCatalog | undefined;
+    if (id && driver === "snowflake") {
+      if (analysis.qualifier?.length) await loadQualified(id, analysis.qualifier).catch(() => {});
+      catalog = catalogOf(id);
+    } else if (
+      id &&
+      driver === "duckdb" &&
+      analysis.context.kind === "table" &&
+      (analysis.qualifier?.length ?? 0) < 3
+    ) {
+      catalog = await loadDuckdbCatalog(id, analysis.qualifier?.[0]).catch(() => undefined);
     }
+    if (ctx.aborted || !current() || consoleSource(path) !== id) return null;
     const candidates = sqlCandidates({
       model: scoped,
       analysis,
       driver,
       dialect,
       sourceName: source?.name ?? undefined,
-      catalog: cataloged ? catalogOf(id) : undefined,
+      catalog,
     });
     if (!candidates.length) return null;
     return {
@@ -1418,8 +1435,8 @@ export function completionSource(path: string, sql: SqlText = WHOLE_FILE): Compl
 
 const noKeywords: CompletionSource = (ctx) => ({ from: ctx.pos, options: [] });
 
-function driverOf(path: string): DbDriver {
-  return sourceById(consoleSource(path))?.driver ?? "sqlite";
+function editorDriverOf(path: string): SqlDriver {
+  return sqlDriverOf(sourceById(consoleSource(path)));
 }
 
 /**
@@ -1428,15 +1445,17 @@ function driverOf(path: string): DbDriver {
  */
 function dialectColours(path: string): Extension {
   const slot = new Compartment();
-  const colours = (driver: DbDriver): Extension =>
-    driver === "snowflake" ? Prec.high(snowflakeLanguage().extension) : [];
-  const initial = driverOf(path);
+  const colours = (driver: SqlDriver): Extension => {
+    if (driver === "duckdb") return Prec.high(duckdbLanguage().extension);
+    return driver === "snowflake" ? Prec.high(snowflakeLanguage().extension) : [];
+  };
+  const initial = editorDriverOf(path);
   return [
     slot.of(colours(initial)),
     ViewPlugin.define((view) => {
       let shown = initial;
       const stop = useDatabase.subscribe(() => {
-        const driver = driverOf(path);
+        const driver = editorDriverOf(path);
         if (driver === shown) return;
         shown = driver;
         view.dispatch({ effects: slot.reconfigure(colours(driver)) });
@@ -1449,7 +1468,7 @@ function dialectColours(path: string): Extension {
 /** Live template contexts at a position (`sql-statement` / `sql-query` / `sql-code`). */
 function templateContextsAt(path: string) {
   return (state: EditorState, pos: number): readonly string[] =>
-    templateContexts(analyze(state.doc.toString(), pos, driverOf(path)));
+    templateContexts(analyze(state.doc.toString(), pos, editorDriverOf(path)));
 }
 
 /**
@@ -1473,7 +1492,7 @@ function valuesInfo(path: string) {
     const sel = state.selection.main;
     if (!sel.empty) return null;
     const id = consoleSource(path);
-    const slot = valuesSlot(state.doc.toString(), sel.head, driverOf(path));
+    const slot = valuesSlot(state.doc.toString(), sel.head, editorDriverOf(path));
     if (!slot) return null;
     const table = id
       ? useDatabase

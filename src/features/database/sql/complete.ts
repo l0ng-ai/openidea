@@ -5,16 +5,19 @@
  * of the tables in scope with their owner and type, join conditions after ON,
  * dialect functions and the keywords that may follow.
  */
-import type { DbCompletion, DbCompletionColumn, DbCompletionTable, DbDriver } from "@/platform/ipc";
+import type { DbCompletion, DbCompletionColumn, DbCompletionTable } from "@/platform/ipc";
 import type { Analysis, Clause, TableRef } from "./analyze";
 import {
   DATA_TYPES,
   functions,
+  identifierKey,
   isReserved,
   joinKeywords,
   nameMatcher,
   predicateKeywords,
   statementStarters,
+  type SqlDriver,
+  type SqlFunction,
 } from "./dialect";
 
 export type CandidateKind =
@@ -69,7 +72,7 @@ const MAX_ALL_COLUMNS = 3000;
  * what is not a plain word is quoted, which is right for the dialects that fold case
  * neither way.
  */
-export function quoteIdent(name: string, driver: DbDriver, dialect?: DbDriver | null): string {
+export function quoteIdent(name: string, driver: SqlDriver, dialect?: SqlDriver | null): string {
   const d = driver === "jdbc" && dialect ? dialect : driver;
   const plain =
     d === "postgres"
@@ -106,7 +109,7 @@ export function aliasFor(table: string, taken: ReadonlySet<string>): string {
 }
 
 /**
- * What lies outside the schema model, for `database.schema.table` names (Snowflake): the data
+ * What lies outside the schema model, for `database.schema.table` names: the data
  * source's databases, and the schemas and tables of one, as far as they are loaded. Names are
  * matched the way the dialect matches them.
  */
@@ -126,9 +129,9 @@ export interface CompletionInput {
   catalog?: SqlCatalog;
   model: DbCompletion | null;
   analysis: Analysis;
-  driver: DbDriver;
+  driver: SqlDriver;
   /** The dialect a `jdbc` source speaks, from its URL (`jdbcDialect`); quoting follows it. */
-  dialect?: DbDriver | null;
+  dialect?: SqlDriver | null;
   /** Data source name, shown next to tables like IDEA does. */
   sourceName?: string;
 }
@@ -142,6 +145,7 @@ export function sqlCandidates({
   catalog,
 }: CompletionInput): SqlCandidate[] {
   const eq = nameMatcher(driver);
+  const columnKey = (name: string) => (driver === "duckdb" ? identifierKey(name, driver) : name.toLowerCase());
   const ctx = a.context;
   if (ctx.kind === "none") return [];
   const typedLower = /[a-z]/.test(a.prefix.text) && !/[A-Z]/.test(a.prefix.text);
@@ -182,13 +186,15 @@ export function sqlCandidates({
     schema
       ? tables.find((t) => eq(t.schema, schema) && eq(t.name, name))
       : (tables.find((t) => eq(t.schema, defaultSchema) && eq(t.name, name)) ?? tables.find((t) => eq(t.name, name)));
+  const refTable = (r: TableRef): DbCompletionTable | undefined =>
+    r.kind === "table" && !(driver === "duckdb" && r.database !== undefined) ? findTable(r.schema, r.name) : undefined;
   const columnsOf = (r: TableRef): Array<Pick<DbCompletionColumn, "name"> & Partial<DbCompletionColumn>> =>
-    r.columns ? r.columns.map((name) => ({ name })) : (findTable(r.schema, r.name)?.columns ?? []);
+    r.columns ? r.columns.map((name) => ({ name })) : (refTable(r)?.columns ?? []);
   const refName = (r: TableRef) => r.alias ?? r.name;
   /** Owner shown after a column: the alias, else the table qualified by its schema (IDEA's `(main.users)`). */
   const ownerOf = (r: TableRef) => {
     if (r.alias || r.kind !== "table") return refName(r);
-    const t = findTable(r.schema, r.name);
+    const t = refTable(r);
     return t?.schema ? `${t.schema}.${t.name}` : r.name;
   };
   /** One candidate inserting several columns: `id, email, name`. */
@@ -236,30 +242,47 @@ export function sqlCandidates({
       : undefined,
   });
 
+  if (ctx.kind === "exclude") {
+    const seen = new Set<string>();
+    const qualifier = a.qualifier?.at(-1);
+    for (const r of a.refs) {
+      if (r.depth !== 0 || (ctx.owner && !eq(refName(r), ctx.owner)) || (qualifier && !eq(refName(r), qualifier)))
+        continue;
+      const t = refTable(r);
+      for (const c of columnsOf(r)) {
+        const key = columnKey(c.name);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(columnCandidate(c, ownerOf(r), t, 40));
+      }
+    }
+    return out;
+  }
+
   // ---- `qualifier.` ----------------------------------------------------------
   if (a.qualifier) {
     const [first, second] = a.qualifier;
     if (a.qualifier.length === 1 && ctx.kind !== "table") {
       const ref = a.refs.find((r) => eq(r.alias, first) || (!r.alias && eq(r.name, first)));
       if (ref) {
-        const t = ref.kind === "table" ? findTable(ref.schema, ref.name) : undefined;
+        const t = refTable(ref);
         return columnsOf(ref).map((c) => columnCandidate(c, refName(ref), t, 50));
       }
     }
     if (a.qualifier.length === 1) {
-      const inSchema: SqlCandidate[] = tables
-        .filter((t) => eq(t.schema, first))
-        .map((t) => ({ ...tableCandidate(t, 30), insert: qn(t.name) }));
-      // `database.`: its schemas (a name can be a schema here and a database too).
+      // DuckDB rejects two-part names when a catalog and a schema share the qualifier.
       const db = database(first!);
+      const inSchema: SqlCandidate[] =
+        driver === "duckdb" && db
+          ? []
+          : tables.filter((t) => eq(t.schema, first)).map((t) => ({ ...tableCandidate(t, 30), insert: qn(t.name) }));
       if (db) inSchema.push(...(catalog?.schemas(db) ?? []).map((s) => schemaCandidate(s, 20, `(${db})`)));
       if (inSchema.length) return inSchema;
       const t = findTable(null, first!);
       if (t && ctx.kind !== "table") return t.columns.map((c) => columnCandidate(c, t.name, t, 50));
       return [];
     }
-    // Snowflake `database.schema.table`: the model holds the session's database only, keyed by the last two parts.
-    if (driver === "snowflake" && ctx.kind === "table") {
+    if ((driver === "snowflake" || driver === "duckdb") && ctx.kind === "table") {
       // `database.schema.`: the tables of that schema, wherever the database is.
       const db = a.qualifier.length === 2 ? database(first!) : undefined;
       if (!db) return [];
@@ -273,6 +296,12 @@ export function sqlCandidates({
       }));
     }
     const [schema, name] = driver === "snowflake" ? a.qualifier.slice(-2) : [first, second];
+    if (
+      driver === "duckdb" &&
+      (a.qualifier.length > 2 ||
+        a.refs.some((r) => r.database !== undefined && eq(r.schema, schema) && eq(r.name, name)))
+    )
+      return [];
     const t = findTable(schema!, name!);
     return t ? t.columns.map((c) => columnCandidate(c, t.name, t, 50)) : [];
   }
@@ -307,6 +336,7 @@ export function sqlCandidates({
             boost: -5,
           });
       if (ctx.join) keywords(["LATERAL"], -10);
+      if (driver === "duckdb") for (const f of functions(driver)) if (f.table) addFunction(f, 10);
       return out;
     }
 
@@ -334,6 +364,10 @@ export function sqlCandidates({
         }
         keywords(["AS", "WHERE", ...joinKeywords(driver), "GROUP BY", "ORDER BY", "LIMIT", "UNION", "UNION ALL"], 10);
         if (driver === "snowflake") keywords(["QUALIFY", "SAMPLE", "PIVOT", "UNPIVOT", "MATCH_RECOGNIZE"], 10);
+        if (driver === "duckdb") {
+          keywords(["QUALIFY", "GROUP BY ALL", "ORDER BY ALL"], 10);
+          if (a.fromFirst) keywords(["SELECT"], 15);
+        }
       }
       return out;
     }
@@ -344,7 +378,7 @@ export function sqlCandidates({
       return out;
 
     case "insertColumns": {
-      const t = ctx.target.kind === "table" ? findTable(ctx.target.schema, ctx.target.name) : undefined;
+      const t = refTable(ctx.target);
       const all = columnsOf(ctx.target);
       // The columns an INSERT needs (no default), then all of them.
       const required = all.filter((c) => !c.hasDefault).map((c) => c.name);
@@ -380,16 +414,16 @@ export function sqlCandidates({
     // Column names in several tables of the block are inserted qualified.
     const count = new Map<string, number>();
     for (const r of inner)
-      for (const c of columnsOf(r)) count.set(c.name.toLowerCase(), (count.get(c.name.toLowerCase()) ?? 0) + 1);
+      for (const c of columnsOf(r)) count.set(columnKey(c.name), (count.get(columnKey(c.name)) ?? 0) + 1);
     const seen = new Set<string>();
     for (const r of visible) {
-      const t = r.kind === "table" ? findTable(r.schema, r.name) : undefined;
+      const t = refTable(r);
       const owner = ownerOf(r);
       for (const c of columnsOf(r)) {
         const key = `${owner}\u0000${c.name}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        const ambiguous = r.depth > 0 || (count.get(c.name.toLowerCase()) ?? 0) > 1;
+        const ambiguous = r.depth > 0 || (count.get(columnKey(c.name)) ?? 0) > 1;
         out.push(
           columnCandidate(
             c,
@@ -421,28 +455,38 @@ export function sqlCandidates({
     }
     for (const c of a.ctes)
       if (!visible.some((r) => eq(r.name, c.name))) out.push({ label: c.name, kind: "table", tail: "(CTE)", boost: 0 });
-    const fnBoost = clause === "select" || clause === "having" ? 15 : 8;
+    for (const name of a.selectColumns ?? []) {
+      if (!out.some((c) => c.kind === "column" && eq(c.label, name)))
+        out.push({ label: name, kind: "column", insert: qn(name), boost: 45 });
+    }
+    const selectLike = clause === "select" || clause === "having" || clause === "qualify";
     for (const f of functions(driver)) {
-      const name = lower || driver === "clickhouse" ? f.name : f.name.toUpperCase();
-      out.push({
-        label: name,
-        kind: "function",
-        tail: `(${f.params})`,
-        type: f.returns?.toUpperCase(),
-        snippet: f.params ? `${name}(\${})` : `${name}()\${0}`,
-        boost: f.aggregate && clause !== "select" && clause !== "having" ? fnBoost - 4 : fnBoost,
-      });
+      if (f.table && f.name !== "range" && f.name !== "generate_series") continue;
+      addFunction(f, selectLike ? 15 : f.aggregate ? 4 : 8);
     }
     keywords(clauseKeywords(clause, driver, a), 5);
   }
+
+  function addFunction(f: SqlFunction, boost: number) {
+    const name = lower || driver === "clickhouse" ? f.name : f.name.toUpperCase();
+    out.push({
+      label: name,
+      kind: "function",
+      tail: `(${f.params})`,
+      type: f.returns?.toUpperCase(),
+      snippet: f.params ? `${name}(\${})` : `${name}()\${0}`,
+      boost,
+    });
+  }
 }
 
-function clauseKeywords(clause: Clause, driver: DbDriver, a: Analysis): string[] {
+function clauseKeywords(clause: Clause, driver: SqlDriver, a: Analysis): string[] {
   const pred = predicateKeywords(driver);
   switch (clause) {
     case "select":
       return [
-        "FROM",
+        ...(a.fromFirst ? [] : ["FROM"]),
+        ...(a.projectionStar ? ["EXCLUDE", "REPLACE", "RENAME"] : []),
         "DISTINCT",
         "AS",
         "CASE",
@@ -459,9 +503,17 @@ function clauseKeywords(clause: Clause, driver: DbDriver, a: Analysis): string[]
     case "where":
     case "on":
     case "having":
-      return [...pred, "GROUP BY", "ORDER BY", "LIMIT", ...(driver === "snowflake" ? ["QUALIFY"] : [])];
+      return [
+        ...pred,
+        "GROUP BY",
+        "ORDER BY",
+        "LIMIT",
+        ...(driver === "snowflake" || driver === "duckdb" ? ["QUALIFY"] : []),
+      ];
+    case "qualify":
+      return [...pred, "ORDER BY", "LIMIT"];
     case "group":
-      return ["HAVING", "ORDER BY", "LIMIT", ...(driver === "snowflake" ? ["QUALIFY"] : [])];
+      return ["HAVING", "ORDER BY", "LIMIT", ...(driver === "snowflake" || driver === "duckdb" ? ["QUALIFY"] : [])];
     case "order":
       return ["ASC", "DESC", "LIMIT", "OFFSET", ...(driver === "mysql" ? [] : ["NULLS FIRST", "NULLS LAST"])];
     case "set":
@@ -486,8 +538,8 @@ type Kw = (k: string) => string;
 function joinCandidates(
   a: Analysis,
   model: DbCompletion | null,
-  driver: DbDriver,
-  dialect: DbDriver | null | undefined,
+  driver: SqlDriver,
+  dialect: SqlDriver | null | undefined,
   taken: Set<string>,
   kw: Kw,
 ): SqlCandidate[] {
@@ -499,6 +551,7 @@ function joinCandidates(
   const local = (s: string) => eq(s, model.defaultSchema) || driver === "sqlite";
   const tableText = (schema: string, name: string) => (local(schema) ? q(name) : `${q(schema)}.${q(name)}`);
   for (const r of a.refs.filter((x) => x.depth === 0 && x.kind === "table")) {
+    if (driver === "duckdb" && r.database !== undefined) continue;
     const rt = model.tables.find((t) => eq(t.name, r.name) && (r.schema ? eq(t.schema, r.schema) : true));
     if (!rt) continue;
     const ra = r.alias ?? r.name;
@@ -554,13 +607,15 @@ function conditionCandidates(
   model: DbCompletion | null,
   ref: TableRef,
   kw: Kw,
-  driver: DbDriver,
+  driver: SqlDriver,
 ): SqlCandidate[] {
   if (!model || ref.kind !== "table") return [];
   const eq = nameMatcher(driver);
   const out: SqlCandidate[] = [];
   const find = (r: TableRef) =>
-    model.tables.find((t) => eq(t.name, r.name) && (r.schema ? eq(t.schema, r.schema) : true));
+    driver === "duckdb" && r.database !== undefined
+      ? undefined
+      : model.tables.find((t) => eq(t.name, r.name) && (r.schema ? eq(t.schema, r.schema) : true));
   const mine = find(ref);
   if (!mine) return out;
   const ma = ref.alias ?? ref.name;

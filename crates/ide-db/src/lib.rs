@@ -8,6 +8,7 @@ mod external_tunnel;
 pub use external_tunnel::stop_external_tunnels_on_exit;
 mod jdbc;
 mod local_settings;
+mod manual_session;
 mod route;
 mod tunnel_approval;
 pub use jdbc::{DbJdbcDriver, jdbc_driver_classes};
@@ -43,7 +44,7 @@ use parking_lot::Mutex;
 use secrets::SecretStore;
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -335,13 +336,32 @@ pub struct DbManager {
     on_disk: Mutex<Option<Vec<DataSource>>>,
 }
 
-type Session = Arc<tokio::sync::Mutex<Option<Held>>>;
+use manual_session::Session;
 
 /// A SQL editor's connection identity within the owning project's lifetime.
 #[derive(Clone, Copy)]
 pub struct ConsoleId<'a> {
     pub window: &'a str,
     pub path: &'a str,
+    expected_manual: Option<bool>,
+}
+
+impl<'a> ConsoleId<'a> {
+    pub const fn new(window: &'a str, path: &'a str) -> Self {
+        Self { window, path, expected_manual: None }
+    }
+
+    pub fn expecting_manual(mut self, manual: Option<bool>) -> Self {
+        self.expected_manual = manual;
+        self
+    }
+}
+
+fn postgres_console_mode_changed() -> IdeError {
+    IdeError::new(
+        ErrorKind::OutOfSync,
+        "PostgreSQL console transaction mode changed. Set the mode again before running SQL.",
+    )
 }
 
 const MAX_META_ROWS: usize = 100_000;
@@ -416,6 +436,41 @@ fn tunnel_target(source: &DataSource) -> (&str, u16) {
     (if source.host.trim().is_empty() { "localhost" } else { source.host.trim() }, port)
 }
 
+fn is_duckdb(source: &DataSource) -> bool {
+    const PREFIX: &str = "jdbc:duckdb:";
+    source.driver == DbDriver::Jdbc
+        && (source.vendor == "duckdb"
+            || source.url.trim().get(..PREFIX.len()).is_some_and(|url| url.eq_ignore_ascii_case(PREFIX)))
+}
+
+async fn duckdb_catalog(pool: &Pool, database: &str) -> IdeResult<Vec<CatalogSchema>> {
+    // List empty schemas too and put all schema names before the bounded table rows.
+    const MAX_CATALOG_ROWS: usize = 20_000;
+    let name = sql::quote_literal(DbDriver::Jdbc, database);
+    let query = format!(
+        "SELECT schema_name AS schema, NULL::VARCHAR AS name, NULL::VARCHAR AS kind, NULL::VARCHAR AS comment \
+         FROM system.main.duckdb_schemas() WHERE database_name = {name} \
+         UNION ALL \
+         SELECT table_schema, table_name, lower(table_type), table_comment \
+         FROM system.information_schema.tables WHERE table_catalog = {name} \
+         ORDER BY name NULLS FIRST, schema LIMIT {MAX_CATALOG_ROWS}"
+    );
+    let mut schemas = BTreeMap::<String, Vec<TableInfo>>::new();
+    for row in pool.rows(&query, MAX_CATALOG_ROWS).await? {
+        let mut values = row.into_iter();
+        let Some(Some(schema)) = values.next() else { continue };
+        let tables = schemas.entry(schema).or_default();
+        if let Some(Some(name)) = values.next() {
+            tables.push(TableInfo {
+                name,
+                kind: DbTableKind::from_catalog(values.next().flatten().as_deref()),
+                comment: values.next().flatten().filter(|comment| !comment.is_empty()),
+            });
+        }
+    }
+    Ok(schemas.into_iter().map(|(name, tables)| CatalogSchema { name, tables }).collect())
+}
+
 pub fn split_target(target: &str) -> (&str, Option<&str>) {
     match target.split_once(':') {
         Some((id, db)) if !db.is_empty() => (id, Some(db)),
@@ -461,12 +516,7 @@ pub(crate) fn keep_alive(pool: &Arc<Pool>, every: Duration) {
 
 /// Rolls back a session's transaction and releases its connection.
 async fn end_session(session: &Session) {
-    let held = session.lock().await.take();
-    if let Some(mut conn) = held
-        && (conn.finish_manual(false).await.is_err() || conn.restore_default().await.is_err())
-    {
-        conn.discard().await;
-    }
+    let _ = session.rollback_and_release().await;
 }
 
 impl DbManager {
@@ -1034,12 +1084,30 @@ impl DbManager {
         Ok(())
     }
 
-    /// The databases of the server of data source `id` (PostgreSQL), the connected one first.
+    /// What databases this data source can see, including DuckDB's live attachments.
     pub async fn databases(&self, id: &str) -> IdeResult<Databases> {
         let id = split_target(id).0;
-        let introspection = self.source(id)?.introspection;
+        let source = self.source(id)?;
+        let introspection = &source.introspection;
         let system = introspection.show_system;
         let pool = self.pool(id).await?;
+        if let Pool::Jdbc(p) = &*pool
+            && is_duckdb(&source)
+        {
+            let mut current = String::new();
+            let mut names = Vec::new();
+            for mut row in p.metadata(&["catalogs"]).await? {
+                if let [Some(name), active] = row.as_mut_slice() {
+                    if active.as_deref() == Some("1") {
+                        current = name.clone();
+                        names.insert(0, std::mem::take(name));
+                    } else if system || name != "system" {
+                        names.push(std::mem::take(name));
+                    }
+                }
+            }
+            return Ok(Databases { current, names });
+        }
         if pool.driver() == DbDriver::SqlServer {
             let first =
                 |rows: Vec<Vec<Option<String>>>| rows.into_iter().filter_map(|r| r.into_iter().next().flatten());
@@ -1078,12 +1146,13 @@ impl DbManager {
         Ok(Databases { current, names })
     }
 
-    /// The schemas of `database` of data source `id` with their tables and views (Snowflake):
-    /// what completion needs to follow `database.schema.table` without the tree being opened.
-    /// The result is also saved ([`DbManager::saved_catalog`]) for the next run.
+    /// The schemas of `database` with their tables and views for qualified SQL completion.
+    /// Snowflake's result is also saved ([`DbManager::saved_catalog`]) for the next run.
     pub async fn database_catalog(&self, id: &str, database: &str) -> IdeResult<Vec<CatalogSchema>> {
         let id = split_target(id).0;
-        let schemas = match &*self.pool(id).await? {
+        let pool = self.pool(id).await?;
+        let schemas = match &*pool {
+            Pool::Jdbc(_) if is_duckdb(&self.source(id)?) => return duckdb_catalog(&pool, database).await,
             Pool::Snowflake(p) => snowflake::meta::catalog(p, database).await?,
             _ => return Err(IdeError::invalid("this data source does not list other databases")),
         };
@@ -1188,14 +1257,45 @@ impl DbManager {
             .collect())
     }
 
+    async fn duckdb_catalog_pool(&self, id: &str) -> IdeResult<Arc<Pool>> {
+        let source = self.source(id)?;
+        if id != source.id || source.driver != DbDriver::Jdbc || source.vendor != "duckdb" {
+            return Err(IdeError::invalid("Catalog browsing requires a DuckDB data source"));
+        }
+        self.pool(id).await
+    }
+
+    pub async fn catalog_table_details(
+        &self,
+        id: &str,
+        catalog: &str,
+        schema: &str,
+        table: &str,
+    ) -> IdeResult<TableDetails> {
+        let pool = self.duckdb_catalog_pool(id).await?;
+        Self::table_details_on(&pool, Some(catalog), schema, table).await
+    }
+
     pub async fn table_details(&self, id: &str, schema: &str, table: &str) -> IdeResult<TableDetails> {
         let pool = self.pool(id).await?;
-        if let Pool::Snowflake(p) = &*pool {
+        Self::table_details_on(&pool, None, schema, table).await
+    }
+
+    async fn table_details_on(
+        pool: &Pool,
+        catalog: Option<&str>,
+        schema: &str,
+        table: &str,
+    ) -> IdeResult<TableDetails> {
+        if let Pool::Snowflake(p) = pool {
             return snowflake::meta::table_details(p, schema, table).await;
         }
         let driver = pool.driver();
-        let rows = match &*pool {
-            Pool::Jdbc(p) => p.metadata(&["columns", schema, table]).await?,
+        let rows = match pool {
+            Pool::Jdbc(p) => match catalog {
+                Some(catalog) => p.metadata(&["columns", schema, table, catalog]).await?,
+                None => p.metadata(&["columns", schema, table]).await?,
+            },
             _ => pool.rows(&sql::columns(driver, schema, table), MAX_META_ROWS).await?,
         };
         let columns = rows
@@ -1637,13 +1737,26 @@ impl DbManager {
 
     /// Refuses transaction control anywhere in a guarded console script before running its first statement.
     pub async fn validate_script(&self, id: &str, statements: &[split::SqlStatement]) -> IdeResult<()> {
+        self.validate_console_script(id, statements, None).await
+    }
+
+    pub async fn validate_console_script(
+        &self,
+        id: &str,
+        statements: &[split::SqlStatement],
+        console: Option<ConsoleId<'_>>,
+    ) -> IdeResult<()> {
         if statements.len() > 1
             && self.source(id).is_ok_and(|s| s.driver == DbDriver::Postgres && s.read_only)
             && self.pool(id).await?.transaction_read_only()
         {
             for statement in statements {
                 if let Err(error) = conn::validate_pg_read_only(&statement.text) {
-                    self.finish_transaction(id, false).await?;
+                    if let Some(console) = console {
+                        self.finish_postgres_console_transaction(id, console, false).await?;
+                    } else {
+                        self.finish_transaction(id, false).await?;
+                    }
                     return Err(IdeError::invalid(error));
                 }
             }
@@ -1667,7 +1780,7 @@ impl DbManager {
         self.execute_in_console(id, statement, skip, max_rows, cancel, schema, None).await
     }
 
-    /// Executes with the originating editor's named HTTP session when supported by the driver.
+    /// Executes in the originating editor's transaction or session when supported by the driver.
     #[allow(clippy::too_many_arguments)]
     pub async fn execute_in_console(
         &self,
@@ -1718,7 +1831,17 @@ impl DbManager {
 
     /// Closes the cursor that reads the pages of `statement` on `id` (its result tab was closed).
     pub fn release_result(&self, id: &str, statement: &str, schema: Option<&str>) {
-        self.cursors.release(&conn::CursorKey::new(id, statement, schema));
+        self.release_console_result(id, statement, schema, None);
+    }
+
+    pub fn release_console_result(
+        &self,
+        id: &str,
+        statement: &str,
+        schema: Option<&str>,
+        console: Option<ConsoleId<'_>>,
+    ) {
+        self.cursors.release(&conn::CursorKey::new(id, statement, schema).with_console(console));
     }
 
     fn remember_statement(&self, id: &str, statement: &str) {
@@ -1762,9 +1885,24 @@ impl DbManager {
         schema: Option<&str>,
         console: Option<ConsoleId<'_>>,
     ) -> IdeResult<Vec<PlanNode>> {
-        let driver = self.pool(id).await?.driver();
-        if driver == DbDriver::Jdbc {
-            return Err(IdeError::invalid("Custom JDBC execution plans are unsupported"));
+        let pool = self.pool(id).await?;
+        let driver = pool.driver();
+        if let Pool::Jdbc(jdbc) = &*pool {
+            if self.source(id)?.vendor != "duckdb" || !jdbc.version.starts_with("DuckDB ") {
+                return Err(IdeError::invalid("Custom JDBC execution plans are unsupported"));
+            }
+            let sql = statement.trim().trim_end_matches(';');
+            if sql.contains(';') {
+                // The driver can execute a whole script. Have DuckDB count its statements before prefixing EXPLAIN.
+                let literal = sql::quote_literal(driver, sql);
+                let check = format!("SELECT json_array_length(json_serialize_plan({literal}), '$.plans')");
+                let result = self.run(id, &check, 0, 1, cancel, schema, console).await?;
+                if result.rows.first().and_then(|r| r.first()).and_then(Option::as_deref) != Some("1") {
+                    return Err(IdeError::invalid("Choose one statement to explain"));
+                }
+            }
+            let result = self.run(id, &format!("EXPLAIN (FORMAT JSON) {sql}"), 0, 3, cancel, schema, console).await?;
+            return plan::duckdb(&result);
         }
         if driver == DbDriver::Oracle {
             // EXPLAIN PLAN writes PLAN_TABLE; the plan is read (and cleaned up) separately.
@@ -1824,16 +1962,28 @@ impl DbManager {
         console: Option<ConsoleId<'_>>,
         paging: bool,
     ) -> IdeResult<QueryResult> {
-        let pool = self.pool(id).await?;
+        let connection = self.connection(id).await?;
+        let pool = connection.pool;
+        let expected_manual = console.and_then(|console| console.expected_manual);
+        if expected_manual.is_some() && !matches!(&*pool, Pool::Postgres(_)) {
+            return Err(postgres_console_mode_changed());
+        }
         if let Pool::Jdbc(p) = &*pool {
-            return p.query_in_schema(statement, skip, max_rows, cancel, schema).await;
+            return p.query_in_console(statement, skip, max_rows, cancel, schema, console).await;
         }
         if let Pool::Clickhouse(p) = &*pool
             && console.is_some()
         {
             return p.execute_in_console(statement, skip, max_rows, cancel, console).await;
         }
-        let session = self.sessions.lock().get(id).cloned();
+        let console = console.filter(|_| matches!(&*pool, Pool::Postgres(_)));
+        let session = match console {
+            Some(console) => connection.console_transactions.session(console),
+            None => self.sessions.lock().get(id).cloned(),
+        };
+        if expected_manual.is_some_and(|manual| manual != session.is_some()) {
+            return Err(postgres_console_mode_changed());
+        }
         let protected = pool.transaction_read_only();
         let cursor = protected || conn::cursor_statement(statement);
         if !cursor || (protected && skip == 0 && paging) {
@@ -1841,7 +1991,7 @@ impl DbManager {
             self.cursors.release_target(id);
         }
         if paging && session.is_none() && (skip > 0 || protected) && pool.keeps_cursors() && cursor {
-            let key = conn::CursorKey::new(id, statement, schema);
+            let key = conn::CursorKey::new(id, statement, schema).with_console(console);
             let started = std::time::Instant::now();
             let page = match self.cursors.resume(&key, skip, max_rows, cancel, protected).await {
                 Some(page) => page,
@@ -1877,44 +2027,9 @@ impl DbManager {
         if pool.driver() == DbDriver::Clickhouse {
             return Err(IdeError::invalid("ClickHouse manual transactions are unsupported"));
         }
-        let mut held = session.lock().await;
-        if pool.transaction_read_only() {
-            // Own the session during awaits so a dropped request cannot return an unfinished transaction.
-            let mut conn = match held.take() {
-                Some(conn) => conn,
-                None => {
-                    let mut conn = Held::acquire(&pool).await?;
-                    conn.begin_manual(pool.driver()).await?;
-                    conn
-                }
-            };
-            let result = async {
-                conn.apply_context(schema).await?;
-                conn.execute_from(&pool, statement, skip, max_rows, cancel).await
-            }
-            .await;
-            if result.is_ok() {
-                *held = Some(conn);
-            } else if cancel.is_cancelled() || conn.finish_manual(false).await.is_err() {
-                conn.discard().await;
-            }
-            return result;
-        }
-        if held.is_none() {
-            let mut conn = Held::acquire(&pool).await?;
-            conn.apply_context(schema).await?;
-            conn.begin_manual(pool.driver()).await?;
-            *held = Some(conn);
-        }
-        let conn = held.as_mut().expect("opened above");
-        conn.apply_context(schema).await?;
-        let r = conn.execute_from(&pool, statement, skip, max_rows, cancel).await;
-        if cancel.is_cancelled() {
-            // The server rolls the transaction back with the connection.
-            held.take().expect("opened above").discard().await;
-            return Err(IdeError::cancelled());
-        }
-        r
+        session
+            .execute(&pool, &connection.console_transactions.capacity, statement, skip, max_rows, cancel, schema)
+            .await
     }
 
     /// Switches `id` between auto-commit and manual commit. Leaving manual
@@ -1947,23 +2062,37 @@ impl DbManager {
         }
         let session = self.sessions.lock().get(id).cloned();
         let Some(session) = session else { return Ok(()) };
-        let mut held = session.lock().await;
-        let Some(mut conn) = held.take() else { return Ok(()) };
-        if let Err(e) = conn.finish_manual(commit).await {
-            // Discarding a Snowflake connection doesn't end its session, which the data source's
-            // other targets share: the transaction stays open, so it stays held to be ended again.
-            if matches!(conn, conn::Held::Snowflake(..)) {
-                *held = Some(conn);
-            } else {
-                conn.discard().await;
+        session.finish(commit).await
+    }
+
+    /// Changes manual-commit mode for one PostgreSQL console. Returns whether it opened a new mode entry.
+    pub async fn set_postgres_console_manual(&self, id: &str, console: ConsoleId<'_>, manual: bool) -> IdeResult<bool> {
+        if self.source(id)?.driver != DbDriver::Postgres {
+            return Err(IdeError::invalid("Scoped manual transactions require a PostgreSQL data source"));
+        }
+        if manual {
+            self.connection(id).await?.console_transactions.enable(console)
+        } else {
+            if let Some(connection) = self.opened_connection(id) {
+                connection.console_transactions.release(console).await?;
             }
-            return Err(e);
+            Ok(false)
         }
-        if let Err(e) = conn.restore_default().await {
-            conn.discard().await;
-            return Err(e);
+    }
+
+    /// Commits or rolls back work held by this PostgreSQL console.
+    pub async fn finish_postgres_console_transaction(
+        &self,
+        id: &str,
+        console: ConsoleId<'_>,
+        commit: bool,
+    ) -> IdeResult<()> {
+        let session =
+            self.opened_connection(id).and_then(|connection| connection.console_transactions.session(console));
+        match session {
+            Some(session) => session.finish(commit).await,
+            None => Err(postgres_console_mode_changed()),
         }
-        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1978,18 +2107,54 @@ impl DbManager {
         limit: u64,
         cancel: &CancellationToken,
     ) -> IdeResult<TablePage> {
-        let details = self.table_details(id, schema, table).await?;
         let pool = self.pool(id).await?;
-        let mut result = if let Pool::Jdbc(p) = &*pool {
+        Self::table_page_on(&pool, None, schema, table, filter, sort, offset, limit, cancel).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn catalog_table_page(
+        &self,
+        id: &str,
+        catalog: &str,
+        schema: &str,
+        table: &str,
+        filter: Option<&str>,
+        sort: &[SortKey],
+        offset: u64,
+        limit: u64,
+        cancel: &CancellationToken,
+    ) -> IdeResult<TablePage> {
+        let pool = self.duckdb_catalog_pool(id).await?;
+        Self::table_page_on(&pool, Some(catalog), schema, table, filter, sort, offset, limit, cancel).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn table_page_on(
+        pool: &Pool,
+        catalog: Option<&str>,
+        schema: &str,
+        table: &str,
+        filter: Option<&str>,
+        sort: &[SortKey],
+        offset: u64,
+        limit: u64,
+        cancel: &CancellationToken,
+    ) -> IdeResult<TablePage> {
+        let details = Self::table_details_on(pool, catalog, schema, table).await?;
+        let mut result = if let Pool::Jdbc(p) = pool {
             let q = &p.identifier_quote;
-            let names = [schema, table].into_iter().chain(sort.iter().map(|k| k.column.as_str()));
+            let names =
+                catalog.into_iter().chain((catalog.is_some() || !schema.is_empty()).then_some(schema)).chain([table]);
             if q.is_empty()
-                && names.into_iter().any(|name| !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+                && names
+                    .clone()
+                    .chain(sort.iter().map(|k| k.column.as_str()))
+                    .any(|name| !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
             {
                 return Err(IdeError::invalid("This JDBC driver cannot quote the selected identifier"));
             }
             let quote = |s: &str| format!("{q}{}{q}", s.replace(q, &format!("{q}{q}")));
-            let name = if schema.is_empty() { quote(table) } else { format!("{}.{}", quote(schema), quote(table)) };
+            let name = names.map(quote).collect::<Vec<_>>().join(".");
             let sql = sql::table_select(&name, filter, sort, quote);
             p.page(&sql, offset, limit, cancel).await?
         } else {

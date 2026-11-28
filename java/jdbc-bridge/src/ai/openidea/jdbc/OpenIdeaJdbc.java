@@ -17,11 +17,9 @@ import java.util.concurrent.atomic.AtomicReference;
 
 public final class OpenIdeaJdbc {
     static final int LIMIT = 16 * 1024 * 1024;
-    private static final String DUCKDB_CLASS = "org.duckdb.DuckDBDriver";
+    static final String DUCKDB_CLASS = "org.duckdb.DuckDBDriver";
     private static final String DUCKDB_MEMORY = "jdbc:duckdb:";
-    private static final String DUCKLAKE_CATALOG = "openidea_lake";
-    final DataInputStream input = new DataInputStream(new BufferedInputStream(System.in));
-    final DataOutputStream output = new DataOutputStream(new BufferedOutputStream(System.out));
+    static final String DUCKLAKE_CATALOG = "openidea_lake";
     Connection connection;
     boolean catalogs;
     boolean namespaceKnown;
@@ -32,6 +30,7 @@ public final class OpenIdeaJdbc {
         if (available < 0 || (value != null && value.length() > available))
             throw new IOException("JDBC result exceeds 16 MiB; select fewer or smaller values");
         if (value == null) { out.writeInt(-1); return; }
+        ReplyBuffer.beforeEncoding(out, Integer.BYTES + 3 * value.length());
         byte[] data = value.getBytes(StandardCharsets.UTF_8);
         if (data.length > available) throw new IOException("JDBC result exceeds 16 MiB; select fewer or smaller values");
         out.writeInt(data.length);
@@ -70,7 +69,7 @@ public final class OpenIdeaJdbc {
         }
     }
 
-    void open(List<String> a, DataOutputStream out) throws Exception {
+    static Connection connect(List<String> a) throws Exception {
         String className = a.get(0), url = a.get(1);
         Driver driver = Class.forName(className).asSubclass(Driver.class).getConstructor().newInstance();
         var props = new Properties();
@@ -89,6 +88,7 @@ public final class OpenIdeaJdbc {
             }
             props.setProperty("duckdb.read_only", "true");
         }
+        Connection connection;
         try { connection = driver.connect(url, props); }
         catch (SQLException e) {
             if (!duckDbReadOnly) throw e;
@@ -98,10 +98,31 @@ public final class OpenIdeaJdbc {
         if (readOnly && !duckDbReadOnly) {
             try { connection.setReadOnly(true); }
             catch (SQLException | UnsupportedOperationException e) {
+                try { connection.close(); } catch (SQLException ignored) {}
                 throw new ReadOnlyUnavailable("The JDBC driver rejected Read-only. Check the driver settings and database account privileges.");
             }
         }
-        openMetadata(connection, out);
+        return connection;
+    }
+
+    @FunctionalInterface
+    interface OpenConnection {
+        Connection open(List<String> args) throws Exception;
+    }
+
+    private void open(List<String> args, DataOutputStream out, OpenConnection opener) throws Exception {
+        Connection opened = opener.open(args);
+        try {
+            openMetadata(opened, out);
+            connection = opened;
+        } catch (Exception | LinkageError failure) {
+            try { opened.close(); } catch (SQLException ignored) {}
+            throw failure;
+        }
+    }
+
+    void close() throws SQLException {
+        if (connection != null) connection.close();
     }
 
     private static void openMetadata(Connection connection, DataOutputStream out) throws SQLException, IOException {
@@ -242,45 +263,73 @@ public final class OpenIdeaJdbc {
         return literal.replace(escape, escape + escape).replace("%", escape + "%").replace("_", escape + "_");
     }
 
-    void schemas(DataOutputStream out) throws Exception {
+    void catalogs(DataOutputStream out) throws Exception {
+        String current = connection.getCatalog();
+        header(out, "catalog", "current");
+        try (ResultSet rs = connection.getMetaData().getCatalogs()) {
+            int n = 0;
+            while (rs.next() && n < 20000) {
+                String name = rs.getString("TABLE_CAT");
+                if (name == null || name.isEmpty()) continue;
+                row(out, name, name.equals(current) ? "1" : "0");
+                n++;
+            }
+        }
+    }
+
+    void schemas(String catalog, DataOutputStream out) throws Exception {
         var m = connection.getMetaData();
         header(out, "schema");
         Set<String> names = new TreeSet<>();
-        try (ResultSet rs = m.getSchemas()) {
+        try (ResultSet rs = catalog == null ? m.getSchemas() : m.getSchemas(catalog, "%")) {
             while (rs.next() && names.size() < 20000) {
+                if (catalog != null && !catalog.equals(rs.getString("TABLE_CATALOG"))) continue;
                 String s = rs.getString("TABLE_SCHEM");
                 if (s != null && !s.isEmpty()) names.add(s);
             }
-        } catch (SQLFeatureNotSupportedException ignored) {}
-        catalogs = names.isEmpty();
-        namespaceKnown = true;
-        if (catalogs) {
-            try (ResultSet rs = m.getCatalogs()) {
-                while (rs.next() && names.size() < 20000) {
-                    String s = rs.getString(1);
-                    if (s != null && !s.isEmpty()) names.add(s);
-                }
-            } catch (SQLFeatureNotSupportedException ignored) {}
+        } catch (SQLFeatureNotSupportedException e) {
+            if (catalog != null) throw e;
         }
-        if (names.isEmpty()) names.add("");
+        if (catalog == null) {
+            catalogs = names.isEmpty();
+            namespaceKnown = true;
+            if (catalogs) {
+                try (ResultSet rs = m.getCatalogs()) {
+                    while (rs.next() && names.size() < 20000) {
+                        String s = rs.getString(1);
+                        if (s != null && !s.isEmpty()) names.add(s);
+                    }
+                } catch (SQLFeatureNotSupportedException ignored) {}
+            }
+            if (names.isEmpty()) names.add("");
+        }
         for (String s : names) row(out, s);
     }
 
     void discoverNamespace() throws Exception {
-        if (!namespaceKnown) schemas(new DataOutputStream(OutputStream.nullOutputStream()));
+        if (!namespaceKnown) schemas(null, new DataOutputStream(OutputStream.nullOutputStream()));
+    }
+
+    static boolean inNamespace(ResultSet rs, String catalog, String schema) throws SQLException {
+        return catalog == null
+            || (catalog.equals(rs.getString("TABLE_CAT")) && schema.equals(rs.getString("TABLE_SCHEM")));
     }
 
     void metadata(String op, List<String> a, DataOutputStream out) throws Exception {
-        discoverNamespace();
+        int catalogIndex = op.equals("columns") ? 2 : 1;
+        String scope = a.size() > catalogIndex ? a.get(catalogIndex) : null;
+        if (scope == null) discoverNamespace();
         var m = connection.getMetaData();
         String name = a.get(0);
-        String catalog = catalogs && !name.isEmpty() ? name : connection.getCatalog();
-        String schema = catalogs || name.isEmpty() ? null : pattern(m, name);
+        String catalog = scope != null ? scope : catalogs && !name.isEmpty() ? name : connection.getCatalog();
+        String schemaName = scope == null && (catalogs || name.isEmpty()) ? null : name;
+        String schema = schemaName == null ? null : pattern(m, schemaName);
         if (op.equals("tables")) {
             header(out, "name", "kind", "comment");
             try (ResultSet rs = m.getTables(catalog, schema, "%", null)) {
                 int n = 0;
                 while (rs.next() && n < 20000) {
+                    if (!inNamespace(rs, scope, name)) continue;
                     String type = rs.getString("TABLE_TYPE").toLowerCase(Locale.ROOT);
                     if (!Set.of("table","base table","view","materialized view","system table","local temporary","foreign table").contains(type)) continue;
                     row(out, rs.getString("TABLE_NAME"), type, rs.getString("REMARKS"));
@@ -293,6 +342,7 @@ public final class OpenIdeaJdbc {
             try (ResultSet rs = m.getColumns(catalog, schema, "%", "%")) {
                 int n = 0;
                 while (rs.next() && n < 100000) {
+                    if (!inNamespace(rs, scope, name)) continue;
                     row(out, rs.getString("TABLE_NAME"), rs.getString("COLUMN_NAME"), rs.getString("TYPE_NAME"),
                         rs.getInt("NULLABLE") == 0 ? "0" : "1", rs.getString("COLUMN_DEF"), rs.getString("REMARKS"));
                     n++;
@@ -302,13 +352,17 @@ public final class OpenIdeaJdbc {
             header(out, "name", "type", "nullable", "default", "primary");
             String table = a.get(1);
             Set<String> keys = new HashSet<>();
-            try (ResultSet rs = m.getPrimaryKeys(catalog, catalogs || name.isEmpty() ? null : name, table)) {
-                while (rs.next()) keys.add(rs.getString("COLUMN_NAME"));
+            try (ResultSet rs = m.getPrimaryKeys(catalog, schemaName, table)) {
+                while (rs.next()) {
+                    if (inNamespace(rs, scope, name) && (scope == null || table.equals(rs.getString("TABLE_NAME")))) {
+                        keys.add(rs.getString("COLUMN_NAME"));
+                    }
+                }
             } catch (SQLFeatureNotSupportedException ignored) {}
             try (ResultSet rs = m.getColumns(catalog, schema, pattern(m, table), "%")) {
                 int n = 0;
                 while (rs.next() && n < 20000) {
-                    if (!table.equals(rs.getString("TABLE_NAME"))) continue;
+                    if (!inNamespace(rs, scope, name) || !table.equals(rs.getString("TABLE_NAME"))) continue;
                     String col = rs.getString("COLUMN_NAME");
                     row(out, col, rs.getString("TYPE_NAME"), rs.getInt("NULLABLE") == 0 ? "0" : "1",
                         rs.getString("COLUMN_DEF"), keys.contains(col) ? "1" : "0");
@@ -349,6 +403,7 @@ public final class OpenIdeaJdbc {
                         if (t == Types.BINARY || t == Types.VARBINARY || t == Types.LONGVARBINARY || t == Types.BLOB) {
                             byte[] b = rs.getBytes(c);
                             if (b != null && b.length > (LIMIT - out.size()) / 2) throw new IOException("JDBC binary value exceeds the result limit");
+                            if (b != null) ReplyBuffer.beforeEncoding(out, Integer.BYTES + 2 + 2 * b.length);
                             text(out, b == null ? null : "0x" + HexFormat.of().formatHex(b));
                         } else {
                             text(out, rs.getString(c));
@@ -382,15 +437,25 @@ public final class OpenIdeaJdbc {
                 cancelled = true;
                 st = statement;
             }
+            cancelStatement(st);
+        }
+
+        synchronized Statement requestCancel() {
+            if (cancelled) return null;
+            cancelled = true;
+            return statement;
+        }
+
+        static void cancelStatement(Statement st) {
             if (st != null) {
                 try { st.cancel(); } catch (SQLException | UnsupportedOperationException ignored) {}
             }
         }
     }
 
-    static List<String> readFields(DataInputStream in, int count) throws IOException {
+    static List<String> readFields(DataInputStream in, int count, int headerBytes) throws IOException {
         if (count < 1 || count > 8192) throw new IOException("Invalid JDBC field count");
-        int remaining = LIMIT - Long.BYTES - Integer.BYTES;
+        int remaining = LIMIT - headerBytes;
         var fields = new ArrayList<String>(count);
         for (int i = 0; i < count; i++) {
             remaining -= Integer.BYTES;
@@ -404,16 +469,21 @@ public final class OpenIdeaJdbc {
         return fields;
     }
 
-    ByteArrayOutputStream reply(Work work, List<String> a) throws IOException {
-        var buffer = new ByteArrayOutputStream();
-        var reply = new DataOutputStream(buffer);
+    ByteArrayOutputStream reply(Work work, List<String> a, OpenConnection opener) throws IOException {
+        return reply(work, a, opener, new ByteArrayOutputStream());
+    }
+
+    ByteArrayOutputStream reply(Work work, List<String> a, OpenConnection opener,
+                                ByteArrayOutputStream buffer) throws IOException {
+        var reply = ReplyBuffer.writer(buffer);
         String op = a.remove(0);
         try {
             reply.writeBoolean(true);
             switch (op) {
-                case "open" -> open(a, reply);
+                case "open" -> open(a, reply, opener);
                 case "openDuckLake" -> openDuckLake(work, a, reply);
-                case "schemas" -> schemas(reply);
+                case "catalogs" -> catalogs(reply);
+                case "schemas" -> schemas(a.isEmpty() ? null : a.get(0), reply);
                 case "tables", "columns", "schemaColumns" -> metadata(op, a, reply);
                 case "namespace" -> {
                     header(reply, "namespace");
@@ -469,8 +539,9 @@ public final class OpenIdeaJdbc {
             }
             if (!op.equals("query") && !op.equals("page")) end(reply, false, -1);
         } catch (Exception | LinkageError e) {
-            buffer = new ByteArrayOutputStream();
-            reply = new DataOutputStream(buffer);
+            if (buffer instanceof ReplyBuffer bounded) bounded.reset();
+            else buffer = new ByteArrayOutputStream();
+            reply = ReplyBuffer.writer(buffer);
             reply.writeBoolean(false);
             if ((e instanceof ClassNotFoundException || e instanceof NoClassDefFoundError)
                     && e.getMessage() != null && e.getMessage().matches("[A-Za-z0-9_.$/]+")) {
@@ -491,14 +562,15 @@ public final class OpenIdeaJdbc {
         return buffer;
     }
 
-    synchronized void send(ByteArrayOutputStream reply) throws IOException {
-        output.writeInt(reply == null ? 0 : reply.size());
-        if (reply != null) reply.writeTo(output);
-        output.flush();
+    static void send(DataOutputStream output, ByteArrayOutputStream reply) throws IOException {
+        synchronized (output) {
+            output.writeInt(reply == null ? 0 : reply.size());
+            if (reply != null) reply.writeTo(output);
+            output.flush();
+        }
     }
 
-    void run() throws IOException {
-        System.setOut(System.err);
+    void run(DataInputStream input, DataOutputStream output) throws IOException {
         var active = new AtomicReference<Work>();
         var worker = Executors.newSingleThreadExecutor(r -> {
             var thread = new Thread(r, "jdbc-session");
@@ -513,17 +585,17 @@ public final class OpenIdeaJdbc {
                 if (count == 0) {
                     var work = active.get();
                     if (work != null && work.id == id) work.cancel();
-                    send(null); // Acknowledge even a cancel that raced with a completed request.
+                    send(output, null); // Acknowledge even a cancel that raced with a completed request.
                     continue;
                 }
-                var fields = readFields(input, count);
+                var fields = readFields(input, count, Long.BYTES + Integer.BYTES);
                 var work = new Work(id);
                 if (!active.compareAndSet(null, work)) throw new IOException("Overlapping JDBC requests");
                 worker.execute(() -> {
                     try {
-                        var result = reply(work, fields);
+                        var result = reply(work, fields, OpenIdeaJdbc::connect);
                         active.compareAndSet(work, null);
-                        send(result);
+                        send(output, result);
                     } catch (Throwable fatal) {
                         // Without a complete frame the parent must discard this session.
                         Runtime.getRuntime().halt(1);
@@ -536,8 +608,19 @@ public final class OpenIdeaJdbc {
     }
 
     public static void main(String[] args) throws Exception {
+        var input = new DataInputStream(new BufferedInputStream(System.in));
+        boolean multiplex = args.length == 1 && args[0].equals("--multiplex");
+        // PrintStream swallows broken pipe errors. The multiplexed writer needs
+        // the failure so it can close all peers and terminate the transport.
+        OutputStream wire = multiplex ? new FileOutputStream(FileDescriptor.out) : System.out;
+        var output = new DataOutputStream(new BufferedOutputStream(wire));
+        System.setOut(System.err);
+        if (multiplex) {
+            new MultiplexBridge(input, output).run();
+            return;
+        }
         var bridge = new OpenIdeaJdbc();
-        try { bridge.run(); }
-        finally { if (bridge.connection != null) bridge.connection.close(); }
+        try { bridge.run(input, output); }
+        finally { bridge.close(); }
     }
 }

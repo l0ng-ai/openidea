@@ -3,21 +3,22 @@
 //! settings its user last accepted in the dialog; the approval lives outside the project.
 use crate::local_settings::persist_local;
 use crate::source::{DUCKDB_URL, DbDuckLakeKind, duck_lake_path};
-use crate::{DataSource, DbManager, QueryResult, ResultColumn};
-use ide_core::{CancellationToken, IdeError, IdeResult};
+use crate::{ConsoleId, DataSource, DbManager, QueryResult, ResultColumn};
+use ide_core::{CancellationToken, IdeError, IdeResult, error::ErrorKind};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::process::{ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
-use tokio::time::{Instant as Deadline, timeout_at};
+use tokio::time::timeout;
 
-const LIMIT: usize = 16 * 1024 * 1024;
+mod bridge;
+
+use bridge::Bridge;
+
 const DUCKDB_CLASS: &str = "org.duckdb.DuckDBDriver";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -279,169 +280,71 @@ fn duck_lake_fields(mode: &str, value: String, data_path: &str) -> Vec<String> {
     ]
 }
 
-struct Bridge {
-    stop: tokio::sync::oneshot::Sender<()>,
-    exited: tokio::task::JoinHandle<()>,
-    sequence: u64,
-    input: ChildStdin,
-    output: ChildStdout,
+struct Session {
+    id: u32,
+    // A physical JDBC Connection executes one request at a time.
+    opened: Mutex<bool>,
+    retired: CancellationToken,
+}
+
+impl Session {
+    fn new(id: u32) -> Self {
+        Self { id, opened: Mutex::new(id == 0), retired: CancellationToken::new() }
+    }
+}
+
+#[derive(Default)]
+struct ConsoleSessions {
+    latest: u32,
+    opened: HashMap<(String, String), Arc<Session>>,
 }
 
 pub struct JdbcPool {
-    bridge: Mutex<Option<Bridge>>,
-    closed: CancellationToken,
+    bridge: Arc<Bridge>,
+    service: Session,
+    consoles: parking_lot::Mutex<ConsoleSessions>,
+    shared_connection: bool,
     pub(crate) version: String,
     pub(crate) identifier_quote: String,
 }
 
-impl Bridge {
-    fn start(cache: &Path, jars: &[String]) -> IdeResult<Self> {
-        let jdks = ide_sdk::java::installed_jdks();
-        let java = ide_sdk::java::java_runtime(&jdks, 17)
-            .ok_or_else(|| IdeError::invalid("Install a Java 17 or newer runtime to use custom JDBC drivers"))?;
-        let jar = ide_sdk::java::jdbc_bridge_jar(cache)
-            .ok_or_else(|| IdeError::invalid("Cannot install the JDBC bridge in the application data directory"))?;
-        let classpath = std::env::join_paths(std::iter::once(jar.as_path()).chain(jars.iter().map(Path::new)))
-            .map_err(|_| IdeError::invalid("A JDBC JAR path contains the system classpath separator"))?;
-        // Embedded databases can resolve file URLs against the JVM's working directory.
-        let files = cache.join("files");
-        std::fs::create_dir_all(&files)?;
-        let mut command = Command::new(ide_sdk::java::java_executable(&java.home));
-        command.current_dir(files);
-        ide_core::process::prepare(command.as_std_mut());
-        let mut child = command
-            .args(["-Xms8m", "-Xmx192m", "--enable-native-access=ALL-UNNAMED", "-cp"])
-            .arg(classpath)
-            .arg("ai.openidea.jdbc.OpenIdeaJdbc")
-            .env_remove("CLASSPATH")
-            .env_remove("JDK_JAVA_OPTIONS")
-            .env_remove("JAVA_TOOL_OPTIONS")
-            .env_remove("_JAVA_OPTIONS")
-            .kill_on_drop(true)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
-        let input = child.stdin.take().expect("piped");
-        let output = child.stdout.take().expect("piped");
-        let (stop, stopped) = tokio::sync::oneshot::channel();
-        let exited = tokio::spawn(async move {
-            tokio::select! {
-                stop = stopped => {
-                    // Disconnect closes stdin so a file-backed driver can flush. A dropped
-                    // request or an unresponsive driver must be reaped without waiting.
-                    if stop.is_err() || tokio::time::timeout(Duration::from_secs(2), child.wait()).await.is_err() {
-                        let _ = child.kill().await;
-                    }
-                }
-                _ = child.wait() => {}
-            }
-        });
-        Ok(Self { input, output, stop, exited, sequence: 0 })
-    }
-
-    async fn close(self) {
-        drop(self.input);
-        let _ = self.stop.send(());
-        let _ = self.exited.await;
-    }
+/// Dropped futures and uncertain transport errors retire the connection they were using.
+struct ActiveRequest<'a> {
+    pool: &'a JdbcPool,
+    session: &'a Session,
+    completed: bool,
 }
 
-// Request: u64 request id, u32 field count, then length-prefixed UTF-8 fields.
-// Zero fields cancels that id. Replies have a u32 length; zero acknowledges Cancel.
-fn encode(id: u64, fields: &[&str]) -> IdeResult<Vec<u8>> {
-    if fields.is_empty() || fields.len() > 8192 {
-        return Err(IdeError::invalid("Invalid JDBC field count"));
-    }
-    let size = fields
-        .iter()
-        .try_fold(12usize, |n, s| n.checked_add(4)?.checked_add(s.len()).filter(|n| *n <= LIMIT))
-        .ok_or_else(|| IdeError::invalid("JDBC request exceeds 16 MiB"))?;
-    let mut data = Vec::with_capacity(size);
-    data.extend_from_slice(&id.to_be_bytes());
-    data.extend_from_slice(&(fields.len() as u32).to_be_bytes());
-    for field in fields {
-        data.extend_from_slice(&(field.len() as u32).to_be_bytes());
-        data.extend_from_slice(field.as_bytes());
-    }
-    Ok(data)
-}
-
-async fn read_frame(output: &mut (impl AsyncRead + Unpin)) -> IdeResult<Vec<u8>> {
-    let n = output.read_u32().await? as usize;
-    if n > LIMIT {
-        return Err(IdeError::invalid("JDBC response exceeds 16 MiB"));
-    }
-    let mut data = vec![0; n];
-    output.read_exact(&mut data).await?;
-    Ok(data)
-}
-
-const CANCEL_GRACE: Duration = Duration::from_secs(3);
-
-fn cancel_timeout() -> IdeError {
-    IdeError::invalid(
-        "Cancellation timed out and the JDBC session was closed. Check the statement's status on the server before running it again. The next query will try to reconnect.",
-    )
-}
-
-async fn exchange(
-    input: &mut (impl AsyncWrite + Unpin),
-    output: &mut (impl AsyncRead + Unpin),
-    frame: Vec<u8>,
-    cancel: &CancellationToken,
-) -> IdeResult<Option<Vec<u8>>> {
-    let mut stop = [0; 12];
-    stop[..8].copy_from_slice(&frame[..8]);
-    let early_deadline = {
-        let send = input.write_all(&frame);
-        tokio::pin!(send);
-        tokio::select! {
-            result = &mut send => { result?; None },
-            () = cancel.cancelled() => {
-                let end = Deadline::now() + CANCEL_GRACE;
-                timeout_at(end, send).await.map_err(|_| cancel_timeout())??;
-                Some(end)
-            }
+impl Drop for ActiveRequest<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.pool.retire(self.session);
         }
-    };
-    drop(frame);
-    let (first, deadline) = {
-        let reply = read_frame(output);
-        tokio::pin!(reply);
-        let end = tokio::select! {
-            biased;
-            () = cancel.cancelled() => early_deadline.unwrap_or_else(|| Deadline::now() + CANCEL_GRACE),
-            data = &mut reply => {
-                let data = data?;
-                if data.is_empty() { return Err(IdeError::invalid("Unexpected JDBC cancellation acknowledgement")); }
-                return Ok(Some(data));
-            }
-        };
-        let first = timeout_at(end, async {
-            input.write_all(&stop).await?;
-            reply.await
-        })
-        .await
-        .map_err(|_| cancel_timeout())??;
-        (first, end)
-    };
-    // Drain both frames before the next statement can use this session. The driver
-    // may complete the statement before or after the control thread acknowledges it.
-    let data = if first.is_empty() {
-        timeout_at(deadline, read_frame(output)).await.map_err(|_| cancel_timeout())??
-    } else {
-        if timeout_at(deadline, output.read_u32()).await.map_err(|_| cancel_timeout())?? != 0 {
-            return Err(IdeError::invalid("Invalid JDBC cancellation acknowledgement"));
-        }
-        first
-    };
-    match data.first() {
-        // A committed statement may have finished before the control thread received Cancel.
-        Some(1) => Ok(Some(data)),
-        Some(0) => Ok(None),
-        _ => Err(IdeError::invalid("Invalid JDBC cancellation response")),
     }
+}
+
+/// A second connection to an anonymous database would see a different database.
+fn private_database_url(url: &str) -> bool {
+    if let Some(h2) = url.strip_prefix("jdbc:h2:mem:") {
+        return h2.is_empty() || h2.starts_with(';');
+    }
+    let Some(sqlite) = url.strip_prefix("jdbc:sqlite:") else {
+        return false;
+    };
+    let (path, query) = sqlite.split_once('?').unwrap_or((sqlite, ""));
+    if matches!(path, "" | ":memory:" | "file:") {
+        return true;
+    }
+    let option = |name| {
+        query
+            .split('&')
+            .rev()
+            .filter_map(|part| part.split_once('='))
+            .find_map(|(key, value)| (key == name).then_some(value))
+    };
+    path.starts_with("file:")
+        && (path == "file::memory:" || option("mode") == Some("memory"))
+        && option("cache") != Some("shared")
 }
 
 impl JdbcPool {
@@ -473,32 +376,85 @@ impl JdbcPool {
         let bridge = tokio::task::spawn_blocking(move || Bridge::start(&cache, &driver.jars))
             .await
             .map_err(|e| IdeError::internal(e.to_string()))??;
-        let mut pool = Self {
-            bridge: Mutex::new(Some(bridge)),
-            closed: CancellationToken::new(),
-            version: String::new(),
-            identifier_quote: String::new(),
-        };
         let args: Vec<_> = fields.iter().map(String::as_str).collect();
         let cancel = CancellationToken::new();
-        let result = tokio::time::timeout(Duration::from_secs(30), pool.request(&args, "", &cancel))
+        let data = timeout(Duration::from_secs(30), bridge.exchange(0, &args, &cancel, &cancel))
             .await
-            .map_err(|_| IdeError::new(ide_core::error::ErrorKind::TimedOut, "JDBC connection timed out"))??;
+            .map_err(|_| IdeError::new(ErrorKind::TimedOut, "JDBC connection timed out"))??;
+        let result = decode(&data.ok_or_else(IdeError::cancelled)?, "", 0.)?;
         let mut metadata = result.rows.into_iter().next().unwrap_or_default().into_iter();
-        pool.version = metadata.next().flatten().unwrap_or_else(|| "Connected".into());
-        pool.identifier_quote = metadata.next().flatten().unwrap_or_default().trim().into();
-        Ok(pool)
+        Ok(Self {
+            bridge: Arc::new(bridge),
+            service: Session::new(0),
+            consoles: Default::default(),
+            shared_connection: private_database_url(&fields[2]),
+            version: metadata.next().flatten().unwrap_or_else(|| "Connected".into()),
+            identifier_quote: metadata.next().flatten().unwrap_or_default().trim().into(),
+        })
     }
 
     pub(crate) async fn close(&self) {
-        self.closed.cancel();
-        if let Some(bridge) = self.bridge.lock().await.take() {
-            bridge.close().await;
-        }
+        self.bridge.close().await;
     }
 
     pub(crate) fn is_closed(&self) -> bool {
-        self.closed.is_cancelled()
+        self.bridge.is_closed()
+    }
+
+    fn console(&self, console: ConsoleId<'_>) -> IdeResult<Arc<Session>> {
+        let key = (console.window.to_owned(), console.path.to_owned());
+        let mut sessions = self.consoles.lock();
+        if let Some(existing) = sessions.opened.get(&key)
+            && !existing.retired.is_cancelled()
+        {
+            return Ok(existing.clone());
+        }
+        let id = sessions.latest.checked_add(1).ok_or_else(|| IdeError::internal("JDBC session IDs exhausted"))?;
+        sessions.latest = id;
+        let session = Arc::new(Session::new(id));
+        sessions.opened.insert(key, session.clone());
+        Ok(session)
+    }
+
+    pub(crate) async fn release_console(&self, console: ConsoleId<'_>) -> IdeResult<()> {
+        let key = (console.window.to_owned(), console.path.to_owned());
+        // Retire the ID before allowing a reopened editor to allocate a replacement.
+        let session = self.consoles.lock().opened.remove(&key).inspect(|session| session.retired.cancel());
+        if let Some(session) = session {
+            let closed = self.bridge.close_session(session.id).await;
+            self.shutdown_service_if_idle();
+            closed?;
+        }
+        Ok(())
+    }
+
+    fn retire(&self, session: &Session) {
+        if session.retired.is_cancelled() {
+            return;
+        }
+        session.retired.cancel();
+        if session.id != 0 {
+            let bridge = self.bridge.clone();
+            let id = session.id;
+            tokio::spawn(async move {
+                let _ = bridge.close_session(id).await;
+            });
+        }
+        self.shutdown_service_if_idle();
+    }
+
+    fn shutdown_service_if_idle(&self) {
+        if !self.service.retired.is_cancelled() {
+            return;
+        }
+        let has_consoles =
+            self.consoles.lock().opened.values().any(|session| {
+                !session.retired.is_cancelled() && session.opened.try_lock().map_or(true, |opened| *opened)
+            });
+        // Service failure cannot discard a healthy editor's transaction or temporary tables.
+        if !has_consoles {
+            self.bridge.shutdown();
+        }
     }
 
     pub(crate) async fn query(
@@ -519,7 +475,21 @@ impl JdbcPool {
         cancel: &CancellationToken,
         schema: Option<&str>,
     ) -> IdeResult<QueryResult> {
-        self.request(
+        self.query_in_console(sql, skip, max, cancel, schema, None).await
+    }
+
+    pub(crate) async fn query_in_console(
+        &self,
+        sql: &str,
+        skip: usize,
+        max: usize,
+        cancel: &CancellationToken,
+        schema: Option<&str>,
+        console: Option<ConsoleId<'_>>,
+    ) -> IdeResult<QueryResult> {
+        let session = console.filter(|_| !self.shared_connection).map(|console| self.console(console)).transpose()?;
+        self.request_on(
+            session.as_deref().unwrap_or(&self.service),
             &["query", sql, &skip.to_string(), &max.min(i32::MAX as usize).to_string(), schema.unwrap_or_default()],
             sql,
             cancel,
@@ -537,82 +507,91 @@ impl JdbcPool {
         self.request(&["page", sql, &offset.to_string(), &limit.min(i32::MAX as u64).to_string()], sql, cancel).await
     }
 
+    /// Introspection on this connection. `catalogs` lists live catalogs with the current one marked.
+    /// `schemas`, `tables`, `schemaColumns`, and `columns` accept a final catalog argument.
     pub(crate) async fn metadata(&self, fields: &[&str]) -> IdeResult<Vec<Vec<Option<String>>>> {
         Ok(self.request(fields, "", &CancellationToken::new()).await?.rows)
     }
 
     async fn request(&self, fields: &[&str], sql: &str, cancel: &CancellationToken) -> IdeResult<QueryResult> {
-        let result = self.exchange_once(fields, sql, cancel).await;
-        if let Err(e) = &result
-            && fields.first() != Some(&"open")
-            && e.kind != ide_core::error::ErrorKind::Cancelled
-            && !self.is_closed()
-            && !self.session_valid().await
-        {
-            // The session is gone (a proxy or tunnel dropped the idle TCP connection): close the
-            // pool so the next statement or Connect starts a new one instead of failing forever.
-            self.close().await;
+        self.request_on(&self.service, fields, sql, cancel).await
+    }
+
+    async fn request_on(
+        &self,
+        session: &Session,
+        fields: &[&str],
+        sql: &str,
+        cancel: &CancellationToken,
+    ) -> IdeResult<QueryResult> {
+        // A rejected local request has not used the connection and cannot invalidate it.
+        bridge::frame_size(fields)?;
+        let mut opened = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(IdeError::cancelled()),
+            () = session.retired.cancelled() => {
+                return Err(if session.id == 0 {
+                    IdeError::new(ErrorKind::Io, "The JDBC service connection was lost. Reconnect to restore catalog access.")
+                } else {
+                    IdeError::cancelled()
+                });
+            }
+            slot = session.opened.lock() => slot,
+        };
+        let mut active = ActiveRequest { pool: self, session, completed: false };
+        if !*opened {
+            let data = timeout(Duration::from_secs(30), self.exchange(session, &["open"], cancel))
+                .await
+                .map_err(|_| IdeError::new(ErrorKind::TimedOut, "JDBC connection timed out"))??;
+            decode(&data.ok_or_else(IdeError::cancelled)?, "", 0.)?;
+            *opened = true;
         }
+        let start = Instant::now();
+        let data = self.exchange(session, fields, cancel).await?;
+        let result = data
+            .ok_or_else(IdeError::cancelled)
+            .and_then(|data| decode(&data, sql, start.elapsed().as_secs_f64() * 1000.0));
+        if result.as_ref().is_err_and(|error| error.kind != ErrorKind::Cancelled) && !self.session_valid(session).await
+        {
+            return result;
+        }
+        active.completed = true;
         result
     }
 
-    /// Keep-alive: checks the session (any SQL would be dialect-specific) and closes a dead one.
+    async fn exchange(
+        &self,
+        session: &Session,
+        fields: &[&str],
+        cancel: &CancellationToken,
+    ) -> IdeResult<Option<Vec<u8>>> {
+        tokio::select! {
+            biased;
+            () = session.retired.cancelled() => Err(IdeError::cancelled()),
+            data = self.bridge.exchange(session.id, fields, cancel, &session.retired) => data,
+        }
+    }
+
+    /// Keep-alive operates on the service connection without waiting on an editor's query.
     pub(crate) async fn ping(&self) -> IdeResult<()> {
-        if self.session_valid().await {
+        let _service = self.service.opened.lock().await;
+        if self.service.retired.is_cancelled() || self.session_valid(&self.service).await {
             return Ok(());
         }
-        self.close().await;
-        Err(IdeError::new(ide_core::error::ErrorKind::Io, "JDBC connection was lost"))
+        self.retire(&self.service);
+        Err(IdeError::new(ErrorKind::Io, "JDBC connection was lost"))
     }
 
-    /// Whether the JDBC session still works, asked after a failed statement.
-    async fn session_valid(&self) -> bool {
-        if self.bridge.lock().await.is_none() {
-            return false;
-        }
+    /// Checks that an error was local to this statement before reusing its connection.
+    async fn session_valid(&self, session: &Session) -> bool {
         let cancel = CancellationToken::new();
-        match tokio::time::timeout(Duration::from_secs(10), self.exchange_once(&["valid"], "", &cancel)).await {
-            Ok(Ok(result)) => {
-                result.rows.first().and_then(|row| row.first()).cloned().flatten().as_deref() != Some("false")
-            }
-            Ok(Err(_)) | Err(_) => false,
-        }
-    }
-
-    async fn exchange_once(&self, fields: &[&str], sql: &str, cancel: &CancellationToken) -> IdeResult<QueryResult> {
-        let mut slot = tokio::select! {
-            biased;
-            () = cancel.cancelled() => return Err(IdeError::cancelled()),
-            () = self.closed.cancelled() => return Err(IdeError::invalid("JDBC connection is closed")),
-            slot = self.bridge.lock() => slot,
+        let Ok(Ok(Some(data))) = timeout(Duration::from_secs(10), self.exchange(session, &["valid"], &cancel)).await
+        else {
+            return false;
         };
-        let bridge = slot
-            .as_mut()
-            .ok_or_else(|| IdeError::invalid("JDBC connection is closed; reconnect to start a new session"))?;
-        bridge.sequence = bridge.sequence.wrapping_add(1);
-        let frame = encode(bridge.sequence, fields)?;
-        let mut bridge = slot.take().expect("checked above");
-        // Dropping an in-flight request must discard its process and partially consumed frame.
-        let interrupted = self.closed.clone().drop_guard();
-        let start = Instant::now();
-        let response = tokio::select! {
-            biased;
-            () = self.closed.cancelled() => Err(IdeError::cancelled()),
-            response = exchange(&mut bridge.input, &mut bridge.output, frame, cancel) => response,
-        };
-        let data = match response {
-            Ok(data) => {
-                *slot = Some(bridge);
-                interrupted.disarm();
-                data
-            }
-            Err(e) => {
-                drop(bridge.stop);
-                let _ = bridge.exited.await;
-                return Err(e);
-            }
-        };
-        decode(&data.ok_or_else(IdeError::cancelled)?, sql, start.elapsed().as_secs_f64() * 1000.0)
+        decode(&data, "", 0.).is_ok_and(|result| {
+            result.rows.first().and_then(|row| row.first()).and_then(Option::as_deref) == Some("true")
+        })
     }
 }
 
@@ -763,6 +742,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_private_jdbc_databases_keep_one_connection() {
+        for url in [
+            "jdbc:sqlite:",
+            "jdbc:sqlite::memory:",
+            "jdbc:sqlite:file:",
+            "jdbc:sqlite:file:private?mode=memory&cache=private",
+            "jdbc:h2:mem:",
+            "jdbc:h2:mem:;DB_CLOSE_DELAY=-1",
+        ] {
+            assert!(private_database_url(url), "{url}");
+        }
+        for url in [
+            "jdbc:sqlite:/tmp/data.db",
+            "jdbc:sqlite:file:data.db?cache=shared",
+            "jdbc:sqlite:file:shared?mode=memory&cache=shared",
+            "jdbc:sqlite:file::memory:?cache=shared",
+            "jdbc:h2:mem:shared;DB_CLOSE_DELAY=-1",
+            "jdbc:h2:file:/tmp/data",
+            "jdbc:h2:tcp://server/data",
+            "jdbc:duckdb:",
+            "jdbc:clickhouse://localhost/default",
+        ] {
+            assert!(!private_database_url(url), "{url}");
+        }
+    }
+
+    #[test]
     fn schema_columns_group_by_table() {
         let row = |t: &str, n: &str, null: &str, def: Option<&str>| {
             vec![Some(t.into()), Some(n.into()), Some("INT".into()), Some(null.into()), def.map(Into::into)]
@@ -784,65 +790,85 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn frame_codec_checks_both_16_mib_boundaries() {
-        assert_eq!(encode(7, &["a"]).unwrap(), [0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 1, 0, 0, 0, 1, b'a']);
-        let mut field = "x".repeat(LIMIT - 16);
-        assert_eq!(encode(1, &[&field]).unwrap().len(), LIMIT);
-        field.push('x');
-        assert!(encode(1, &[&field]).is_err());
-        let mut framed = vec![0u8; LIMIT + 4];
-        framed[..4].copy_from_slice(&(LIMIT as u32).to_be_bytes());
-        assert_eq!(read_frame(&mut framed.as_slice()).await.unwrap().len(), LIMIT);
-        assert!(read_frame(&mut &((LIMIT + 1) as u32).to_be_bytes()[..]).await.is_err());
-        assert!(read_frame(&mut &[0, 0, 0, 2, 1u8][..]).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn cancel_drains_partial_replies_in_either_order() {
-        for ack_first in [true, false] {
-            let (mut input, mut peer_input) = tokio::io::duplex(1);
-            let (mut output, mut peer_output) = tokio::io::duplex(1);
-            let cancel = CancellationToken::new();
-            let frame = encode(42, &["query"]).unwrap();
-            let peer = async {
-                let mut request = vec![0; frame.len()];
-                peer_input.read_exact(&mut request).await.unwrap();
-                assert_eq!(request, frame);
-                // The one-byte pipe forces the reader to consume part of the header before Cancel.
-                peer_output.write_all(&[0, 0]).await.unwrap();
-                cancel.cancel();
-                let mut stop = [0; 12];
-                peer_input.read_exact(&mut stop).await.unwrap();
-                assert_eq!(&stop[..8], &42u64.to_be_bytes());
-                assert_eq!(&stop[8..], &[0; 4]);
-                let frames = if ack_first { [0, 0, 0, 0, 0, 1, 0] } else { [0, 1, 1, 0, 0, 0, 0] };
-                peer_output.write_all(&frames).await.unwrap();
-            };
-            let (result, ()) = tokio::join!(exchange(&mut input, &mut output, frame.clone(), &cancel), peer);
-            assert_eq!(result.unwrap(), (!ack_first).then(|| vec![1]));
+    #[ignore = "requires DUCKDB_JDBC_JAR and a local Java 17+ runtime"]
+    async fn duckdb_live_catalog_metadata_is_scoped_to_the_requested_namespace() -> IdeResult<()> {
+        let tmp = tempfile::tempdir()?;
+        let source = DataSource { url: "jdbc:duckdb:".into(), ..Default::default() };
+        let driver = DbJdbcDriver {
+            id: "duckdb".into(),
+            name: "DuckDB".into(),
+            vendor: None,
+            jars: vec![std::env::var("DUCKDB_JDBC_JAR").expect("DUCKDB_JDBC_JAR")],
+            class_name: "org.duckdb.DuckDBDriver".into(),
+            url_template: String::new(),
+        };
+        let pool = JdbcPool::connect(&source, None, driver, tmp.path().join("jdbc")).await?;
+        let stop = CancellationToken::new();
+        let path = |file| tmp.path().join(file).to_string_lossy().replace('\'', "''");
+        let archive = "archive.db:1";
+        for sql in [
+            "SET threads = 1".into(),
+            "CREATE TABLE memory.main.dupe (root_only INT)".into(),
+            format!("ATTACH '{}' AS first", path("first.duckdb")),
+            format!(r#"ATTACH '{}' AS "archive.db:1""#, path("archive.duckdb")),
+            "CREATE TABLE first.main.dupe (first_only INT PRIMARY KEY)".into(),
+            r#"CREATE TABLE "archive.db:1".main.dupe (archive_only INT)"#.into(),
+            r#"CREATE SCHEMA "archive.db:1"."qa_%""#.into(),
+            r#"CREATE SCHEMA "archive.db:1".qaSimilar"#.into(),
+            r#"CREATE TABLE "archive.db:1"."qa_%"."t_%""q" (quoted_only INT PRIMARY KEY)"#.into(),
+            r#"COMMENT ON TABLE "archive.db:1"."qa_%"."t_%""q" IS 'Archive table'"#.into(),
+            r#"COMMENT ON COLUMN "archive.db:1"."qa_%"."t_%""q".quoted_only IS 'In the archive'"#.into(),
+            r#"CREATE TABLE "archive.db:1".qaSimilar."t_%""q" (wrong_schema INT)"#.into(),
+            r#"COMMENT ON TABLE "archive.db:1".qaSimilar."t_%""q" IS 'Wrong schema table'"#.into(),
+            r#"COMMENT ON COLUMN "archive.db:1".qaSimilar."t_%""q".wrong_schema IS 'Outside the schema'"#.into(),
+        ] {
+            pool.query(&sql, 0, 1, &stop).await?;
         }
-    }
 
-    #[tokio::test]
-    async fn exchange_rejects_unexpected_acknowledgements() {
-        let cancel = CancellationToken::new();
-        let mut sink = tokio::io::sink();
-        let mut reply = &[0, 0, 0, 1, 1u8][..];
-        assert_eq!(
-            exchange(&mut sink, &mut reply, encode(1, &["query"]).unwrap(), &cancel).await.unwrap(),
-            Some(vec![1])
-        );
-        for cancelled in [false, true] {
-            if cancelled {
-                cancel.cancel();
-            }
-            let mut duplicate_ack = &[0u8; 8][..];
-            assert!(exchange(&mut sink, &mut duplicate_ack, encode(1, &["query"]).unwrap(), &cancel).await.is_err());
+        let catalogs = pool.metadata(&["catalogs"]).await?;
+        assert!(catalogs.contains(&vec![Some("memory".into()), Some("1".into())]));
+        assert!(catalogs.contains(&vec![Some("first".into()), Some("0".into())]));
+        assert!(catalogs.contains(&vec![Some(archive.into()), Some("0".into())]));
+        let mut schemas = pool.metadata(&["schemas", archive]).await?;
+        // DuckDB JDBC 1.1.3 also lists these system schemas for attached catalogs.
+        schemas.retain(|row| !matches!(row[0].as_deref(), Some("information_schema" | "pg_catalog")));
+        assert_eq!(schemas, ["main", "qaSimilar", "qa_%"].map(|schema| vec![Some(schema.into())]));
+        let tables = pool.metadata(&["tables", "qa_%", archive]).await?;
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0][0].as_deref(), Some(r#"t_%"q"#));
+        assert_eq!(tables[0][2].as_deref(), Some("Archive table"));
+
+        for (catalog, column, primary) in
+            [("memory", "root_only", "0"), ("first", "first_only", "1"), (archive, "archive_only", "0")]
+        {
+            let columns = pool.metadata(&["columns", "main", "dupe", catalog]).await?;
+            assert_eq!(columns.len(), 1);
+            assert_eq!(columns[0][0].as_deref(), Some(column));
+            assert_eq!(columns[0][4].as_deref(), Some(primary));
         }
-        let (mut peer, mut output) = tokio::io::duplex(4);
-        peer.write_u32(0).await.unwrap();
-        let error = exchange(&mut sink, &mut output, encode(1, &["query"]).unwrap(), &cancel).await.unwrap_err();
-        assert_eq!(error.message, cancel_timeout().message);
+        let quoted = pool.metadata(&["columns", "qa_%", r#"t_%"q"#, archive]).await?;
+        assert_eq!(quoted.len(), 1);
+        assert_eq!(quoted[0][0].as_deref(), Some("quoted_only"));
+        assert_eq!(quoted[0][4].as_deref(), Some("1"));
+        let all = schema_columns(pool.metadata(&["schemaColumns", "qa_%", archive]).await?);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[r#"t_%"q"#][0].name, "quoted_only");
+        assert_eq!(all[r#"t_%"q"#][0].comment.as_deref(), Some("In the archive"));
+
+        pool.query("USE first", 0, 1, &stop).await?;
+        let catalogs = pool.metadata(&["catalogs"]).await?;
+        assert!(catalogs.contains(&vec![Some("first".into()), Some("1".into())]));
+        let legacy = pool.metadata(&["columns", "main", "dupe"]).await?;
+        assert_eq!(legacy[0][0].as_deref(), Some("first_only"));
+        pool.query("USE memory", 0, 1, &stop).await?;
+        pool.query("DETACH first", 0, 1, &stop).await?;
+        let catalogs = pool.metadata(&["catalogs"]).await?;
+        assert!(!catalogs.iter().any(|r| r[0].as_deref() == Some("first")));
+        assert!(pool.metadata(&["schemas", "first"]).await?.is_empty());
+        assert!(pool.metadata(&["tables", "main", "first"]).await?.is_empty());
+        assert!(pool.metadata(&["columns", "main", "dupe", "first"]).await?.is_empty());
+        pool.close().await;
+        Ok(())
     }
 
     #[test]
