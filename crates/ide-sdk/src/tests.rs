@@ -1675,6 +1675,85 @@ fn conda_creates_named_environments_in_its_envs_directory() {
     }
 }
 
+/// A conda record of `package` in the environment at `prefix`, holding the `.dist-info` of `dist`.
+fn conda_record(prefix: &Path, package: &str, dist: &str) {
+    std::fs::create_dir_all(prefix.join("conda-meta")).unwrap();
+    let files = [format!("lib/python3.12/site-packages/{dist}-1.0.dist-info/METADATA"), format!("bin/{package}")];
+    let record = serde_json::json!({ "name": package, "version": "1.0", "files": files });
+    std::fs::write(prefix.join(format!("conda-meta/{package}-1.0-py_0.json")), record.to_string()).unwrap();
+}
+
+#[test]
+fn conda_changes_only_the_packages_conda_installed() {
+    use crate::python::{conda_change, conda_constraint, conda_owned};
+    assert_eq!(conda_constraint("Django == 5.0"), Some(("Django", "==5.0".to_owned())));
+    assert_eq!(conda_constraint("numpy>=2.1"), Some(("numpy", ">=2.1".to_owned())));
+    for pip_only in
+        ["requests[socks]", "pkg; python_version<'3.12'", "pkg~=1.0", "git+https://x/y", "pkg @ https://x", ""]
+    {
+        assert_eq!(conda_constraint(pip_only), None, "{pip_only}");
+    }
+    let env = tempfile::tempdir().unwrap();
+    let prefix = env.path();
+    conda_record(prefix, "pytorch", "torch");
+    conda_record(prefix, "typing_extensions", "typing_extensions");
+    std::fs::write(prefix.join("conda-meta/history"), "").unwrap();
+    let owned = conda_owned(prefix);
+    assert_eq!(owned.get("torch").map(String::as_str), Some("pytorch"));
+    assert_eq!(owned.get("typing_extensions").map(String::as_str), Some("typing_extensions"));
+    let p = prefix.display().to_string();
+    let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    // Through the PyPI name, to the conda package; a new version or an upgrade.
+    assert_eq!(conda_change(prefix, "torch==2.5", false), Some(args(&["install", "-p", &p, "-y", "pytorch==2.5"])));
+    assert_eq!(
+        conda_change(prefix, "Typing-Extensions", true),
+        Some(args(&["update", "-p", &p, "-y", "typing_extensions"]))
+    );
+    // New packages and pip's are pip's; so is a requirement conda can't read.
+    assert_eq!(conda_change(prefix, "graphviz", false), None);
+    assert_eq!(conda_change(prefix, "torch[cuda]", false), None);
+}
+
+#[test]
+#[cfg(unix)]
+fn conda_environments_change_condas_packages_with_conda_and_the_rest_with_pip() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let script = |path: &Path, body: String| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    // An installation with an environment where conda installed `six`.
+    let root = tmp.path().join("miniforge3");
+    std::fs::create_dir_all(root.join("condabin")).unwrap();
+    let env = root.join("envs/demo");
+    conda_record(&env, "six", "six");
+    let conda_log = tmp.path().join("conda.log");
+    let pip_log = tmp.path().join("pip.log");
+    script(&root.join("bin/conda"), format!("#!/bin/sh\necho \"$@\" >> '{}'\n", conda_log.display()));
+    let python = env.join("bin/python");
+    script(&python, format!("#!/bin/sh\necho \"$@\" >> '{}'\n", pip_log.display()));
+    let log = |p: &Path| std::fs::read_to_string(p).unwrap_or_default();
+    let cancel = Default::default();
+    let prefix = env.display();
+
+    // A new package goes to pip, and conda is not asked.
+    crate::python::install_package(&python, "requests", false, false, None, &cancel, &|_| {}).unwrap();
+    assert!(log(&pip_log).contains("-m pip install requests"), "{}", log(&pip_log));
+    assert!(log(&conda_log).is_empty(), "{}", log(&conda_log));
+    // conda's own package: another version, an upgrade and removal (only that package) by conda.
+    crate::python::install_package(&python, "six==1.16.0", false, false, None, &cancel, &|_| {}).unwrap();
+    assert!(log(&conda_log).contains(&format!("install -p {prefix} -y six==1.16.0")), "{}", log(&conda_log));
+    crate::python::install_package(&python, "six", true, false, None, &cancel, &|_| {}).unwrap();
+    assert!(log(&conda_log).contains(&format!("update -p {prefix} -y six")));
+    crate::python::uninstall_package(&python, "six", &cancel, &|_| {}).unwrap();
+    assert!(log(&conda_log).contains(&format!("remove -p {prefix} -y --force six")));
+    crate::python::uninstall_package(&python, "requests", &cancel, &|_| {}).unwrap();
+    assert!(log(&pip_log).contains("-m pip uninstall -y requests"), "{}", log(&pip_log));
+    assert!(!log(&conda_log).contains("requests"));
+}
+
 #[test]
 #[cfg(unix)]
 fn a_named_conda_environment_is_found_where_conda_put_it() {
