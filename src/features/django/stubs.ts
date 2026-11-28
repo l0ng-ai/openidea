@@ -26,6 +26,8 @@ export const useStubs = create<StubsState>(initial);
 
 /** Bumped by each reset: a check started for the previous project doesn't write into the store. */
 let epoch = 0;
+/** Bumped by each check: only the latest one (another interpreter's, say) writes. */
+let latest = 0;
 export function resetStubs() {
   epoch++;
   useStubs.setState(initial());
@@ -37,15 +39,20 @@ export const needsStubs = (packages: readonly string[]) =>
 
 /** A virtual environment (venv, virtualenv, conda), the only kind the banner installs into: not the system Python. */
 async function isEnvironment(python: string): Promise<boolean> {
-  const root = python.replace(/\\/g, "/").split("/").slice(0, -2).join("/");
+  const parts = python.replace(/\\/g, "/").split("/");
+  // `env/bin/python`, `env\Scripts\python.exe`, and a Windows conda env's `env\python.exe`.
+  const roots = [parts.slice(0, -2).join("/"), parts.slice(0, -1).join("/")];
   const kinds = await Promise.all(
-    ["pyvenv.cfg", "conda-meta"].map((name) => call(commands.fsEntryKind(`${root}/${name}`)).catch(() => null)),
+    roots.flatMap((root) =>
+      ["pyvenv.cfg", "conda-meta"].map((name) => call(commands.fsEntryKind(`${root}/${name}`)).catch(() => null)),
+    ),
   );
   return kinds.some(Boolean);
 }
 
 export async function checkStubs(python: string): Promise<void> {
   const mine = epoch;
+  const check = ++latest;
   const missing =
     (await isEnvironment(python)) &&
     needsStubs(
@@ -53,7 +60,7 @@ export async function checkStubs(python: string): Promise<void> {
         p.name.toLowerCase().replace(/_/g, "-"),
       ),
     );
-  if (mine === epoch) useStubs.setState({ python, missing });
+  if (mine === epoch && check === latest) useStubs.setState({ python, missing });
 }
 
 export async function install() {

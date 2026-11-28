@@ -98,6 +98,23 @@ describe("Django field lookups", () => {
     expect(labels("shop.Tag", [])).not.toContain("coffee");
   });
 
+  it("points a concrete parent's relations back from the parent alone (multi-table inheritance)", () => {
+    const mti = modelFields(
+      parseModels(
+        `class User(models.Model):\n    name = models.CharField()\n\n\nclass Place(models.Model):\n    owner = models.ForeignKey(User, related_name="places", on_delete=models.CASCADE)\n    host = models.ForeignKey(User, on_delete=models.CASCADE)\n\n\nclass Restaurant(Place):\n    stars = models.IntegerField()\n`,
+        "a",
+      ),
+    );
+    expect(
+      mti
+        .get("a.User")!
+        .filter((f) => f.type === "reverse")
+        .map((f) => f.name),
+    ).toEqual(["places", "place"]);
+    // The child still queries the parent's fields.
+    expect(lookupOptions(mti, "a.Restaurant", []).map((o) => o.label)).toContain("owner");
+  });
+
   it("resolves models per app", () => {
     // "Tag" in shop's models is shop's own Tag, not blog's.
     expect(labels("shop.Coffee", ["tags"])).toContain("label");

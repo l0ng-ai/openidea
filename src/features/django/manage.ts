@@ -35,8 +35,8 @@ export interface ManageCommand {
 /** The script name, as typed in command lines. */
 const MANAGE = "manage.py";
 
-/** `manage.py migrate`, `./manage.py migrate`, `python manage.py migrate`, `python3.12 …`, `py …`. */
-const LINE = /^(?:(?:py|python[\d.]*)\s+)?(?:\.\/)?manage\.py(?:\s+|$)/;
+/** `manage.py migrate`, `./manage.py` / `.\manage.py`, `python`, `python3.12`, `python.exe`, `py`, `py -3.12`. */
+const LINE = /^(?:(?:py(?:\s+-[\d.]+)?|python[\d.]*(?:\.exe)?)\s+)?(?:\.[\\/])?manage\.py(?:\s+|$)/;
 
 /** The arguments after `manage.py`, or null when `line` isn't a manage.py command line. */
 export function manageArgs(line: string, windows = usePlatform.getState().os === "windows"): string[] | null {
@@ -130,13 +130,19 @@ async function capture(config: RunConfig, timeoutMs = 30_000): Promise<{ out: st
 
 /** The file the lookup starts from: the active editor's, so a monorepo uses that project's manage.py. */
 const near = () => maybeEditorService()?.activePath() ?? null;
+/** The file the last lookup started from: another active file may belong to another project. */
+let lookedUpFrom: string | null = null;
 
 /** The manage.py of the active file's project and its interpreter (looked up each time: the index may still be building). */
 export async function locateManage(): Promise<{ manage: string | null; python: string | null }> {
   const mine = epoch;
-  const manage = await findManage(near());
+  const from = near();
+  const manage = await findManage(from);
   const python = (manage && (await call(commands.sdkPythonEffective(dirname(manage))))) || null;
-  if (mine === epoch) useManage.setState({ manage, python });
+  if (mine === epoch) {
+    lookedUpFrom = from;
+    useManage.setState({ manage, python });
+  }
   return { manage, python };
 }
 
@@ -216,7 +222,7 @@ export function manageRunAnything(run: (config: RunConfig) => unknown): RunAnyth
     items(query) {
       if (!manageArgs(query)) return [];
       const { manage, python, commands: lists } = useManage.getState();
-      if (!manage || !python) {
+      if (!manage || !python || near() !== lookedUpFrom) {
         // One lookup at a time while typing; the rows come when it (and `help`) answers.
         locating ??= locateManage()
           .then((at) => void (at.manage && at.python && loadCommands(at.manage, at.python)))

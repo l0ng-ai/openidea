@@ -40,7 +40,8 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
   };
 });
 
-const { loadCommands, locateManage, resetManage, runManageLine, useManage } = await import("./manage");
+const { loadCommands, locateManage, manageRunAnything, resetManage, runManageLine, useManage } =
+  await import("./manage");
 
 const HELP = "Available subcommands:\n\n[django]\n    check\n    migrate\n";
 const answer = async (text: string, kind: "stdout" | "stderr" = "stdout") => {
@@ -81,6 +82,15 @@ it("uses the manage.py of the active file's project", async () => {
   ipc.files = ["/p/a/manage.py", "/p/b/manage.py"];
   ipc.active = "/p/b/shop/views.py";
   expect((await locateManage()).manage).toBe("/p/b/manage.py");
+});
+
+it("looks manage.py up again in Run Anything when another project's file is active", async () => {
+  ipc.files = ["/p/a/manage.py", "/p/b/manage.py"];
+  ipc.active = "/p/a/x.py";
+  expect((await locateManage()).manage).toBe("/p/a/manage.py");
+  ipc.active = "/p/b/x.py";
+  manageRunAnything(() => {}).items("manage.py ");
+  await vi.waitFor(() => expect(useManage.getState().manage).toBe("/p/b/manage.py"));
 });
 
 it("reports a failed help and reads it again only when asked", async () => {

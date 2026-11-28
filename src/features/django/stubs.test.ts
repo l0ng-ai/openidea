@@ -8,6 +8,8 @@ const ipc = vi.hoisted(() => ({
   restart: vi.fn(),
   notify: vi.fn(),
   gate: null as null | Promise<void>,
+  /** Per interpreter: holds its package list back. */
+  gates: {} as Record<string, Promise<void>>,
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ Channel: class {} }));
@@ -20,8 +22,9 @@ vi.mock("@/platform/ipc", async (importOriginal) => ({
     cancelRequest: () => ok(null),
     fsEntryKind: (path: string) =>
       ipc.envFiles.includes(path) ? ok("file") : Promise.resolve({ status: "error", error: { message: "missing" } }),
-    sdkPythonPackages: async () => {
+    sdkPythonPackages: async (python: string) => {
       await ipc.gate;
+      await ipc.gates[python];
       return ok(ipc.packages.map((name) => ({ name, version: "1" })));
     },
     sdkPythonPip: (python: string, requirement: string) => {
@@ -62,6 +65,13 @@ it("offers the install only for a virtual environment", async () => {
   ipc.envFiles = ["/opt/conda/envs/site/conda-meta"];
   await checkStubs("/opt/conda/envs/site/bin/python");
   expect(useStubs.getState().missing).toBe(true);
+  // Windows: a venv's Scripts\python.exe, and a conda env's python.exe at its root.
+  ipc.envFiles = ["C:/p/.venv/pyvenv.cfg", "C:/conda/envs/site/conda-meta"];
+  await checkStubs("C:\\p\\.venv\\Scripts\\python.exe");
+  expect(useStubs.getState().missing).toBe(true);
+  resetStubs();
+  await checkStubs("C:\\conda\\envs\\site\\python.exe");
+  expect(useStubs.getState().missing).toBe(true);
 });
 
 it("installs into the checked interpreter, restarts the type checker and checks again", async () => {
@@ -80,4 +90,16 @@ it("drops a check that ends after the project changed", async () => {
   release();
   await old;
   expect(useStubs.getState().python).toBeNull();
+});
+
+it("keeps the latest check when the interpreter changes during a slower one", async () => {
+  let release!: () => void;
+  ipc.gates = { "/old/.venv/bin/python": new Promise((resolve) => (release = resolve)) };
+  ipc.envFiles = ["/old/.venv/pyvenv.cfg", "/new/.venv/pyvenv.cfg"];
+  const old = checkStubs("/old/.venv/bin/python");
+  await checkStubs("/new/.venv/bin/python");
+  release();
+  await old;
+  expect(useStubs.getState().python).toBe("/new/.venv/bin/python");
+  ipc.gates = {};
 });

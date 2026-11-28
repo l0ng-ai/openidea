@@ -137,6 +137,18 @@ export function modelFields(models: readonly Model[]): Map<string, ModelField[]>
     });
     return [...inherited, ...m.fields];
   };
+  // A model's own relations: its fields and what abstract bases copy into it, not those of a
+  // concrete parent (multi-table inheritance), which point back from the parent alone.
+  const declared = (m: Model, seen = new Set<string>()): ModelField[] => {
+    if (seen.has(m.key)) return [];
+    seen.add(m.key);
+    const copied = m.bases.flatMap((b) => {
+      const key = resolve(byKey, b, m);
+      const base = key ? byKey.get(key)! : null;
+      return base?.abstract ? declared(base, seen) : [];
+    });
+    return [...copied, ...m.fields];
+  };
   const out = new Map<string, ModelField[]>();
   for (const m of models) {
     const fields = own(m).flatMap((f): ModelField[] => {
@@ -150,8 +162,9 @@ export function modelFields(models: readonly Model[]): Map<string, ModelField[]>
   }
   for (const m of models) {
     if (m.abstract) continue;
-    for (const f of [...out.get(m.key)!]) {
-      const target = f.to && f.type !== "reverse" ? out.get(f.to) : undefined;
+    for (const f of declared(m)) {
+      const to = f.to && resolve(byKey, f.to, m);
+      const target = to ? out.get(to) : undefined;
       const name = (f.relatedQuery ?? f.related ?? m.name.toLowerCase())
         .replace("%(class)s", m.name.toLowerCase())
         .replace("%(app_label)s", m.app);

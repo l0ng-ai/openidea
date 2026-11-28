@@ -39,6 +39,8 @@ describe("manage.py tasks", () => {
     expect(manageArgs("./manage.py ")).toEqual([]);
     expect(manageArgs("py manage.py check")).toEqual(["check"]);
     expect(manageArgs("python3.12 manage.py check")).toEqual(["check"]);
+    expect(manageArgs("py -3.12 manage.py check")).toEqual(["check"]);
+    expect(manageArgs("python.exe .\\manage.py check", true)).toEqual(["check"]);
     // Windows: backslashes in paths stay.
     expect(manageArgs("manage.py loaddata C:\\x\\a.json", true)).toEqual(["loaddata", "C:\\x\\a.json"]);
     expect(manageArgs("manage.pyx migrate")).toBeNull();
