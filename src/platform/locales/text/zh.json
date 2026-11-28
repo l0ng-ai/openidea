@@ -4067,6 +4067,8 @@
   "Group By": "分组依据",
   "Show on Double-Click": "双击时显示",
   "Follow the Interface": "跟随界面",
+  "create": "创建",
+  "1 occurrence": "1 个匹配项",
   "1 occurrence in 1 file": "1 个文件中的 1 处匹配项",
   "1 occurrence in {files} files": "{files} 个文件中的 1 处匹配项",
   "{occurrences} occurrences in 1 file": "1 个文件中的 {occurrences} 处匹配项",

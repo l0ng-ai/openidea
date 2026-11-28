@@ -784,10 +784,12 @@ function PreviewDialog({ popup }: { popup: Extract<LspPopup, { kind: "preview" }
                     → {basename(e.to)}
                   </span>
                 )}
-                {e.operation && e.operation !== "rename" && <span className={styles.previewOp}>{e.operation}</span>}
+                {e.operation && e.operation !== "rename" && (
+                  <span className={styles.previewOp}>{e.operation === "create" ? tx("create") : tx("delete")}</span>
+                )}
                 {e.edits > 0 && (
                   <span className={styles.previewCount}>
-                    {e.edits} {e.edits === 1 ? "occurrence" : "occurrences"}
+                    {e.edits === 1 ? tx("1 occurrence") : tx`${e.edits} occurrences`}
                   </span>
                 )}
               </li>

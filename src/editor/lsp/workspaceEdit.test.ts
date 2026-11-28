@@ -52,6 +52,10 @@ describe("summarizeWorkspaceEdit", () => {
       ],
     });
     expect(describeSummary(s)).toBe("3 个文件中的 5 处匹配项");
+    const count = (occurrences: number, files: number) => describeSummary({ ...s, occurrences, files });
+    expect(count(1, 1)).toBe("1 个文件中的 1 处匹配项");
+    expect(count(1, 2)).toBe("2 个文件中的 1 处匹配项");
+    expect(count(4, 1)).toBe("1 个文件中的 4 处匹配项");
   });
 
   it("applies single-file renames directly", () => {
