@@ -177,18 +177,23 @@ pub async fn run_gradle_init_script(name: String, text: String) -> IdeResult<Str
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
-/// Results from the JUnit XML reports (Surefire, Failsafe, Gradle) of the module at
-/// `module` (relative to the project root) written since `since_ms` (Unix epoch, ms).
+/// Results from the JUnit XML reports (Surefire, Failsafe, Gradle) changed by `run`.
+/// Without a run id, read reports in `module` written since `since_ms` (Unix epoch, ms).
 #[command(trust = trusted)]
 pub async fn run_test_reports(
     host: &Host,
     window: &str,
     module: Option<std::path::PathBuf>,
     since_ms: f64,
+    run: Option<ide_core::RunId>,
 ) -> IdeResult<Vec<ide_run::junit::TestCaseReport>> {
     let root = host.project(window)?.root.clone();
-    let dir = module.map(|m| root.join(m)).unwrap_or(root);
     let since = std::time::UNIX_EPOCH + std::time::Duration::from_millis(since_ms.max(0.0) as u64);
+    if let Some(run) = run {
+        let processes = host.processes.clone();
+        return crate::ops::blocking_value(move || processes.test_reports(run, &root, since)).await;
+    }
+    let dir = module.map(|m| root.join(m)).unwrap_or(root);
     tokio::task::spawn_blocking(move || ide_run::junit::read_reports(&ide_run::junit::report_dirs(&dir), since))
         .await
         .map_err(|e| IdeError::internal(e.to_string()))

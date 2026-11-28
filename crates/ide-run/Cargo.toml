@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+blake3.workspace = true
 ide-core.workspace = true
 ide-language.workspace = true
 ide-workspace.workspace = true
