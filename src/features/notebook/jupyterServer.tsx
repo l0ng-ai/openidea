@@ -5,7 +5,8 @@ import type { JupyterServer } from "@/bindings";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { Dialog, Input, T } from "@/ui";
-import { notebookSessions, type NotebookSession } from "./session";
+import { chooseItem } from "@/workbench/inputDialogs";
+import { notebookBackend, notebookSessions, type NotebookSession } from "./session";
 import styles from "./Notebook.module.css";
 
 /** The kernel drop-down's value for a kernel spec of a server. */
@@ -13,6 +14,8 @@ export const remoteKernel = (server: string, spec: string) => `${server}#${spec}
 
 /** The drop-down entry that opens the dialog. */
 export const CONNECT = "jupyter:connect";
+/** The drop-down entry that removes a saved server. */
+export const REMOVE = "jupyter:remove";
 
 const useConnect = create<{ open: boolean; session: NotebookSession | null }>(() => ({ open: false, session: null }));
 
@@ -21,8 +24,26 @@ export function connectJupyterServer(session: NotebookSession | null = null) {
   useConnect.setState({ open: true, session });
 }
 
+/** Probes the saved servers again and lists them in every open notebook. */
+function serversChanged() {
+  for (const open of notebookSessions()) void open.detectEnvironments(true);
+}
+
+/** Remove Jupyter Server…: forgets a saved server and its token. */
+export async function removeJupyterServer() {
+  const servers = await notebookBackend.servers().catch(() => []);
+  const url = await chooseItem({
+    title: "Remove Jupyter Server",
+    items: servers.map((server) => server.url),
+    empty: "No Jupyter servers saved",
+  });
+  if (!url) return;
+  await call(commands.jupyterServerRemove(url));
+  serversChanged();
+}
+
 function connected(server: JupyterServer, session: NotebookSession | null) {
-  for (const open of notebookSessions()) void open.detectEnvironments();
+  serversChanged();
   const first = server.kernels[0];
   if (session && first) session.selectPython(remoteKernel(server.url, first.name));
 }

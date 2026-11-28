@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as TauriCore from "@tauri-apps/api/core";
 import { EditorState } from "@codemirror/state";
-import type { IdeEvent, NotebookSnapshot } from "@/bindings";
+import type { IdeEvent, JupyterServer, NotebookSnapshot } from "@/bindings";
 import { IpcError } from "@/platform/ipc";
 import type * as Ipc from "@/platform/ipc";
 import {
@@ -118,6 +118,20 @@ function model() {
 }
 
 describe("shared notebook mutation session", () => {
+  it("lists local interpreters without waiting for saved Jupyter servers", async () => {
+    const m = model();
+    let answer: (servers: JupyterServer[]) => void = () => {};
+    m.backend.environments = async () => [[{ name: "Python 3.12", path: "/py" } as never], "/py"];
+    m.backend.servers = () => new Promise((resolve) => (answer = resolve));
+    const session = new NotebookSession("/p/a.ipynb", m.backend, true);
+    await session.load();
+    await vi.waitFor(() => expect(session.getState().environments).toHaveLength(1));
+    expect(session.getState().servers).toEqual([]);
+    answer([{ url: "http://h/", kernels: [{ name: "python3", displayName: "Python 3" }] }]);
+    await vi.waitFor(() => expect(session.getState().servers).toHaveLength(1));
+    await session.close();
+  });
+
   it("fetches the code cells' language-server documents when the code cells change", async () => {
     const m = model();
     const cellDocs = vi.fn(m.backend.cellDocs);

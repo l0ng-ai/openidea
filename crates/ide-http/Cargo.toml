@@ -11,8 +11,11 @@ ide-vfs.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 specta.workspace = true
-tokio.workspace = true
+# `net`: tunnel.rs opens connections reqwest does not (a WebSocket).
+tokio = { workspace = true, features = ["net"] }
 parking_lot.workspace = true
+base64.workspace = true
+http = "1"
 reqwest.workspace = true
 # The system proxy reqwest reads, to notice when it changes (see `client::shared`).
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }

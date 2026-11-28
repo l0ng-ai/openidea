@@ -19,6 +19,8 @@ use zeromq::SocketRecv;
 pub(crate) mod remote;
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+/// A heavy kernel on a shared server (a JupyterHub) can take longer.
+const REMOTE_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 const INTERRUPT_TIMEOUT: Duration = Duration::from_secs(5);
 const SEND_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
@@ -305,7 +307,8 @@ impl Session {
     }
 
     async fn ready(&mut self, stop: &CancellationToken) -> IdeResult<()> {
-        let deadline = Instant::now() + STARTUP_TIMEOUT;
+        let remote = matches!(self.link, Link::Remote(_));
+        let deadline = Instant::now() + if remote { REMOTE_STARTUP_TIMEOUT } else { STARTUP_TIMEOUT };
         let mut probe = tokio::time::interval(Duration::from_millis(250));
         probe.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut request = String::new();
@@ -316,8 +319,11 @@ impl Session {
                 biased;
                 _ = stop.cancelled() => return Err(IdeError::cancelled()),
                 _ = self.failure.token.cancelled() => return Err(self.failure.error()),
-                _ = tokio::time::sleep_until(deadline) => return Err(IdeError::unavailable(format!(
-                    "selected Python kernel was not ready within 30 seconds; {}", self.link.stderr()))),
+                _ = tokio::time::sleep_until(deadline) => return Err(IdeError::unavailable(if remote {
+                    "the kernel on the Jupyter server was not ready within 60 seconds".to_owned()
+                } else {
+                    format!("selected Python kernel was not ready within 30 seconds; {}", self.link.stderr())
+                })),
                 _ = probe.tick() => {
                     if let Some(message) = self.link.death()? {
                         return Err(IdeError::unavailable(message));
@@ -545,6 +551,11 @@ async fn supervise(
     ready: oneshot::Sender<IdeResult<()>>,
 ) {
     status(&notebook, KernelState::Starting, None);
+    // Starting a remote kernel also waits for the server's REST answer.
+    let limit = match &target {
+        KernelTarget::Local(_) => STARTUP_TIMEOUT,
+        KernelTarget::Remote(_) => REMOTE_STARTUP_TIMEOUT + Duration::from_secs(15),
+    };
     let startup = async {
         let mut session = Session::connect(&runtime, &notebook, &target).await?;
         session.ready(&stop).await?;
@@ -553,7 +564,7 @@ async fn supervise(
     let result = tokio::select! {
         biased;
         _ = stop.cancelled() => Err(IdeError::cancelled()),
-        result = tokio::time::timeout(STARTUP_TIMEOUT, startup) => result.unwrap_or_else(|_| Err(IdeError::unavailable("selected Python kernel startup timed out"))),
+        result = tokio::time::timeout(limit, startup) => result.unwrap_or_else(|_| Err(IdeError::unavailable("kernel startup timed out"))),
     };
     let mut session = match result {
         Ok(session) => session,

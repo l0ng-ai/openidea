@@ -16,7 +16,7 @@ import { useProject } from "@/platform/project";
 import { Button, Dialog, EmptyState, IconButton, Select, Spinner, type SelectOption } from "@/ui";
 import type { EditorInput } from "@/workbench/contributions";
 import { CellEditor } from "./CellEditor";
-import { CONNECT, connectJupyterServer, remoteKernel } from "./jupyterServer";
+import { CONNECT, connectJupyterServer, REMOVE, remoteKernel, removeJupyterServer } from "./jupyterServer";
 import { CellOutputs, MarkdownCell } from "./OutputView";
 import { notebookSession, type CellReveal, type NotebookSession } from "./session";
 import styles from "./Notebook.module.css";
@@ -120,6 +120,7 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
       });
   }
   options.push({ value: CONNECT, label: "Connect to Jupyter Server…" });
+  if (state.servers.length) options.push({ value: REMOVE, label: "Remove Jupyter Server…" });
   if (state.python && !options.some((option) => option.value === state.python))
     options.unshift({
       value: state.python,
@@ -194,13 +195,19 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
           value={state.python}
           options={options}
           disabled={disabled || state.running}
-          onChange={(value) => (value === CONNECT ? connectJupyterServer(session) : session.selectPython(value))}
+          onChange={(value) =>
+            value === CONNECT
+              ? connectJupyterServer(session)
+              : value === REMOVE
+                ? void removeJupyterServer()
+                : session.selectPython(value)
+          }
         />
         <IconButton
           icon="refresh"
           title="Refresh Python interpreters"
           disabled={disabled || state.running}
-          onClick={() => invoke(session.detectEnvironments())}
+          onClick={() => invoke(session.detectEnvironments(true))}
         />
         <span className={styles.kernel} role="status" title={state.error ?? undefined}>
           {state.running && <Spinner size={12} />}

@@ -13,6 +13,8 @@ import { call, commands, IpcError, isTauri, nextRequestId, onIdeEvent } from "@/
 import { notifyEditorDocumentChanged } from "@/workbench/contributions";
 import { OutputReducer } from "./outputs";
 
+let savedServers: Promise<JupyterServer[]> | null = null;
+
 export const notebookBackend = {
   open: (path: string) => call(commands.notebookOpen(path)),
   get: (id: string) => call(commands.notebookGet(id)),
@@ -33,7 +35,15 @@ export const notebookBackend = {
     output: Channel<NotebookOutputEvent>,
   ) => call(commands.notebookExecute(id, cells, python, request, output)),
   environments: () => Promise.all([call(commands.sdkDetect("python")), call(commands.sdkPythonEffective(null))]),
-  servers: () => call(commands.jupyterServers()),
+  /** Saved Jupyter servers, probed over the network once for every notebook until `refresh`. */
+  servers: (refresh = false) => {
+    if (refresh || !savedServers)
+      savedServers = call(commands.jupyterServers()).catch((error: unknown) => {
+        savedServers = null;
+        throw error;
+      });
+    return savedServers;
+  },
   cancel: (request: RequestId) => commands.cancelRequest(request),
 };
 
@@ -299,20 +309,21 @@ export class NotebookSession {
       .finally(() => this.publish({ loading: false }));
     return this.loading;
   }
-  async detectEnvironments() {
+  async detectEnvironments(refreshServers = false) {
+    // Saved servers answer over the network, or not at all: local interpreters do not wait.
+    // They are optional: an untrusted project or an unreachable store leaves local ones.
+    const servers = this.backend.servers(refreshServers).catch(() => []);
     try {
-      const [[environments, effective], servers] = await Promise.all([
-        this.backend.environments(),
-        // Servers are optional: an untrusted project or an unreachable store leaves local interpreters.
-        this.backend.servers().catch(() => []),
-      ]);
+      const [environments, effective] = await this.backend.environments();
       if (!this.disposed) {
-        this.publish({ environments, servers, python: this.state.python ?? effective });
+        this.publish({ environments, python: this.state.python ?? effective });
         this.recover("environment");
       }
     } catch (error) {
       if (!this.disposed) this.reportOperation(error, "environment");
     }
+    const listed = await servers;
+    if (!this.disposed) this.publish({ servers: listed });
   }
   selectPython(python: string) {
     if (this.state.running || this.state.frozen) return;

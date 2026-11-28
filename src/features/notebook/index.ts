@@ -17,7 +17,7 @@ import {
 import { isTauri } from "@/platform/ipc";
 import { ProviderAcquisitions } from "@/workbench/providerAcquisition";
 import { registerConversions } from "./convert";
-import { connectJupyterServer, JupyterServerDialog } from "./jupyterServer";
+import { connectJupyterServer, JupyterServerDialog, removeJupyterServer } from "./jupyterServer";
 import {
   closeNotebook,
   existingNotebookSession,
@@ -91,6 +91,13 @@ export function activate(): () => void {
         category: "Tools",
         when: "projectOpen",
         run: () => connectJupyterServer(),
+      },
+      {
+        id: "notebook.removeJupyterServer",
+        title: "Remove Jupyter Server…",
+        category: "Tools",
+        when: "projectOpen",
+        run: () => void removeJupyterServer(),
       },
     ]),
     registerEditorKind({

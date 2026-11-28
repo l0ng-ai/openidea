@@ -4,7 +4,7 @@
 use super::{Channel, Failure, Frame, MAX_MESSAGE_BYTES, SEND_TIMEOUT, protocol};
 use crate::kernel::RemoteKernel;
 use futures::SinkExt;
-use futures::stream::{SplitSink, StreamExt};
+use futures::stream::StreamExt;
 use ide_core::{IdeError, IdeResult};
 use jupyter_protocol::JupyterMessage;
 use reqwest::Method;
@@ -12,16 +12,25 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use specta::Type;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::net::TcpStream;
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::{Message, http::HeaderValue};
-use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream, connect_async_tls_with_config};
+use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream, client_async_tls_with_config};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+/// Waits between attempts to reopen a dropped channels socket, about 15 s in all.
+const RECONNECT_DELAYS: [Duration; 5] = [
+    Duration::from_millis(500),
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+    Duration::from_secs(8),
+];
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -33,9 +42,13 @@ pub struct KernelSpec {
     pub display_name: String,
 }
 
+/// Where a page's path starts on a Jupyter server (JupyterLab, Notebook, their editors).
+const PAGES: [&str; 6] = ["lab", "tree", "notebooks", "edit", "doc", "voila"];
+
 /// The server's base URL (`http(s)://host[:port]/[prefix/]`) from what a user pastes, and
-/// the `?token=` it carries. A trailing `lab` or `tree` (JupyterLab / Notebook pages) is
-/// dropped, so a URL copied from the browser works.
+/// the `?token=` it carries. A page's path (`/lab/tree/x.ipynb`, `/notebooks/x.ipynb`) is
+/// dropped, so a URL copied from the browser works. A JupyterHub user server's
+/// `/user/<name>/` is kept whatever the name.
 pub fn normalize_server_url(text: &str) -> IdeResult<(String, Option<String>)> {
     let invalid = || IdeError::invalid("enter the Jupyter server's http:// or https:// URL");
     let mut url = reqwest::Url::parse(text.trim()).map_err(|_| invalid())?;
@@ -45,8 +58,9 @@ pub fn normalize_server_url(text: &str) -> IdeResult<(String, Option<String>)> {
     let token = url.query_pairs().find(|(key, _)| key == "token").map(|(_, value)| value.into_owned());
     let mut segments: Vec<String> =
         url.path_segments().into_iter().flatten().filter(|s| !s.is_empty()).map(str::to_owned).collect();
-    if segments.last().is_some_and(|last| last == "lab" || last == "tree") {
-        segments.pop();
+    let prefix = if segments.first().is_some_and(|first| first == "user") { 2 } else { 0 };
+    if let Some(page) = segments.iter().skip(prefix).position(|s| PAGES.contains(&s.as_str())) {
+        segments.truncate(prefix + page);
     }
     let path = segments.iter().map(|segment| format!("{segment}/")).collect::<String>();
     url.set_path(&format!("/{path}"));
@@ -60,9 +74,13 @@ pub fn normalize_server_url(text: &str) -> IdeResult<(String, Option<String>)> {
 async fn call(base: &str, token: &str, method: Method, path: &str, body: Option<Value>) -> IdeResult<Value> {
     // Redirects are not followed: the token must not travel to another host.
     let client = ide_http::client::shared_without_redirects()?;
+    let write = method != Method::GET;
     let mut request = client.request(method, format!("{base}{path}")).timeout(REQUEST_TIMEOUT);
     if !token.is_empty() {
         request = request.header(reqwest::header::AUTHORIZATION, format!("token {token}"));
+    } else if write && let Some(xsrf) = xsrf(&client, base).await {
+        // A server without a token checks XSRF on every request that changes something.
+        request = request.header(reqwest::header::COOKIE, format!("_xsrf={xsrf}")).header("X-XSRFToken", xsrf);
     }
     if let Some(body) = body {
         request = request.header(reqwest::header::CONTENT_TYPE, "application/json").body(body.to_string());
@@ -72,7 +90,11 @@ async fn call(base: &str, token: &str, method: Method, path: &str, body: Option<
     })?;
     let status = response.status();
     if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-        return Err(IdeError::unavailable("the Jupyter server did not accept the token"));
+        return Err(IdeError::unavailable(if token.is_empty() {
+            "the Jupyter server needs a token"
+        } else {
+            "the Jupyter server did not accept the token"
+        }));
     }
     if !status.is_success() {
         return Err(IdeError::unavailable(format!("the Jupyter server answered {status} to {path}")));
@@ -85,6 +107,15 @@ async fn call(base: &str, token: &str, method: Method, path: &str, body: Option<
         return Ok(Value::Null);
     }
     serde_json::from_slice(&bytes).map_err(|_| IdeError::unavailable("the URL did not answer like a Jupyter server"))
+}
+
+/// The `_xsrf` cookie the server sets on any page (an API reply sets none).
+async fn xsrf(client: &reqwest::Client, base: &str) -> Option<String> {
+    let response = client.get(base).timeout(REQUEST_TIMEOUT).send().await.ok()?;
+    response.headers().get_all(reqwest::header::SET_COOKIE).iter().find_map(|cookie| {
+        let value = cookie.to_str().ok()?.split(';').next()?.trim().strip_prefix("_xsrf=")?;
+        Some(value.trim_matches('"').to_owned())
+    })
 }
 
 /// The server's kernel specs, its default first. Also checks the URL and the token.
@@ -108,61 +139,140 @@ fn parse_specs(reply: &Value) -> IdeResult<Vec<KernelSpec>> {
     Ok(specs)
 }
 
-pub(crate) struct Link {
+/// A kernel the IDE started on a server. Deleted there when the last handle goes, so a
+/// startup that fails, times out or is cancelled leaves nothing running.
+struct Kernel {
     base: String,
     token: String,
     id: String,
-    sink: SplitSink<Socket, Message>,
+    deleted: AtomicBool,
+}
+
+async fn delete(base: &str, token: &str, id: &str) {
+    let _ = call(base, token, Method::DELETE, &format!("api/kernels/{id}"), None).await;
+}
+
+impl Kernel {
+    async fn delete(&self) {
+        if !self.deleted.swap(true, Ordering::AcqRel) {
+            delete(&self.base, &self.token, &self.id).await;
+        }
+    }
+}
+
+impl Drop for Kernel {
+    fn drop(&mut self) {
+        if !*self.deleted.get_mut()
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            let (base, token, id) = (self.base.clone(), self.token.clone(), self.id.clone());
+            runtime.spawn(async move { delete(&base, &token, &id).await });
+        }
+    }
+}
+
+pub(crate) struct Link {
+    kernel: Arc<Kernel>,
+    outgoing: mpsc::Sender<String>,
 }
 
 /// Starts a kernel of `kernel.spec` and connects to its channels; frames go to `tx` like
-/// a local kernel's ZeroMQ frames.
+/// a local kernel's ZeroMQ frames. The returned task owns the socket and reopens it, for
+/// the same kernel, when it drops.
 pub(super) async fn connect(
     kernel: &RemoteKernel,
     tx: mpsc::Sender<Frame>,
     failure: Failure,
     queued: Arc<Semaphore>,
 ) -> IdeResult<(Link, JoinHandle<()>)> {
-    let RemoteKernel { base, token, spec } = kernel;
-    let started = call(base, token, Method::POST, "api/kernels", Some(json!({ "name": spec }))).await?;
-    let id = started["id"].as_str().ok_or_else(|| protocol("kernel start reply has no id"))?.to_owned();
-    let socket = match open_channels(base, token, &id).await {
-        Ok(socket) => socket,
-        Err(error) => {
-            let _ = call(base, token, Method::DELETE, &format!("api/kernels/{id}"), None).await;
-            return Err(error);
-        }
-    };
-    let (sink, mut stream) = socket.split();
-    let reader = tokio::spawn(async move {
-        while let Some(message) = stream.next().await {
-            let text = match message {
-                Ok(Message::Text(text)) => text,
-                Ok(Message::Close(_)) | Err(_) => break,
-                // Binary frames carry messages with buffers (widgets), which notebooks do not show.
-                Ok(_) => continue,
-            };
-            match frame(text.as_str(), &queued) {
-                Ok(Some(frame)) => {
-                    if tx.try_send(frame).is_err() {
-                        return failure.fail(IdeError::unavailable(
-                            "kernel output queue overflow; execution stopped to bound memory",
-                        ));
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => return failure.fail(error),
-            }
-        }
-        failure.fail(IdeError::unavailable("the connection to the Jupyter server closed"));
+    let RemoteKernel { base, token, spec } = kernel.clone();
+    // Not cancelled with the caller: a kernel the server starts after that is deleted.
+    let (sent, started) = oneshot::channel();
+    tokio::spawn(async move {
+        let reply = call(&base, &token, Method::POST, "api/kernels", Some(json!({ "name": spec }))).await;
+        let kernel = reply.and_then(|reply| {
+            let id = reply["id"].as_str().ok_or_else(|| protocol("kernel start reply has no id"))?.to_owned();
+            Ok(Arc::new(Kernel { base, token, id, deleted: AtomicBool::new(false) }))
+        });
+        let _ = sent.send(kernel);
     });
-    Ok((Link { base: base.clone(), token: token.clone(), id, sink }, reader))
+    let kernel = started.await.map_err(|_| IdeError::unavailable("kernel start task ended"))??;
+    let session = uuid::Uuid::new_v4().to_string();
+    let socket = open_channels(&kernel, &session).await?;
+    let (outgoing, messages) = mpsc::channel(16);
+    let pump = tokio::spawn(pump(kernel.clone(), session, socket, messages, tx, failure, queued));
+    Ok((Link { kernel, outgoing }, pump))
 }
 
-async fn open_channels(base: &str, token: &str, id: &str) -> IdeResult<Socket> {
+/// Moves messages between the socket and the session until the link goes. A socket that
+/// drops is reopened with the same session id, so the server replays what it buffered.
+async fn pump(
+    kernel: Arc<Kernel>,
+    session: String,
+    mut socket: Socket,
+    mut messages: mpsc::Receiver<String>,
+    tx: mpsc::Sender<Frame>,
+    failure: Failure,
+    queued: Arc<Semaphore>,
+) {
+    loop {
+        tokio::select! {
+            message = messages.recv() => {
+                let Some(message) = message else { return };
+                match tokio::time::timeout(SEND_TIMEOUT, socket.send(Message::Text(message.into()))).await {
+                    Ok(Ok(())) => {}
+                    _ => return failure.fail(IdeError::unavailable(
+                        "sending to the Jupyter server failed; delivery uncertain, not retried",
+                    )),
+                }
+            }
+            incoming = socket.next() => {
+                let text = match incoming {
+                    Some(Ok(Message::Text(text))) => text,
+                    // Binary frames carry messages with buffers (widgets), which notebooks do not show.
+                    Some(Ok(Message::Close(_)) | Err(_)) | None => match reopen(&kernel, &session).await {
+                        Ok(reopened) => { socket = reopened; continue; }
+                        Err(error) => return failure.fail(error),
+                    },
+                    Some(Ok(_)) => continue,
+                };
+                match frame(text.as_str(), &queued) {
+                    Ok(Some(frame)) => {
+                        if tx.try_send(frame).is_err() {
+                            return failure.fail(IdeError::unavailable(
+                                "kernel output queue overflow; execution stopped to bound memory",
+                            ));
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => return failure.fail(error),
+                }
+            }
+        }
+    }
+}
+
+async fn reopen(kernel: &Kernel, session: &str) -> IdeResult<Socket> {
+    let mut last = None;
+    for delay in RECONNECT_DELAYS {
+        tokio::time::sleep(delay).await;
+        match open_channels(kernel, session).await {
+            Ok(socket) => return Ok(socket),
+            Err(error) => last = Some(error),
+        }
+    }
+    let reason = last.map(|error| error.message).unwrap_or_default();
+    Err(IdeError::unavailable(format!(
+        "lost the connection to the Jupyter server ({reason}); the kernel may still be running there"
+    )))
+}
+
+async fn open_channels(kernel: &Kernel, session: &str) -> IdeResult<Socket> {
+    let Kernel { base, token, id, .. } = kernel;
     let ws = base.replacen("http", "ws", 1);
-    let session = uuid::Uuid::new_v4();
-    let mut request = format!("{ws}api/kernels/{id}/channels?session_id={session}")
+    let url = format!("{ws}api/kernels/{id}/channels?session_id={session}");
+    let mut request = url
+        .as_str()
         .into_client_request()
         .map_err(|error| IdeError::invalid(format!("Jupyter server URL: {error}")))?;
     if !token.is_empty() {
@@ -177,13 +287,18 @@ async fn open_channels(base: &str, token: &str, id: &str) -> IdeResult<Socket> {
     } else {
         Connector::Plain
     };
-    let (socket, _) = tokio::time::timeout(
-        REQUEST_TIMEOUT,
-        connect_async_tls_with_config(request, Some(config), false, Some(connector)),
-    )
-    .await
-    .map_err(|_| IdeError::unavailable("connecting to the kernel's channels on the Jupyter server timed out"))?
-    .map_err(|error| IdeError::unavailable(format!("could not connect to the kernel's channels: {error}")))?;
+    let opening = async {
+        // Through the HTTP proxy the REST calls use, if any.
+        let stream =
+            ide_http::tunnel::connect(&reqwest::Url::parse(&url).map_err(|_| IdeError::invalid("Jupyter server URL"))?)
+                .await?;
+        client_async_tls_with_config(request, stream, Some(config), Some(connector))
+            .await
+            .map_err(|error| IdeError::unavailable(format!("could not connect to the kernel's channels: {error}")))
+    };
+    let (socket, _) = tokio::time::timeout(REQUEST_TIMEOUT, opening)
+        .await
+        .map_err(|_| IdeError::unavailable("connecting to the kernel's channels on the Jupyter server timed out"))??;
     Ok(socket)
 }
 
@@ -217,22 +332,28 @@ impl Link {
         message.channel = Some(jupyter_protocol::Channel::Shell);
         let mut value = serde_json::to_value(&message).map_err(protocol)?;
         value["buffers"] = json!([]);
-        tokio::time::timeout(SEND_TIMEOUT, self.sink.send(Message::Text(value.to_string().into())))
+        tokio::time::timeout(SEND_TIMEOUT, self.outgoing.send(value.to_string()))
             .await
             .map_err(|_| IdeError::unavailable("kernel request send timed out; delivery uncertain, not retried"))?
-            .map_err(|error| IdeError::unavailable(format!("Jupyter server: {error}")))
+            .map_err(|_| IdeError::unavailable("the connection to the Jupyter server closed"))
     }
 
+    /// Asks the server to interrupt the kernel, without waiting: the run keeps reading
+    /// output meanwhile, and its interrupt deadline covers a server that does not answer.
     pub(super) async fn interrupt(&mut self) -> IdeResult<()> {
-        call(&self.base, &self.token, Method::POST, &format!("api/kernels/{}/interrupt", self.id), None)
-            .await
-            .map(|_| ())
+        let kernel = self.kernel.clone();
+        tokio::spawn(async move {
+            let _ =
+                call(&kernel.base, &kernel.token, Method::POST, &format!("api/kernels/{}/interrupt", kernel.id), None)
+                    .await;
+        });
+        Ok(())
     }
 
+    /// Deletes the kernel and waits for the server's answer. A server that cannot be
+    /// reached keeps it until it culls idle kernels, if it is configured to.
     pub(super) async fn shutdown(&mut self) {
-        let _ = tokio::time::timeout(Duration::from_millis(500), self.sink.close()).await;
-        // Best effort: a server that cannot be reached culls the kernel itself, if configured to.
-        let _ = call(&self.base, &self.token, Method::DELETE, &format!("api/kernels/{}", self.id), None).await;
+        self.kernel.delete().await;
     }
 }
 
@@ -255,6 +376,19 @@ mod tests {
         assert_eq!(
             base("https://hub.example.com/user/alice/tree?x=1#y"),
             ("https://hub.example.com/user/alice/".into(), None)
+        );
+        // A page's path, wherever it ends.
+        assert_eq!(base("http://localhost:8888/lab/tree/work/x.ipynb"), ("http://localhost:8888/".into(), None));
+        assert_eq!(
+            base("http://localhost:8888/notebooks/x.ipynb?token=t"),
+            ("http://localhost:8888/".into(), Some("t".into()))
+        );
+        assert_eq!(base("https://host/jupyter/doc/tree/x.ipynb"), ("https://host/jupyter/".into(), None));
+        // A Hub user named like a page keeps the name.
+        assert_eq!(base("https://hub.example.com/user/lab/"), ("https://hub.example.com/user/lab/".into(), None));
+        assert_eq!(
+            base("https://hub.example.com/user/lab/lab/tree/a"),
+            ("https://hub.example.com/user/lab/".into(), None)
         );
         assert!(normalize_server_url("file:///tmp").is_err());
         assert!(normalize_server_url("localhost:8888").is_err());

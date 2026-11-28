@@ -51,7 +51,9 @@ To run a notebook where the data or the GPU is, choose **Connect to Jupyter Serv
 
 OpenIDEA checks them against the server, keeps the token in the system credential store and lists the server's kernels in every notebook's interpreter list. The choice is remembered per notebook, like an interpreter.
 
-Running, interrupting and restarting work as with a local kernel. OpenIDEA starts a kernel on the server for the notebook and shuts it down when you close the notebook. Only the source of the cells you run is sent; the notebook file stays on your computer and is saved there. Signing in to JupyterHub through the browser is not supported; create an API token on the Hub's Token page instead.
+Running, interrupting and restarting work as with a local kernel. OpenIDEA starts a kernel on the server for the notebook and shuts it down when you close the notebook. Only the source of the cells you run is sent; the notebook file stays on your computer and is saved there. If the connection to the server drops, OpenIDEA reconnects to the same kernel for about 15 seconds before giving up. The kernel's connection goes through the HTTP proxy of **Settings › Appearance & Behavior › System Settings › HTTP Proxy**, like the server's other requests. Signing in to JupyterHub through the browser is not supported; create an API token on the Hub's Token page instead.
+
+To forget a server and its token, choose **Remove Jupyter Server…** in the interpreter list or in Find Action.
 
 ## Edit cells
 
