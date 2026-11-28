@@ -7940,6 +7940,7 @@
   "Collapse or expand this branch": "折叠或展开此分支",
   "Diff Preview Location": "差异预览位置",
   "Parent": "父提交",
+  "Changes to {parent}": "对 {parent} 的更改",
   "Committed by": "提交者",
   "Merge of": "合并自",
   "Containing branches": "包含此提交的分支",

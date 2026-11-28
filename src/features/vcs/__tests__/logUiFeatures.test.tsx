@@ -544,11 +544,61 @@ describe("commit details", () => {
         <ContextMenuHost />
       </>,
     );
-    expect(await screen.findByText("4 files")).toBeInTheDocument();
+    // The merge's own two changes, then each parent's two under "Changes to <parent>".
+    expect(await screen.findByText("6 files")).toBeInTheDocument();
     expect(api.diff).toHaveBeenCalledWith("/repo", "p1", "merge");
+    expect(screen.getByText("Changes to p1")).toBeInTheDocument();
+    expect(screen.getByText("Changes to p2")).toBeInTheDocument();
     expect(screen.queryByText("c.ts")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "All Parents" }));
     fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: "Parent 2: p2" }));
     await waitFor(() => expect(api.diff).toHaveBeenLastCalledWith("/repo", "p2", "merge"));
+    expect(await screen.findByText("4 files")).toBeInTheDocument();
+    expect(screen.queryByText("Changes to p1")).toBeNull();
+    expect(screen.getByText("Changes to p2")).toBeInTheDocument();
+  });
+
+  it("lists a merge's own changes above each parent's, like IDEA's Show Changes to Parents", async () => {
+    const merge = { ...c("merge", ["p1", "p2"]), repo: "/repo" };
+    const p2 = { ...c("p2", ["base"]), repo: "/repo", summary: "fix: pricing" };
+    api.diff.mockImplementation(async (_repo: string, from: string) => ({
+      status: "ok",
+      data:
+        from === "p1"
+          ? [
+              { path: "app/Posts.php", kind: "modified", oldPath: null, before: "p1", after: "merge" },
+              { path: "config/pricing.php", kind: "modified", oldPath: null, before: "p1", after: "merge" },
+            ]
+          : [{ path: "app/Posts.php", kind: "modified", oldPath: null, before: "p2", after: "merge" }],
+    }));
+    useGitLog.setState({ commits: [merge, p2], selected: commitKey(merge), selection: [commitKey(merge)] });
+    useLogOptions.setState({ changesFromParents: false, showOnlyAffected: false });
+    const view = render(<CommitDetails commits={[merge, p2]} />);
+    // Off: only the merge's own change.
+    expect(await screen.findByText("Posts.php")).toBeInTheDocument();
+    expect(screen.queryByText("pricing.php")).toBeNull();
+    expect(screen.queryByText(/^Changes to/)).toBeNull();
+    view.unmount();
+
+    useLogOptions.setState({ changesFromParents: true });
+    render(<CommitDetails commits={[merge, p2]} />);
+    expect(await screen.findByText("4 files")).toBeInTheDocument();
+    const rows = screen.getAllByRole("treeitem").map((r) => r.textContent ?? "");
+    const at = (text: string) => rows.findIndex((r) => r.includes(text));
+    expect(at("Posts.php")).toBeLessThan(at("Changes to p1"));
+    expect(at("Changes to p1")).toBeLessThan(at("Changes to p2 fix: pricing"));
+  });
+
+  it("says a merge without changes of its own has no merge conflicts", async () => {
+    const merge = { ...c("merge", ["p1", "p2"]), repo: "/repo" };
+    api.diff.mockImplementation(async (_repo: string, from: string) => ({
+      status: "ok",
+      data: [{ path: `${from}.ts`, kind: "modified", oldPath: null, before: from, after: "merge" }],
+    }));
+    useGitLog.setState({ commits: [merge], selected: commitKey(merge), selection: [commitKey(merge)] });
+    useLogOptions.setState({ changesFromParents: true, showOnlyAffected: false });
+    render(<CommitDetails commits={[merge]} />);
+    expect(await screen.findByText("No merge conflicts")).toBeInTheDocument();
+    expect(screen.getByText("2 files")).toBeInTheDocument();
   });
 });
