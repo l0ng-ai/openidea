@@ -102,9 +102,11 @@ In the Commit tool window, choose a run configuration and turn on **Run Tests** 
 
 Before committing, OpenIDEA also warns about committing in detached HEAD or during a rebase, file names that cause problems on other systems, files larger than 50 MB, and CRLF line endings. A warning stops the commit once; click **Commit Anyway** to go ahead.
 
-### Sign commits with GPG
+### Sign commits with GPG or SSH
 
-Open **Settings › Version Control › Git › Configure GPG Signature** in a trusted project. Choose the repository, enable **Sign commits with GPG**, and select an OpenPGP signing key. OpenIDEA saves the settings to that repository's Git config. Subsequent commits use the repository's configured signer.
+Open **Settings › Version Control › Git › Configure GPG Signature** in a trusted project. Choose the repository and a **Signing format**, enable signing, and select a key. OpenIDEA saves the settings to that repository's Git config (`gpg.format`, `commit.gpgsign`, `user.signingkey`). Subsequent commits use the repository's configured signer.
+
+For SSH, the list shows the keys ssh-agent holds, then the public keys in `~/.ssh`. A key with a passphrase must be in ssh-agent (`ssh-add`), since a commit from the IDE cannot ask for it. SSH signing needs Git 2.34 or later. To see your SSH-signed commits as verified in the log, list your key in the file that `gpg.ssh.allowedSignersFile` names, as on the command line.
 
 ### Modal commit
 

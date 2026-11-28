@@ -297,6 +297,8 @@ describe("catalogs", () => {
     "12288 MB",
     "16384 MB",
     "Docker",
+    // The OpenPGP signing format, in Configure GPG Signature.
+    "OpenPGP",
     "URL",
     "ID:",
     "Code Vision",

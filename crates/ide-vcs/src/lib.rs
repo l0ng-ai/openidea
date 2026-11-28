@@ -988,7 +988,7 @@ pub use rebase_editor::{
 };
 pub use remotes::{FetchReport, Remote};
 pub use roots::{ProjectUpdateTarget, Repos};
-pub use signing::{GitSigningConfig, GitSigningEdit, GpgSigningKey};
+pub use signing::{GitSigningConfig, GitSigningEdit, GpgSigningKey, SshSigningKey};
 pub use staged_text::{StagedText, StagedTextEdit, StagingLineHunk, StagingLineHunks};
 
 fn clone_args(url: &str, dest: &str, depth: Option<u32>, recurse_submodules: bool) -> IdeResult<Vec<String>> {
