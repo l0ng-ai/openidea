@@ -19,8 +19,10 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
+import type { FileEntry } from "@/bindings";
 import { revealRange, useEditorRegistry } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
+import { formatDay } from "@/platform/dateFormat";
 import { tx, useTxTemplate } from "@/platform/i18n";
 import { isTauri } from "@/platform/ipc";
 import { canDragOut, dragOut, isDraggingOut } from "@/platform/dragOut";
@@ -264,6 +266,27 @@ function InlineEditor({ editing, initial, onDone }: { editing: Editing; initial:
 
 // ---------------------------------------------------------------------------
 // Rows
+
+const FILE_SIZE_UNITS = ["B", "KB", "MB", "GB", "TB"];
+
+function formatFileSize(bytes: number): string {
+  let value = bytes;
+  let unit = 0;
+  // Promote values that round to 1024 so the next unit starts cleanly.
+  while (unit < FILE_SIZE_UNITS.length - 1 && Number(value.toFixed(1)) >= 1024) {
+    value /= 1024;
+    unit++;
+  }
+  return `${unit === 0 ? value : Number(value.toFixed(1))} ${FILE_SIZE_UNITS[unit]}`;
+}
+
+/** Concise metadata for the detail slot; zero means the backend has no modification time. */
+export function formatFileDetails(entry: Pick<FileEntry, "size" | "mtimeMs"> | null): string | null {
+  if (!entry) return null;
+  const size = formatFileSize(entry.size);
+  const modified = entry.mtimeMs ? formatDay(new Date(entry.mtimeMs), undefined, true) : null;
+  return modified ? `${size} · ${modified}` : size;
+}
 
 interface RowProps {
   node: ProjectNode;
@@ -925,7 +948,11 @@ export function ProjectView() {
           editing={editing}
           cut={cutPaths.has(node.path)}
           dropTarget={dropTarget === node.key}
-          detail={node.detail ?? (rootPath(node) && options.showRootPaths ? rootPath(node) : null)}
+          detail={
+            node.detail ??
+            (rootPath(node) && options.showRootPaths ? rootPath(node) : null) ??
+            (options.showFileDetails && !node.dir ? formatFileDetails(node.entry) : null)
+          }
           hint={rootPath(node)}
           onEditDone={focusTree}
           onClick={onRowClick}
@@ -938,6 +965,7 @@ export function ProjectView() {
       cutPaths,
       dropTarget,
       options.showRootPaths,
+      options.showFileDetails,
       rootPath,
       focusTree,
       onRowClick,

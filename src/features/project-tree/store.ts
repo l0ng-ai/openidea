@@ -66,6 +66,8 @@ export interface ViewOptions extends TreeOptions {
   showMembers: boolean;
   /** Show the location of each project root beside its name. */
   showRootPaths: boolean;
+  /** Show each file's size and modification date beside its name. */
+  showFileDetails: boolean;
   /** List Scratches and Consoles below the project in the Project pane. */
   showScratches: boolean;
   /** Rows wider than the pane scroll sideways; off clips long names (VS Code's horizontal scrolling). */
@@ -80,6 +82,7 @@ export const DEFAULT_VIEW_OPTIONS: ViewOptions = {
   singleClickExpand: false,
   showMembers: false,
   showRootPaths: true,
+  showFileDetails: false,
   showScratches: true,
   horizontalScroll: true,
 };

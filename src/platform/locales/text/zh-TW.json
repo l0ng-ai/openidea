@@ -7941,6 +7941,7 @@
   "{names} need {name} and stop while it is disabled. Disable it anyway?": "{names} 依賴 {name}，在其被停用期間將停止執行。仍要停用嗎？",
   "{names} needs {name} and stops while it is disabled. Disable it anyway?": "{names} 依賴 {name}，在其被停用期間將停止執行。仍要停用嗎？",
   "Show Root Paths": "顯示根路徑",
+  "File Details": "顯示檔案詳細資訊",
   "Workspace": "工作區",
   "Disable Server": "停用伺服器",
   "Enable Server": "啟用伺服器",

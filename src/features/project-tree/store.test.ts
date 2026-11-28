@@ -508,6 +508,15 @@ describe("single-click expansion", () => {
   });
 });
 
+it("keeps File Details off by default and persists the option across reloads", async () => {
+  expect(useProjectTree.getState().options.showFileDetails).toBe(false);
+  setViewOption("showFileDetails", true);
+  vi.resetModules();
+  const fresh = await import("./store");
+  expect(fresh.useProjectTree.getState().options.showFileDetails).toBe(true);
+  setViewOption("showFileDetails", false);
+});
+
 it("keeps the primary first and sorts attachments by name", () => {
   initProjectTree("/z", "Z", ["/z", "/c", "/a"]);
   expect(currentModel().roots.map((n) => n.path)).toEqual(["/z", "/a", "/c"]);
