@@ -37,6 +37,24 @@ fn build_output_tail_keeps_the_last_150_lines_across_streams() {
     assert_eq!(build_output_tail(&events), lines(5..155));
 }
 
+#[test]
+fn maven_resources_select_projects_by_coordinates_not_by_basedir() {
+    // Maven reports absolute basedirs whose spelling can differ from the opened folder on Windows
+    // (`D:/worktree/jxc/organ` against `d:\\worktree\\jxc`); coordinates always name a reactor project.
+    let project = |dir: &str, artifact: &str| ProjectModel {
+        dir: PathBuf::from(dir),
+        group_id: "org.starry".into(),
+        artifact_id: artifact.into(),
+        ..Default::default()
+    };
+    let projects = [
+        project("D:/worktree/jxc/organ", "organ"),
+        project("D:/worktree/jxc", "cloud"),
+        project("D:/worktree/jxc/organ", "organ"),
+    ];
+    assert_eq!(maven_project_selection(projects.iter()), "org.starry:cloud,org.starry:organ");
+}
+
 /// A JDK (`JAVA_HOME`) and Maven on the search path, else `None` (the test is skipped).
 fn tools() -> Option<(PathBuf, PathBuf)> {
     let home = std::env::var_os("JAVA_HOME").map(PathBuf::from).filter(|h| h.join("bin").is_dir())?;
@@ -239,7 +257,7 @@ fn builds_maven_modules_with_javac_and_only_what_changed() {
     f.write("app/src/main/resources/app.properties", "version=${project.version}\nmore=1\n");
     let steps = f.steps_of_launch();
     assert_eq!(steps.len(), 1, "{steps:?}");
-    assert!(steps[0].contains("resources:resources") && steps[0].contains("-pl app"), "{steps:?}");
+    assert!(steps[0].contains("resources:resources") && steps[0].contains("-pl t:app"), "{steps:?}");
     assert_eq!(fs::read_to_string(f.out("t.app/classes/app.properties")).unwrap(), "version=1\nmore=1\n");
 
     // A deleted source leaves no class behind.
