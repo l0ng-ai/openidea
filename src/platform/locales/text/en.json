@@ -4409,7 +4409,6 @@
   "Run manage.py Task…": "Run manage.py Task…",
   "No manage.py in this project": "No manage.py in this project",
   "manage.py Tasks": "manage.py Tasks",
-  "Install django-types to complete Django model fields and managers": "Install django-types to complete Django model fields and managers",
   "Installing django-types": "Installing django-types",
   "Cannot install django-types": "Cannot install django-types",
   "Gutter": "Gutter",
@@ -4437,5 +4436,7 @@
   "Keep Key": "Keep Key",
   "Drop Index": "Drop Index",
   "Keep Index": "Keep Index",
-  "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite cannot drop the index of a primary key or unique constraint."
+  "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite cannot drop the index of a primary key or unique constraint.",
+  "Cannot list the manage.py commands": "Cannot list the manage.py commands",
+  "Install django-types into this project's virtual environment to complete Django model fields and managers": "Install django-types into this project's virtual environment to complete Django model fields and managers"
 }

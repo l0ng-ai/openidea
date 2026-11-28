@@ -1,9 +1,9 @@
 /** The Python Console's process: the project interpreter running console.py on the Run process host. */
 import { Channel } from "@tauri-apps/api/core";
 import { create } from "zustand";
-import { pickManage } from "@/features/django/manage";
 import { call, commands, onIdeEvent, type OutputChunk, type RunConfig, type RunId } from "@/platform/ipc";
 import { windowLabel } from "@/platform/auxWindow";
+import { findManage } from "@/platform/django";
 import { dirname, useProject } from "@/platform/project";
 import { tx } from "@/platform/i18n";
 import { AnsiStream, appendSpans, type Span } from "@/ui/ansi";
@@ -88,18 +88,20 @@ function onMessage(message: ConsoleMessage) {
 /** Run ids of this window's consoles: a reloaded page finds the ones its previous load left running. */
 const PREFIX = `python-console:${windowLabel()}:`;
 
-/** The settings module `manage.py` sets as DJANGO_SETTINGS_MODULE. */
+/** The settings module `manage.py` sets as DJANGO_SETTINGS_MODULE (`setdefault(…)` or `os.environ[…] =`). */
 export const settingsModule = (manage: string) =>
-  /DJANGO_SETTINGS_MODULE["']\s*,\s*["']([\w.]+)["']/.exec(manage)?.[1] ?? null;
+  /^[^#\n]*DJANGO_SETTINGS_MODULE["']\s*(?:,|\]\s*=)\s*["']([\w.]+)["']/m.exec(manage)?.[1] ?? null;
 
-/** In a Django project the console runs where manage.py is, with Django set up (PyCharm's Django Console). */
-async function django(): Promise<{ cwd: string; settings: string } | null> {
-  const manage = pickManage((await call(commands.findFilesNamed("manage.py")).catch(() => [])).map(String));
-  const settings = manage && settingsModule((await call(commands.fsReadText(manage)).catch(() => null)) ?? "");
-  return manage && settings ? { cwd: dirname(manage), settings } : null;
+/** Environment that has the driver set Django up (PyCharm's Django Console), in a project with a manage.py. */
+async function djangoEnv(near: string | null): Promise<Record<string, string>> {
+  const manage = await findManage(near).catch(() => null);
+  if (!manage) return {};
+  const settings = settingsModule((await call(commands.fsReadText(manage)).catch(() => null)) ?? "");
+  // Without a literal settings module, Django is set up only if the environment names one.
+  return { OPENIDEA_DJANGO_DIR: dirname(manage), ...(settings && { OPENIDEA_DJANGO_SETTINGS: settings }) };
 }
 
-function config(python: string, cwd: string, settings?: string): RunConfig {
+function config(python: string, cwd: string, env: Record<string, string>): RunConfig {
   return {
     id: `${PREFIX}${crypto.randomUUID()}`,
     name: "Python Console",
@@ -108,7 +110,7 @@ function config(python: string, cwd: string, settings?: string): RunConfig {
     command: python,
     args: ["-u", "-c", DRIVER],
     cwd,
-    env: settings ? { OPENIDEA_DJANGO_SETTINGS: settings } : {},
+    env,
     detected: true,
     isTest: false,
     debugAdapter: null,
@@ -148,9 +150,9 @@ export async function startConsole() {
       }
       // "system" chunks echo the command line, which is the driver's source here.
     };
-    const site = await django();
+    const env = await djangoEnv(active);
     if (mine !== generation) return;
-    const info = await call(commands.runStart(config(python, site?.cwd ?? root, site?.settings), channel, null));
+    const info = await call(commands.runStart(config(python, root, env), channel, null));
     if (mine !== generation) void call(commands.runStop(info.id)).catch(() => {});
     else {
       runId = info.id;
