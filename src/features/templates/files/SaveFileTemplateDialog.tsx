@@ -80,7 +80,6 @@ function SaveFileTemplateDialog({
       width={440}
       position="top"
       popup
-      className={styles.dialog}
       buttons={[
         { label: "Cancel", role: "cancel" },
         { label: "Save", role: "default", onClick: submit },
