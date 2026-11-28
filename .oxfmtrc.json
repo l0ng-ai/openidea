@@ -18,6 +18,7 @@
     "plugins/themes.md",
     "pnpm-lock.yaml",
     "**/*.toml",
+    "vendor",
     "fixtures",
     "plugins/*/web",
     "plugins/official/*/web",

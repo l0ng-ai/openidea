@@ -14,8 +14,9 @@ use ide_core::remote_settings::SshAuth;
 use ide_core::{IdeError, IdeResult, error::ErrorKind};
 use parking_lot::Mutex;
 use russh::client::{self, Handle, Msg};
-use russh::keys::{self, HashAlg, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate, known_hosts};
-use russh::{ChannelMsg, ChannelStream, ChannelWriteHalf, Sig};
+use russh::keys::{self, Algorithm, HashAlg, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate, known_hosts};
+use russh::{ChannelMsg, ChannelStream, ChannelWriteHalf, Preferred, Sig};
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,6 +25,15 @@ use tokio::sync::oneshot;
 /// Generous: a relayed VPN path (e.g. Tailscale via DERP) can take ~1 s per round trip.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(45);
 const DEFAULT_IDENTITIES: [&str; 3] = ["id_ed25519", "id_ecdsa", "id_rsa"];
+
+/// Offered host key algorithms: the russh defaults with the post-quantum hybrid
+/// `ssh-mldsa44-ed25519` (ML-DSA-44 + Ed25519) appended, so it is only selected by
+/// servers that have nothing classical to offer.
+pub fn preferred_key_algorithms() -> Cow<'static, [Algorithm]> {
+    let mut key = Preferred::default().key.into_owned();
+    key.push(Algorithm::MlDsa44Ed25519);
+    Cow::Owned(key)
+}
 
 /// A host key the user has not trusted yet.
 #[derive(Debug, Clone)]
@@ -508,7 +518,7 @@ async fn remote_forward(channel: russh::Channel<Msg>, reply: client::ChannelOpen
 
 #[derive(Debug)]
 enum HostKeyIssue {
-    Unknown(PublicKey),
+    Unknown(Box<PublicKey>),
     Changed(usize),
 }
 
@@ -539,7 +549,7 @@ impl client::Handler for Client {
             Ok(false) | Err(_) if self.host_key_policy == HostKeyPolicy::AcceptNew && self.learn(&key) => {
                 return Ok(true);
             }
-            Ok(false) | Err(_) => HostKeyIssue::Unknown(key),
+            Ok(false) | Err(_) => HostKeyIssue::Unknown(Box::new(key)),
         };
         *self.issue.lock() = Some(issue);
         Ok(false)
@@ -712,6 +722,7 @@ where
         keepalive_interval: Some(Duration::from_secs(30)),
         keepalive_max: 3,
         nodelay: true,
+        preferred: Preferred { key: preferred_key_algorithms(), ..Default::default() },
         ..Default::default()
     });
     let issue = Arc::new(Mutex::new(None));
@@ -732,7 +743,7 @@ where
         Some(HostKeyIssue::Unknown(key)) => ConnectError::UnknownHostKey(Box::new(UnknownHostKey {
             host: hop.host.clone(),
             port: hop.port,
-            key,
+            key: *key,
             known_hosts: hop.known_hosts.clone(),
         })),
         Some(HostKeyIssue::Changed(line)) => ConnectError::Other(IdeError::new(
