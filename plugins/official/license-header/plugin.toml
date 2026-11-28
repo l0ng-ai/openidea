@@ -1,17 +1,17 @@
 id = "openidea.license-header"
 name = "License Header"
-version = "0.1.0"
-description = "Keeps a copyright and SPDX license header at the top of source files: files without one are reported when they open, a quick fix adds it, and a project scan lists every file that still needs one."
+version = "0.2.0"
+description = "Keeps a copyright notice at the top of source files, written from copyright profiles: templates with $year, $author, $license, $project and $file, and comment styles per file type. Files without one are reported when they open, a quick fix adds it, Update Copyright rewrites it in a file or a whole folder, and new files can get it as they are created."
 authors = ["OpenIDEA contributors"]
 license = "Apache-2.0"
-change-notes = "0.1.0 — first release: missing headers reported on open and save, Add License Header quick fix and command, project scan in the background."
+change-notes = "0.2.0 — copyright profiles (named notice templates with variables, chosen per project), comment styles per file extension, Update Copyright for the current file or the files and folders selected in the Project view (keeps the first year: 2020-2026), optional header for new files. 0.1.0 — first release: missing headers reported on open and save, Add License Header quick fix and command, project scan in the background."
 categories = ["tools"]
-engines.openidea = "^1.0"
+engines.openidea = "^1.6"
 wasm = "dist/plugin.wasm"
-activation = ["on-event:file-opened", "on-event:file-saved", "on-command:*"]
+activation = ["on-event:file-opened", "on-event:file-saved", "on-event:files-changed", "on-command:*"]
 
 [capabilities]
-required = ["events", "project.read", "editor.read", "editor.write"]
+required = ["events", "project.read", "project.write", "editor.read", "editor.write"]
 
 [[contributes.providers]]
 kinds = ["code-actions"]
@@ -23,6 +23,16 @@ title = "License Header: Add to Current File"
 category = "License Header"
 
 [[contributes.commands]]
+id = "update"
+title = "License Header: Update Copyright in Current File"
+category = "License Header"
+
+[[contributes.commands]]
+id = "update-selected"
+title = "Update Copyright"
+category = "License Header"
+
+[[contributes.commands]]
 id = "scan"
 title = "License Header: Find Files Without a Header"
 category = "License Header"
@@ -30,6 +40,14 @@ category = "License Header"
 [[contributes.menus]]
 menu = "tools"
 command = "scan"
+
+[[contributes.menus]]
+menu = "tools"
+command = "update"
+
+[[contributes.menus]]
+menu = "projectView.context"
+command = "update-selected"
 
 [contributes.settings]
 title = "License Header"

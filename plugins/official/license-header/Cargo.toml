@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 openidea-plugin = { path = "../../../sdk/rust/openidea-plugin" }
+serde_json = "1"
 
 [profile.release]
 opt-level = "s"
