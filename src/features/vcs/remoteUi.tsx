@@ -40,7 +40,7 @@ import {
 } from "./ops";
 import { PushChanges, pushChangesKey } from "./PushChanges";
 import { PushCheckStatus } from "./PushCheckStatus";
-import { PushTagOptions, usePushTagOptions } from "./PushTagOptions";
+import { PushTagOptions, projectPushStorageKey, usePushTagOptions } from "./PushTagOptions";
 import { PushReview, usePushDiff } from "./PushDiff";
 import {
   PushInspectionBanner,
@@ -672,14 +672,15 @@ function MultiPushDialog({
     if (inspection.needsFetch) return inspection.fetch();
     // Like the single-repository dialog: each forced target is confirmed first (once, when several
     // repositories push to the same one), and declining one pushes nothing.
-    const forced = new Set<string>();
+    const forced = new Map<string, [remote: string, target: string]>();
     for (const r of force && forceAvailable ? picked : []) {
       const target = targetNameOf(r);
-      const remote = shownRemoteOf(r);
-      if (!isProtectedBranch(target) && !specialTarget(r)) forced.add(remote ? `${remote}/${target}` : target);
+      const remote = shownRemoteOf(r) ?? "";
+      if (!isProtectedBranch(target) && !specialTarget(r))
+        forced.set(JSON.stringify([remote, target]), [remote, target]);
     }
-    for (const target of forced) if (!(await confirmForcePush(target))) return;
-    if (useProject.getState().project !== project) return;
+    for (const [remote, target] of forced.values())
+      if (!(await confirmForcePush(remote, target)) || useProject.getState().project !== project) return;
     const tags = tagOptions.rememberForPush();
     onClose();
     await pushTargets(
@@ -1210,7 +1211,7 @@ function PushDialog({
   const push = async () => {
     if (!selection || inspection.fetching || useProject.getState().project !== project) return;
     if (inspection.needsFetch) return inspection.fetch();
-    if (force && forceAvailable && !(await confirmForcePush(remote ? `${remote}/${target}` : (target ?? "")))) return;
+    if (force && forceAvailable && !(await confirmForcePush(remote ?? "", target ?? ""))) return;
     if (useProject.getState().project !== project) return;
     const options = {
       forceWithLease: force && forceAvailable,
@@ -1387,31 +1388,39 @@ function PushDialog({
   );
 }
 
-const SILENT_FORCE_PUSH_KEY = "openidea.vcs.silentForcePushTargets";
+type ForcePushTarget = [remote: string, branch: string];
 
-function silentForcePushTargets(): string[] {
+/** The project's silenced (remote, branch) pairs: a joined `remote/branch` would be ambiguous. */
+function silentForcePushTargets(key: string | null): ForcePushTarget[] {
   try {
-    const v: unknown = JSON.parse(localStorage.getItem(SILENT_FORCE_PUSH_KEY) ?? "[]");
-    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+    const v: unknown = key ? JSON.parse(localStorage.getItem(key) ?? "[]") : [];
+    return Array.isArray(v)
+      ? v.filter(
+          (x): x is ForcePushTarget => Array.isArray(x) && x.length === 2 && x.every((s) => typeof s === "string"),
+        )
+      : [];
   } catch {
     return [];
   }
 }
 
-/** IDEA's force push confirmation, with "Don't warn about this target". */
-async function confirmForcePush(target: string): Promise<boolean> {
-  if (target && silentForcePushTargets().includes(target)) return true;
+/** IDEA's force push confirmation, with "Don't warn about this target" remembered per project. */
+async function confirmForcePush(remote: string, branch: string): Promise<boolean> {
+  // Taken before asking: the project may change while the confirmation is open.
+  const key = branch ? projectPushStorageKey("openidea.vcs.silentForcePushTargets") : null;
+  if (silentForcePushTargets(key).some(([r, b]) => r === remote && b === branch)) return true;
+  const target = remote ? `${remote}/${branch}` : branch;
   const r = await ask({
     title: "Force Push",
     body: tx`You're going to force push to '${target}'. It may overwrite commits at the remote. Are you sure you want to proceed?`,
     icon: "warning",
-    checkbox: target ? "Don't warn about this target" : undefined,
+    checkbox: key ? "Don't warn about this target" : undefined,
     buttons: [{ id: "force", label: "Force Push", primary: true }],
   });
   if (r.button !== "force") return false;
-  if (r.checked && target) {
+  if (r.checked && key) {
     try {
-      localStorage.setItem(SILENT_FORCE_PUSH_KEY, JSON.stringify([...silentForcePushTargets(), target]));
+      localStorage.setItem(key, JSON.stringify([...silentForcePushTargets(key), [remote, branch]]));
     } catch {
       // Not remembered: the next force push asks again.
     }
