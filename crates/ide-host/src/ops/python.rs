@@ -30,13 +30,7 @@ pub(super) fn with_user_paths(
     command: Option<&str>,
     near: Option<&Path>,
 ) -> Vec<PathBuf> {
-    let named = command
-        .filter(|c| ide_sdk::apply::is_python_command(c))
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute() && p.is_file())
-        .map(|p| ide_core::project_roots::resolve(&project.root, &p));
-    let python = named.or_else(|| super::sdk::effective_python(config_dir, project, near));
-    if let Some(python) = python {
+    if let Some(python) = launch_python(config_dir, project, command, near) {
         for path in ide_sdk::apply::interpreter_user_paths(&python, &project.settings.effective()) {
             if !paths.contains(&path) {
                 paths.push(path);
@@ -44,6 +38,27 @@ pub(super) fn with_user_paths(
         }
     }
     paths
+}
+
+/// The interpreter a launch uses: `command` when it names a Python executable, else the
+/// interpreter of the project or workspace member at `near`.
+fn launch_python(config_dir: &Path, project: &Project, command: Option<&str>, near: Option<&Path>) -> Option<PathBuf> {
+    let named = command
+        .filter(|c| ide_sdk::apply::is_python_command(c))
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute() && p.is_file())
+        .map(|p| ide_core::project_roots::resolve(&project.root, &p));
+    named.or_else(|| super::sdk::effective_python(config_dir, project, near))
+}
+
+/// The conda environment of the interpreter a launch uses ([`launch_python`]), to activate.
+pub(super) fn conda_prefix(
+    config_dir: &Path,
+    project: &Project,
+    command: Option<&str>,
+    near: Option<&Path>,
+) -> Option<PathBuf> {
+    ide_sdk::apply::conda_env_prefix(&launch_python(config_dir, project, command, near)?)
 }
 
 /// The interpreter a debugpy launch names (`"python": "<executable>"`), if it names one.
@@ -58,6 +73,7 @@ pub(super) fn prepare_debug(
     config: &mut LaunchConfig,
     paths: &[PathBuf],
     plots: Option<(&ide_run::plots::Plots, &Path)>,
+    conda: Option<&Path>,
 ) -> IdeResult<()> {
     // Adapter-specific env takes precedence over the common launch fields in DAP.
     let mut extra: Option<serde_json::Value> = config.extra_json.as_deref().and_then(|s| serde_json::from_str(s).ok());
@@ -77,6 +93,9 @@ pub(super) fn prepare_debug(
             object.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned()))).collect();
         let inherit = !vars.contains_key("PYTHONPATH");
         ide_run::python_path::extend(&mut vars, paths, inherit)?;
+        if let Some(prefix) = conda {
+            ide_run::python_path::activate_conda(&mut vars, prefix, inherit)?;
+        }
         if let Some((plots, dir)) = plots {
             ide_run::plots::add(&mut vars, plots, Some(dir))?;
         }
@@ -86,6 +105,9 @@ pub(super) fn prepare_debug(
         config.extra_json = extra.map(|e| e.to_string());
     } else {
         ide_run::python_path::extend(&mut config.env, paths, true)?;
+        if let Some(prefix) = conda {
+            ide_run::python_path::activate_conda(&mut config.env, prefix, true)?;
+        }
         if let Some((plots, dir)) = plots {
             ide_run::plots::add(&mut config.env, plots, Some(dir))?;
         }
@@ -96,6 +118,30 @@ pub(super) fn prepare_debug(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_activates_the_interpreters_conda_environment() {
+        let root = std::env::temp_dir().join("project");
+        let prefix = std::env::temp_dir().join("miniforge3").join("envs").join("ds");
+        let mut config = LaunchConfig {
+            name: "Python".into(),
+            adapter: "debugpy".into(),
+            request: "launch".into(),
+            program: None,
+            args: vec![],
+            cwd: None,
+            env: BTreeMap::new(),
+            extra_json: Some(serde_json::json!({"env": {"CONDA_DEFAULT_ENV": "mine"}}).to_string()),
+        };
+        prepare_debug(&mut config, std::slice::from_ref(&root), None, Some(&prefix)).unwrap();
+        let value: serde_json::Value = serde_json::from_str(config.extra_json.as_deref().unwrap()).unwrap();
+        let env = &value["env"];
+        assert_eq!(env["CONDA_PREFIX"], prefix.to_string_lossy().as_ref());
+        assert_eq!(env["CONDA_DEFAULT_ENV"], "mine");
+        let path = env.as_object().unwrap().iter().find(|(k, _)| k.eq_ignore_ascii_case("PATH")).unwrap().1;
+        let first = std::env::split_paths(path.as_str().unwrap()).next().unwrap();
+        assert!(first.starts_with(&prefix), "{first:?}");
+    }
 
     #[test]
     fn debug_preserves_remote_paths_and_handles_null_env() {
@@ -111,11 +157,11 @@ mod tests {
             extra_json: Some(serde_json::json!({"env": null, "debugServer": "remote:5678"}).to_string()),
         };
         let before = config.extra_json.clone();
-        prepare_debug(&mut config, std::slice::from_ref(&root), None).unwrap();
+        prepare_debug(&mut config, std::slice::from_ref(&root), None, None).unwrap();
         assert_eq!(config.extra_json, before);
         assert!(config.env.is_empty());
         config.extra_json = Some(serde_json::json!({"env": null}).to_string());
-        prepare_debug(&mut config, std::slice::from_ref(&root), None).unwrap();
+        prepare_debug(&mut config, std::slice::from_ref(&root), None, None).unwrap();
         let value: serde_json::Value = serde_json::from_str(config.extra_json.as_deref().unwrap()).unwrap();
         let paths = std::env::split_paths(value["env"]["PYTHONPATH"].as_str().unwrap()).collect::<Vec<_>>();
         assert_eq!(paths[0], root);
@@ -137,7 +183,7 @@ mod tests {
                 env: vars.clone(),
                 extra_json: extra.then(|| serde_json::json!({"env": vars}).to_string()),
             };
-            prepare_debug(&mut config, std::slice::from_ref(&root), None).unwrap();
+            prepare_debug(&mut config, std::slice::from_ref(&root), None, None).unwrap();
             let vars: BTreeMap<String, String> = if extra {
                 let value: serde_json::Value = serde_json::from_str(config.extra_json.as_deref().unwrap()).unwrap();
                 serde_json::from_value(value["env"].clone()).unwrap()
@@ -172,7 +218,7 @@ mod tests {
 
         // The launch's own variables stay as they are, other values included.
         let mut config = launch(serde_json::json!({"env": {"DEBUG": "1", "LEVEL": 3}}), BTreeMap::new());
-        prepare_debug(&mut config, std::slice::from_ref(&root), Some((&plots, &root))).unwrap();
+        prepare_debug(&mut config, std::slice::from_ref(&root), Some((&plots, &root)), None).unwrap();
         let env = env_of(&config);
         assert_eq!((env["DEBUG"].as_str(), env["LEVEL"].as_i64()), (Some("1"), Some(3)));
         assert_eq!(env["MPLBACKEND"], "module://openidea_matplotlib_backend");
@@ -183,13 +229,13 @@ mod tests {
 
         // A backend the launch names, in either environment field, is kept.
         let mut config = launch(serde_json::json!({"env": {"MPLBACKEND": "Agg"}}), BTreeMap::new());
-        prepare_debug(&mut config, std::slice::from_ref(&root), Some((&plots, &root))).unwrap();
+        prepare_debug(&mut config, std::slice::from_ref(&root), Some((&plots, &root)), None).unwrap();
         let env = env_of(&config);
         assert_eq!(env["MPLBACKEND"], "Agg");
         assert!(env.get("OPENIDEA_PLOTS_DIR").is_none());
         let own = BTreeMap::from([("MPLBACKEND".into(), "TkAgg".into())]);
         let mut config = launch(serde_json::json!({}), own);
-        prepare_debug(&mut config, std::slice::from_ref(&root), Some((&plots, &root))).unwrap();
+        prepare_debug(&mut config, std::slice::from_ref(&root), Some((&plots, &root)), None).unwrap();
         assert_eq!(config.env["MPLBACKEND"], "TkAgg");
         assert!(!config.env.contains_key("OPENIDEA_PLOTS_DIR"));
     }
