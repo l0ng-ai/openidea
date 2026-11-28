@@ -3,7 +3,7 @@ use crate::ops::Channel;
 use base64::Engine;
 use ide_core::error::ErrorKind;
 use ide_core::{CancellationToken, IdeError, IdeEvent, IdeResult, IpcPath, SharedSink};
-use ide_notebook::kernel::{KernelManager, KernelOutput};
+use ide_notebook::kernel::{KernelManager, KernelOutput, KernelTarget};
 use ide_notebook::{NotebookDocument, NotebookEdit, NotebookSnapshot};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -363,6 +363,42 @@ impl NotebookService {
         }
     }
 
+    /// Opens the debugger of the notebook's kernel, starting `target` first (or replacing a
+    /// kernel of another target). Also returns the notebook's code cells as (URI, source), read
+    /// when called, and the prefix of its cell URIs: what Debug Cell needs (see
+    /// `ide_notebook::kernel::debug`).
+    pub(crate) async fn debugger(
+        &self,
+        id: &str,
+        target: KernelTarget,
+        cancel: CancellationToken,
+    ) -> IdeResult<(ide_notebook::kernel::KernelDebugger, impl Fn() -> Vec<(String, String)> + Send + 'static, String)>
+    {
+        let document = self.resolve(id)?;
+        if document.state.lock().active.is_some() {
+            return Err(IdeError::unavailable("notebook is running"));
+        }
+        // The drop-down's kernel, which may not be the one running yet.
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(IdeError::cancelled()),
+            result = self.kernels.start(&document.path, target) => result?,
+        }
+        let debugger = self.kernels.debugger(&document.path)?;
+        let prefix = ide_lsp::cell_uri(&document.path, "");
+        // Read again on each use: cells are added and edited while the session runs.
+        let cells = move || {
+            let Ok(snapshot) = snapshot(&document) else { return Vec::new() };
+            snapshot
+                .cells
+                .into_iter()
+                .filter(|cell| cell.cell_type == "code")
+                .map(|cell| (ide_lsp::cell_uri(&document.path, &cell.id), cell.source))
+                .collect()
+        };
+        Ok((debugger, cells, prefix))
+    }
+
     pub(crate) fn admit(
         &self,
         id: &str,
@@ -375,7 +411,7 @@ impl NotebookService {
     pub(crate) async fn execute(
         self: &Arc<Self>,
         admission: ExecutionAdmission,
-        python: PathBuf,
+        target: KernelTarget,
         on_output: Channel<NotebookOutputEvent>,
     ) -> IdeResult<NotebookSnapshot> {
         let document = admission.guard.document.clone();
@@ -384,7 +420,7 @@ impl NotebookService {
         tokio::spawn(async move {
             let ExecutionAdmission { guard, generation, plan } = admission;
             let result =
-                service.run_batch(document.clone(), generation, plan, python, guard.batch.clone(), on_output).await;
+                service.run_batch(document.clone(), generation, plan, target, guard.batch.clone(), on_output).await;
             drop(guard);
             match result {
                 Ok(()) => snapshot(&document),
@@ -400,7 +436,7 @@ impl NotebookService {
         document: Arc<ManagedDocument>,
         generation: u64,
         plan: Vec<(String, String)>,
-        python: PathBuf,
+        target: KernelTarget,
         batch: Arc<Batch>,
         on_output: Channel<NotebookOutputEvent>,
     ) -> IdeResult<()> {
@@ -428,7 +464,7 @@ impl NotebookService {
                 .kernels
                 .execute(
                     &document.path,
-                    &python,
+                    target.clone(),
                     &source,
                     batch.cancel.clone(),
                     Arc::new(move |output: KernelOutput| {

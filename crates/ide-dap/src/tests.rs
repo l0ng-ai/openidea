@@ -3791,3 +3791,19 @@ async fn stop_detaches_from_an_attached_program() {
     assert!(!h.commands().contains(&"terminate".to_owned()));
     assert_eq!(h.request("disconnect")["arguments"]["terminateDebuggee"], false);
 }
+
+#[tokio::test]
+async fn cell_breakpoints_go_only_to_their_notebooks_kernel_session() {
+    use crate::jvm_memory::test_support::bare_session_of;
+    use std::path::Path;
+    let (a, b) = ("vscode-notebook-cell:/p/a.ipynb#c1", "vscode-notebook-cell:/p/b.ipynb#c1");
+    let mut kernel = bare_session_of(crate::NOTEBOOK_ADAPTER, "attach");
+    std::sync::Arc::get_mut(&mut kernel.session).unwrap().notebook_cells =
+        Some("vscode-notebook-cell:/p/a.ipynb#".into());
+    let python = bare_session_of("debugpy", "launch");
+    assert!(kernel.session.takes(Path::new(a)));
+    assert!(!kernel.session.takes(Path::new(b)), "another notebook's cells");
+    assert!(kernel.session.takes(Path::new("/p/lib.py")), "files the cells may call");
+    assert!(!python.session.takes(Path::new(a)));
+    assert!(python.session.takes(Path::new("/p/lib.py")));
+}

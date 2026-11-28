@@ -936,6 +936,14 @@ export const commands = {
 	jdkDownloadVendors: () => __TAURI_INVOKE<JdkVendor[]>("jdk_download_vendors"),
 	/**  The Java version the window's jdtls needs; `None` while it isn't installed or doesn't tell. */
 	jdtlsRequiredJava: () => typedError<number | null, IdeError>(__TAURI_INVOKE("jdtls_required_java")),
+	/**
+	 *  Checks `url` and `token` against the server and saves them. A `?token=` in the URL
+	 *  (as JupyterLab prints it) is used when `token` is empty.
+	 */
+	jupyterServerAdd: (url: string, token: string) => typedError<JupyterServer, IdeError>(__TAURI_INVOKE("jupyter_server_add", { url, token })),
+	jupyterServerRemove: (url: string) => typedError<null, IdeError>(__TAURI_INVOKE("jupyter_server_remove", { url })),
+	/**  The saved servers and their kernel specs; a server that cannot be reached has none. */
+	jupyterServers: () => typedError<JupyterServer[], IdeError>(__TAURI_INVOKE("jupyter_servers")),
 	jvmFilePresentations: (paths: string[]) => typedError<JvmFilePresentation[], IdeError>(__TAURI_INVOKE("jvm_file_presentations", { paths })),
 	languages: () => __TAURI_INVOKE<LanguageInfo_Serialize[]>("languages"),
 	/**
@@ -1279,6 +1287,12 @@ export const commands = {
 	navResolveModule: (name: string, from: IpcPath) => typedError<string | null, IdeError>(__TAURI_INVOKE("nav_resolve_module", { name, from })),
 	notebookCellDocs: (id: string) => typedError<NotebookCellDoc[], IdeError>(__TAURI_INVOKE("notebook_cell_docs", { id })),
 	notebookClose: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("notebook_close", { id })),
+	/**
+	 *  Debug Cell: a debug session named `name` on the notebook's kernel, starting the kernel
+	 *  when none runs. The caller then runs the cell; ending the session leaves the kernel and
+	 *  its state running.
+	 */
+	notebookDebugStart: (id: string, python: string | null, name: string, justMyCode: boolean) => typedError<DebugSessionId, IdeError>(__TAURI_INVOKE("notebook_debug_start", { id, python, name, justMyCode })),
 	notebookEdit: (id: string, version: number, edit: NotebookEdit) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_edit", { id, version, edit })),
 	notebookExecute: (id: string, cells: string[], python: string | null, request: RequestId, onOutput: Channel<NotebookOutputEvent>) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_execute", { id, cells, python, request, onOutput })),
 	notebookGet: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_get", { id })),
@@ -9343,6 +9357,13 @@ export type JunitLaunch = {
 	surefire: string[],
 };
 
+/**  A Jupyter server notebooks can run on. */
+export type JupyterServer = {
+	/**  Base URL, ending in `/`. */
+	url: string,
+	kernels: KernelSpec[],
+};
+
 /**  The backend that reads a debugged JVM's objects (instances, fields, referrers). */
 export type JvmBackendState = { kind: "ready" } | 
 /**  Turned off for the rest of the session: the debug adapter lacks what it needs. */
@@ -9484,6 +9505,12 @@ export type JvmTypeKind = "class" | "abstractClass" | "interface" | "enum" | "re
 export type JvmValue = { kind: "null" } | { kind: "primitive"; typeName: string; text: string } | 
 /**  `text` is `None` when `length` exceeds [`STRING_PREVIEW_CHARS`]. */
 { kind: "string"; id: number; text: string | null; length: number } | { kind: "boxed"; id: number; typeName: string; text: string } | { kind: "object"; id: number; typeName: string } | { kind: "array"; id: number; typeName: string; length: number };
+
+/**  A kernel spec a Jupyter server offers. */
+export type KernelSpec = {
+	name: string,
+	displayName: string,
+};
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
 export type LanguageCodeStyle = LanguageCodeStyle_Serialize | LanguageCodeStyle_Deserialize;

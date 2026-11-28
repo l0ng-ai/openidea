@@ -139,6 +139,8 @@ pub struct Host {
     pub web: ide_web::WebServer,
     /// The HTTP proxy's saved password (see `proxy.rs`).
     proxy_password: ide_ssh::secrets::SecretFile,
+    /// Tokens of the Jupyter servers notebooks run on, by server base URL.
+    jupyter_tokens: ide_ssh::secrets::SecretFile,
     /// The proxy password when it could not be saved (no credential store).
     proxy_session_password: Mutex<Option<String>>,
     /// Values of agents' and MCP servers' environment variables and headers (see `agent_secrets.rs`).
@@ -235,6 +237,7 @@ impl Host {
             trust: std::sync::Arc::new(trust::TrustStore::load(&config_dir, &data_dir)),
             mcp_approvals: Arc::new(trust::McpServerApprovals::load(&data_dir)),
             proxy_password: ide_ssh::secrets::SecretFile::new(data_dir.join("proxy-password.json")),
+            jupyter_tokens: ide_ssh::secrets::SecretFile::new(data_dir.join("jupyter-tokens.json")),
             proxy_session_password: Mutex::default(),
             agent_secrets: Arc::new(agent_secrets::AgentSecrets::new(&data_dir)),
             remote: Arc::new(ide_remote::RemoteService::new(ssh.clone(), data_dir.join("remote"))),

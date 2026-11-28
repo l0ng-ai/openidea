@@ -3,6 +3,7 @@
 //! Output routing ends at the matching shell reply AND IOPub idle. Readers remain
 //! alive and drain later background output, but never attribute it to another run.
 
+pub mod debug;
 mod process;
 mod transport;
 
@@ -21,6 +22,45 @@ use tokio::sync::Mutex as AsyncMutex;
 /// A read of the variables running longer is interrupted. Its kernel is kept even if it does
 /// not drain; an Interrupt then stops it like a run.
 const READ_LIMIT: Duration = Duration::from_secs(5);
+
+pub use transport::remote::{KernelSpec, kernel_specs, normalize_server_url};
+
+/// Where a notebook's kernel runs.
+#[derive(Clone, PartialEq, Eq)]
+pub enum KernelTarget {
+    /// A kernel the IDE starts from this Python interpreter.
+    Local(PathBuf),
+    /// A kernel started on a Jupyter server.
+    Remote(RemoteKernel),
+}
+
+/// A kernel spec on a Jupyter server, and the token to reach it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RemoteKernel {
+    /// The server's base URL, ending in `/` (see [`normalize_server_url`]).
+    pub base: String,
+    pub token: String,
+    pub spec: String,
+}
+
+impl std::fmt::Debug for RemoteKernel {
+    // Leaves out the token.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteKernel").field("base", &self.base).field("spec", &self.spec).finish()
+    }
+}
+
+impl From<&Path> for KernelTarget {
+    fn from(python: &Path) -> Self {
+        Self::Local(python.to_path_buf())
+    }
+}
+
+impl From<&PathBuf> for KernelTarget {
+    fn from(python: &PathBuf) -> Self {
+        Self::Local(python.clone())
+    }
+}
 
 pub(super) type StatusCallback = Arc<dyn Fn(&Path, KernelState, Option<String>) + Send + Sync>;
 pub(super) type OutputCallback = Arc<dyn Fn(KernelOutput) + Send + Sync>;
@@ -76,6 +116,7 @@ struct Slot {
     inspection: Mutex<Option<CancellationToken>>,
     /// Counts `cancel()` calls, so an inspection sees one that came before its token was set.
     interrupts: AtomicUsize,
+    debug: transport::DebugPort,
 }
 
 impl Slot {
@@ -88,6 +129,7 @@ impl Slot {
             inspecting: AtomicUsize::new(0),
             inspection: Mutex::new(None),
             interrupts: AtomicUsize::new(0),
+            debug: transport::DebugPort::default(),
         }
     }
 
@@ -141,11 +183,12 @@ impl KernelManager {
     pub async fn execute(
         &self,
         notebook: &Path,
-        python: &Path,
+        target: impl Into<KernelTarget>,
         code: &str,
         cancel: CancellationToken,
         on_output: OutputCallback,
     ) -> IdeResult<ExecutionResult> {
+        let target = target.into();
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }
@@ -176,7 +219,7 @@ impl KernelManager {
         if slot.closed.load(Ordering::Acquire) {
             return Err(IdeError::unavailable("notebook kernel was closed"));
         }
-        if running.as_ref().is_some_and(|r| r.python != python || r.is_finished())
+        if running.as_ref().is_some_and(|r| r.target != target || r.is_finished())
             && let Some(old) = running.take()
         {
             old.shutdown().await;
@@ -188,8 +231,9 @@ impl KernelManager {
             let (new, ready) = transport::Running::spawn(
                 self.runtime_dir.clone(),
                 notebook.to_path_buf(),
-                python.to_path_buf(),
+                target,
                 self.on_status.clone(),
+                slot.debug.clone(),
             );
             *slot.stop.lock() = Some(new.stop.clone());
             *running = Some(new);
@@ -263,11 +307,28 @@ impl KernelManager {
         Ok(result?.user_expressions)
     }
 
+    /// Starts `target` for the notebook, or replaces a kernel of another target; a kernel
+    /// already running for `target` is kept.
+    pub async fn start(&self, notebook: &Path, target: impl Into<KernelTarget>) -> IdeResult<()> {
+        self.execute(notebook, target, "", CancellationToken::new(), Arc::new(|_| {})).await.map(|_| ())
+    }
+
+    /// Opens the debugger of the notebook's running kernel. One session at a time; it ends
+    /// when the returned value is dropped or the kernel stops.
+    pub fn debugger(&self, notebook: &Path) -> IdeResult<KernelDebugger> {
+        let slot = self.slots.lock().get(notebook).cloned();
+        let slot = slot.ok_or_else(|| IdeError::unavailable("the notebook's kernel is not running"))?;
+        let (control, inbox) = slot.debug.open()?;
+        Ok(KernelDebugger { control, inbox })
+    }
+
     /// Cancels the active request, including startup. The execution future drains
     /// reply+idle before returning, or stops the owned process on interrupt timeout.
     pub async fn interrupt(&self, notebook: &Path) -> IdeResult<()> {
         let slot = self.slots.lock().get(notebook).cloned();
         if let Some(slot) = slot {
+            // A run paused at a breakpoint goes on first; paused, it would not answer in time.
+            slot.debug.release().await;
             slot.cancel();
             // Wait for native interrupt delivery/drain, not just token mutation.
             let _drained = slot.operation.lock().await;
@@ -284,10 +345,15 @@ impl KernelManager {
             return Err(IdeError::unavailable("notebook kernel was closed"));
         }
         let Some(old) = running.take() else { return Ok(()) };
-        let python = old.python.clone();
+        let target = old.target.clone();
         old.shutdown().await;
-        let (new, ready) =
-            transport::Running::spawn(self.runtime_dir.clone(), notebook.to_path_buf(), python, self.on_status.clone());
+        let (new, ready) = transport::Running::spawn(
+            self.runtime_dir.clone(),
+            notebook.to_path_buf(),
+            target,
+            self.on_status.clone(),
+            slot.debug.clone(),
+        );
         *slot.stop.lock() = Some(new.stop.clone());
         *running = Some(new);
         if slot.closed.load(Ordering::Acquire) {
@@ -355,6 +421,29 @@ impl Drop for KernelManager {
         for slot in self.slots.get_mut().values() {
             slot.closed.store(true, Ordering::Release);
             slot.stop();
+        }
+    }
+}
+
+/// A debug session on a notebook's kernel, in the Jupyter debugger protocol: DAP requests
+/// go out as `debug_request`, DAP responses and events come back.
+pub struct KernelDebugger {
+    control: tokio::sync::mpsc::Sender<jupyter_protocol::JupyterMessage>,
+    inbox: tokio::sync::mpsc::UnboundedReceiver<Value>,
+}
+
+impl KernelDebugger {
+    /// Sends a DAP request.
+    pub async fn send(&self, request: Value) -> IdeResult<()> {
+        let message: jupyter_protocol::JupyterMessage = jupyter_protocol::DebugRequest { content: request }.into();
+        self.control.send(message).await.map_err(|_| IdeError::unavailable("the notebook's kernel stopped"))
+    }
+
+    /// The next DAP response or event; `None` once the kernel stopped.
+    pub async fn receive(&mut self) -> Option<Value> {
+        tokio::select! {
+            message = self.inbox.recv() => message,
+            () = self.control.closed() => None,
         }
     }
 }

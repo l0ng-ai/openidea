@@ -982,6 +982,8 @@ export async function startSession(
     rerunnable?: boolean;
     /** `false`: keep the current tool window (the Services panel starts debuggers in place). */
     show?: boolean;
+    /** Starts the backend session instead of `debugStart` (a notebook kernel's debugger). */
+    start?: () => Promise<DebugSessionId>;
   } = {},
 ): Promise<DebugSessionId | null> {
   if (!isTauri()) {
@@ -1008,7 +1010,7 @@ export async function startSession(
     const adapterStarted = performance.now();
     const pending = { name: launch.name, runConfig: options.runConfig };
     pendingConfigs.push(pending);
-    const id = await call(commands.debugStart(launch)).finally(() => {
+    const id = await (options.start?.() ?? call(commands.debugStart(launch))).finally(() => {
       // Its session took the entry when it was announced, unless it never was.
       const at = pendingConfigs.indexOf(pending);
       if (at >= 0) pendingConfigs.splice(at, 1);

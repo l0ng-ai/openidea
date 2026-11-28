@@ -4548,6 +4548,8 @@ dependencies = [
 name = "ide-http"
 version = "0.1.55"
 dependencies = [
+ "base64 0.22.1",
+ "http",
  "hyper-util",
  "ide-core",
  "ide-vfs",
@@ -4746,18 +4748,22 @@ dependencies = [
 name = "ide-notebook"
 version = "0.1.55"
 dependencies = [
+ "futures",
  "ide-core",
+ "ide-http",
  "ide-vfs",
  "jupyter-protocol",
  "jupyter-zmq-client",
  "libc",
  "parking_lot 0.12.5",
+ "reqwest",
  "serde",
  "serde_json",
  "specta",
  "specta-typescript",
  "tempfile",
  "tokio",
+ "tokio-tungstenite",
  "uuid",
  "windows-sys 0.61.2",
  "zeromq",
