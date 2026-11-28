@@ -145,6 +145,64 @@ pub struct BlockHistory {
     pub revisions: Vec<BlockRevision>,
 }
 
+/// The commit and line range used by every query in one selection history tab.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockHistoryAnchor {
+    pub commit: String,
+    pub lines: (u32, u32),
+}
+
+/// The revision list and its eagerly loaded diffs. `diffs` holds the first revisions
+/// (all of them for small selections or short histories); `rest` holds the headers of
+/// any remaining revisions, whose diffs load on navigation.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockHistorySummary {
+    pub anchor: Option<BlockHistoryAnchor>,
+    /// The selected lines as HEAD has them, each ending with `\n`.
+    #[serde(default)]
+    pub head: Option<String>,
+    pub diffs: Vec<BlockRevision>,
+    pub rest: Vec<BlockRevisionSummary>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockRevisionSummary {
+    pub id: String,
+    pub short_id: String,
+    pub author: String,
+    pub email: String,
+    pub time_ms: f64,
+    pub summary: String,
+    /// Line ranges `git log -L` followed in this commit, so its diff can be read starting
+    /// here instead of re-walking from the anchor; empty for diff-less commits (merges),
+    /// None when the path cannot be passed back to Git (not UTF-8).
+    pub ranges: Option<Vec<BlockSpotRange>>,
+}
+
+/// Where a selection history row's diff comes from: the line ranges `git log -L` followed
+/// in that commit, so its diff can be read starting there instead of walking down from the
+/// anchor.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockRevisionSpot {
+    pub id: String,
+    /// The ranges in this commit; empty when Git shows the commit without a diff (a merge).
+    /// None when they cannot be passed back to Git (a path that is not UTF-8).
+    pub ranges: Option<Vec<BlockSpotRange>>,
+}
+
+/// Lines `start..=end` (1-based) of `path` (repository-relative) in a commit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockSpotRange {
+    pub path: String,
+    pub start: u32,
+    pub end: u32,
+}
+
 /// A commit that changed the block, with the block in its first parent and in it.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -1297,6 +1355,44 @@ impl Repo {
         let encoding = encoding.into();
         let _scope = self.execution_scope();
         block_history::block_history(self, path, current_text, lines, encoding, cancel)
+    }
+    /// History for Selection summary: streams `git log -L` once, returning the initial diff
+    /// batch (or all diffs while within the inline byte budget) plus headers and spots for
+    /// any remaining revisions.
+    pub fn block_history_summary(
+        &self,
+        path: &Path,
+        current_text: Option<&str>,
+        lines: (u32, u32),
+        encoding: impl Into<TextEncoding>,
+        cancel: &CancellationToken,
+    ) -> IdeResult<BlockHistorySummary> {
+        let _scope = self.execution_scope();
+        block_history::summary(self, path, current_text, lines, encoding.into(), cancel)
+    }
+    /// Diffs for up to four revisions starting at `index` from `anchor`.
+    pub fn block_history_revisions(
+        &self,
+        path: &Path,
+        anchor: &BlockHistoryAnchor,
+        index: u32,
+        commits: &[String],
+        encoding: impl Into<TextEncoding>,
+        cancel: &CancellationToken,
+    ) -> IdeResult<Vec<BlockRevision>> {
+        let _scope = self.execution_scope();
+        block_history::revisions(self, path, anchor, index, commits, encoding.into(), cancel)
+    }
+    /// Diffs for up to four revisions from their spots, each read starting at its own
+    /// commit: the same diffs as [`Self::block_history_revisions`] in constant time.
+    pub fn block_history_revisions_at(
+        &self,
+        spots: &[BlockRevisionSpot],
+        encoding: impl Into<TextEncoding>,
+        cancel: &CancellationToken,
+    ) -> IdeResult<Vec<BlockRevision>> {
+        let _scope = self.execution_scope();
+        block_history::revisions_at(self, spots, encoding.into(), cancel)
     }
     /// Commits newest-first in topological order (children before parents).
     ///
@@ -2611,7 +2707,7 @@ impl Repo {
         let path = path.filter(|p| !p.as_os_str().is_empty()).map(std::sync::Arc::from);
         *self.git_executable.write().unwrap_or_else(|p| p.into_inner()) = path;
     }
-    fn execution_scope(&self) -> ExecutionScope {
+    pub(crate) fn execution_scope(&self) -> ExecutionScope {
         let git = self.git_executable.read().unwrap_or_else(|p| p.into_inner()).clone();
         ExecutionScope::enter_with(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire), git)
     }

@@ -2162,6 +2162,15 @@ export const commands = {
 	 *  editor text. Cancellable with `cancel_request(request)`.
 	 */
 	vcsBlockHistory: (request: RequestId, path: string, text: string | null, lines: [number, number]) => typedError<BlockHistory, IdeError>(__TAURI_INVOKE("vcs_block_history", { request, path, text, lines })),
+	/**  Diffs for up to four revisions of a selection history, walking from `anchor` with `--skip`. */
+	vcsBlockHistoryRevisions: (request: RequestId, path: string, anchor: BlockHistoryAnchor, index: number, commits: string[]) => typedError<BlockRevision[], IdeError>(__TAURI_INVOKE("vcs_block_history_revisions", { request, path, anchor, index, commits })),
+	/**  The diffs of up to four revisions read from their spots ([`Repo::block_history_revisions_at`]). */
+	vcsBlockHistoryRevisionsAt: (request: RequestId, path: string, spots: BlockRevisionSpot[]) => typedError<BlockRevision[], IdeError>(__TAURI_INVOKE("vcs_block_history_revisions_at", { request, path, spots })),
+	/**
+	 *  History for Selection summary: revision headers plus the initial diff batch
+	 *  (or all diffs for small selections/histories). Cancellable with `cancel_request(request)`.
+	 */
+	vcsBlockHistorySummary: (request: RequestId, path: string, text: string | null, lines: [number, number]) => typedError<BlockHistorySummary, IdeError>(__TAURI_INVOKE("vcs_block_history_summary", { request, path, text, lines })),
 	vcsBranchInfo: (repo: string | null) => typedError<BranchInfo_Serialize, IdeError>(__TAURI_INVOKE("vcs_branch_info", { repo })),
 	vcsBranches: (repo: string | null) => typedError<Branch[], IdeError>(__TAURI_INVOKE("vcs_branches", { repo })),
 	vcsChangelistsLoad: () => typedError<ChangelistState, IdeError>(__TAURI_INVOKE("vcs_changelists_load")),
@@ -4049,6 +4058,25 @@ export type BlockHistory = {
 	revisions: BlockRevision[],
 };
 
+/**  The commit and line range used by every query in one selection history tab. */
+export type BlockHistoryAnchor = {
+	commit: string,
+	lines: [number, number],
+};
+
+/**
+ *  The revision list and its eagerly loaded diffs. `diffs` holds the first revisions
+ *  (all of them for small selections or short histories); `rest` holds the headers of
+ *  any remaining revisions, whose diffs load on navigation.
+ */
+export type BlockHistorySummary = {
+	anchor: BlockHistoryAnchor | null,
+	/**  The selected lines as HEAD has them, each ending with `\n`. */
+	head?: string | null,
+	diffs: BlockRevision[],
+	rest: BlockRevisionSummary[],
+};
+
 /**  A commit that changed the block, with the block in its first parent and in it. */
 export type BlockRevision = {
 	id: string,
@@ -4065,6 +4093,42 @@ export type BlockRevision = {
 	/**  0-based first line of the block before and after the commit. */
 	beforeLine: number,
 	afterLine: number,
+};
+
+/**
+ *  Where a selection history row's diff comes from: the line ranges `git log -L` followed
+ *  in that commit, so its diff can be read starting there instead of walking down from the
+ *  anchor.
+ */
+export type BlockRevisionSpot = {
+	id: string,
+	/**
+	 *  The ranges in this commit; empty when Git shows the commit without a diff (a merge).
+	 *  None when they cannot be passed back to Git (a path that is not UTF-8).
+	 */
+	ranges: BlockSpotRange[] | null,
+};
+
+export type BlockRevisionSummary = {
+	id: string,
+	shortId: string,
+	author: string,
+	email: string,
+	timeMs: number | null,
+	summary: string,
+	/**
+	 *  Line ranges `git log -L` followed in this commit, so its diff can be read starting
+	 *  here instead of re-walking from the anchor; empty for diff-less commits (merges),
+	 *  None when the path cannot be passed back to Git (not UTF-8).
+	 */
+	ranges: BlockSpotRange[] | null,
+};
+
+/**  Lines `start..=end` (1-based) of `path` (repository-relative) in a commit. */
+export type BlockSpotRange = {
+	path: string,
+	start: number,
+	end: number,
 };
 
 export type Branch = {

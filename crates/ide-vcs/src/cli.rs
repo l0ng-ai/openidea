@@ -623,13 +623,31 @@ fn run_capture(
     Ok(out)
 }
 
+enum StdoutSink<'a> {
+    Buffer { max: usize },
+    Lines(&'a mut (dyn FnMut(&[u8]) + Send)),
+}
+
 pub(crate) fn capture_command(
-    mut cmd: Command,
+    cmd: Command,
     stdin: Option<&[u8]>,
     cancel: &CancellationToken,
     max: usize,
     program: &str,
 ) -> IdeResult<Output> {
+    capture_with_stdout(cmd, stdin, cancel, StdoutSink::Buffer { max }, max, true, program)
+}
+
+fn capture_with_stdout(
+    mut cmd: Command,
+    stdin: Option<&[u8]>,
+    cancel: &CancellationToken,
+    stdout_sink: StdoutSink<'_>,
+    stderr_max: usize,
+    fail_on_stderr_overflow: bool,
+    program: &str,
+) -> IdeResult<Output> {
+    use std::io::BufRead;
     if cancel.is_cancelled() {
         return Err(IdeError::cancelled());
     }
@@ -645,78 +663,154 @@ pub(crate) fn capture_command(
             error.into()
         }
     })?;
-    let writer = match (stdin, child.stdin.take()) {
-        (Some(data), Some(mut pipe)) => {
-            let data = data.to_vec();
-            Some(std::thread::spawn(move || {
+    let stdout_pipe = child.stdout.take().expect("piped stdout");
+    let mut stderr_pipe = child.stderr.take().expect("piped stderr");
+    let stdin_pipe = child.stdin.take();
+    std::thread::scope(|scope| {
+        let writer = match (stdin, stdin_pipe) {
+            (Some(data), Some(mut pipe)) => Some(scope.spawn(move || {
                 // A broken pipe just means git stopped reading early; its exit status tells the story.
-                let _ = pipe.write_all(&data);
-            }))
-        }
-        _ => None,
-    };
-    // When both readers finish, their senders disconnect the channel and wake the child wait.
-    let (closed_tx, closed) = mpsc::channel::<()>();
-    let capture = |mut pipe: Box<dyn Read + Send>| {
-        let overflow = overflow.clone();
-        let closed_tx = closed_tx.clone();
-        std::thread::spawn(move || {
+                let _ = pipe.write_all(data);
+            })),
+            _ => None,
+        };
+        // When both readers finish, their senders disconnect the channel and wake the child wait.
+        let (closed_tx, closed) = mpsc::channel::<()>();
+        let out_closed = closed_tx.clone();
+        let out_overflow = overflow.clone();
+        let stdout_max = match stdout_sink {
+            StdoutSink::Buffer { max } => max,
+            StdoutSink::Lines(_) => stderr_max,
+        };
+        let stdout = scope.spawn(move || {
+            let _closed_tx = out_closed;
+            match stdout_sink {
+                StdoutSink::Buffer { max } => {
+                    let mut pipe = stdout_pipe;
+                    let mut bytes = Vec::new();
+                    (&mut pipe).take(max.saturating_add(1) as u64).read_to_end(&mut bytes)?;
+                    if bytes.len() > max {
+                        out_overflow.store(true, std::sync::atomic::Ordering::Release);
+                        std::io::copy(&mut pipe, &mut std::io::sink())?;
+                    }
+                    Ok::<_, std::io::Error>(bytes)
+                }
+                StdoutSink::Lines(on_line) => {
+                    let mut reader = std::io::BufReader::with_capacity(1 << 16, stdout_pipe);
+                    let mut carry = Vec::new();
+                    loop {
+                        if cancel.is_cancelled() {
+                            break;
+                        }
+                        let buf = reader.fill_buf()?;
+                        if buf.is_empty() {
+                            if !carry.is_empty() {
+                                on_line(&carry);
+                            }
+                            break;
+                        }
+                        let mut consumed = 0;
+                        while let Some(pos) = buf[consumed..].iter().position(|&b| b == b'\n') {
+                            let end = consumed + pos + 1;
+                            if carry.is_empty() {
+                                on_line(&buf[consumed..end]);
+                            } else {
+                                carry.extend_from_slice(&buf[consumed..end]);
+                                on_line(&carry);
+                                carry.clear();
+                            }
+                            consumed = end;
+                        }
+                        if consumed < buf.len() {
+                            carry.extend_from_slice(&buf[consumed..]);
+                        }
+                        let len = buf.len();
+                        reader.consume(len);
+                    }
+                    Ok(Vec::new())
+                }
+            }
+        });
+        let err_overflow = overflow.clone();
+        let stderr = scope.spawn(move || {
             let _closed_tx = closed_tx;
             let mut bytes = Vec::new();
-            (&mut pipe).take(max.saturating_add(1) as u64).read_to_end(&mut bytes)?;
-            if bytes.len() > max {
-                overflow.store(true, std::sync::atomic::Ordering::Release);
-                std::io::copy(&mut pipe, &mut std::io::sink())?;
+            (&mut stderr_pipe).take(stderr_max.saturating_add(1) as u64).read_to_end(&mut bytes)?;
+            if bytes.len() > stderr_max {
+                if fail_on_stderr_overflow {
+                    err_overflow.store(true, std::sync::atomic::Ordering::Release);
+                } else {
+                    bytes.truncate(stderr_max);
+                }
+                std::io::copy(&mut stderr_pipe, &mut std::io::sink())?;
             }
-            Ok(bytes)
-        })
-    };
-    let stdout = capture(Box::new(child.stdout.take().expect("piped stdout")));
-    let stderr = capture(Box::new(child.stderr.take().expect("piped stderr")));
-    drop(closed_tx);
-    let mut pipes_open = true;
-    let mut backoff = Duration::from_micros(100);
-    let status = loop {
-        if cancel.is_cancelled() || overflow.load(std::sync::atomic::Ordering::Acquire) {
-            terminate_tree(&mut child, KILL_GRACE);
-            let _ = stdout.join();
-            let _ = stderr.join();
-            if let Some(w) = writer {
-                let _ = w.join();
+            Ok::<_, std::io::Error>(bytes)
+        });
+        let mut pipes_open = true;
+        let mut backoff = Duration::from_micros(100);
+        let status = loop {
+            if cancel.is_cancelled() || overflow.load(std::sync::atomic::Ordering::Acquire) {
+                terminate_tree(&mut child, KILL_GRACE);
+                let _ = stdout.join();
+                let _ = stderr.join();
+                if let Some(w) = writer {
+                    let _ = w.join();
+                }
+                return Err(if cancel.is_cancelled() {
+                    IdeError::cancelled()
+                } else {
+                    IdeError::invalid(format!("{program} output exceeds {stdout_max} bytes"))
+                });
             }
-            return Err(if cancel.is_cancelled() {
-                IdeError::cancelled()
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if pipes_open {
+                // Cancellation and overflow are only noticed between wake-ups, so wait at most one
+                // `POLL` for them; the pipes closing ends the wait at once.
+                pipes_open = !matches!(closed.recv_timeout(POLL), Err(mpsc::RecvTimeoutError::Disconnected));
             } else {
-                IdeError::invalid(format!("{program} output exceeds {max} bytes"))
-            });
+                // Reap promptly after EOF, but back off if the child keeps running without its pipes.
+                std::thread::sleep(backoff);
+                backoff = (backoff * 2).min(POLL);
+            }
+        };
+        if let Some(w) = writer {
+            let _ = w.join();
         }
-        if let Some(status) = child.try_wait()? {
-            break status;
+        let join = |thread: std::thread::ScopedJoinHandle<'_, std::io::Result<Vec<u8>>>| {
+            thread
+                .join()
+                .map_err(|_| IdeError::internal(format!("{program} output reader panicked")))?
+                .map_err(IdeError::from)
+        };
+        let out = Output { stdout: join(stdout)?, stderr: join(stderr)?, code: status.code() };
+        if out.stdout.len() > stdout_max || (fail_on_stderr_overflow && out.stderr.len() > stderr_max) {
+            return Err(IdeError::invalid(format!("{program} output exceeds {stdout_max} bytes")));
         }
-        if pipes_open {
-            // Cancellation and overflow are only noticed between wake-ups, so wait at most one
-            // `POLL` for them; the pipes closing ends the wait at once.
-            pipes_open = !matches!(closed.recv_timeout(POLL), Err(mpsc::RecvTimeoutError::Disconnected));
-        } else {
-            // Reap promptly after EOF, but back off if the child keeps running without its pipes.
-            std::thread::sleep(backoff);
-            backoff = (backoff * 2).min(POLL);
-        }
-    };
-    if let Some(w) = writer {
-        let _ = w.join();
+        Ok(out)
+    })
+}
+
+/// Hands git's stdout to `on_line` one line at a time (each with its `\n`, if any) instead
+/// of holding it, for output too large to keep; cancellation kills git. Fails like
+/// [`run_cancellable`] on a non-zero exit status.
+pub(crate) fn run_cancellable_lines(
+    root: &Path,
+    args: &[&str],
+    cancel: &CancellationToken,
+    on_line: &mut (dyn FnMut(&[u8]) + Send),
+) -> IdeResult<()> {
+    const STDERR_MAX: usize = 1 << 20;
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
     }
-    let join = |thread: std::thread::JoinHandle<std::io::Result<Vec<u8>>>| {
-        thread
-            .join()
-            .map_err(|_| IdeError::internal(format!("{program} output reader panicked")))?
-            .map_err(IdeError::from)
-    };
-    let out = Output { stdout: join(stdout)?, stderr: join(stderr)?, code: status.code() };
-    if out.stdout.len() > max || out.stderr.len() > max {
-        return Err(IdeError::invalid(format!("{program} output exceeds {max} bytes")));
-    }
-    Ok(out)
+    let mut cmd = command(root)?;
+    cmd.args(args);
+    let mut session = CommandSession::start(&mut cmd);
+    let out = capture_with_stdout(cmd, None, cancel, StdoutSink::Lines(on_line), STDERR_MAX, false, "git")?;
+    session.finish(out.code == Some(0), &String::from_utf8_lossy(&out.stderr));
+    if out.code == Some(0) { Ok(()) } else { Err(failure(args, &out.stderr, b"", out.code)) }
 }
 
 /// Runs git and maps a non-zero exit status to an error carrying git's message.
