@@ -1642,6 +1642,9 @@ fn spelling_regions_cover_declared_names_only() {
         .map(|r| &doc_src[r.start..r.end])
         .collect();
     assert_eq!(docs, ["\"\"\"Doc.\"\"\""]);
+    // A JavaScript directive is not a docstring.
+    let js = "\"use strict\";\n";
+    assert!(!syntax().spelling_regions(&lang("javascript"), js).unwrap().iter().any(|r| r.doc));
     // Names in paths and calls are uses.
     let rs = "use crate::ui::keymap;\nfn run() { let n = std::ffi::OsStr::new(\"x\"); a::b::millis(); }\n";
     let names: Vec<&str> = syntax()

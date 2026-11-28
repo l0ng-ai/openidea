@@ -39,17 +39,23 @@ export function CommitGrammar({ message, onChange }: { message: string; onChange
     if (!enabled || !isTauri() || !message.trim()) return;
     const id = nextRequestId();
     let live = true;
+    // Only a request that was sent and has not answered yet is cancelled.
+    let inFlight = false;
     const timer = setTimeout(() => {
+      inFlight = true;
       call(commands.grammarCheckText(message, id))
         .then((problems) => live && setChecked({ message, problems }))
         .catch((e) => {
           if (!isCancelled(e)) console.debug("[grammar]", e);
+        })
+        .finally(() => {
+          inFlight = false;
         });
     }, CHECK_DELAY);
     return () => {
       live = false;
       clearTimeout(timer);
-      void commands.cancelRequest(id);
+      if (inFlight) commands.cancelRequest(id).catch(() => {});
     };
   }, [message, enabled, settings?.grammar, settings?.spelling]);
   const problems = enabled && checked?.message === message ? checked.problems : [];

@@ -145,7 +145,7 @@ export function grammarExtension(): Extension {
     let request: RequestId | null = null;
     let seq = 0;
     const cancel = () => {
-      if (request !== null) void commands.cancelRequest(request);
+      if (request !== null) commands.cancelRequest(request).catch(() => {});
       request = null;
     };
     const clear = () => {

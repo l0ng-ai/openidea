@@ -16,8 +16,16 @@ use std::sync::Arc;
 /// Harper's spelling rule, always off.
 const SPELL_CHECK: &str = "SpellCheck";
 
-/// Characters checked per text at most; the rest is skipped.
+/// Characters checked per text at most: whole paragraphs and comments up to
+/// this many are checked, the rest of the text is not.
 pub const MAX_CHARS: usize = 120_000;
+
+/// Markdown and plain text are checked in pieces of about this many bytes
+/// (whole paragraphs), so a cancelled check stops soon.
+const CHUNK_BYTES: usize = 4_000;
+
+/// Engines kept for different dialects or word lists (project windows).
+const MAX_ENGINES: usize = 3;
 
 /// What a [`Block`] holds, which decides what is stripped before checking.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,7 +62,8 @@ pub struct GrammarFix {
 pub struct GrammarProblem {
     /// UTF-16 range of the flagged text.
     pub range: Range,
-    /// The flagged text.
+    /// The flagged text as the document has it (comment markers included,
+    /// `\r\n` as `\n`).
     pub text: String,
     /// Harper's rule name (`AnA`), what "Disable rule" turns off.
     pub rule: String,
@@ -93,11 +102,9 @@ fn dialect(name: &str) -> Dialect {
     }
 }
 
-/// Harper's dictionary and rules, built once (the dictionary takes about a
-/// second and 150 MB) and rebuilt only when the dialect or the words change.
+/// Harper's dictionary and rules for one dialect and word list (the shared
+/// dictionary takes about a second and 150 MB to load once).
 struct Engine {
-    dialect: Dialect,
-    words: Vec<String>,
     dictionary: Arc<MergedDictionary>,
     group: LintGroup,
     /// Harper's curated rule settings, restored before each check.
@@ -105,9 +112,9 @@ struct Engine {
 }
 
 impl Engine {
-    fn new(dialect: Dialect, words: Vec<String>) -> Self {
+    fn new(dialect: Dialect, words: &[String]) -> Self {
         let mut user = MutableDictionary::new();
-        for w in &words {
+        for w in words {
             user.append_word_str(w, DictWordMetadata::default());
         }
         let mut dictionary = MergedDictionary::new();
@@ -116,44 +123,93 @@ impl Engine {
         let dictionary = Arc::new(dictionary);
         let group = LintGroup::new_curated(dictionary.clone(), dialect);
         let defaults = group.config.clone();
-        Self { dialect, words, dictionary, group, defaults }
+        Self { dictionary, group, defaults }
     }
 }
 
-static ENGINE: Mutex<Option<Engine>> = Mutex::new(None);
+type EngineKey = (Dialect, Vec<String>);
+
+/// Engines by dialect and words, the most recently used last. Each has its
+/// own lock, so a long check in one project does not hold up another's.
+static ENGINES: Mutex<Vec<(EngineKey, Arc<Mutex<Engine>>)>> = Mutex::new(Vec::new());
+
+fn engine_for(key: EngineKey) -> Arc<Mutex<Engine>> {
+    {
+        let mut all = ENGINES.lock();
+        if let Some(i) = all.iter().position(|(k, _)| *k == key) {
+            let entry = all.remove(i);
+            let engine = entry.1.clone();
+            all.push(entry);
+            return engine;
+        }
+    }
+    // Built without holding the cache lock (about half a second).
+    let engine = Arc::new(Mutex::new(Engine::new(key.0, &key.1)));
+    let mut all = ENGINES.lock();
+    if let Some((_, e)) = all.iter().find(|(k, _)| *k == key) {
+        return e.clone();
+    }
+    if all.len() >= MAX_ENGINES {
+        all.remove(0);
+    }
+    all.push((key, engine.clone()));
+    engine
+}
 
 /// Runs `f` with the engine for `options`, its rules set from them.
 fn with_engine<T>(options: &Options, f: impl FnOnce(&mut Engine) -> T) -> T {
-    let mut guard = ENGINE.lock();
-    let d = dialect(&options.dialect);
     let mut words = options.words.clone();
     words.sort();
     words.dedup();
-    let engine = match guard.as_mut() {
-        Some(e) if e.dialect == d && e.words == words => e,
-        _ => guard.insert(Engine::new(d, words)),
-    };
+    let engine = engine_for((dialect(&options.dialect), words));
+    let mut engine = engine.lock();
     engine.group.config = engine.defaults.clone();
     engine.group.config.set_rule_enabled(SPELL_CHECK, false);
     for rule in &options.disabled_rules {
         engine.group.config.set_rule_enabled(rule, false);
     }
-    f(engine)
+    f(&mut engine)
 }
 
-/// Every rule but Harper's spell check, by name.
+/// Every rule but Harper's spell check, by name (from any engine: the rules
+/// are the same for every dialect and word list).
 pub fn rules() -> Vec<GrammarRule> {
-    with_engine(&Options::default(), |e| {
-        let mut out: Vec<GrammarRule> = e
-            .group
-            .all_descriptions()
-            .into_iter()
-            .filter(|(name, _)| *name != SPELL_CHECK)
-            .map(|(name, description)| GrammarRule { name: name.to_string(), description: description.to_string() })
-            .collect();
-        out.sort_by(|a, b| a.name.cmp(&b.name));
-        out
-    })
+    let engine = ENGINES.lock().last().map(|(_, e)| e.clone());
+    let engine = engine.unwrap_or_else(|| engine_for((Dialect::American, Vec::new())));
+    let engine = engine.lock();
+    let mut out: Vec<GrammarRule> = engine
+        .group
+        .all_descriptions()
+        .into_iter()
+        .filter(|(name, _)| *name != SPELL_CHECK)
+        .map(|(name, description)| GrammarRule { name: name.to_string(), description: description.to_string() })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// `block` (Markdown or plain text) in pieces of whole paragraphs of about
+/// [`CHUNK_BYTES`]; a fenced code block is never split.
+fn chunks(text: &str, block: Block) -> Vec<Block> {
+    let mut out = Vec::new();
+    let mut start = block.start;
+    let mut fence = false;
+    let mut at = block.start;
+    for line in text[block.start..block.end].split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if block.kind == BlockKind::Markdown && (trimmed.starts_with("```") || trimmed.starts_with("~~~")) {
+            fence = !fence;
+        }
+        at += line.len();
+        if !fence && line.trim().is_empty() && at - start >= CHUNK_BYTES {
+            out.push(Block { start, end: at, kind: block.kind });
+            start = at;
+        }
+    }
+    if start < block.end {
+        out.push(Block { start, end: block.end, kind: block.kind });
+    }
+    out
 }
 
 /// The checked text of a block: its characters and, for each, its byte offset
@@ -287,7 +343,10 @@ pub fn check(
     cancelled: &dyn Fn() -> bool,
 ) -> Option<Vec<GrammarProblem>> {
     let mut merged: Vec<Block> = Vec::new();
-    for b in blocks {
+    for b in blocks.iter().flat_map(|b| match b.kind {
+        BlockKind::Markdown | BlockKind::Plain => chunks(text, *b),
+        _ => vec![*b],
+    }) {
         match merged.last_mut() {
             Some(last)
                 if last.kind == BlockKind::Comment
@@ -297,7 +356,7 @@ pub fn check(
             {
                 last.end = b.end
             }
-            _ => merged.push(*b),
+            _ => merged.push(b),
         }
     }
     with_engine(options, |engine| {
@@ -312,6 +371,7 @@ pub fn check(
             if s.chars.iter().all(|c| c.is_whitespace()) {
                 continue;
             }
+            // Whole blocks up to the budget; the rest of the text is not checked.
             if s.chars.len() > budget {
                 break;
             }
@@ -353,7 +413,7 @@ pub fn check(
                         end,
                         GrammarProblem {
                             range,
-                            text: flagged,
+                            text: text[start..end].replace("\r\n", "\n"),
                             rule: rule.clone(),
                             message: lint.message,
                             fixes,
@@ -453,8 +513,10 @@ mod tests {
         let found = run(text, &blocks);
         let p = found.iter().find(|p| p.rule.contains("Repeat") || p.message.contains("repeat"));
         let p = p.expect("repetition across lines reported");
-        // The repeated words sit on two lines, around a marker: no in-place fix.
+        // The repeated words sit on two lines, around a marker: no in-place fix,
+        // and the text is the document's, so the editor finds the problem.
         assert!(p.fixes.is_empty(), "{p:?}");
+        assert_eq!(p.text, "the\n// the");
     }
 
     #[test]
@@ -476,5 +538,58 @@ mod tests {
             check(text, &[Block { start: 0, end: text.len(), kind: BlockKind::Plain }], &Options::default(), &|| true)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn long_texts_are_checked_up_to_the_budget() {
+        let filler = "Some words in a sentence here.\n\n".repeat(5000);
+        let text = format!("This is an test.\n\n{filler}This is an test.\n");
+        assert!(text.chars().count() > MAX_CHARS);
+        let found = whole(&text, BlockKind::Markdown);
+        let ana: Vec<u32> = found.iter().filter(|p| p.rule == "AnA").map(|p| p.range.start.line).collect();
+        // The first paragraphs are checked; the end, past the budget, is not.
+        assert_eq!(ana, [0]);
+    }
+
+    #[test]
+    fn chunks_keep_fenced_code_whole() {
+        let code = format!("```\n{}\n```\n", "let x = 1;\n\n".repeat(600));
+        let text = format!("{}{code}This is an test.\n", "Words here.\n\n".repeat(400));
+        let blocks = chunks(&text, Block { start: 0, end: text.len(), kind: BlockKind::Markdown });
+        assert!(blocks.len() > 1);
+        assert!(blocks.windows(2).all(|w| w[0].end == w[1].start));
+        let fence = text.find("```").unwrap();
+        let close = text.rfind("```").unwrap();
+        assert!(blocks.iter().any(|b| b.start <= fence && close < b.end), "the code block is in one piece");
+        assert!(whole(&text, BlockKind::Markdown).iter().any(|p| p.rule == "AnA"));
+    }
+
+    #[test]
+    fn crlf_problems_use_the_editors_line_breaks() {
+        let text = "// Pass the\r\n// the value.\r\n";
+        let blocks: Vec<Block> = text
+            .match_indices("//")
+            .map(|(i, _)| Block { start: i, end: i + text[i..].find('\r').unwrap(), kind: BlockKind::Comment })
+            .collect();
+        let found = run(text, &blocks);
+        let p = found.iter().find(|p| p.message.contains("repeat")).expect("repetition reported");
+        assert_eq!(p.text, "the\n// the");
+    }
+
+    #[test]
+    fn engines_for_other_word_lists_are_kept() {
+        let text = "This is an test.";
+        let blocks = [Block { start: 0, end: text.len(), kind: BlockKind::Plain }];
+        let a = Options { words: vec!["zorblax".into()], ..Default::default() };
+        let b = Options { words: vec!["quuxify".into()], ..Default::default() };
+        check(text, &blocks, &a, &|| false).unwrap();
+        check(text, &blocks, &b, &|| false).unwrap();
+        let keys: Vec<Vec<String>> = ENGINES.lock().iter().map(|(k, _)| k.1.clone()).collect();
+        assert!(keys.contains(&vec!["zorblax".to_string()]) && keys.contains(&vec!["quuxify".to_string()]));
+        assert!(ENGINES.lock().len() <= MAX_ENGINES);
+        // The settings page's rule list reuses an engine.
+        let before = ENGINES.lock().len();
+        assert!(!rules().is_empty());
+        assert_eq!(ENGINES.lock().len(), before);
     }
 }

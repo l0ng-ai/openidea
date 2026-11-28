@@ -81,7 +81,7 @@ Manage the project and application dictionaries, and add your own dictionary fil
 
 ## Grammar checking
 
-The **Proofreading › Grammar** inspection checks comments, Python docstrings, Markdown and plain-text files, and the commit message with [Harper](https://github.com/Automattic/harper)'s English rules. The check runs inside the IDE; no text leaves your machine. Comment markers, docstring quotes, doctest lines and Markdown code are not checked, and spelling is left to Typo.
+The **Proofreading › Grammar** inspection checks comments, Python docstrings, Markdown and plain-text files, and the commit message with [Harper](https://github.com/Automattic/harper)'s English rules. The check runs inside the IDE; no text leaves your machine. Comment markers, docstring quotes, doctest lines and Markdown code are not checked, and spelling is left to Typo. In a long file, whole paragraphs and comments up to the first 120,000 characters are checked.
 
 On a grammar problem, `⌥↵` / `Alt+Enter` offers Harper's suggested edits, **Disable grammar rule '…'**, and, when a single word is flagged, saving it to the spelling dictionary (Harper then accepts it too). The commit message box lists its problems below the text, each with its first fix and **Disable rule**.
 

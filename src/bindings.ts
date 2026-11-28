@@ -8268,7 +8268,10 @@ export type GrammarFix = {
 export type GrammarProblem = {
 	/**  UTF-16 range of the flagged text. */
 	range: Range,
-	/**  The flagged text. */
+	/**
+	 *  The flagged text as the document has it (comment markers included,
+	 *  `\r\n` as `\n`).
+	 */
 	text: string,
 	/**  Harper's rule name (`AnA`), what "Disable rule" turns off. */
 	rule: string,
