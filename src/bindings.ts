@@ -2361,6 +2361,8 @@ export const commands = {
 	vcsShelves: () => typedError<ShelvedChangeList[], IdeError>(__TAURI_INVOKE("vcs_shelves")),
 	/**  The effective signing settings for one registered Git repository. */
 	vcsSigningConfig: (repo: string) => typedError<GitSigningConfig, IdeError>(__TAURI_INVOKE("vcs_signing_config", { repo })),
+	/**  Lists SSH public keys from ssh-agent and `~/.ssh` for SSH commit signing. */
+	vcsSshSigningKeys: (repo: string, request: RequestId) => typedError<SshSigningKey[], IdeError>(__TAURI_INVOKE("vcs_ssh_signing_keys", { repo, request })),
 	vcsStage: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage", { paths })),
 	vcsStageFormattedText: (path: string, before: string, after: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage_formatted_text", { path, before, after })),
 	/**
@@ -8110,6 +8112,8 @@ export type GitSigningConfig = {
 export type GitSigningEdit = {
 	enabled: boolean | null,
 	key: string | null,
+	/**  `openpgp` or `ssh`. */
+	format: string | null,
 };
 
 /**  Settings › Version Control › GitHub (`vcs.github`). */
@@ -13984,6 +13988,14 @@ export type SshConfiguration = {
 /**  Tools › SSH Configurations. */
 export type SshSettings = {
 	configs?: SshConfiguration[],
+};
+
+export type SshSigningKey = {
+	/**  The `user.signingkey` value: a public key file path, or `key::` and the key itself. */
+	key: string,
+	comment: string | null,
+	/**  ssh-agent holds this key, so signing with it needs no passphrase prompt. */
+	inAgent: boolean,
 };
 
 export type StackFrame = {

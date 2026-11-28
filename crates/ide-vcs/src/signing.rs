@@ -27,6 +27,18 @@ pub struct GpgSigningKey {
 pub struct GitSigningEdit {
     pub enabled: Option<bool>,
     pub key: Option<String>,
+    /// `openpgp` or `ssh`.
+    pub format: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SshSigningKey {
+    /// The `user.signingkey` value: a public key file path, or `key::` and the key itself.
+    pub key: String,
+    pub comment: Option<String>,
+    /// ssh-agent holds this key, so signing with it needs no passphrase prompt.
+    pub in_agent: bool,
 }
 
 impl Repo {
@@ -40,7 +52,7 @@ impl Repo {
 
     pub fn gpg_signing_keys(&self, cancel: &CancellationToken) -> IdeResult<Vec<GpgSigningKey>> {
         let _scope = self.execution_scope();
-        self.require_openpgp()?;
+        self.require_editable()?;
         let program = gpg_program(self.root(), cancel)?;
         let mut cmd = Command::new(&program);
         cmd.current_dir(self.root()).args(["--batch", "--no-tty", "--with-colons", "--list-secret-keys"]);
@@ -56,14 +68,52 @@ impl Repo {
         Ok(parse_keys(&out.stdout_str()))
     }
 
+    /// Keys ssh-agent holds, then the public key files in `~/.ssh`.
+    pub fn ssh_signing_keys(&self, cancel: &CancellationToken) -> IdeResult<Vec<SshSigningKey>> {
+        let _scope = self.execution_scope();
+        self.require_editable()?;
+        let mut cmd = Command::new("ssh-add");
+        cmd.current_dir(self.root()).arg("-L");
+        ide_core::process::prepare(&mut cmd);
+        // ssh-add exits 1 without identities and 2 without an agent; both just mean no agent keys.
+        let agent = cli::capture_command(cmd, None, cancel, 1 << 20, "ssh-add")
+            .ok()
+            .filter(|out| out.code == Some(0))
+            .map(|out| out.stdout_str())
+            .unwrap_or_default();
+        let mut files = Vec::new();
+        if let Some(dir) = gix::path::env::home_dir().map(|home| home.join(".ssh"))
+            && let Ok(entries) = std::fs::read_dir(dir)
+        {
+            for path in entries.flatten().map(|entry| entry.path()) {
+                if path.extension().is_some_and(|ext| ext == "pub")
+                    && let (Some(path), Ok(text)) = (path.to_str(), std::fs::read_to_string(&path))
+                {
+                    files.push((path.to_owned(), text));
+                }
+            }
+        }
+        files.sort();
+        Ok(ssh_keys(&agent, &files))
+    }
+
     pub fn edit_signing(&self, edit: GitSigningEdit) -> IdeResult<()> {
         let _scope = self.execution_scope();
-        self.require_openpgp()?;
-        if edit.enabled.is_none() && edit.key.is_none() {
+        let current = self.require_editable()?;
+        if edit.enabled.is_none() && edit.key.is_none() && edit.format.is_none() {
             return Ok(());
         }
-        if edit.key.as_deref().is_some_and(|key| !valid_fingerprint(key)) {
-            return Err(IdeError::invalid("invalid OpenPGP fingerprint"));
+        let format = edit.format.as_deref().unwrap_or(&current);
+        if !matches!(format, "openpgp" | "ssh") {
+            return Err(IdeError::invalid("unsupported signing format"));
+        }
+        if let Some(key) = edit.key.as_deref() {
+            if format == "openpgp" && !valid_fingerprint(key) {
+                return Err(IdeError::invalid("invalid OpenPGP fingerprint"));
+            }
+            if format == "ssh" && (key.trim().is_empty() || key.chars().any(char::is_control)) {
+                return Err(IdeError::invalid("invalid SSH signing key"));
+            }
         }
         let config = self.metadata_dirs()?[1].join("config");
         let mut lock = lock::File::acquire(&config, Fail::Immediately, None, 0, Some(&lock::acquire::resolve_symlink))
@@ -74,7 +124,11 @@ impl Repo {
         let mut staged = tempfile::NamedTempFile::new_in(config.parent().expect("repository config directory"))?;
         io::copy(&mut original, &mut staged)?;
         let enabled = edit.enabled.map(|enabled| if enabled { "true" } else { "false" });
-        for (name, value) in [("commit.gpgsign", enabled), ("user.signingkey", edit.key.as_deref())] {
+        for (name, value) in [
+            ("gpg.format", edit.format.as_deref()),
+            ("commit.gpgsign", enabled),
+            ("user.signingkey", edit.key.as_deref()),
+        ] {
             if let Some(value) = value {
                 cli::run(
                     self.root(),
@@ -102,14 +156,16 @@ impl Repo {
         Ok(())
     }
 
-    fn require_openpgp(&self) -> IdeResult<()> {
+    /// The repository's signing format, when the IDE can edit it (OpenPGP or SSH).
+    fn require_editable(&self) -> IdeResult<String> {
         if !execution_allowed() {
             return Err(IdeError::unavailable("Git signing configuration requires a trusted project"));
         }
-        if self.config_get("gpg.format")?.is_some_and(|format| format != "openpgp") {
-            return Err(IdeError::invalid("the repository uses a signing format other than OpenPGP"));
+        let format = self.config_get("gpg.format")?.unwrap_or_else(|| "openpgp".into());
+        if !matches!(format.as_str(), "openpgp" | "ssh") {
+            return Err(IdeError::invalid("the repository uses a signing format other than OpenPGP or SSH"));
         }
-        Ok(())
+        Ok(format)
     }
 }
 
@@ -140,6 +196,37 @@ fn gpg_program(root: &Path, cancel: &CancellationToken) -> IdeResult<PathBuf> {
         }
     }
     Ok(if program.is_relative() && program.components().count() > 1 { root.join(program) } else { program })
+}
+
+/// `agent` is `ssh-add -L` output; `files` are `(path, contents)` of public key files.
+/// A file whose key the agent holds replaces that agent entry.
+fn ssh_keys(agent: &str, files: &[(String, String)]) -> Vec<SshSigningKey> {
+    // "<type> <base64> [comment]": the first two fields identify the key.
+    let split = |line: &str| {
+        let mut parts = line.trim().splitn(3, ' ');
+        let id = parts.next().zip(parts.next()).map(|(kind, blob)| format!("{kind} {blob}"));
+        id.map(|id| (id, parts.next().map(str::trim).filter(|c| !c.is_empty()).map(str::to_owned)))
+    };
+    let agent: Vec<_> = agent.lines().filter_map(split).collect();
+    let files: Vec<_> = files
+        .iter()
+        .filter_map(|(path, text)| {
+            let (id, comment) = text.lines().find(|line| !line.trim().is_empty()).and_then(split)?;
+            Some((id, SshSigningKey { key: path.clone(), comment, in_agent: false }))
+        })
+        .collect();
+    let mut keys: Vec<_> = agent
+        .iter()
+        .filter(|(id, _)| !files.iter().any(|(file, _)| file == id))
+        .map(|(id, comment)| SshSigningKey { key: format!("key::{id}"), comment: comment.clone(), in_agent: true })
+        .collect();
+    for (id, mut key) in files {
+        key.in_agent = agent.iter().any(|(held, _)| *held == id);
+        keys.push(key);
+    }
+    // Keys the agent holds first: they sign without a passphrase prompt.
+    keys.sort_by_key(|key| !key.in_agent);
+    keys
 }
 
 fn valid_fingerprint(value: &str) -> bool {
@@ -239,7 +326,7 @@ mod tests {
         git(&["config", "--local", "user.email", "test@example.com"]);
         let repo = Repo::discover(dir.path()).unwrap().unwrap();
 
-        let enable = || GitSigningEdit { enabled: Some(true), key: Some(FINGERPRINT.into()) };
+        let enable = || GitSigningEdit { enabled: Some(true), key: Some(FINGERPRINT.into()), format: None };
         assert!(repo.edit_signing(enable()).is_err());
         assert!(repo.gpg_signing_keys(&CancellationToken::default()).is_err());
         repo.set_execution_allowed(true);
@@ -254,13 +341,47 @@ mod tests {
         assert_eq!(git(&["config", "--local", "--get", "user.email"]).trim(), "test@example.com");
         assert!(repo.signing_config().unwrap().enabled);
 
-        repo.edit_signing(GitSigningEdit { enabled: Some(false), key: None }).unwrap();
+        repo.edit_signing(GitSigningEdit { enabled: Some(false), key: None, format: None }).unwrap();
         assert!(!repo.signing_config().unwrap().enabled);
         assert_eq!(git(&["config", "--local", "--get", "user.signingkey"]).trim(), FINGERPRINT);
 
-        git(&["config", "--local", "gpg.format", "ssh"]);
+        let ssh = GitSigningEdit {
+            enabled: Some(true),
+            key: Some("key::ssh-ed25519 AAAA".into()),
+            format: Some("ssh".into()),
+        };
+        repo.edit_signing(ssh).unwrap();
+        let config = repo.signing_config().unwrap();
+        assert_eq!((config.format.as_str(), config.enabled), ("ssh", true));
+        assert_eq!(config.key.as_deref(), Some("key::ssh-ed25519 AAAA"));
+        let bad = GitSigningEdit { enabled: None, key: Some("a\nb".into()), format: None };
+        assert!(repo.edit_signing(bad).is_err());
+
+        git(&["config", "--local", "gpg.format", "x509"]);
         assert!(repo.edit_signing(enable()).is_err());
-        assert_eq!(repo.signing_config().unwrap().format, "ssh");
-        assert!(!repo.signing_config().unwrap().enabled);
+        assert_eq!(repo.signing_config().unwrap().format, "x509");
+    }
+
+    #[test]
+    fn lists_agent_keys_first_and_prefers_files_for_held_keys() {
+        let agent = "ssh-ed25519 AAAA held@host\nssh-rsa BBBB agent only\n";
+        let files = [
+            ("/h/.ssh/a.pub".to_owned(), "ssh-ed25519 CCCC other\n".to_owned()),
+            ("/h/.ssh/b.pub".to_owned(), "\nssh-ed25519 AAAA held@host\n".to_owned()),
+            ("/h/.ssh/bad.pub".to_owned(), "garbage".to_owned()),
+        ];
+        let key = |key: &str, comment: &str, in_agent| SshSigningKey {
+            key: key.into(),
+            comment: Some(comment.into()),
+            in_agent,
+        };
+        assert_eq!(
+            ssh_keys(agent, &files),
+            vec![
+                key("key::ssh-rsa BBBB", "agent only", true),
+                key("/h/.ssh/b.pub", "held@host", true),
+                key("/h/.ssh/a.pub", "other", false),
+            ]
+        );
     }
 }

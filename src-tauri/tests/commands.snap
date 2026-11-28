@@ -838,6 +838,7 @@ vcs_shelf_rename                             trusted            project_host bin
 vcs_shelve                                   trusted            project_host bindings async
 vcs_shelves                                  always             project_host bindings async
 vcs_signing_config                           always             project_host bindings async
+vcs_ssh_signing_keys                         trusted            project_host bindings async
 vcs_stage                                    trusted            project_host bindings async
 vcs_stage_formatted_text                     trusted            project_host bindings async
 vcs_stage_hunks                              trusted            project_host bindings async

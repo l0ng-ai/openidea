@@ -7,6 +7,7 @@ import {
   nextRequestId,
   type GitSigningConfig,
   type GpgSigningKey,
+  type SshSigningKey,
   type VcsRoot,
 } from "@/platform/ipc";
 import { basename, useProject } from "@/platform/project";
@@ -96,55 +97,92 @@ function RepositorySigning({
 }) {
   const rootId = useId();
   const keyId = useId();
+  const formatId = useId();
   const [initial, setInitial] = useState<GitSigningConfig>();
+  const [format, setFormat] = useState<string>();
   const [enabled, setEnabled] = useState(false);
   const [key, setKey] = useState<string | null>(null);
-  const [keys, setKeys] = useState<GpgSigningKey[]>();
-  const [keysError, setKeysError] = useState<string>();
+  const [keys, setKeys] = useState<{
+    format: string;
+    gpg?: GpgSigningKey[];
+    ssh?: SshSigningKey[];
+    error?: string;
+  }>();
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     let live = true;
-    let request: ReturnType<typeof nextRequestId> | undefined;
     void call(commands.vcsSigningConfig(repo)).then(
       (config) => {
         if (!live) return;
         setInitial(config);
+        setFormat(config.format);
         setEnabled(config.enabled);
         setKey(config.key);
-        if (config.format !== "openpgp") return;
-        request = nextRequestId();
-        void call(commands.vcsGpgSigningKeys(repo, request))
-          .then(
-            (keys) => live && setKeys(keys),
-            (error: unknown) => live && setKeysError(message(error)),
-          )
-          .finally(() => {
-            request = undefined;
-          });
       },
       (error: unknown) => live && setError(message(error)),
     );
     return () => {
       live = false;
-      if (request !== undefined) void commands.cancelRequest(request).catch(() => undefined);
     };
   }, [repo]);
 
-  const supported = initial?.format === "openpgp";
+  const supported = initial?.format === "openpgp" || initial?.format === "ssh";
+  useEffect(() => {
+    if (!supported || !format) return;
+    let live = true;
+    let request: ReturnType<typeof nextRequestId> | undefined = nextRequestId();
+    const loaded =
+      format === "ssh"
+        ? call(commands.vcsSshSigningKeys(repo, request)).then((ssh) => ({ format, ssh }))
+        : call(commands.vcsGpgSigningKeys(repo, request)).then((gpg) => ({ format, gpg }));
+    void loaded
+      .then(
+        (keys) => live && setKeys(keys),
+        (error: unknown) => live && setKeys({ format, error: message(error) }),
+      )
+      .finally(() => {
+        request = undefined;
+      });
+    return () => {
+      live = false;
+      if (request !== undefined) void commands.cancelRequest(request).catch(() => undefined);
+    };
+  }, [repo, format, supported]);
+
+  const ssh = format === "ssh";
+  const changedFormat = initial && format !== initial.format;
   const changedEnabled = initial && enabled !== initial.enabled;
-  const changedKey = enabled && key !== initial?.key;
-  const dirty = changedEnabled || changedKey;
-  const options: SelectOption<string>[] = (keys ?? []).map((key) => ({
-    value: key.fingerprint,
-    label: key.userId || key.fingerprint,
-    verbatim: true,
-    detail: key.userId ? key.fingerprint : undefined,
-    verbatimDetail: true,
-  }));
-  if (initial?.key && !options.some((option) => option.value === initial.key)) {
-    options.unshift({ value: initial.key, label: initial.key, verbatim: true });
+  const changedKey = enabled && (key !== initial?.key || changedFormat);
+  const dirty = changedFormat || changedEnabled || changedKey;
+  const shown = keys?.format === format ? keys : undefined;
+  const keysError = shown?.error;
+  const options: SelectOption<string>[] = ssh
+    ? (shown?.ssh ?? []).map((key) => ({
+        value: key.key,
+        label: key.comment || key.key,
+        verbatim: true,
+        detail: [key.key.startsWith("key::") ? undefined : key.key, key.inAgent ? "ssh-agent" : undefined]
+          .filter(Boolean)
+          .join(" · "),
+        verbatimDetail: true,
+      }))
+    : (shown?.gpg ?? []).map((key) => ({
+        value: key.fingerprint,
+        label: key.userId || key.fingerprint,
+        verbatim: true,
+        detail: key.userId ? key.fingerprint : undefined,
+        verbatimDetail: true,
+      }));
+  if (key && !options.some((option) => option.value === key)) {
+    options.unshift({ value: key, label: key, verbatim: true });
+  }
+  const outsideAgent = ssh && !!key && !!shown?.ssh && !shown.ssh.some((k) => k.key === key && k.inAgent);
+
+  function chooseFormat(next: string) {
+    setFormat(next);
+    setKey(next === initial?.format ? (initial?.key ?? null) : null);
   }
 
   async function save() {
@@ -153,7 +191,11 @@ function RepositorySigning({
     setError(undefined);
     try {
       await call(
-        commands.vcsEditSigning(repo, { enabled: changedEnabled ? enabled : null, key: changedKey ? key : null }),
+        commands.vcsEditSigning(repo, {
+          enabled: changedEnabled ? enabled : null,
+          key: changedKey ? key : null,
+          format: changedFormat ? (format ?? null) : null,
+        }),
       );
       onClose();
     } catch (error) {
@@ -208,7 +250,25 @@ function RepositorySigning({
         {initial ? (
           supported ? (
             <>
-              <Toggle label="Sign commits with GPG" checked={enabled} onChange={setEnabled} disabled={saving} />
+              <Row label="Signing format" htmlFor={formatId} stacked>
+                <Select
+                  id={formatId}
+                  className={styles.signingPicker}
+                  value={format ?? null}
+                  options={[
+                    { value: "openpgp", label: "OpenPGP", verbatim: true },
+                    { value: "ssh", label: "SSH", verbatim: true },
+                  ]}
+                  disabled={saving}
+                  onChange={chooseFormat}
+                />
+              </Row>
+              <Toggle
+                label={ssh ? "Sign commits with SSH" : "Sign commits with GPG"}
+                checked={enabled}
+                onChange={setEnabled}
+                disabled={saving}
+              />
               <Row
                 label="Signing key"
                 htmlFor={keyId}
@@ -218,8 +278,14 @@ function RepositorySigning({
                     <span className={workflow.error} role="alert">
                       {keysError}
                     </span>
-                  ) : keys?.length === 0 ? (
-                    <T>No OpenPGP signing keys found.</T>
+                  ) : shown && !options.length ? (
+                    ssh ? (
+                      <T>No SSH public keys found in ssh-agent or ~/.ssh.</T>
+                    ) : (
+                      <T>No OpenPGP signing keys found.</T>
+                    )
+                  ) : outsideAgent && enabled ? (
+                    <T>ssh-agent doesn't hold this key. If it has a passphrase, add it with ssh-add first.</T>
                   ) : undefined
                 }
               >
@@ -227,7 +293,7 @@ function RepositorySigning({
                   id={keyId}
                   className={styles.signingPicker}
                   value={key}
-                  placeholder={keys || keysError ? "Select a signing key" : "Loading…"}
+                  placeholder={shown ? "Select a signing key" : "Loading…"}
                   options={options}
                   disabled={!enabled || saving || !options.length}
                   onChange={setKey}

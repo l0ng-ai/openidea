@@ -2002,6 +2002,22 @@ pub async fn vcs_gpg_signing_keys(
     result
 }
 
+/// Lists SSH public keys from ssh-agent and `~/.ssh` for SSH commit signing.
+#[command(trust = trusted)]
+pub async fn vcs_ssh_signing_keys(
+    host: &Host,
+    window: &str,
+    repo: PathBuf,
+    request: RequestId,
+) -> IdeResult<Vec<SshSigningKey>> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let cancel = host.begin_project_request(window, request);
+    let result = blocking(move || project.with_repo_at(Some(&repo), |repo| repo.ssh_signing_keys(&cancel))).await;
+    host.end_request(request);
+    result
+}
+
 /// Updates the selected repository's Git config.
 #[command(trust = trusted)]
 pub async fn vcs_edit_signing(host: &Host, window: &str, repo: PathBuf, edit: GitSigningEdit) -> IdeResult<()> {
@@ -3201,6 +3217,7 @@ ide_command::domain!(
     vcs_config_get_bool,
     vcs_signing_config,
     vcs_gpg_signing_keys,
+    vcs_ssh_signing_keys,
     vcs_edit_signing,
     vcs_watch_commit_messages,
     vcs_set_user_identity,
