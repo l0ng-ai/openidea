@@ -403,6 +403,88 @@ const keyRepeat: Scenario = {
   },
 };
 
+/** `lines` lines of ~140k chars each: one multi-row INSERT per line, as a mysqldump data dump. */
+function sqlDump(lines: number, tag: string): string {
+  const out = [`-- ${tag}`];
+  for (let l = 1; out.length <= lines; l++) {
+    const rows: string[] = [];
+    for (let i = 0, len = 0; len < 140_000; i++) {
+      const row = `(${l * 10_000 + i},'customer ${i}','2024-01-${(i % 28) + 1} 10:00:00',${i % 97}.25,NULL,'{"k":${i}}')`;
+      rows.push(row);
+      len += row.length + 1;
+    }
+    out.push(`INSERT INTO \`orders\` VALUES ${rows.join(",")};`);
+  }
+  return out.join("\n");
+}
+
+/**
+ * Shift+Down over a 20-line dump whose lines are ~140k chars, one step at a time: each step's cost
+ * used to grow with the selected long lines in a highlighted `.sql` file. The `.txt` twin (soft wrap
+ * off, so both lay out the same) is the unhighlighted control.
+ */
+async function extendSelection(h: Harness, path: string, unwrap: boolean): Promise<Metrics> {
+  const openMs = await h.openFile(path, sqlDump(20, "dump"));
+  if (unwrap) {
+    const toggled = await h.page.evaluate(() =>
+      (window as never as { __openideaPerf: { runAction(id: string): Promise<boolean> } }).__openideaPerf.runAction(
+        "editor.toggleSoftWrap",
+      ),
+    );
+    if (!toggled) throw new Error("editor.toggleSoftWrap is unavailable");
+  }
+  await h.setCursor(0);
+  await h.parserIdle();
+  const t0 = await h.now();
+  const before = await h.counters();
+  // Keydown → the frame after the one it starts has painted: CodeMirror measures and draws the
+  // selection layer, and the browser lays the lines out, after the first animation frame callback.
+  await h.page.evaluate(() => {
+    const w = window as never as { __steps: number[]; __perf: { afterNextPaint(): Promise<number> } };
+    w.__steps = [];
+    addEventListener(
+      "keydown",
+      (e) => {
+        if (e.key === "ArrowDown") void w.__perf.afterNextPaint().then((t) => w.__steps.push(t - e.timeStamp));
+      },
+      { capture: true },
+    );
+  });
+  // Shift stays down so that only the arrows are measured inputs.
+  await h.page.keyboard.down("Shift");
+  for (let i = 0; i < 20; i++) {
+    // oxlint-disable-next-line no-await-in-loop -- each step is measured on its own, after the previous one painted
+    await h.page.keyboard.press("ArrowDown");
+    // oxlint-disable-next-line no-await-in-loop -- waits for this step's paint before the next key
+    await h.page.waitForFunction((n) => (window as never as { __steps: number[] }).__steps.length > n, i);
+    // oxlint-disable-next-line no-await-in-loop -- asserts this step's selection
+    const st = await h.editorState();
+    if (st?.line !== i + 1) throw new Error(`selection head on line ${st?.line} after Shift+Down ${i + 1}`);
+  }
+  await h.page.keyboard.up("Shift");
+  const work = Harness.delta(before, await h.counters());
+  const steps = await h.page.evaluate(() => (window as never as { __steps: number[] }).__steps);
+  return {
+    openMs,
+    ...latencySummary(steps, "step"),
+    lastStepMs: steps.at(-1)!,
+    mainThreadMsPerStep: work.taskMs / steps.length,
+    tbtMs: totalBlockingTime(await h.longTasksSince(t0)),
+  };
+}
+
+const selectLongLinesSql: Scenario = {
+  id: "selectLongLinesSql",
+  title: "Extend a selection over 20 highlighted 140k-char SQL lines",
+  run: (h) => extendSelection(h, `${ROOT}/db/dump.sql`, false),
+};
+
+const selectLongLinesTxt: Scenario = {
+  id: "selectLongLinesTxt",
+  title: "Extend a selection over the same 20 lines as plain text",
+  run: (h) => extendSelection(h, `${ROOT}/db/dump.txt`, true),
+};
+
 async function typeAndMeasure(h: Harness, text: string, intervalMs: number): Promise<Metrics> {
   const refresh = await h.refreshMs();
   const t0 = await h.now();
@@ -1150,6 +1232,8 @@ export const SCENARIOS: Scenario[] = [
   gitLogScrollbar,
   resizePanels,
   keyRepeat,
+  selectLongLinesSql,
+  selectLongLinesTxt,
   scroll,
   tabs,
   agentTabs,
