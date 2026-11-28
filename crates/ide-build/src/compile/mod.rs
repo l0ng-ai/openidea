@@ -29,6 +29,7 @@ pub use up_to_date::{menu_up_to_date, record_menu_build};
 
 use crate::process::{self, Stream};
 use crate::{BuildModel, maven};
+use ide_core::build_jobs::append_default_jobs;
 use ide_core::settings::CMakeProfile;
 use ide_core::{CancellationToken, Diagnostic, IdeError, IdeResult, Pos, Range, Severity};
 use parse::{ColUnit, Format, OutputParser, RawMessage};
@@ -420,7 +421,8 @@ fn cargo_steps(dir: &Path, kind: BuildKind) -> Vec<BuildStep> {
 }
 
 /// CLion's Build Project for a CMake project: configures the build directory when it has no
-/// `CMakeCache.txt` yet, then `cmake --build` (`--clean-first` to rebuild). The directory and
+/// `CMakeCache.txt` yet, then `cmake --build` (`--clean-first` to rebuild), one job per
+/// logical CPU unless the profile's build arguments choose a count. The directory and
 /// options come from the CMake profile; without one, a configured directory of the project
 /// (the first by name), else `build`, as the generated run configurations use.
 fn cmake_steps(dir: &Path, kind: BuildKind, profile: Option<&CMakeProfile>) -> Vec<BuildStep> {
@@ -458,6 +460,7 @@ fn cmake_steps(dir: &Path, kind: BuildKind, profile: Option<&CMakeProfile>) -> V
         build.args.push("--clean-first".into());
     }
     build.args.extend(profile.map(|p| p.build_args.clone()).unwrap_or_default());
+    append_default_jobs(&mut build.args);
     build.env = env;
     steps.push(build);
     steps
@@ -1508,14 +1511,15 @@ mod tests {
         let cm = tmp.path().join("cm");
         write(&cm, "CMakeLists.txt", "project(app)");
         let args = |p: &BuildPlan| p.steps.iter().map(|s| s.args.join(" ")).collect::<Vec<_>>();
+        let jobs = format!("-j {}", ide_core::build_jobs::default_jobs());
         let p =
             plan(&cm, &BuildModel::default(), BuildKind::Build, None, None, None, &CancellationToken::new()).unwrap();
         assert_eq!(p.system, BuildSystem::CMake);
         assert_eq!(
             args(&p),
             [
-                "-S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
-                "--build build --config Debug"
+                "-S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON".to_owned(),
+                format!("--build build --config Debug {jobs}"),
             ],
             "an unconfigured project is configured first"
         );
@@ -1524,7 +1528,7 @@ mod tests {
             plan(&cm, &BuildModel::default(), BuildKind::Rebuild, None, None, None, &CancellationToken::new()).unwrap();
         assert_eq!(
             args(&p),
-            ["--build cmake-build-release --config Debug --clean-first"],
+            [format!("--build cmake-build-release --config Debug --clean-first {jobs}")],
             "a configured directory is reused"
         );
         let profile = CMakeProfile {
