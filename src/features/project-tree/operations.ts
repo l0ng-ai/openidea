@@ -224,12 +224,12 @@ export function openMoveDialog(nodes: ProjectNode[] = selectedNodes(), target?: 
 }
 
 /** Copy… (F5): IDEA's Copy dialog for the selection, into the folder it is in. */
-export function openCopyDialog(nodes: ProjectNode[] = selectedNodes()) {
+export function openCopyDialog(nodes: ProjectNode[] = selectedNodes(), options: { forceOpenInEditor?: boolean } = {}) {
   const copyable = nodes.filter((n) => !n.root && !n.group);
   const paths = topLevelPaths(copyable);
   if (!paths.length) return;
   const single = paths.length === 1 && copyable.some((n) => n.path === paths[0] && n.dir);
-  openCopyDialogFor(paths, parentOf(paths[0]!), single);
+  openCopyDialogFor(paths, parentOf(paths[0]!), single, options.forceOpenInEditor);
 }
 
 function openMoveDialogFor(paths: string[], target?: string, dir?: boolean, done?: () => void) {
@@ -764,7 +764,7 @@ function sameFiles(files: string[], paths: string[] | undefined): boolean {
   return key(files) === key(paths);
 }
 
-function openCopyDialogFor(paths: string[], target: string, dir?: boolean) {
+function openCopyDialogFor(paths: string[], target: string, dir?: boolean, forceOpenInEditor = false) {
   if (!paths.length) return;
   void loadDir(target);
   openFileRefactorDialog({
@@ -772,6 +772,7 @@ function openCopyDialogFor(paths: string[], target: string, dir?: boolean) {
     paths,
     target,
     dir,
+    forceOpenInEditor,
     copy: async (to, name, openInEditor) => {
       const first = await copyDialogPaths(paths, to, name, dir);
       if (typeof first === "string" && openInEditor) void openFile(first, { focus: true });

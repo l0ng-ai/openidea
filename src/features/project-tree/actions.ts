@@ -414,7 +414,7 @@ export function registerProjectActions(): () => void {
       },
       run: () => {
         const path = activeEditor()?.ctx.path;
-        if (path) openCopyDialog(nodesFrom(path));
+        if (path) openCopyDialog(nodesFrom(path), { forceOpenInEditor: true });
       },
     },
     {

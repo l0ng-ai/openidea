@@ -1145,6 +1145,7 @@ impl Documents {
 
     /// Copies the current buffer without changing the source; another open target is never overwritten.
     pub fn copy_as(&self, doc: DocId, target: &Path) -> IdeResult<bool> {
+        // Keep the operation lock across the target check and write so opening cannot race the copy.
         let _operation = self.operations.lock();
         if is_untitled(target) {
             return Err(IdeError::invalid("cannot copy over an untitled buffer"));
@@ -1160,12 +1161,15 @@ impl Documents {
                 None => {}
             }
         }
-        self.with_doc(doc, |st| {
-            if st.uri.is_some() || ide_vfs::is_archive_path(&st.path) {
-                return Err(IdeError::invalid("only a file document can be copied to a new path"));
-            }
-            Self::write_to(st, &target).map(|_| true)
-        })
+        let slot = self.slot(doc)?;
+        let mut st = slot.lock();
+        if st.closed {
+            return Err(IdeError::not_found(format!("document {doc} is not open")));
+        }
+        if st.uri.is_some() || ide_vfs::is_archive_path(&st.path) {
+            return Err(IdeError::invalid("only a file document can be copied to a new path"));
+        }
+        Self::write_to(&mut st, &target).map(|_| true)
     }
 
     pub fn has_unsaved_changes(&self) -> bool {

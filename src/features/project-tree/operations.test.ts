@@ -676,11 +676,21 @@ describe("Copy dialog buffer copies and Save As", () => {
     useEditorRegistry.setState({ active: { ctx: { path: "/p/source.txt" } } as never });
 
     await getAction("file.saveAs")!.run({ ctx: getContext() });
-    expect(pendingFileRefactorDialog()).toMatchObject({ kind: "copy", paths: ["/p/source.txt"], target: "/p" });
+    expect(pendingFileRefactorDialog()).toMatchObject({
+      kind: "copy",
+      paths: ["/p/source.txt"],
+      target: "/p",
+      forceOpenInEditor: true,
+    });
     closeFileRefactorDialog();
 
     await getAction("project.copyElement")!.run({ ctx: { ...getContext(), projectViewFocus: false } });
-    expect(pendingFileRefactorDialog()).toMatchObject({ kind: "copy", paths: ["/p/source.txt"], target: "/p" });
+    expect(pendingFileRefactorDialog()).toMatchObject({
+      kind: "copy",
+      paths: ["/p/source.txt"],
+      target: "/p",
+      forceOpenInEditor: false,
+    });
   });
 });
 
