@@ -439,6 +439,7 @@ async fn start_inner(
                     python_paths: Vec::new(),
                     ruby_reporter: None,
                     plots: None,
+                    capture_junit_reports: false,
                 },
                 sink,
                 Box::new(move |c| on_output(c)),
@@ -456,6 +457,7 @@ async fn start_inner(
                 // A folder on this machine: not in the container.
                 ruby_reporter: None,
                 plots: None,
+                capture_junit_reports: false,
             };
             project.require_trust()?;
             return host.processes.start(
@@ -554,6 +556,7 @@ async fn start_inner(
         python_paths,
         ruby_reporter: ruby_reporter_dir(host, &config),
         plots: if is_python { super::plots::prepare(host, &project).await } else { None },
+        capture_junit_reports: config.is_test && config.extras.test_runner.as_deref() == Some("jvm"),
     };
     project.require_trust()?;
     if config.kind == "go" && matches!(config.args.first().map(String::as_str), Some("mod" | "work")) {
