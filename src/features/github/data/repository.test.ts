@@ -167,19 +167,31 @@ describe("GitHub Enterprise Server hosts beside github.com", () => {
     expect(ghApi).toHaveBeenLastCalledWith("/w/app", expect.objectContaining({ host: "ghe.example.com" }));
   });
 
-  it("reads a choice saved without a host as the origin remote's repository", async () => {
-    layout = {
-      "/w/app": [
-        { name: "public", url: "https://github.com/acme/app.git" },
-        { name: "origin", url: "git@ghe.example.com:acme/app.git" },
-      ],
-    };
+  // A choice saved without a host comes from a release that knew only github.com.
+  const legacy = async (remotes: Array<{ name: string; url: string }>) => {
+    layout = { "/w/app": remotes };
     useProject.setState({ project: { root: "/w" } as never });
     localStorage.setItem("openidea.github.repository.v1:/w", "acme/app");
     ghAvailability.mockReturnValue(ready("https://ghe.example.com/acme/app"));
     ghApi.mockImplementation(answer);
     await refreshConnection();
-    expect(useGhRepository.getState().connection?.coordinates).toMatchObject({ host: "ghe.example.com" });
+    return useGhRepository.getState().connection?.coordinates;
+  };
+
+  it("reads a choice saved without a host as github.com's repository", async () => {
+    const connected = await legacy([
+      { name: "origin", url: "git@ghe.example.com:acme/app.git" },
+      { name: "public", url: "https://github.com/acme/app.git" },
+    ]);
+    expect(connected).toMatchObject({ owner: "acme", name: "app", host: "github.com" });
+  });
+
+  it("reads a choice saved without a host as the Enterprise repository when github.com has none", async () => {
+    const connected = await legacy([
+      { name: "origin", url: "git@ghe.example.com:acme/app.git" },
+      { name: "public", url: "https://github.com/acme/tools.git" },
+    ]);
+    expect(connected).toMatchObject({ owner: "acme", name: "app", host: "ghe.example.com" });
   });
 
   it("recognises SSH remotes of a server whose web address has a port", async () => {
