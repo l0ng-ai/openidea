@@ -82,9 +82,13 @@ interface FileTemplatesState {
   codeTemplates: TemplateFragment[];
 }
 
+function readCustomizations(scheme: TemplateScheme, root: string | null): Customizations {
+  return { ...EMPTY, ...loadJson<Partial<Customizations>>(storageKey(scheme, root), {}) } as Customizations;
+}
+
 function snapshot(root: string | null): FileTemplatesState {
   const scheme = readScheme(root);
-  const custom = { ...EMPTY, ...loadJson<Partial<Customizations>>(storageKey(scheme, root), {}) } as Customizations;
+  const custom = readCustomizations(scheme, root);
   return {
     scheme,
     root,
@@ -100,9 +104,11 @@ useContributedFileTemplates.subscribe(() => {
   useFileTemplates.setState((s) => ({ templates: mergeFileTemplates(s.custom) }));
 });
 
-function commit(custom: Customizations) {
-  const { scheme, root } = useFileTemplates.getState();
+function commit(custom: Customizations, scheme = useFileTemplates.getState().scheme) {
+  const { root } = useFileTemplates.getState();
   saveJson(storageKey(scheme, root), custom);
+  // Saving explicitly to another scheme must not replace the scheme currently shown in Settings.
+  if (scheme !== useFileTemplates.getState().scheme) return;
   useFileTemplates.setState({
     custom,
     templates: mergeFileTemplates(custom),
@@ -122,9 +128,10 @@ export function templateIncludes(): IncludeResolver {
   return fragmentResolver(s.includes, s.codeTemplates);
 }
 
-export function saveFileTemplate(t: FileTemplate) {
-  const c = custom();
-  commit({ ...c, templates: { ...c.templates, [t.id]: t }, deleted: c.deleted.filter((d) => d !== t.id) });
+export function saveFileTemplate(t: FileTemplate, scheme = useFileTemplates.getState().scheme) {
+  const current = useFileTemplates.getState();
+  const c = scheme === current.scheme ? current.custom : readCustomizations(scheme, current.root);
+  commit({ ...c, templates: { ...c.templates, [t.id]: t }, deleted: c.deleted.filter((d) => d !== t.id) }, scheme);
 }
 
 export function removeFileTemplate(id: string) {

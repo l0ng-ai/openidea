@@ -233,6 +233,7 @@
   "menu.project.attach": "附加專案…",
   "menu.file.openProject": "開啟…",
   "menu.file.save": "全部儲存",
+  "menu.templates.saveFileAsTemplate": "將檔案另存為範本…",
   "menu.file.projectStructure": "專案結構…",
   "menu.file.settings": "設定…",
   "menu.find": "查詢",

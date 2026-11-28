@@ -2235,6 +2235,7 @@
   "Inner": "内部",
   "Insert Live Template…": "插入实时模板…",
   "Save as Live Template…": "另存为实时模板…",
+  "Save File as Template…": "将文件另存为模板…",
   "Insert Macro…": "插入宏…",
   "Insert pair quote": "插入成对引号",
   "Insert selected suggestion by pressing space, dot, or other context-dependent keys": "按空格、点或其他上下文相关键时插入所选建议",

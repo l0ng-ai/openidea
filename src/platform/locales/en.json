@@ -237,6 +237,7 @@
   "menu.project.attach": "Attach Project…",
   "menu.file.openProject": "Open…",
   "menu.file.save": "Save All",
+  "menu.templates.saveFileAsTemplate": "Save File as Template…",
   "menu.file.projectStructure": "Project Structure…",
   "menu.file.settings": "Settings…",
   "menu.find": "Find",

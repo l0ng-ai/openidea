@@ -22,6 +22,7 @@ import {
 } from "./editor";
 import { ChooserHost } from "./popup/Chooser";
 import { NewFileDialogHost, openNewFileDialog } from "./files/NewFileDialog";
+import { SaveFileTemplateDialogHost, openSaveFileTemplateDialog } from "./files/SaveFileTemplateDialog";
 import { defaultDirectory } from "./files/create";
 import { fileTemplates, useFileTemplates, watchTemplateProject } from "./files/store";
 import type { FileTemplate } from "./files/model";
@@ -175,6 +176,7 @@ export function activate(): () => void {
     registerEditorContribution({ id: "templates", order: 90, extensions: templateEditorExtension }),
     registerOverlay({ id: "templates.chooser", component: ChooserHost }),
     registerOverlay({ id: "templates.newFile", component: NewFileDialogHost }),
+    registerOverlay({ id: "templates.saveFileAsTemplate", component: SaveFileTemplateDialogHost }),
     registerOverlay({ id: "templates.emmetUpdateTag", component: UpdateTagDialogHost }),
     registerMenuGroup({
       id: "templates.emmet",
@@ -230,6 +232,22 @@ export function activate(): () => void {
         run: () => {
           const view = activeEditor()?.view;
           if (view) saveAsLiveTemplate(view);
+        },
+      },
+      {
+        id: "templates.saveFileAsTemplate",
+        title: "Save File as Template…",
+        category: "File",
+        when: "textEditorActive && (editorFocus || !toolWindowFocus)",
+        keywords: ["file", "template", "save"],
+        enabled: () => {
+          const editor = activeEditor();
+          return !!editor?.ctx.path && !editor.ctx.virtual;
+        },
+        run: () => {
+          const editor = activeEditor();
+          if (!editor?.ctx.path || editor.ctx.virtual) return;
+          openSaveFileTemplateDialog({ path: editor.ctx.path, body: editor.view.state.doc.toString() });
         },
       },
       {

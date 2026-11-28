@@ -236,6 +236,7 @@
   "menu.project.attach": "Присоединить проект…",
   "menu.file.openProject": "Открыть…",
   "menu.file.save": "Сохранить всё",
+  "menu.templates.saveFileAsTemplate": "Сохранить файл как шаблон…",
   "menu.file.projectStructure": "Структура проекта…",
   "menu.file.settings": "Настройки…",
   "menu.find": "Найти",
