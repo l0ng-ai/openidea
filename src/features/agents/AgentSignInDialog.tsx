@@ -24,6 +24,25 @@ export interface SignInSpawner {
   ghLoginSpawn?(cols: number, rows: number, onEvent: (e: AgentLoginEvent) => void): Promise<TerminalId>;
 }
 
+// oxlint-disable-next-line no-control-regex
+const OSC_COLOR_RESPONSE_RE = /\x1b\]1[012];[^\x07\x1b]*(?:\x07|\x1b\\)/g;
+// oxlint-disable-next-line no-control-regex
+const TERMINAL_QUERY_RESPONSE_RE = /^(?:\x1b\[\d+;\d+R|\x1b\[[?>]?[\d;]*c)+$/;
+
+/**
+ * Drops xterm's automated OSC 10/11/12 color-query replies (`\x1b]11;rgb:…\x1b\\`):
+ * if they arrive after a CLI's short theme-probe timeout or out of order with CSI 6n,
+ * the PTY echoes `^[]11;rgb:…^[\` and interactive prompters like `gh`'s `survey` abort
+ * with `unexpected escape sequence from terminal: ['\x1b' ']']`.
+ */
+function filterTerminalInput(data: string): string {
+  return data.replace(OSC_COLOR_RESPONSE_RE, "");
+}
+
+function isAutomatedTerminalReply(data: string): boolean {
+  return TERMINAL_QUERY_RESPONSE_RE.test(data);
+}
+
 function formatVerificationUrl(rawUrl: string): string {
   try {
     const parsed = new URL(rawUrl);
@@ -47,6 +66,7 @@ export function AgentSignInDialog({
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const ptyIdRef = useRef<TerminalId | null>(null);
+  const enqueueWriteRef = useRef<(data: string) => void>(() => {});
   const completedRef = useRef(false);
   const outputBufferRef = useRef("");
   const devicePromptRef = useRef<DeviceCodePrompt | null>(null);
@@ -79,6 +99,8 @@ export function AgentSignInDialog({
     let disposed = false;
     let term: EmbeddedTerminal | null = null;
     const pendingOutput: string[] = [];
+    let pendingInput = "";
+    let flushingInput = false;
     let pendingSize: { cols: number; rows: number } = { cols: 80, rows: 18 };
     completedRef.current = false;
     outputBufferRef.current = "";
@@ -89,9 +111,36 @@ export function AgentSignInDialog({
     setDevicePrompt(null);
     setCopiedCode(null);
 
+    const flushInput = () => {
+      if (disposed || flushingInput || ptyIdRef.current === null || !pendingInput) return;
+      flushingInput = true;
+      void (async () => {
+        try {
+          // oxlint-disable-next-line no-await-in-loop -- PTY writes must stay strictly FIFO so terminal replies cannot reorder over async IPC/SSH
+          while (!disposed && ptyIdRef.current !== null && pendingInput) {
+            const id = ptyIdRef.current;
+            const chunk = pendingInput;
+            pendingInput = "";
+            // oxlint-disable-next-line no-await-in-loop
+            await commands.termWrite(id, chunk).catch(() => {});
+          }
+        } finally {
+          flushingInput = false;
+        }
+      })();
+    };
+
+    const enqueueWrite = (data: string) => {
+      if (!data || disposed) return;
+      pendingInput += data;
+      flushInput();
+    };
+    enqueueWriteRef.current = enqueueWrite;
+
     const killPty = () => {
       const id = ptyIdRef.current;
       ptyIdRef.current = null;
+      pendingInput = "";
       if (id !== null) void commands.termKill(id).catch(() => {});
     };
 
@@ -101,12 +150,13 @@ export function AgentSignInDialog({
         const factory = embeddedTerminal();
         if (!factory) throw new Error(tx("The terminal is not available in this window."));
         const instance = await factory(el, {
-          onData: (data) => {
-            if (devicePromptRef.current) {
+          onData: (rawData) => {
+            const data = filterTerminalInput(rawData);
+            if (!data) return;
+            if (devicePromptRef.current && !isAutomatedTerminalReply(data)) {
               sentEnterCodesRef.current.add(devicePromptRef.current.code);
             }
-            const id = ptyIdRef.current;
-            if (id !== null) void commands.termWrite(id, data).catch(() => {});
+            enqueueWrite(data);
           },
           onResize: (cols, rows) => {
             pendingSize = { cols, rows };
@@ -172,6 +222,7 @@ export function AgentSignInDialog({
           return;
         }
         ptyIdRef.current = ptyId;
+        flushInput();
         void commands.termResize(ptyId, pendingSize.cols, pendingSize.rows).catch(() => {});
         term?.focus();
       } catch (e) {
@@ -181,6 +232,7 @@ export function AgentSignInDialog({
 
     return () => {
       disposed = true;
+      enqueueWriteRef.current = () => {};
       killPty();
       term?.dispose();
     };
@@ -212,8 +264,7 @@ export function AgentSignInDialog({
     markCopied(code);
     if (needsEnterToPoll && (isRemoteWindow() || isWebMode()) && !sentEnterCodesRef.current.has(code)) {
       sentEnterCodesRef.current.add(code);
-      const id = ptyIdRef.current;
-      if (id !== null) void commands.termWrite(id, "\r").catch(() => {});
+      enqueueWriteRef.current("\r");
     }
     await openExternalUrl(url);
   };
